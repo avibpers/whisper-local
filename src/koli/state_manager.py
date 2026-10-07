@@ -112,6 +112,11 @@ class StateManager:
         self._rephrase_selection = ''
         self._rephrase_original_clipboard = ''
         self._continuous_aborted = False
+        # True while the running recording was started by auto-dictation (a text
+        # field got focus) rather than a hotkey; see auto_dictation.py.
+        self._auto_started = False
+        self._auto_dictation = None
+        self._warned_no_vad_for_auto = False
         from .media_control import MediaControl
         self.media_control = MediaControl()
         self._hotkey_listener_ref = None
@@ -173,8 +178,15 @@ class StateManager:
 
     def handle_vad_event(self, event: VadEvent):
         if event == VadEvent.SILENCE_TIMEOUT:
+            # An auto-started recording in which nobody spoke is not a dictation:
+            # drop it without a sound, so a field you merely clicked stays quiet.
+            if self._auto_started and not self._detector_heard_speech():
+                self.logger.info("Auto-dictation: no speech heard - cancelling quietly")
+                print(f"   ✗ Listening cancelled: nothing heard for {self._active_silence_timeout():g}s")
+                self.cancel_active_recording(quiet=True)
+                return
             self.logger.info("VAD silence timeout detected - stopping recording")
-            timeout_seconds = int(self.vad_manager.vad_silence_timeout_seconds)
+            timeout_seconds = int(self._active_silence_timeout())
             self._clear_streaming_display()
             print(f"⏰ Stopping recording after {timeout_seconds} seconds of silence...")
             audio_data = self.audio_recorder.stop_recording()
@@ -215,7 +227,9 @@ class StateManager:
         else:
             return False
     
-    def cancel_active_recording(self):
+    # `quiet` skips the cancel sound: auto-dictation cancels often (you typed,
+    # or never spoke) and a chime each time would be noise.
+    def cancel_active_recording(self, quiet: bool = False):
         self._clear_streaming_display()
         # Tear down the streaming-delivery worker (already-typed text stays — you
         # can't un-type live output, same as Wispr).
@@ -231,8 +245,10 @@ class StateManager:
             self._rephrase_mode = False
             self._rephrase_selection = ''
         self._continuous_aborted = True
+        self._auto_started = False
         self.audio_recorder.cancel_recording()
-        self.audio_feedback.play_cancel_sound()
+        if not quiet:
+            self.audio_feedback.play_cancel_sound()
         self._update_ui_state("idle")
         if self.level_overlay:
             self.level_overlay.hide()
@@ -327,21 +343,74 @@ class StateManager:
             if self.level_overlay:
                 self.level_overlay.show_recording()
 
-    def _begin_recording(self):
+    def _begin_recording(self, auto_started: bool = False):
         self._apply_recording_context()
         self._maybe_pause_media()
-        success = self.audio_recorder.start_recording()
+        silence_timeout = self._auto_silence_timeout() if auto_started else None
+        success = self.audio_recorder.start_recording(silence_timeout=silence_timeout)
 
         if success:
+            self._auto_started = auto_started
             # Only spin up the streaming-delivery worker once recording is
             # confirmed — otherwise a failed start would leak the worker thread.
             self._setup_streaming_delivery()
-            print("\n🎤 Recording started! Speak now...")
-            self.config_manager.print_stop_instructions_based_on_config()
-            self.audio_feedback.play_start_sound()
+            if auto_started:
+                # Same console story as a hotkey start, only the chime is skipped.
+                self.logger.info(f"Auto-dictation: listening (stops after {silence_timeout:g}s of silence)")
+                print("\n🎤 Listening — a text field got focus. Speak now...")
+                print(f"   Quiet for {silence_timeout:g}s: cancelled. Pause after speaking: transcribed. Typing or leaving the field: cancelled.")
+                if not getattr(self.audio_recorder, 'continuous_vad', None) and not self._warned_no_vad_for_auto:
+                    self._warned_no_vad_for_auto = True
+                    self.logger.warning("Auto-dictation: 'Stop on silence' is off, so only typing or a hotkey ends the recording")
+                    print("   ⚠ 'Stop on silence' is off, so only typing or a hotkey ends this recording.")
+            else:
+                print("\n🎤 Recording started! Speak now...")
+                self.config_manager.print_stop_instructions_based_on_config()
+                self.audio_feedback.play_start_sound()  # auto starts stay silent
             self._update_ui_state("recording")
             if self.level_overlay:
                 self.level_overlay.show_recording()
+
+    # ── Auto-dictation (a focused text field starts the recording) ───────────
+    # The coordinator in auto_dictation.py decides WHEN; these are the only
+    # entry points it uses, so the policy stays out of the pipeline.
+    def set_auto_dictation(self, coordinator):
+        self._auto_dictation = coordinator
+
+    def begin_auto_recording(self) -> bool:
+        if not self.can_start_recording() or self.is_paused:
+            return False
+        self._begin_recording(auto_started=True)
+        return self._auto_started
+
+    def is_auto_recording(self) -> bool:
+        return bool(self._auto_started) and self.audio_recorder.get_recording_status()
+
+    # Typing means "I'll write it myself": the audio is dropped, quietly.
+    def cancel_auto_recording(self, reason: str = '') -> bool:
+        if not self.is_auto_recording():
+            return False
+        self.logger.info(f"Auto-dictation: cancelled ({reason or 'cancelled'})")
+        print(f"   ✗ Listening cancelled: {reason or 'cancelled'}")
+        self.cancel_active_recording(quiet=True)
+        return True
+
+    def _auto_silence_timeout(self) -> float:
+        cfg = self.config_manager.config.get('auto_dictation') or {}
+        try:
+            return max(1.0, float(cfg.get('silence_timeout_seconds', 5)))
+        except (TypeError, ValueError):
+            return 5.0
+
+    def _active_silence_timeout(self) -> float:
+        detector = getattr(self.audio_recorder, 'continuous_vad', None)
+        if detector is not None:
+            return float(getattr(detector, 'silence_timeout_sec', self.vad_manager.vad_silence_timeout_seconds))
+        return float(self.vad_manager.vad_silence_timeout_seconds)
+
+    def _detector_heard_speech(self) -> bool:
+        detector = getattr(self.audio_recorder, 'continuous_vad', None)
+        return bool(getattr(detector, 'had_speech', True))
 
     # Decide whether this (plain dictation) recording should stream finalized
     # phrases to the cursor live, and if so spin up the delivery worker. Only the
@@ -530,6 +599,7 @@ class StateManager:
         try:
             with self._state_lock:
                 self.is_processing = True
+                self._auto_started = False
                 command_mode = self._command_mode
                 self._command_mode = False
                 rephrase_mode = self._rephrase_mode
@@ -830,6 +900,8 @@ class StateManager:
     # recording it is and whether hotkeys are paused.
     def _publish_state(self, state: str):
         mode = 'command' if self._command_mode else ('rephrase' if self._rephrase_mode else 'dictate')
+        if state == 'recording' and self._auto_started:
+            mode = 'auto'  # the floating bar shows "Listening" instead of the hotkey hints
         payload = {'state': state, 'mode': mode, 'paused': bool(self.is_paused),
                    'model_loading': bool(self.is_model_loading)}
         if state != 'recording':
@@ -1163,6 +1235,14 @@ class StateManager:
                 self._execute_model_change(new_whisper['model'])
             except Exception as e:
                 self.logger.error(f"Profile model change failed: {e}")
+
+        # A profile may switch auto-dictation on or off; the tray path bypasses
+        # the settings appliers, so apply it here.
+        if self._auto_dictation is not None:
+            try:
+                self._auto_dictation.apply_settings()
+            except Exception as e:
+                self.logger.warning(f"Auto-dictation not re-applied after profile: {e}")
 
         self.logger.info(f"Activated profile: {name}")
         print(f"   ✓ Profile activated: {name}")

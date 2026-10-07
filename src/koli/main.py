@@ -393,6 +393,20 @@ def _is_app_launch(args) -> bool:
     return True
 
 
+# Auto-dictation (a focused text field starts the recording). Off by default;
+# the settings applier and profiles start or stop it later, so a failure here
+# must never take the hotkeys down with it.
+def setup_auto_dictation(state_manager: StateManager, config_manager: ConfigManager, logger: logging.Logger):
+    from .auto_dictation import AutoDictation
+    coordinator = AutoDictation(state_manager, config_manager, state_manager.app_rules)
+    state_manager.set_auto_dictation(coordinator)
+    try:
+        coordinator.start()
+    except Exception as e:
+        logger.warning(f"Auto-dictation not started: {e}")
+    return coordinator
+
+
 def shutdown_app(hotkey_listener: HotkeyListener, state_manager: StateManager, logger: logging.Logger):
     try:
         if hotkey_listener and hotkey_listener.is_active():
@@ -400,6 +414,13 @@ def shutdown_app(hotkey_listener: HotkeyListener, state_manager: StateManager, l
             hotkey_listener.stop_listening()
     except Exception as ex:
         logger.error(f"Error stopping hotkey listener: {ex}")
+
+    try:
+        coordinator = getattr(state_manager, '_auto_dictation', None) if state_manager else None
+        if coordinator is not None:
+            coordinator.stop()
+    except Exception as ex:
+        logger.error(f"Error stopping auto-dictation: {ex}")
 
     if state_manager:
         state_manager.shutdown()
@@ -724,6 +745,7 @@ def main():
         try:
             hotkey_listener = setup_hotkey_listener(hotkey_config, state_manager, voice_commands_config['enabled'])
             state_manager.set_hotkey_listener(hotkey_listener)
+            setup_auto_dictation(state_manager, config_manager, logger)
         except Exception as hotkey_error:
             logger.error(f"Hotkey registration failed: {hotkey_error}")
             print(f"\n❌ Could not register hotkeys ({hotkey_error}).")

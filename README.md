@@ -88,6 +88,7 @@ This is a **community tool**, not a product. There's no support SLA, no roadmap 
 - 🤖 **AI rephrase** — dedicated `Ctrl+Shift+Win` hotkey: select text, hold, speak your instruction, release — local Ollama rewrites it in place
 - 🌐 **Translation mode** — speak any language, get English; tray → Profile → Translate
 - 🔁 **Continuous dictation mode** — for long-form notes, the app auto-restarts recording after each delivery
+- 🖱️ **Start listening when a text field gets focus** (Windows, opt-in) — click into any field and talk; quiet if you say nothing, cancels the moment you type or leave the field
 - 📋 **Fallback window** — if no text field is focused, the transcript appears in a small window (pre-selected, copy button, already on clipboard)
 - ⏸ **Pause-all hotkey** — `Ctrl+Alt+Win` disables every Koli hotkey until you press it again
 - 📋 **Auto-paste at cursor** — transcript lands wherever you're typing, optionally followed by Enter (auto-send)
@@ -375,6 +376,8 @@ Highlights:
 | `hotkey.recording_hotkey` | `ctrl+win` | Configurable |
 | `hotkey.recording_mode` | `push_to_talk` | `push_to_talk` (hold to talk) or `toggle` |
 | `hotkey.double_tap_to_lock` | `false` | Double-tap the record hotkey for hands-free recording |
+| `auto_dictation.enabled` | `false` | Start listening when a text field gets focus (Windows); typing cancels, silence ends it |
+| `auto_dictation.silence_timeout_seconds` | `5` | How long an auto-started recording waits for speech, and how long a pause ends it |
 | `hotkey.paste_last_hotkey` | `alt+shift+z` | Type your last dictation again (`ctrl+option+v` on macOS) |
 | `postprocess.style` | `""` | `formal` / `casual` / `very_casual` / `verbatim`, or per app in `app_rules.yaml` |
 | `postprocess.snippets` | `[]` | Spoken shortcuts expanded inline |

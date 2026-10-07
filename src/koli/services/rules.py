@@ -13,7 +13,7 @@ from .. import profiles as pf
 from ..utils import get_user_app_data_path
 
 RULE_KEYS = ('match', 'auto_send', 'auto_paste', 'suppress', 'initial_prompt', 'language', 'task',
-             'style') + ar.FORMATTING_KEYS
+             'style', 'auto_dictation') + ar.FORMATTING_KEYS
 
 
 def _rules_path() -> Path:

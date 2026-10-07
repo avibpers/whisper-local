@@ -5,6 +5,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 ## [Unreleased]
 
 ### Added
+- **Start listening when a text field gets focus** (Windows). Turn it on in
+  Settings and click into any text field to dictate, no hotkey. It stays
+  quiet if you say nothing for 5 seconds, stops and pastes after a pause once
+  you have spoken, and cancels the moment you type or click away from the
+  field. Password fields and
+  Koli's own window never trigger it. A per-app rule (`auto_dictation:
+  false`) turns it off for an app, and a profile can switch it on or off.
 - **A new app window and floating bar.** The bar sits at the edge of the
   screen: a thin handle at rest, the level and a timer while you talk, then
   what happened (pasted, copied, nothing heard, no text field). Right-click it

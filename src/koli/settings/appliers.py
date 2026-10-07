@@ -417,6 +417,13 @@ class Appliers:
         elif path == 'overlay.position':
             bar.set_position(value)
 
+    # The toggle hooks or unhooks focus and typing at once; the silence limit
+    # is read at the next auto start.
+    def auto_dictation(self, path, value, old):
+        coordinator = getattr(self.sm, '_auto_dictation', None)
+        if coordinator is not None and path == 'auto_dictation.enabled':
+            coordinator.apply_settings()
+
     def update_check(self, path, value, old):
         if value:
             from ..update_check import maybe_check_for_update
@@ -474,5 +481,6 @@ _PREFIX_HANDLERS = [
     ('terminal_title.', Appliers.terminal_title),
     ('system_tray.', Appliers.tray),
     ('overlay.', Appliers.overlay),
+    ('auto_dictation.', Appliers.auto_dictation),
     ('server.', Appliers.server),
 ]

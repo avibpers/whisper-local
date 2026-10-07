@@ -4,7 +4,11 @@
 # profile is activated from the system tray "Profile" submenu.
 #
 # Sections that can be overridden: any top-level key in config.defaults.yaml
-# (whisper, hotkey, vad, audio, clipboard, voice_commands, ...).
+# (whisper, hotkey, vad, audio, clipboard, voice_commands, auto_dictation, ...).
+# For example, a profile can start listening whenever a text field gets focus:
+#   overrides:
+#     auto_dictation:
+#       enabled: true
 
 active: dictation
 

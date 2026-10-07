@@ -20,6 +20,8 @@ function summary(e) {
   if (e.suppress) bits.push('Never deliver');
   if (e.auto_paste === false) bits.push('Copy only');
   if (e.auto_send === true) bits.push('Auto-send');
+  if (e.auto_dictation === false) bits.push('No auto-listen');
+  if (e.auto_dictation === true) bits.push('Auto-listen');
   if (e.style) bits.push(e.style.replace('_', ' '));
   if (e.language) bits.push(`language ${e.language}`);
   if (e.initial_prompt) bits.push('prompt');
@@ -45,6 +47,7 @@ function RuleEditor({ item, onSaved, onDeleted }) {
     <${Row} label="Paste at cursor"><${Segmented} label="Paste" value=${pasteMode} options=${[[null, 'Default'], [true, 'Paste'], [false, 'Copy only']]} onChange=${(v) => set('auto_paste', v)} /></${Row}>
     <${Row} label="Don't deliver at all"><${Toggle} checked=${!!e.suppress} label="Suppress" onChange=${(v) => set('suppress', v || null)} /></${Row}>
     <div class="eyebrow" style="margin-top:10px">Listening</div>
+    <${Row} label="Start listening when a text field gets focus"><${Segmented} label="Auto-listen" value=${e.auto_dictation ?? null} options=${[[null, 'Default'], [true, 'On'], [false, 'Off']]} onChange=${(v) => set('auto_dictation', v)} /></${Row}>
     <${Row} label="Language"><${Select} label="Language" value=${e.language ?? null} options=${LANGS} onChange=${(v) => set('language', v)} /></${Row}>
     <${Row} label="Output"><${Segmented} label="Output" value=${e.task ?? null} options=${[[null, 'Default'], ['transcribe', 'Transcribe'], ['translate', 'Translate']]} onChange=${(v) => set('task', v)} /></${Row}>
     <div style="padding:10px 0;border-top:1px solid var(--line)"><div style="margin-bottom:6px">Extra context prompt</div>
@@ -138,7 +141,7 @@ function openProfileEditor(item, reload) {
       </div>
       <label class="stack" style="gap:6px"><span class="eyebrow">Settings it changes</span>
         <textarea class="inp mono" rows="12" value=${text} onInput=${(e) => { text = e.currentTarget.value; }}></textarea></label>
-      <p class="small muted" style="margin:0">Sections and keys as in Settings, for example {"whisper": {"language": "he", "model": "small"}, "clipboard": {"auto_paste": true}}.</p>
+      <p class="small muted" style="margin:0">Sections and keys as in Settings, for example {"whisper": {"language": "he", "model": "small"}, "clipboard": {"auto_paste": true}, "auto_dictation": {"enabled": true}}.</p>
     </div>
     <div class="modal-foot"><button type="button" class="btn" onClick=${closeModal}>Cancel</button>
       <button type="button" class="btn pri" onClick=${() => {

@@ -95,6 +95,12 @@ SCHEMA = [
        help='Off copies to the clipboard only. App rules can override this per app.'),
     _S('audio.continuous_mode', 'Continuous dictation', 'general', 'toggle',
        help='Starts recording again after each delivery. Press Esc to stop.'),
+    _S('auto_dictation.enabled', 'Start listening when a text field gets focus', 'general', 'toggle',
+       help='Click into any text field and talk, no hotkey. Quiet if you say nothing, '
+       'stops when you pause, cancels the moment you type or leave the field. App rules can turn it off per app. Windows only for now.'),
+    _S('auto_dictation.silence_timeout_seconds', 'Auto-listen silence limit', 'general', 'number',
+       apply=NEXT_RECORDING, min=1, max=60, step=1, unit='seconds',
+       help='How long it listens for you to start, and how long a pause ends it, when it started from a focused field.'),
 
     # ── Microphone & audio ───────────────────────────────────────────────────
     _S('audio.input_device', 'Microphone', 'audio', 'microphone', apply=BACKGROUND, mode=SIMPLE,

@@ -211,6 +211,16 @@ hotkey: # Hotkey Configuration
     double_tap_to_lock: false
     double_tap_window_ms: 400
 
+auto_dictation: # Start listening when a text field gets focus (Windows)
+    # Click or tab into any text field and Koli listens, no hotkey needed.
+    # It cancels quietly if you say nothing for silence_timeout_seconds, stops
+    # and pastes after that long a pause once you have spoken, and cancels the
+    # moment you type or click away from the field. Per-app rules can turn it off for an app
+    # (auto_dictation: false), and profiles can switch it on or off.
+    # Needs "Stop on silence" (vad_realtime_enabled) for the silence rules.
+    enabled: false
+    silence_timeout_seconds: 5
+
 vad: # Voice Activity Detection (VAD)
     # Voice Activity Detection (VAD) Pre-check
     # Uses TEN VAD to detect speech before transcription (prevents hallucinations on silence)

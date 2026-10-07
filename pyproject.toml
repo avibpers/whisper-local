@@ -64,6 +64,8 @@ dependencies = [
     "pywin32>=306; sys_platform=='win32'",
     # Pause music and lower the volume while recording (media_control.py)
     "pycaw>=20240210; sys_platform=='win32'",
+    # Auto-dictation asks UI Automation whether the focused control is a text field (input_watch.py)
+    "comtypes>=1.4; sys_platform=='win32'",
     "winrt-runtime>=2.3; sys_platform=='win32'",
     "winrt-Windows.Media.Control>=2.3; sys_platform=='win32'",
     "winrt-Windows.Foundation>=2.3; sys_platform=='win32'",

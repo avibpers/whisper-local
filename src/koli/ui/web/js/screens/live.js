@@ -76,7 +76,7 @@ function NowCard() {
   const audio = useAudio();
   const streaming = app.use((s) => s.streaming);
   const cur = audio && audio.current;
-  const label = st.paused ? 'Hotkeys paused' : recording ? (st.mode === 'command' ? 'Listening for a command' : st.mode === 'rephrase' ? 'Listening for an instruction' : st.hands_free ? 'Recording hands-free · tap the keys to stop' : 'Recording')
+  const label = st.paused ? 'Hotkeys paused' : recording ? (st.mode === 'command' ? 'Listening for a command' : st.mode === 'rephrase' ? 'Listening for an instruction' : st.mode === 'auto' ? 'Listening · a text field got focus, typing cancels' : st.hands_free ? 'Recording hands-free · tap the keys to stop' : 'Recording')
     : st.state === 'processing' ? 'Transcribing…' : st.state === 'model_loading' ? 'Loading the model…' : 'Ready';
   return html`<section class="card pad stack" style="grid-column:span 2;min-width:0" aria-label="Current recording">
     <div class="row-flex" style="justify-content:space-between">
@@ -275,7 +275,7 @@ export function LiveScreen() {
     <div class="page-head">
       <div><h1 class="page-title">Live</h1><p class="page-sub">What the engine hears and does, as it happens.</p></div>
       <div class="row-flex">
-        ${st.state === 'recording' && html`<span class="chip rec"><span class="dot"></span>${st.mode === 'dictate' ? 'Recording' : st.mode}</span>`}
+        ${st.state === 'recording' && html`<span class="chip rec"><span class="dot"></span>${st.mode === 'dictate' ? 'Recording' : st.mode === 'auto' ? 'Listening' : st.mode}</span>`}
         ${fg.exe && html`<span class="chip">${fg.exe}${fg.rule ? ` · rule “${fg.rule}”` : ''}</span>`}
       </div>
     </div>

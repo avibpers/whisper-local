@@ -175,10 +175,12 @@ function Status() {
   if (st.state === 'recording') {
     const command = st.mode === 'command';
     const rephrase = st.mode === 'rephrase';
+    const auto = st.mode === 'auto';  // started by a focused text field, not a hotkey
     const handsFree = st.hands_free || (settings.audio && settings.audio.continuous_mode);
     return html`<div class="bub">
       ${command ? html`<${Badge} tone="purple" icon="command" /><span>Command</span>`
         : rephrase ? html`<${Badge} tone="purple" icon="pen" /><span>Rephrase</span>`
+        : auto ? html`<${Badge} tone="acc" icon="mic" /><span title="Started because a text field got focus. Typing cancels it.">Listening</span>`
         : handsFree ? html`<span class="badge purple" title="Recording without holding the keys. Tap them again to stop."><${Icon} name="lock" /></span>` : ''}
       <${Wave} />
       ${streaming && !command ? html`<span class="text" dir="auto">…${streaming.slice(-48)}</span>` : html`<${Timer} />`}

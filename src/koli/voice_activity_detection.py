@@ -182,6 +182,9 @@ class ContinuousVoiceDetector:
         self.frames_for_timeout = int(self.silence_timeout_sec / self.frame_duration_sec)
         self.probability_buffer = deque(maxlen=self.frames_for_timeout) # Control memory growth with circular buffer
         self.state = VadState.SILENCE_COUNTING
+        # True once any speech was heard this recording. Auto-dictation uses it
+        # to tell "you never spoke" (cancel quietly) from "you stopped" (deliver).
+        self.had_speech = False
         self._lock = threading.Lock()
         self.event_callback = event_callback
         # Latest speech probability, for the Live screen's voice-detection bar.
@@ -189,6 +192,15 @@ class ContinuousVoiceDetector:
         self.onset_threshold = vad_onset_threshold
         self.offset_threshold = vad_offset_threshold
         self.logger = logging.getLogger(__name__)
+
+    # A per-recording silence budget: auto-dictation stops after a few seconds,
+    # a hotkey recording after the configured timeout. Takes effect at the next
+    # frame, so call it before reset() at the start of a recording.
+    def set_silence_timeout(self, seconds: float):
+        with self._lock:
+            self.silence_timeout_sec = float(seconds)
+            self.frames_for_timeout = max(1, int(self.silence_timeout_sec / self.frame_duration_sec))
+            self.probability_buffer = deque(self.probability_buffer, maxlen=self.frames_for_timeout)
 
     def _dispatch_event(self, event: VadEvent):
         if self.event_callback:
@@ -225,6 +237,9 @@ class ContinuousVoiceDetector:
             current_state = self.state
             event = VadEvent.NO_EVENT
 
+            if speech_detected:
+                self.had_speech = True
+
             if current_state == VadState.SPEECH_DETECTED:
                 if speech_detected:
                     self.silence_frame_count = 0
@@ -254,6 +269,7 @@ class ContinuousVoiceDetector:
         with self._lock:
             self.state = VadState.SILENCE_COUNTING
             self.silence_frame_count = 0
+            self.had_speech = False
             self.probability_buffer.clear()
             self.hysteresis.speech_detected = False
 
@@ -275,4 +291,5 @@ class ContinuousVoiceDetector:
                 'onset': self.onset_threshold,
                 'offset': self.offset_threshold,
                 'timeout_s': self.silence_timeout_sec,
+                'had_speech': self.had_speech,
             }

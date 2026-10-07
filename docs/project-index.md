@@ -49,6 +49,7 @@ Koli is a fork of `drajb/whisper-local` by Rohit Burani (repo `avibpers/whisper-
 | **Snippets** | `snippets.py` | Spoken shortcuts expanded inline during dictation | re |
 | **Styles** | `styles.py` | Named writing styles (formal/casual/very casual/verbatim), global or per app | - |
 | **Hotkey Gestures** | `hotkey_gestures.py` | Double-tap-to-lock state machine for push-to-talk | threading |
+| **Auto-dictation** | `auto_dictation.py` | Starts listening when a text field gets focus; quiet cancel without speech, cancel on typing (design: `docs/design/auto-dictation.md`) | threading |
 | **Whisper Mode** | `audio_gain.py` | Boosts quiet recordings before transcription | numpy |
 | **Corrections** | `corrections.py` | Persist post-transcription replacements (history "Fix this everywhere") | ruamel.yaml |
 | **System Audio** | `system_audio.py` | `--transcribe-system` loopback capture (experimental, opt-in) | soundcard |
@@ -66,6 +67,7 @@ Koli is a fork of `drajb/whisper-local` by Rohit Burani (repo `avibpers/whisper-
 | **Console Welcome (legacy)** | `onboarding_tutorial.py` | First-launch console banner, skipped when the app window runs | - |
 | **Whisper.cpp Backend** | `whisper_engine_cpp.py` | Opt-in `whisper_cpp` backend mirroring WhisperEngine's API | pywhispercpp |
 | **Foreground App** | `platform/*/foreground.py` | Detects the active window/app for per-app rules | pywin32 / pyobjc |
+| **Input Watch** | `platform/*/input_watch.py` | Focus-change and typing hooks plus the UI Automation "is this a text field" probe for auto-dictation (Windows; macOS stub) | ctypes, comtypes |
 | **Console Control** | `platform/windows/console.py` | Show/hide/own the console window (pyapp builds) | ctypes |
 
 ## App window and floating bar

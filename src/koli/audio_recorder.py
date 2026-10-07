@@ -268,7 +268,10 @@ class AudioRecorder:
         if status:
             self.logger.debug(f"Audio callback status: {status}")
 
-    def start_recording(self):
+    # `silence_timeout` overrides the configured silence stop for this one
+    # recording (auto-dictation listens for a few seconds only); None restores
+    # the configured value, so a hotkey recording never inherits the short one.
+    def start_recording(self, silence_timeout: Optional[float] = None):
         if self.is_recording:
             return False
 
@@ -276,6 +279,10 @@ class AudioRecorder:
         self.recording_start_time = time.time()
 
         if self.continuous_vad:
+            configured = getattr(self.vad_manager, 'vad_silence_timeout_seconds', None)
+            wanted = silence_timeout if silence_timeout else configured
+            if wanted and wanted != self.continuous_vad.silence_timeout_sec:
+                self.continuous_vad.set_silence_timeout(wanted)
             self.continuous_vad.reset()
         if self.continuous_streaming:
             self.continuous_streaming.reset()
