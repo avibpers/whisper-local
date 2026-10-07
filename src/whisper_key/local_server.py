@@ -118,10 +118,60 @@ def _build_engine():
     return engine
 
 
+# Runs the same server inside the app (Settings › System › Local API) on a
+# background thread, sharing the dictation engine. `engine_provider` returns
+# the current engine on every request, so a model switch in the app is picked
+# up without restarting the server.
+class ServerController:
+    def __init__(self, engine_provider):
+        self._engine_provider = engine_provider
+        self._httpd = None
+        self._thread = None
+        self.host = None
+        self.port = None
+        self.error = ''
+
+    def start(self, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT):
+        self.stop()
+        self.error = ''
+        try:
+            httpd = ThreadingHTTPServer((host, int(port)), _make_handler(self._engine_provider))
+        except OSError as e:
+            self.error = f"Could not use {host}:{port} — {e}"
+            raise RuntimeError(self.error)
+        self._httpd, self.host, self.port = httpd, host, int(port)
+        self._thread = threading.Thread(target=httpd.serve_forever, daemon=True, name='local-api')
+        self._thread.start()
+        logger.info(f"Local API listening on http://{host}:{port}")
+
+    def stop(self):
+        if self._httpd is not None:
+            try:
+                self._httpd.shutdown()
+                self._httpd.server_close()
+            except Exception:
+                pass
+            logger.info("Local API stopped")
+        self._httpd = None
+        self._thread = None
+
+    def status(self) -> dict:
+        return {'running': self._httpd is not None, 'host': self.host, 'port': self.port,
+                'error': self.error,
+                'url': f"http://{self.host}:{self.port}/v1/audio/transcriptions" if self._httpd else ''}
+
+
 # Factory that returns a per-server BaseHTTPRequestHandler subclass bound to
 # our engine. We use a factory (not module-level globals) so multiple servers
-# could in principle coexist with different configs.
+# could in principle coexist with different configs. `engine` may also be a
+# zero-argument callable returning the engine (the in-app server).
 def _make_handler(engine):
+    engine_source = engine
+
+    def current_engine():
+        if callable(engine_source) and not hasattr(engine_source, 'transcribe_audio'):
+            return engine_source()
+        return engine_source
 
     # Single lock across requests — Whisper inference is single-threaded per
     # model instance, and serialising here gives predictable latency. If you
@@ -171,6 +221,7 @@ def _make_handler(engine):
                 return
 
             with transcribe_lock:
+                engine = current_engine()
                 old_lang = engine.language
                 old_prompt = engine.initial_prompt
                 try:

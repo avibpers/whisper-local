@@ -45,6 +45,10 @@ class SystemTray:
                
         self.icon = None  # pystray object, holds menu, state, etc.
         self.is_running = False
+        # Set by the app window host: open a page in the app instead of the
+        # legacy Tk/console windows, and quit cleanly through the host.
+        self.on_open = None
+        self.on_quit = None
         self.current_state = "idle"
         self.available = True
         
@@ -349,6 +353,12 @@ class SystemTray:
                 ),
             ]
 
+            if self.on_open:
+                menu_items[0:0] = [
+                    pystray.MenuItem("Open Whisper Local", lambda icon, item: self.on_open(None), default=True),
+                    pystray.Menu.SEPARATOR,
+                ]
+
             profile_items = self._build_profile_menu()
             if profile_items:
                 active_profile = self.state_manager.get_active_profile() or "—"
@@ -484,6 +494,9 @@ class SystemTray:
         console.start_minimize_monitor(console.hide)
 
     def _quit_application_from_tray(self, icon=None, item=None):
+        if self.on_quit:
+            self.on_quit()
+            return
         os.kill(os.getpid(), signal.SIGINT)
 
     # Relaunch, then quit this instance — the new one's single-instance guard
@@ -512,15 +525,23 @@ class SystemTray:
         os.kill(os.getpid(), signal.SIGINT)
 
     def _run_doctor_in_window(self, icon=None, item=None):
+        if self.on_open:
+            return self.on_open('diagnostics')
         self._run_module_in_window('--doctor')
 
     def _run_stats_in_window(self, icon=None, item=None):
+        if self.on_open:
+            return self.on_open('history')
         self._run_module_in_window('--stats')
 
     def _open_settings_window(self, icon=None, item=None):
+        if self.on_open:
+            return self.on_open('settings')
         self._run_module_in_window('--settings')
 
     def _open_history_window(self, icon=None, item=None):
+        if self.on_open:
+            return self.on_open('history')
         self._run_module_in_window('--history')
 
     def _toggle_autostart(self, icon=None, item=None):
@@ -533,6 +554,8 @@ class SystemTray:
             self.logger.error(f"Failed to toggle autostart: {e}")
 
     def _open_cheat_sheet(self, icon=None, item=None):
+        if self.on_open:
+            return self.on_open('diagnostics')
         try:
             from .window_launcher import open_in_child_process
             if open_in_child_process('cheat-sheet'):
@@ -546,6 +569,8 @@ class SystemTray:
             self.logger.error(f"Failed to open cheat sheet: {e}")
 
     def _run_selftest_in_window(self, icon=None, item=None):
+        if self.on_open:
+            return self.on_open('diagnostics')
         self._run_module_in_window('--selftest')
 
     def _bundle_logs_action(self, icon=None, item=None):

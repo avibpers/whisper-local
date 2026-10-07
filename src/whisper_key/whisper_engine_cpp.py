@@ -49,6 +49,7 @@ class WhisperEngineCpp:
         self.model = None
         self._loading_thread = None
         self._progress_callback = None
+        self.last_info = None
 
         self._Model = Model
         n_threads = max(1, (os.cpu_count() or 4) - 1)
@@ -109,6 +110,12 @@ class WhisperEngineCpp:
 
             elapsed = time.time() - t0
             print(f"   ✓ Transcription completed in {elapsed:.1f} seconds")
+            self.last_info = {
+                'language': self.language or 'auto', 'language_probability': None,
+                'seconds': round(elapsed, 2), 'model': self.model_key, 'device': self.device,
+                'compute_type': self.compute_type, 'beam_size': self.beam_size,
+                'backend': 'whisper_cpp',
+            }
 
             if self.log_transcriptions:
                 self.logger.info(f"Transcribed: '{transcribed_text}'")

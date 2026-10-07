@@ -612,6 +612,36 @@ postprocess: # Transcription post-processing pipeline
 
             {text}
 
+ui: # The app window and floating bar
+    # simple = plain-language settings for everyday use
+    # advanced = every option, the live log and tools
+    mode: simple
+
+    # light | dark | system (follows Windows)
+    theme: light
+
+    # Open the app window when Whisper Local starts (it always opens on the
+    # very first run). Otherwise only the floating bar shows.
+    open_on_start: false
+
+    # Set once the first-run welcome has been completed (managed automatically)
+    welcome_done: false
+
+    # Last window size and position (managed automatically)
+    window:
+        width: 1280
+        height: 860
+        x: null
+        y: null
+        maximized: false
+
+server: # Local OpenAI-compatible transcription API (also: whisper-local --serve)
+    # Runs inside the app when enabled, sharing the dictation model.
+    enabled: false
+    # Keep 127.0.0.1 unless you trust every device on your network.
+    host: 127.0.0.1
+    port: 7777
+
 update_check: # Opt-in update notifications
     # When enabled, once per day Whisper Local checks the GitHub releases API
     # for a newer version and shows a tray notification if found.

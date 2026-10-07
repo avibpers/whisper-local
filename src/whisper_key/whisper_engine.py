@@ -65,6 +65,8 @@ class WhisperEngine:
 
         self._loading_thread = None
         self._progress_callback = None
+        # Details of the most recent transcription, for the Live trace.
+        self.last_info = None
 
         self.vad_manager = vad_manager
 
@@ -259,6 +261,14 @@ class WhisperEngine:
             # Log some info about what we transcribed
             detected_language = info.language
             confidence = info.language_probability
+            self.last_info = {
+                'language': detected_language,
+                'language_probability': round(float(confidence or 0), 3),
+                'seconds': round(transcription_time, 2),
+                'model': self.model_key, 'device': self.device,
+                'compute_type': self.compute_type, 'beam_size': self.beam_size,
+                'backend': 'faster_whisper',
+            }
             self.logger.info(f"Transcription complete. Language: {detected_language} (confidence: {confidence:.2f}) - Time: {transcription_time:.2f}s")
             if self.log_transcriptions:
                 self.logger.info(f"Transcribed text: '{transcribed_text}'")

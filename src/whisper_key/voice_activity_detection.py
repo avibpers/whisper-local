@@ -184,6 +184,10 @@ class ContinuousVoiceDetector:
         self.state = VadState.SILENCE_COUNTING
         self._lock = threading.Lock()
         self.event_callback = event_callback
+        # Latest speech probability, for the Live screen's voice-detection bar.
+        self.last_probability = 0.0
+        self.onset_threshold = vad_onset_threshold
+        self.offset_threshold = vad_offset_threshold
         self.logger = logging.getLogger(__name__)
 
     def _dispatch_event(self, event: VadEvent):
@@ -207,6 +211,7 @@ class ContinuousVoiceDetector:
                     audio_int16 = np.pad(audio_int16, (0, VAD_CHUNK_SIZE - len(audio_int16)),
                                          mode='constant', constant_values=0)
             probability, _ = self.ten_vad.process(audio_int16)
+            self.last_probability = float(probability)
             speech_detected = self.hysteresis.detect_speech(probability)
             self.probability_buffer.append(probability)
             return self._update_state(speech_detected)
@@ -259,3 +264,15 @@ class ContinuousVoiceDetector:
     def get_silence_duration(self) -> float:
         with self._lock:
             return self.silence_frame_count * self.frame_duration_sec
+
+    # Everything the Live screen shows about voice detection, in one read.
+    def snapshot(self) -> dict:
+        with self._lock:
+            return {
+                'probability': round(self.last_probability, 3),
+                'speaking': self.state == VadState.SPEECH_DETECTED,
+                'silence_s': round(self.silence_frame_count * self.frame_duration_sec, 2),
+                'onset': self.onset_threshold,
+                'offset': self.offset_threshold,
+                'timeout_s': self.silence_timeout_sec,
+            }

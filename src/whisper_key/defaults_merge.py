@@ -79,9 +79,11 @@ def _merge_lists(shipped: list, user: list, id_key: str) -> list:
         if isinstance(entry, dict) and str(entry.get(id_key, '')) in shipped_ids:
             by_id[str(entry[id_key])] = entry
 
-    # Anything that doesn't name a shipped entry is the user's own.
+    # Anything that doesn't name a shipped entry is the user's own. Their own
+    # entries can be switched off too (the app window's enable toggle).
     merged = [e for e in user
-              if isinstance(e, dict) and str(e.get(id_key, '')) not in shipped_ids]
+              if isinstance(e, dict) and str(e.get(id_key, '')) not in shipped_ids
+              and not e.get(DISABLED_KEY)]
 
     for entry in shipped:
         if not isinstance(entry, dict):
@@ -109,7 +111,7 @@ def _merge_dicts(shipped: dict, user: dict) -> dict:
         if isinstance(override, dict) and isinstance(merged[name], dict):
             merged[name].update({k: v for k, v in override.items() if k != DISABLED_KEY})
     for name, entry in user.items():
-        if name not in shipped:
+        if name not in shipped and not (isinstance(entry, dict) and entry.get(DISABLED_KEY)):
             merged[name] = entry
     return merged
 
@@ -257,3 +259,281 @@ def load_layered(defaults_filename: str, user_path: Path, section: str,
     return _merge_lists(shipped,
                         user_section if isinstance(user_section, list) else [],
                         id_key), data
+
+
+# ── Writing (the app window's editors) ───────────────────────────────────────
+#
+# The editors change one entry at a time and keep the overrides-only format:
+# an edit to a shipped entry stores only the keys that differ (a key the edit
+# removed is stored as null, which is how a user override clears a shipped
+# action), "turn off" stores `disabled: true`, and "reset" drops the override.
+# The user's own entries are stored whole. Own entries without an id are
+# addressed as "#<n>" (their position among the user's own entries).
+
+OWN_PREFIX = '#'
+
+
+def _load_for_write(defaults_filename: str, user_path: Path, section: str, header: str,
+                    id_key: str, mapping: bool):
+    # Make sure the file exists and is migrated before editing it.
+    load_layered(defaults_filename, user_path, section, header, id_key=id_key, mapping=mapping)
+    data = _read_yaml(user_path)
+    if data is None:
+        raise RuntimeError(f"{user_path.name} has a typo, so it can't be edited here. "
+                           f"Fix it in a text editor first.")
+    shipped = _read_shipped(defaults_filename, section) or ({} if mapping else [])
+    user_section = data.get(section)
+    if user_section is None:
+        user_section = {} if mapping else []
+    return data, shipped, user_section
+
+
+def _save(user_path: Path, header: str, data: dict, section: str, user_section):
+    payload = {FORMAT_KEY: CURRENT_FORMAT}
+    payload.update({k: v for k, v in data.items() if k not in (FORMAT_KEY, section)})
+    payload[section] = user_section
+    _write(user_path, header, payload)
+
+
+def _plain(obj):
+    if isinstance(obj, dict):
+        return {k: _plain(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_plain(v) for v in obj]
+    return obj
+
+
+def _shipped_ids(shipped: list, id_key: str) -> set:
+    return {str(e.get(id_key)) for e in shipped if isinstance(e, dict) and e.get(id_key) is not None}
+
+
+# Every entry as the editors see it: merged values, where it comes from
+# ('shipped', 'changed' or 'yours'), and whether it is switched off.
+# Switched-off entries are included here, unlike load_layered().
+def layered_view(defaults_filename: str, user_path: Path, section: str, header: str,
+                 id_key: str = 'id', mapping: bool = False) -> list:
+    load_layered(defaults_filename, user_path, section, header, id_key=id_key, mapping=mapping)
+    data = _read_yaml(user_path) or {}
+    shipped = _read_shipped(defaults_filename, section) or ({} if mapping else [])
+    user_section = data.get(section) or ({} if mapping else [])
+    out = []
+    if mapping:
+        user_map = user_section if isinstance(user_section, dict) else {}
+        for name, entry in shipped.items():
+            override = user_map.get(name)
+            merged = dict(entry) if isinstance(entry, dict) else {}
+            disabled = False
+            changed = False
+            if isinstance(override, dict):
+                disabled = bool(override.get(DISABLED_KEY))
+                changed = any(k != DISABLED_KEY for k in override)
+                merged.update({k: v for k, v in override.items() if k != DISABLED_KEY})
+            out.append({'id': name, 'origin': 'changed' if changed else 'shipped',
+                        'disabled': disabled, 'entry': _plain(merged)})
+        for name, entry in user_map.items():
+            if name in shipped:
+                continue
+            e = dict(entry) if isinstance(entry, dict) else {}
+            disabled = bool(e.pop(DISABLED_KEY, False))
+            out.append({'id': name, 'origin': 'yours', 'disabled': disabled, 'entry': _plain(e)})
+        return out
+
+    user_list = user_section if isinstance(user_section, list) else []
+    shipped_ids = _shipped_ids(shipped, id_key)
+    overrides = {str(e.get(id_key)): e for e in user_list
+                 if isinstance(e, dict) and str(e.get(id_key, '')) in shipped_ids}
+    own_index = 0
+    for e in user_list:
+        if not isinstance(e, dict) or str(e.get(id_key, '')) in shipped_ids:
+            continue
+        entry = {k: v for k, v in e.items() if k != DISABLED_KEY}
+        ident = str(e.get(id_key)) if e.get(id_key) not in (None, '') else f"{OWN_PREFIX}{own_index}"
+        out.append({'id': ident, 'origin': 'yours', 'disabled': bool(e.get(DISABLED_KEY)),
+                    'entry': _plain(entry)})
+        own_index += 1
+    for e in shipped:
+        if not isinstance(e, dict):
+            continue
+        ident = str(e.get(id_key))
+        override = overrides.get(ident)
+        merged = dict(e)
+        disabled = False
+        changed = False
+        if override:
+            disabled = bool(override.get(DISABLED_KEY))
+            changed = any(k not in (id_key, DISABLED_KEY) for k in override)
+            merged.update({k: v for k, v in override.items() if k != DISABLED_KEY})
+        out.append({'id': ident, 'origin': 'changed' if changed else 'shipped',
+                    'disabled': disabled, 'entry': _plain(merged)})
+    return out
+
+
+def _find_own(user_list: list, ident: str, id_key: str, shipped_ids: set) -> int:
+    own = [i for i, e in enumerate(user_list)
+           if isinstance(e, dict) and str(e.get(id_key, '')) not in shipped_ids]
+    if ident.startswith(OWN_PREFIX) and ident[1:].isdigit():
+        n = int(ident[1:])
+        return own[n] if n < len(own) else -1
+    for i in own:
+        if str(user_list[i].get(id_key, '')) == ident:
+            return i
+    return -1
+
+
+# Create or update one entry. `original_id` names the entry being edited (it
+# differs from the new id when the user renamed it). For mappings (profiles)
+# `name` is the entry's key. Returns the entry's id.
+def save_entry(defaults_filename: str, user_path: Path, section: str, header: str,
+               entry: dict, id_key: str = 'id', original_id: str = None, mapping: bool = False,
+               name: str = None) -> str:
+    data, shipped, user_section = _load_for_write(defaults_filename, user_path, section, header,
+                                                  id_key, mapping)
+    entry = {k: v for k, v in dict(entry).items() if k != DISABLED_KEY}
+
+    if mapping:
+        if not isinstance(user_section, dict):
+            user_section = {}
+        new_name = name or original_id
+        if not new_name:
+            raise RuntimeError("A name is needed")
+        if original_id and original_id != new_name:
+            user_section.pop(original_id, None)
+            if original_id in shipped:
+                user_section[original_id] = {DISABLED_KEY: True}
+        source = shipped.get(new_name)
+        if isinstance(source, dict):
+            diff = {k: v for k, v in entry.items() if source.get(k) != v}
+            if diff:
+                user_section[new_name] = diff
+            else:
+                user_section.pop(new_name, None)
+        else:
+            user_section[new_name] = entry
+        _save(user_path, header, data, section, user_section)
+        return new_name
+
+    if not isinstance(user_section, list):
+        user_section = []
+    shipped_by_id = {str(e.get(id_key)): e for e in shipped if isinstance(e, dict) and e.get(id_key) is not None}
+    shipped_ids = set(shipped_by_id)
+    new_id = entry.get(id_key)
+    new_id = str(new_id) if new_id not in (None, '') else None
+
+    # Renaming: the old own entry goes away; a renamed shipped entry is turned
+    # off and the edit becomes the user's own entry.
+    insert_at = 0
+    if original_id and original_id != new_id:
+        idx = _find_own(user_section, original_id, id_key, shipped_ids)
+        if idx >= 0:
+            insert_at = idx
+            user_section.pop(idx)
+        elif original_id in shipped_ids:
+            user_section[:] = [e for e in user_section
+                               if not (isinstance(e, dict) and str(e.get(id_key, '')) == original_id)]
+            user_section.append({id_key: original_id, DISABLED_KEY: True})
+
+    if new_id and new_id in shipped_ids:
+        source = shipped_by_id[new_id]
+        diff = {k: v for k, v in entry.items() if k != id_key and source.get(k) != v}
+        diff.update({k: None for k in source if k not in entry and k != id_key})
+        user_section[:] = [e for e in user_section
+                           if not (isinstance(e, dict) and str(e.get(id_key, '')) == new_id)]
+        if diff:
+            user_section.append({id_key: new_id, **diff})
+        _save(user_path, header, data, section, user_section)
+        return new_id
+
+    if new_id:
+        idx = _find_own(user_section, new_id, id_key, shipped_ids)
+        if idx >= 0:
+            user_section[idx] = entry
+            _save(user_path, header, data, section, user_section)
+            return new_id
+    user_section.insert(min(insert_at, len(user_section)), entry)
+    _save(user_path, header, data, section, user_section)
+    return new_id or f"{OWN_PREFIX}{insert_at}"
+
+
+def set_entry_disabled(defaults_filename: str, user_path: Path, section: str, header: str,
+                       ident: str, disabled: bool, id_key: str = 'id', mapping: bool = False):
+    data, shipped, user_section = _load_for_write(defaults_filename, user_path, section, header,
+                                                  id_key, mapping)
+    if mapping:
+        if not isinstance(user_section, dict):
+            user_section = {}
+        entry = dict(user_section.get(ident) or {})
+        if disabled:
+            entry[DISABLED_KEY] = True
+        else:
+            entry.pop(DISABLED_KEY, None)
+        if entry or ident not in shipped:
+            user_section[ident] = entry
+        else:
+            user_section.pop(ident, None)
+        _save(user_path, header, data, section, user_section)
+        return
+
+    shipped_ids = _shipped_ids(shipped, id_key)
+    if ident in shipped_ids:
+        found = None
+        for e in user_section:
+            if isinstance(e, dict) and str(e.get(id_key, '')) == ident:
+                found = e
+        if disabled:
+            if found is None:
+                user_section.append({id_key: ident, DISABLED_KEY: True})
+            else:
+                found[DISABLED_KEY] = True
+        elif found is not None:
+            found.pop(DISABLED_KEY, None)
+            if set(found) <= {id_key}:
+                user_section.remove(found)
+    else:
+        idx = _find_own(user_section, ident, id_key, shipped_ids)
+        if idx < 0:
+            raise RuntimeError("That entry no longer exists")
+        if disabled:
+            user_section[idx][DISABLED_KEY] = True
+        else:
+            user_section[idx].pop(DISABLED_KEY, None)
+    _save(user_path, header, data, section, user_section)
+
+
+# Delete the user's own entry, or reset a shipped one to how it ships.
+def delete_entry(defaults_filename: str, user_path: Path, section: str, header: str,
+                 ident: str, id_key: str = 'id', mapping: bool = False):
+    data, shipped, user_section = _load_for_write(defaults_filename, user_path, section, header,
+                                                  id_key, mapping)
+    if mapping:
+        if isinstance(user_section, dict):
+            user_section.pop(ident, None)
+    else:
+        shipped_ids = _shipped_ids(shipped, id_key)
+        if ident in shipped_ids:
+            user_section[:] = [e for e in user_section
+                               if not (isinstance(e, dict) and str(e.get(id_key, '')) == ident)]
+        else:
+            idx = _find_own(user_section, ident, id_key, shipped_ids)
+            if idx >= 0:
+                user_section.pop(idx)
+    _save(user_path, header, data, section, user_section)
+
+
+# Put the user's own entries in a new order (for app rules, where order decides
+# which rule wins). Shipped entries always come after the user's own.
+def reorder_own(defaults_filename: str, user_path: Path, section: str, header: str,
+                ordered_ids: list, id_key: str = 'id'):
+    data, shipped, user_section = _load_for_write(defaults_filename, user_path, section, header,
+                                                  id_key, False)
+    shipped_ids = _shipped_ids(shipped, id_key)
+    own_positions = [i for i, e in enumerate(user_section)
+                     if isinstance(e, dict) and str(e.get(id_key, '')) not in shipped_ids]
+    keyed = {}
+    for n, i in enumerate(own_positions):
+        e = user_section[i]
+        ident = str(e.get(id_key)) if e.get(id_key) not in (None, '') else f"{OWN_PREFIX}{n}"
+        keyed[ident] = e
+    reordered = [keyed[i] for i in ordered_ids if i in keyed]
+    reordered += [e for i, e in keyed.items() if i not in ordered_ids]
+    rest = [e for i, e in enumerate(user_section) if i not in own_positions]
+    _save(user_path, header, data, section, reordered + rest)

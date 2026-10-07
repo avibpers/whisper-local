@@ -73,6 +73,13 @@ def setup_logging(config_manager: ConfigManager):
         console_handler.setFormatter(formatter)
         root_logger.addHandler(console_handler)
 
+    # The app window's Live console. Re-attached on every call because the
+    # handlers were cleared above (settings can re-run this at any time). It
+    # follows the file log's level so the window shows what app.log records.
+    from .ui import log_stream
+    stream = log_stream.install()
+    stream.setLevel(getattr(logging, log_config.get('level', 'INFO')))
+
 def setup_exception_handler():
     def exception_handler(exc_type, exc_value, exc_traceback):
         if issubclass(exc_type, KeyboardInterrupt):
@@ -308,6 +315,27 @@ def _int_setting(value, default: int) -> int:
     except (TypeError, ValueError):
         return default
 
+# Whether to run the app window. Returns (use_ui, reason it can't, or '').
+def _decide_ui(args) -> tuple:
+    if args.legacy_ui:
+        return False, ''
+    from .ui.host import ui_available
+    return ui_available()
+
+
+# True when these flags start the app itself rather than a one-off command.
+def _is_app_launch(args) -> bool:
+    one_off = ('doctor', 'version', 'quit', 'export_settings', 'import_settings', 'stats', 'setup',
+               'export_transcripts', 'import_vocab', 'add_word', 'remove_word', 'list_dictionary',
+               'settings', 'history', 'window', 'enable_autostart', 'disable_autostart', 'selftest',
+               'cheat_sheet', 'serve', 'uninstall', 'import_model')
+    if any(getattr(args, name, None) for name in one_off):
+        return False
+    if args.bundle_logs is not None or args.export_model is not None or args.transcribe_system is not None:
+        return False
+    return True
+
+
 def shutdown_app(hotkey_listener: HotkeyListener, state_manager: StateManager, logger: logging.Logger):
     try:
         if hotkey_listener and hotkey_listener.is_active():
@@ -383,7 +411,36 @@ def main():
     parser.add_argument('--transcribe-system', metavar='SECONDS', nargs='?', const=10, type=int,
                         help='Transcribe N seconds of system audio / loopback (default 10). '
                              'Needs the loopback extra: pip install whisper-local[loopback]. EXPERIMENTAL.')
+    parser.add_argument('--open', action='store_true', help='Open the app window at start')
+    parser.add_argument('--page', metavar='PAGE',
+                        help='With --open: the screen to show, e.g. settings/audio, history, live')
+    parser.add_argument('--ui-dev', action='store_true',
+                        help='App window with developer tools and verbose UI logging')
+    parser.add_argument('--legacy-ui', action='store_true',
+                        help='Use the classic tray + Tk windows instead of the app window')
+    parser.add_argument('--replace', action='store_true',
+                        help='Replace a running instance instead of opening its window')
     args = parser.parse_args()
+
+    instance_name = "WhisperKeyLocal_test" if args.test else "WhisperKeyLocal"
+    use_ui, ui_reason = _decide_ui(args)
+
+    # With the app window, these flags open its screens instead of the old
+    # windows and console reports.
+    if use_ui:
+        page_flags = (('settings', 'settings'), ('history', 'history'), ('stats', 'history'),
+                      ('cheat_sheet', 'diagnostics'), ('doctor', None), ('selftest', None))
+        for flag, page in page_flags:
+            if getattr(args, flag) and page:
+                setattr(args, flag, False)
+                args.open, args.page = True, page
+
+    # Launching again while the app runs opens its window (unless --replace).
+    if use_ui and not args.replace and _is_app_launch(args):
+        from .ui.instance_ipc import send_open
+        if send_open(instance_name, args.page if args.open else None):
+            print("Whisper Local is already running; opened its window.")
+            sys.exit(0)
 
     # '' means the flag was given with no path → export_model picks the default.
     if args.uninstall:
@@ -510,7 +567,8 @@ def main():
     sys.stdout.flush()
     app.setup()
 
-    instance_name = "WhisperKeyLocal_test" if args.test else "WhisperKeyLocal"
+    if not use_ui and not args.legacy_ui and ui_reason:
+        print(f"ℹ Using the classic interface: {ui_reason}.")
     # Keep this handle referenced for the whole process lifetime. It looks unused
     # (linters flag it), but dropping it would close the mutex/flock and let a
     # second instance start alongside this one. Do NOT "clean up" this variable.
@@ -556,7 +614,10 @@ def main():
         log_config = config_manager.get_logging_config()
         log_transcriptions = log_config.get('log_transcriptions', False)
 
-        whisper_config = run_gpu_onboarding(config_manager, whisper_config)
+        # The app window asks about the GPU in its welcome flow instead of a
+        # blocking console prompt.
+        if not use_ui:
+            whisper_config = run_gpu_onboarding(config_manager, whisper_config)
 
         model_registry = ModelRegistry(
             whisper_models_config=whisper_config.get('models', {}),
@@ -587,6 +648,10 @@ def main():
         )
         audio_recorder = setup_audio_recorder(audio_config, state_manager, vad_manager, streaming_manager)
         system_tray = setup_system_tray(tray_config, config_manager, state_manager, model_registry, console_config)
+        ui_host = None
+        if use_ui:
+            from .ui.host import UiHost
+            state_manager.overlay_factory = UiHost.overlay_factory
         state_manager.attach_components(audio_recorder, system_tray)
         
         try:
@@ -599,8 +664,28 @@ def main():
             print(f"   Check the recording_hotkey in user_settings.yaml: {hotkey_config.get('recording_hotkey')}")
             raise
 
-        system_tray.start()
+        if tray_config.get('enabled', True):
+            system_tray.start()
         terminal_title.start()
+
+        if use_ui:
+            from .local_server import ServerController
+            from .settings.appliers import AppContext
+            ctx = AppContext(
+                state_manager, config_manager, system_tray=system_tray, model_registry=model_registry,
+                streaming_manager=streaming_manager,
+                server=ServerController(lambda: state_manager.whisper_engine),
+                reconfigure_logging=lambda: setup_logging(config_manager),
+            )
+            ui_host = UiHost(ctx, open_page=(args.page or 'live') if args.open else None,
+                             dev=args.ui_dev, instance_name=instance_name)
+            ui_host.attach()
+            server_cfg = config_manager.config.get('server') or {}
+            if server_cfg.get('enabled'):
+                try:
+                    ctx.server.start(server_cfg.get('host', '127.0.0.1'), server_cfg.get('port', 7777))
+                except Exception as e:
+                    logger.warning(f"Local API not started: {e}")
 
         if clipboard_config['auto_paste']:
             if not permissions.check_accessibility_permission():
@@ -618,6 +703,8 @@ def main():
         print("   [CTRL+C] to quit", flush=True)
 
         try:
+            if use_ui:
+                raise RuntimeError("the app window shows its own welcome")
             from .onboarding_tutorial import needs_tutorial, show_console_welcome
             from .utils import beautify_hotkey
             if needs_tutorial():
@@ -633,6 +720,8 @@ def main():
             logger.debug(f"Onboarding skipped: {e}")
 
         try:
+            if use_ui:
+                raise RuntimeError("the app window shows its own welcome")
             from .first_run import is_first_run, show_welcome_window
             from .utils import beautify_hotkey
             if is_first_run():
@@ -662,7 +751,18 @@ def main():
 
         system_tray.apply_console_settings()
 
-        app.run_event_loop(shutdown_event)
+        if ui_host is not None:
+            try:
+                # Blocks on the main thread until the app quits.
+                ui_host.run(shutdown_event)
+            except Exception as e:
+                # The windows failed; dictation, hotkeys and the tray carry on.
+                logger.error(f"App window failed, continuing without it: {e}", exc_info=True)
+                print(f"⚠ The app window could not start ({e}). Dictation keeps working; "
+                      f"use --legacy-ui to hide this message.")
+                app.run_event_loop(shutdown_event)
+        else:
+            app.run_event_loop(shutdown_event)
             
     except KeyboardInterrupt:
         logger.info("Application shutting down...")

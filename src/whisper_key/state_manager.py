@@ -48,6 +48,38 @@ from .transcript_log import record_transcript
 from .platform import foreground
 from .level_overlay import LevelOverlay
 from .fallback_window import FallbackWindow
+from .ui.events import publish
+
+
+# Wraps the tray so every notification also reaches the event bus (the floating
+# bar and the app window show them). Everything else passes through, and a
+# missing tray still publishes, so a tray-less setup keeps its notifications.
+class _NotifyFanout:
+    def __init__(self, tray):
+        self._tray = tray
+
+    def notify(self, message: str, title: str = "Whisper Local"):
+        publish('notify', {'kind': 'info', 'message': message})
+        if self._tray is not None:
+            self._tray.notify(message, title)
+
+    def __getattr__(self, name):
+        if self._tray is None:
+            raise AttributeError(name)
+        return getattr(self._tray, name)
+
+
+# A short name for an app rule in the Live trace: its id, else its match list.
+def _rule_label(rule) -> Optional[str]:
+    if not rule:
+        return None
+    if rule.get('id'):
+        return str(rule['id'])
+    match = rule.get('match')
+    if isinstance(match, (list, tuple)):
+        return ', '.join(str(m) for m in match)
+    return str(match) if match else None
+
 
 class StateManager:
     def __init__(self,
@@ -64,7 +96,7 @@ class StateManager:
         self.audio_recorder = audio_recorder
         self.whisper_engine = whisper_engine
         self.clipboard_manager = clipboard_manager
-        self.system_tray = OptionalComponent(system_tray)
+        self.system_tray = OptionalComponent(_NotifyFanout(system_tray))
         self.terminal_title = OptionalComponent(terminal_title)
         self.config_manager = config_manager
         self.audio_feedback = OptionalComponent(audio_feedback)
@@ -101,12 +133,17 @@ class StateManager:
         )
         self.level_overlay = None
         self.fallback_window = FallbackWindow()
+        # Set by the UI host: builds the floating bar instead of the Tk overlay.
+        self.overlay_factory = None
+        # Work that must wait until no recording/transcription is running
+        # (engine and recorder swaps from instant-apply settings).
+        self._idle_actions = []
 
     def attach_components(self,
                           audio_recorder: AudioRecorder,
                           system_tray: Optional[SystemTray]):
         self.audio_recorder = audio_recorder
-        self.system_tray = OptionalComponent(system_tray)
+        self.system_tray = OptionalComponent(_NotifyFanout(system_tray))
         self._ensure_audio_device_for_host(self._current_audio_host)
 
         try:
@@ -115,10 +152,11 @@ class StateManager:
             pass
 
         overlay_cfg = self.config_manager.config.get('overlay', {}) or {}
-        if overlay_cfg.get('enabled', True):
+        if overlay_cfg.get('enabled', True) or self.overlay_factory:
             try:
-                self.level_overlay = LevelOverlay(
-                    level_provider=self.audio_recorder.get_current_level,
+                factory = self.overlay_factory or LevelOverlay
+                self.level_overlay = factory(
+                    level_provider=lambda: self.audio_recorder.get_current_level(),
                     click_through=overlay_cfg.get('click_through', True),
                     position=overlay_cfg.get('position', 'bottom-center'),
                 )
@@ -154,6 +192,8 @@ class StateManager:
             display_text = text if len(text) < 67 else "..." + text[-64:]
             print(f"\r   {display_text:<70}", end="", flush=True)
             self._streaming_display_active = True
+        if text:
+            publish('streaming_text', {'text': text, 'final': bool(is_final)})
         if self.level_overlay and text:
             self.level_overlay.set_streaming_text(text)
 
@@ -223,6 +263,7 @@ class StateManager:
         if paused and self.audio_recorder.get_recording_status():
             self.cancel_active_recording()
         self.system_tray.notify("Hotkeys paused" if paused else "Hotkeys resumed")
+        self._publish_state(self.get_current_state())
 
     def start_rephrase_recording(self):
         if not self.can_start_recording():
@@ -484,6 +525,7 @@ class StateManager:
     # is a legitimate "nothing to deliver" case and must still clear state via
     # the finally block.
     def _transcription_pipeline(self, audio_data, use_auto_enter: bool = False):
+        mode = 'dictate'
         try:
             with self._state_lock:
                 self.is_processing = True
@@ -493,10 +535,12 @@ class StateManager:
                 rephrase_selection = self._rephrase_selection
                 self._rephrase_mode = False
                 self._rephrase_selection = ''
+            mode = 'command' if command_mode else ('rephrase' if rephrase_mode and rephrase_selection else 'dictate')
 
             self.audio_feedback.play_stop_sound()
 
             if audio_data is None:
+                self._emit_pipeline('no_audio', mode=mode)
                 self.system_tray.notify("No audio captured — was the mic muted?")
                 # Flash the overlay too — tray balloons are often suppressed by Windows.
                 if self.level_overlay:
@@ -504,13 +548,17 @@ class StateManager:
                 return
 
             duration = self.audio_recorder.get_audio_duration(audio_data)
+            self._emit_pipeline('captured', mode=mode, duration=round(duration, 2))
 
             # Commit-on-endpoint streaming: if finalized phrases were already typed
             # live during this recording, flush the trailing phrase, record it, and
             # skip the (now redundant) Whisper pass. Falls through to Whisper if
             # nothing was actually finalized (e.g. a very short utterance).
             if self._streaming_delivery_active and self.streaming_delivery:
-                if self._finalize_streaming_delivery(use_auto_enter, duration):
+                streamed = self._finalize_streaming_delivery(use_auto_enter, duration)
+                if streamed:
+                    self._emit_pipeline('delivered', mode=mode, outcome='streamed', text=streamed,
+                                        duration=round(duration, 2))
                     return
 
             print(f"   ✓ Recorded {duration:.1f} seconds, transcribing...")
@@ -519,16 +567,22 @@ class StateManager:
             if self.level_overlay:
                 self.level_overlay.show_processing()
 
+            self._emit_pipeline('transcribing', mode=mode)
             transcribed_text = self.whisper_engine.transcribe_audio(audio_data)
+            info = dict(getattr(self.whisper_engine, 'last_info', None) or {})
 
             if not transcribed_text:
+                self._emit_pipeline('empty', mode=mode, info=info)
                 self.system_tray.notify("Transcription was empty (silence or noise only).")
                 if self.level_overlay:
                     self.level_overlay.flash_failure("No speech detected")
                 return
 
+            self._emit_pipeline('transcribed', mode=mode, raw=transcribed_text, info=info)
+
             if command_mode:
                 matched = self._handle_command_transcription(transcribed_text, use_auto_enter)
+                self._emit_pipeline('command', mode=mode, raw=transcribed_text, matched=bool(matched))
                 if self.level_overlay:
                     if matched:
                         self.level_overlay.flash_success()
@@ -538,6 +592,7 @@ class StateManager:
 
             if rephrase_mode and rephrase_selection:
                 self._handle_rephrase(rephrase_selection, transcribed_text)
+                self._emit_pipeline('rephrased', mode=mode, raw=transcribed_text)
                 return
 
             # Match the foreground app once, before post-processing, so a rule can
@@ -549,18 +604,28 @@ class StateManager:
             if fmt_overrides:
                 self.logger.info(f"App rule {rule.get('match')} → formatting overrides {fmt_overrides}")
             postprocess_cfg = effective_postprocess_config(raw_postprocess_cfg, rule)
-            transcribed_text = postprocess(transcribed_text, postprocess_cfg)
+            trace = []
+            heard_text = transcribed_text
+            transcribed_text = postprocess(transcribed_text, postprocess_cfg, trace=trace)
+            rule_id = _rule_label(rule)
+            fg_now = foreground.get_foreground_app() or {}
+            self._emit_pipeline('postprocessed', mode=mode, raw=heard_text, text=transcribed_text,
+                                steps=trace, rule=rule_id, app=fg_now.get('exe', ''),
+                                title=fg_now.get('title', ''))
 
             # Post-processing can legitimately empty the text — e.g. "scratch that"
             # erasing the whole utterance. Don't deliver an empty string (which
             # with auto-enter would just press Enter into the focused field).
             if not transcribed_text or not transcribed_text.strip():
                 self.logger.info("Post-processing produced empty text; nothing to deliver")
+                self._emit_pipeline('delivered', mode=mode, outcome='empty', raw=heard_text, text='')
                 if self.level_overlay:
                     self.level_overlay.flash_failure("Nothing to type")
                 return
 
             if rule and rule.get('suppress'):
+                self._emit_pipeline('delivered', mode=mode, outcome='suppressed', raw=heard_text,
+                                    text=transcribed_text, rule=rule_id, app=fg_now.get('exe', ''))
                 self.logger.info(f"Delivery suppressed by app rule: {rule.get('match')}")
                 # Clipboard-free setups get the recovery window instead of a
                 # silent copy, so the transcript is still retrievable without
@@ -586,6 +651,8 @@ class StateManager:
                 return
 
             if not self._foreground_is_textable():
+                self._emit_pipeline('delivered', mode=mode, outcome='fallback', raw=heard_text,
+                                    text=transcribed_text, app=fg_now.get('exe', ''))
                 self.logger.info("No textable foreground window; opening fallback window")
                 may_copy = self.clipboard_manager.silent_copy_allowed
                 if may_copy:
@@ -635,6 +702,13 @@ class StateManager:
                 if previous_auto_paste is not None:
                     self.clipboard_manager.update_auto_paste(previous_auto_paste)
 
+            delivered_paste = self.clipboard_manager.auto_paste
+            self._emit_pipeline(
+                'delivered', mode=mode,
+                outcome=('pasted' if delivered_paste else 'copied') if success else 'failed',
+                raw=heard_text, text=transcribed_text, rule=rule_id, app=fg_now.get('exe', ''),
+                method=self.clipboard_manager.delivery_method, auto_enter=bool(effective_auto_enter and success),
+                duration=round(duration, 2))
             if success:
                 self.last_transcription = transcribed_text
                 self.recent_transcriptions.appendleft(transcribed_text)
@@ -648,7 +722,8 @@ class StateManager:
                     duration_seconds=duration,
                     app=fg.get('exe', ''),
                 )
-                record_transcript(transcribed_text, app=fg.get('exe', ''), duration_s=duration)
+                record_transcript(transcribed_text, app=fg.get('exe', ''), duration_s=duration,
+                                  language=(info or {}).get('language') or '')
                 audit_enabled = (self.config_manager.config.get('audit') or {}).get('enabled', False)
                 audit_record('delivered', transcribed_text, fg.get('exe', ''), audit_enabled)
                 self._maybe_restart_continuous()
@@ -658,6 +733,7 @@ class StateManager:
         except Exception as e:
             self.logger.error(f"Error in processing workflow: {e}")
             print(f"❌ Error processing recording: {e}")
+            self._emit_pipeline('error', mode=mode, error=str(e))
             if self.level_overlay:
                 self.level_overlay.flash_failure()
 
@@ -693,6 +769,7 @@ class StateManager:
 
             if not (pending_device or pending_model):
                 self._update_ui_state("idle")
+            self._run_idle_actions()
 
     def _handle_command_transcription(self, text: str, use_auto_enter: bool = False) -> bool:
         log_config = self.config_manager.get_logging_config()
@@ -744,6 +821,82 @@ class StateManager:
     def _update_ui_state(self, state: str):
         self.system_tray.update_state(state)
         self.terminal_title.update_state(state)
+        self._publish_state(state)
+
+    # The UI's view of the state: the pipeline state plus which kind of
+    # recording it is and whether hotkeys are paused.
+    def _publish_state(self, state: str):
+        mode = 'command' if self._command_mode else ('rephrase' if self._rephrase_mode else 'dictate')
+        publish('state', {'state': state, 'mode': mode, 'paused': bool(self.is_paused),
+                          'model_loading': bool(self.is_model_loading)})
+
+    # One stage of a dictation, for the Live trace and the floating bar. Text is
+    # only ever kept in memory for the UI; the log still follows log_transcriptions.
+    def _emit_pipeline(self, stage: str, **data):
+        data['stage'] = stage
+        data['t'] = time.time()
+        publish('pipeline', data)
+
+    # ── Hot-swapping components (instant-apply settings) ──────────────────────
+
+    def is_idle(self) -> bool:
+        return self.get_current_state() == 'idle'
+
+    # Run `fn` now if nothing is recording or transcribing, otherwise as soon as
+    # the current dictation finishes. Used by background settings so a model or
+    # microphone swap never interrupts a dictation in progress.
+    def run_when_idle(self, fn):
+        if self.is_idle():
+            fn()
+            return True
+        with self._state_lock:
+            self._idle_actions.append(fn)
+        return False
+
+    def _run_idle_actions(self):
+        with self._state_lock:
+            actions, self._idle_actions = self._idle_actions, []
+        for fn in actions:
+            try:
+                fn()
+            except Exception as e:
+                self.logger.error(f"Deferred action failed: {e}")
+
+    # Replace the Whisper engine with one already built and warmed up off-thread.
+    def replace_whisper_engine(self, new_engine):
+        with self._state_lock:
+            old = self.whisper_engine
+            self.whisper_engine = new_engine
+        self.logger.info(f"Whisper engine swapped: {getattr(old, 'model_key', '?')} -> "
+                         f"{getattr(new_engine, 'model_key', '?')} on {getattr(new_engine, 'device', '?')}")
+
+    # Build a new recorder with the same callbacks and any changed parameters,
+    # swap it in, then stop the old one's capture thread.
+    def rebuild_audio_recorder(self, **overrides):
+        old = self.audio_recorder
+        audio_cfg = self.config_manager.config.get('audio') or {}
+        params = dict(
+            on_vad_event=self.handle_vad_event,
+            channels=old.channels,
+            dtype=old.dtype,
+            max_duration=old.max_duration,
+            on_max_duration_reached=old.on_max_duration_reached,
+            vad_manager=old.vad_manager,
+            streaming_manager=old.streaming_manager,
+            on_streaming_result=old.on_streaming_result,
+            device=old.device,
+            noise_suppression_config=audio_cfg.get('noise_suppression') or {},
+            whisper_mode_config=audio_cfg.get('whisper_mode') or {},
+        )
+        params.update(overrides)
+        new_recorder = AudioRecorder(**params)
+        with self._state_lock:
+            self.audio_recorder = new_recorder
+        try:
+            old.shutdown()
+        except Exception as e:
+            self.logger.debug(f"Old recorder shutdown failed: {e}")
+        return new_recorder
 
     
     def shutdown(self):        
@@ -1184,7 +1337,14 @@ class StateManager:
                 whisper_mode_config=audio_cfg.get('whisper_mode') or {},
             )
 
+            old_recorder = self.audio_recorder
             self.audio_recorder = new_recorder
+            # The old recorder's capture thread kept its stream open forever;
+            # stop it now that the new one is live.
+            try:
+                old_recorder.shutdown()
+            except Exception:
+                pass
 
             print(f"✅ Successfully switched audio device to: {device_name}")
 

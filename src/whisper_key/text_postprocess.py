@@ -54,20 +54,30 @@ def _on(value) -> bool:
     return value is True or (isinstance(value, int) and not isinstance(value, bool) and value != 0)
 
 
-def postprocess(text: str, config: dict) -> str:
+def postprocess(text: str, config: dict, trace: list = None) -> str:
     if not text or not config:
         return text
+
+    # `trace`, when given, collects the name of every step that changed the
+    # text, for the Live screen's "what happened to my words" view.
+    def note(name: str, before: str, after: str):
+        if trace is not None and before != after:
+            trace.append(name)
 
     # A named style is shorthand for a set of the toggles below. The app-rule
     # path resolves it beforehand (see app_rules.effective_postprocess_config)
     # and drops the key; this covers every other caller.
     if config.get('style'):
+        if trace is not None:
+            trace.append(f"style:{config['style']}")
         config = {**config, **resolve_style(config['style'], config)}
 
     # Spoken editing commands ("scratch that") operate on the raw dictation flow,
     # so they run first — before any symbol/format rewriting.
     if _on(config.get('voice_editing')):
+        _before = text
         text = _apply_voice_editing(text)
+        note('voice_editing', _before, text)
 
     # "at 2, actually 3" → "at 3". Same raw-flow reasoning as voice editing.
     backtrack_cfg = config.get('backtrack')
@@ -75,13 +85,19 @@ def postprocess(text: str, config: dict) -> str:
         cues = backtrack_cfg.get('cues') or dictation_cleanup.DEFAULT_BACKTRACK_CUES
         if isinstance(cues, str):
             cues = [cues]
+        _before = text
         text = dictation_cleanup.apply_backtrack(text, cues)
+        note('backtrack', _before, text)
 
     if _on(config.get('remove_repeated_words')):
+        _before = text
         text = dictation_cleanup.remove_repeated_words(text)
+        note('repeated_words', _before, text)
 
     if _on(config.get('inline_formatting')):
+        _before = text
         text = _apply_inline_formatting(text, config)
+        note('voice_punctuation', _before, text)
 
     # Deterministic, offline symbol formatting (times / emails / URLs). Each
     # sub-toggle is off by default; only run the pass if at least one is on.
@@ -89,7 +105,9 @@ def postprocess(text: str, config: dict) -> str:
     # instead of a mapping must not take down the whole transcription.
     smart_cfg = config.get('smart_formatting')
     if isinstance(smart_cfg, dict) and any(smart_cfg.get(k) for k in ('times', 'emails', 'urls')):
+        _before = text
         text = _apply_smart_formatting(text, smart_cfg)
+        note('smart_formatting', _before, text)
 
     # Both correction passes run late — after formatting, so they win over it,
     # but before Ollama so the LLM sees already-corrected text.
@@ -97,16 +115,22 @@ def postprocess(text: str, config: dict) -> str:
     # `corrections` is the vocabulary map (one canonical term, many misheard
     # variants). It runs first so a specific `replacements` entry can still
     # override a broad vocabulary mapping.
+    _before = text
     text = _apply_corrections(text, config.get('corrections'))
+    note('corrections', _before, text)
 
     # `replacements` is the per-entry form (whole_word / case_sensitive /
     # regex) and is what the history window's "Fix this everywhere" writes.
     replacements = config.get('replacements')
     if isinstance(replacements, (list, tuple)) and replacements:
+        _before = text
         text = _apply_replacements(text, replacements)
+        note('replacements', _before, text)
 
     if _on(config.get('strip_filler_words')):
+        _before = text
         text = _strip_fillers(text)
+        note('filler_words', _before, text)
 
     became_list = False
     if _on(config.get('list_formatting')):
@@ -114,27 +138,38 @@ def postprocess(text: str, config: dict) -> str:
         text = dictation_cleanup.apply_list_formatting(
             text, style=str(config.get('list_style', 'numbered')))
         became_list = text != before
+        note('list', before, text)
 
     # Before snippets, so a style never lowercases a snippet's expansion; the
     # user's corrected terms keep their casing too.
     if _on(config.get('lowercase')):
+        _before = text
         text = dictation_cleanup.apply_lowercase(text, _protected_terms(config))
+        note('lowercase', _before, text)
 
     # A dictation that was only a snippet trigger is delivered exactly as the
     # snippet is written: no casing or punctuation tidying, no LLM polish.
+    _before = text
     text, whole_snippet = expand_snippets(text, config.get('snippets'))
+    note('snippets', _before, text)
     if whole_snippet:
         return text
 
     if _on(config.get('strip_trailing_period')):
+        _before = text
         text = _strip_trailing_period(text)
+        note('final_period', _before, text)
 
     if _on(config.get('capitalize_first')):
+        _before = text
         text = _capitalize_first(text)
+        note('capitalize', _before, text)
 
     # A list's last item takes no closing period.
     if _on(config.get('ensure_punctuation')) and not became_list:
+        _before = text
         text = _ensure_punctuation(text)
+        note('punctuation', _before, text)
 
     # Same defensive shape check as smart_formatting above — a malformed
     # `ollama:` value must degrade to "no polish", not raise mid-dictation.
@@ -142,6 +177,7 @@ def postprocess(text: str, config: dict) -> str:
     if isinstance(ollama_cfg, dict) and _on(ollama_cfg.get('enabled')):
         polished = _ollama_polish(text, ollama_cfg)
         if polished:
+            note('ai_polish', text, polished)
             text = polished
 
     return text

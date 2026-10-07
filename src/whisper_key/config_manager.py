@@ -58,6 +58,17 @@ def _to_plain(obj):
     return obj
 
 
+# Dotted paths whose values differ between two plain config trees. Maps that
+# hold the user's own entries (models, styles, corrections) are compared whole.
+def _diff_paths(old, new, prefix: str, out: list):
+    if isinstance(old, dict) and isinstance(new, dict) and prefix not in EXTENSIBLE_PATHS:
+        for key in set(old) | set(new):
+            path = f"{prefix}.{key}" if prefix else key
+            _diff_paths(old.get(key), new.get(key), path, out)
+    elif old != new:
+        out.append(prefix)
+
+
 def _compute_overrides(config, defaults, path_prefix=''):
     overrides = {}
     for key, value in config.items():
@@ -100,6 +111,11 @@ class ConfigManager:
         self.use_user_settings = use_user_settings
         self.config = {}
         self.logger = logging.getLogger(__name__)
+        import threading
+        self._write_lock = threading.RLock()
+        self._save_timer = None
+        self._own_write_mtime = None
+        self._external_seen_mtime = None
         
         self.config_path = self._determine_config_path(use_user_settings, config_path)
         
@@ -110,6 +126,7 @@ class ConfigManager:
         if self.use_user_settings:
             try:
                 self._postprocess_mtime = os.path.getmtime(self.user_settings_path)
+                self._external_seen_mtime = self._postprocess_mtime
             except OSError:
                 pass
 
@@ -227,9 +244,93 @@ class ConfigManager:
         body = StringIO()
         yaml.dump(_to_plain(user_config), body)
 
-        with open(self.user_settings_path, 'w', encoding='utf-8') as f:
-            f.write(_build_settings_header())
-            f.write(body.getvalue())
+        with self._write_lock:
+            with open(self.user_settings_path, 'w', encoding='utf-8') as f:
+                f.write(_build_settings_header())
+                f.write(body.getvalue())
+            # Remember our own write so the external-change watcher and the
+            # postprocess hot-reload don't treat it as someone else's edit.
+            try:
+                mtime = os.path.getmtime(self.user_settings_path)
+                self._own_write_mtime = mtime
+            except OSError:
+                pass
+
+    # ── Path access (used by the settings service / app window) ───────────────
+
+    # Value at a dotted path like "audio.noise_suppression.enabled", or `default`.
+    def get_path(self, path: str, default: Any = None) -> Any:
+        node = self.config
+        for key in path.split('.'):
+            if not isinstance(node, dict) or key not in node:
+                return default
+            node = node[key]
+        return node
+
+    # Set a dotted path in memory and save soon after. Saves are debounced so a
+    # slider drag or typing writes the file once, not on every change.
+    def set_path(self, path: str, value: Any, save: bool = True):
+        keys = path.split('.')
+        with self._write_lock:
+            node = self.config
+            for key in keys[:-1]:
+                if not isinstance(node.get(key), dict):
+                    node[key] = {}
+                node = node[key]
+            node[keys[-1]] = value
+        if save:
+            self.schedule_save()
+
+    def schedule_save(self, delay: float = 0.3):
+        import threading
+        with self._write_lock:
+            if self._save_timer is not None:
+                self._save_timer.cancel()
+            self._save_timer = threading.Timer(delay, self.flush)
+            self._save_timer.daemon = True
+            self._save_timer.start()
+
+    # Write pending changes now (called on exit and by tests).
+    def flush(self):
+        with self._write_lock:
+            if self._save_timer is not None:
+                self._save_timer.cancel()
+                self._save_timer = None
+        if self.use_user_settings:
+            self._save_user_overrides()
+
+    # The user's overrides as they would be written, e.g. to tell a brand-new
+    # install from an upgrade.
+    def user_overrides(self) -> Dict[str, Any]:
+        return _compute_overrides(self.config, self._defaults_baseline)
+
+    # Re-read user_settings.yaml if something other than this app changed it
+    # (the CLI, a hand edit). Returns the dotted paths whose values changed, so
+    # the settings service can apply them like any other change.
+    def reload_if_changed_externally(self) -> list:
+        if not self.use_user_settings:
+            return []
+        try:
+            mtime = os.path.getmtime(self.user_settings_path)
+        except OSError:
+            return []
+        if mtime == self._own_write_mtime or mtime == self._external_seen_mtime:
+            return []
+        self._external_seen_mtime = mtime
+        old = copy.deepcopy(_to_plain(self.config))
+        try:
+            fresh = self._load_config()
+        except Exception as e:
+            self.logger.warning(f"Could not reload edited settings: {e}")
+            return []
+        with self._write_lock:
+            self.config = fresh
+        self._postprocess_mtime = mtime
+        changed = []
+        _diff_paths(old, _to_plain(fresh), '', changed)
+        if changed:
+            self.logger.info(f"user_settings.yaml changed outside the app: {', '.join(changed[:8])}")
+        return changed
 
     def _print_config_status(self):
         print("📁 Loading configuration...")
@@ -353,6 +454,10 @@ class ConfigManager:
         if mtime == getattr(self, '_postprocess_mtime', None):
             return
         self._postprocess_mtime = mtime
+        # Our own save already matches memory (which may even be newer, while a
+        # debounced save is pending); only someone else's edit needs a re-read.
+        if mtime == getattr(self, '_own_write_mtime', None):
+            return
         try:
             default_config = self._load_default_config()
             yaml = YAML()

@@ -61,6 +61,7 @@ class AudioRecorder:
         self.on_max_duration_reached = on_max_duration_reached
         self.is_recording = False
         self.recording_start_time = None
+        self.level_preview = False
         self.logger = logging.getLogger(__name__)
         self._noise_suppression_config = noise_suppression_config or {}
         self._whisper_mode_gain = self._parse_whisper_mode(whisper_mode_config)
@@ -238,7 +239,9 @@ class AudioRecorder:
         chunk = audio_data.copy()
         recording = self.is_recording
 
-        if recording:
+        # The level is also measured while "Test my microphone" is open, which
+        # never starts a recording.
+        if recording or self.level_preview:
             self._current_level = float(np.sqrt(np.mean(chunk.astype(np.float32) ** 2)))
         else:
             self._current_level = 0.0
@@ -411,6 +414,36 @@ class AudioRecorder:
 
     def get_current_level(self) -> float:
         return self._current_level
+
+    # Settings that apply from the next recording without reopening the stream.
+    def apply_live_config(self, max_duration=None, noise_suppression=None, whisper_mode=None):
+        if max_duration is not None:
+            self.max_duration = max_duration
+        if noise_suppression is not None:
+            self._noise_suppression_config = dict(noise_suppression)
+        if whisper_mode is not None:
+            self._whisper_mode_gain = self._parse_whisper_mode(whisper_mode)
+
+    # Rebuild the realtime voice detector after its thresholds change.
+    def refresh_vad(self):
+        self.continuous_vad = self._setup_continuous_vad_monitoring()
+
+    # Device details for the Live screen's chips.
+    def describe(self) -> dict:
+        name = None
+        try:
+            info = sd.query_devices(self.device) if self.device is not None else sd.query_devices(kind='input')
+            name = info.get('name')
+        except Exception:
+            pass
+        return {
+            'device_id': self.device, 'name': name, 'host': self.device_hostapi,
+            'native_rate': self.device_native_rate, 'recording_rate': self._recording_rate,
+            'channels': self.channels, 'dtype': self.dtype,
+            'preroll_s': self.PREROLL_SECONDS, 'max_duration': self.max_duration,
+            'noise_suppression': bool(self._noise_suppression_config.get('enabled')),
+            'whisper_mode': bool(self._whisper_mode_gain),
+        }
 
     def cancel_recording(self):
         if not self.is_recording:
