@@ -18,7 +18,7 @@ class Koli < Formula
 
   desc "Free, offline AI dictation — press a hotkey, speak, get text at the cursor"
   homepage "https://github.com/drajb/whisper-local"
-  url "https://files.pythonhosted.org/packages/source/w/whisper-local/whisper_local-<VERSION>.tar.gz"
+  url "https://files.pythonhosted.org/packages/source/k/koli/koli-<VERSION>.tar.gz"
   sha256 "<SDIST_SHA256>"
   license "MIT"
 
@@ -30,7 +30,6 @@ class Koli < Formula
     virtualenv_create(libexec, "python3.12")
     system libexec/"bin/pip", "install", "koli==#{version}"
     bin.install_symlink libexec/"bin/koli"
-    bin.install_symlink libexec/"bin/wl"
   end
 
   test do
