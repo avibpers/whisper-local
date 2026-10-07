@@ -29,6 +29,16 @@ class SettingsError(ValueError):
     pass
 
 
+# Keys in a shortcut the OS hotkey backend can't register. Without a backend
+# (the lean test env) nothing is refused here; the listener still rolls back.
+def _unsupported_keys(value) -> list:
+    try:
+        from ..platform import hotkeys
+    except Exception:
+        return []
+    return list(hotkeys.unsupported_keys(value))
+
+
 def _norm_hotkey(value) -> frozenset:
     if not value:
         return frozenset()
@@ -101,6 +111,15 @@ class SettingsService:
                 result = self.appliers.apply(path, value, old) or result
             except Exception as e:
                 logger.error(f"Applying {path} failed: {e}", exc_info=True)
+                # A shortcut that can't be registered is useless saved, and the
+                # listener has already gone back to the old one: match it.
+                if path in HOTKEY_PATHS:
+                    with self._lock:
+                        self.cm.set_path(path, old)
+                        if record_undo and self._undo:
+                            self._undo.pop()
+                    raise SettingsError(f"That shortcut couldn't be registered, so your previous "
+                                        f"one is kept. ({e})")
                 warnings.append(f"Saved, but could not apply it right now: {e}")
         out = {'ok': True, 'path': path, 'value': value, 'old': old, 'warnings': warnings,
                'label': setting.label, **result}
@@ -167,6 +186,11 @@ class SettingsService:
         if path in HOTKEY_PATHS:
             keys = _norm_hotkey(value)
             if keys:
+                bad = _unsupported_keys(value)
+                if bad:
+                    shown = ', '.join(f"“{k}”" for k in bad)
+                    raise SettingsError(f"{shown} can't be used in a shortcut on this computer. "
+                                        "Your previous shortcut is kept.")
                 for other in HOTKEY_PATHS:
                     if other == path:
                         continue

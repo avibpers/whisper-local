@@ -6,6 +6,7 @@ import time
 
 from global_hotkeys import (clear_hotkeys, register_hotkeys, start_checking_hotkeys,
                              stop_checking_hotkeys)
+from global_hotkeys.keycodes import vk_key_names
 
 # global-hotkeys library expects: 'control + window + shift' format
 KEY_MAP = {
@@ -15,12 +16,26 @@ KEY_MAP = {
     'cmd': 'window',
     'super': 'window',
     'esc': 'escape',
+    'pageup': 'page_up',
+    'pagedown': 'page_down',
 }
 
 def _normalize_hotkey(hotkey_str: str) -> str:
     keys = hotkey_str.lower().split('+')
     converted = [KEY_MAP.get(k.strip(), k.strip()) for k in keys]
     return ' + '.join(converted)
+
+# The keys in a hotkey string the backend can't register, as typed. Checked
+# before saving: register() clears every binding first, so one bad key there
+# would leave all hotkeys dead. ',' is the library's chord separator, so it
+# can never be a key even though it has a key code.
+def unsupported_keys(hotkey_str: str) -> list:
+    bad = []
+    for key in (k.strip().lower() for k in str(hotkey_str or '').split('+')):
+        name = KEY_MAP.get(key, key)
+        if not key or key == ',' or name not in vk_key_names:
+            bad.append(key)
+    return bad
 
 # REPLACES the current bindings — it does not add to them. The macOS mirror
 # rebinds its whole list on every call, and callers rely on that: the pause

@@ -3024,6 +3024,48 @@ class WisprStyleFeatureTests(unittest.TestCase):
                                    double_tap_to_lock=True)
         self.assertIsNone(plain.tap_latch, 'toggle mode is already hands-free')
 
+    # A shortcut the backend refuses must not leave every hotkey dead: the
+    # old one is registered again and the error still reaches the caller.
+    def test_listener_keeps_the_old_shortcut_when_the_new_one_fails(self):
+        import unittest.mock as mock
+        HotkeyListener, _ = self._import_app_modules()
+        with mock.patch.object(HotkeyListener, 'start_listening'):
+            listener = HotkeyListener(mock.Mock(), 'ctrl+win', 'ctrl', recording_mode='toggle')
+        registered = []
+
+        def start():
+            combos = [b[0] for b in listener.hotkey_bindings]
+            if 'ctrl+~' in combos:
+                raise Exception('The key [~] not a valid virtual keystroke.')
+            registered.append(combos)
+        with mock.patch.object(listener, 'start_listening', side_effect=start), \
+                mock.patch.object(listener, 'stop_listening'):
+            with self.assertRaises(Exception):
+                listener.change_hotkey_config('recording_hotkey', 'ctrl+~')
+        self.assertEqual(listener.recording_hotkey, 'ctrl+win')
+        self.assertIn('ctrl+win', registered[-1])
+
+    # A shortcut saved with an unusable key (older versions accepted "~") must
+    # not stop the app starting: it goes back to its default and is reported.
+    def test_startup_resets_a_saved_shortcut_with_an_unusable_key(self):
+        import unittest.mock as mock
+        self._import_app_modules()
+        import whisper_key.main as main
+        from whisper_key.platform import hotkeys
+        hotkeys.unsupported_keys = lambda combo: [k for k in combo.split('+') if k == '~']
+        cm = mock.Mock()
+        cm._defaults_baseline = {'hotkey': {'recording_hotkey': 'ctrl+win'}}
+        config = {'recording_hotkey': 'ctrl+shift+win+~', 'stop_key': 'ctrl'}
+        self.addCleanup(main.STARTUP_NOTICES.clear)
+        import contextlib
+        import io
+        with contextlib.redirect_stdout(io.StringIO()):
+            main.repair_unusable_hotkeys(config, cm)
+        self.assertEqual(config['recording_hotkey'], 'ctrl+win')
+        self.assertEqual(config['stop_key'], 'ctrl')
+        cm.set_path.assert_called_once_with('hotkey.recording_hotkey', 'ctrl+win')
+        self.assertEqual([n['kind'] for n in main.STARTUP_NOTICES], ['hotkey'])
+
     # --- Whisper mode ---
     def test_whisper_mode_boosts_only_quiet_speech(self):
         try:
@@ -3734,6 +3776,44 @@ class SettingsServiceTests(unittest.TestCase):
         with self.assertRaises(SettingsError):
             self.svc.set('hotkey.recording_hotkey', taken)
         self.assertNotEqual(self.cm.get_path('hotkey.recording_hotkey'), taken)
+
+    # A key the OS backend can't register is refused before it's saved, so
+    # the page shows the error and the previous shortcut stays.
+    def test_a_key_the_backend_cannot_register_is_refused(self):
+        import unittest.mock as mock
+        from whisper_key.settings.service import SettingsError
+        modules = fake_platform_modules()
+        modules['whisper_key.platform.hotkeys'].unsupported_keys = (
+            lambda combo: [k for k in combo.split('+') if k == '~'])
+        before = self.cm.get_path('hotkey.recording_hotkey')
+        with mock.patch.dict(sys.modules, modules):
+            with self.assertRaises(SettingsError) as caught:
+                self.svc.set('hotkey.recording_hotkey', 'ctrl+~')
+        self.assertIn('“~”', str(caught.exception))
+        self.assertEqual(self.cm.get_path('hotkey.recording_hotkey'), before)
+        self.assertFalse(self.svc.can_undo())
+
+    # If registering still fails while applying, the saved value goes back too.
+    def test_a_shortcut_that_fails_to_register_is_not_kept(self):
+        import unittest.mock as mock
+        from whisper_key.settings.service import SettingsError
+        self.svc.appliers = mock.Mock()
+        self.svc.appliers.apply.side_effect = Exception('not a valid virtual keystroke')
+        before = self.cm.get_path('hotkey.recording_hotkey')
+        with self.assertRaises(SettingsError):
+            self.svc.set('hotkey.recording_hotkey', 'f8')
+        self.assertEqual(self.cm.get_path('hotkey.recording_hotkey'), before)
+        self.assertFalse(self.svc.can_undo())
+
+    def test_windows_backend_names_the_keys_it_cannot_register(self):
+        try:
+            from whisper_key.platform.windows.hotkeys import unsupported_keys
+        except Exception:
+            self.skipTest('global_hotkeys not installed')
+        self.assertEqual(unsupported_keys('ctrl+~'), ['~'])
+        self.assertEqual(unsupported_keys('ctrl+,'), [','])
+        for ok in ('ctrl+win', 'shift+`', 'ctrl+pageup', 'esc', 'alt+shift+z', 'f9'):
+            self.assertEqual(unsupported_keys(ok), [], ok)
 
     def test_settings_the_app_manages_cannot_be_changed_from_the_page(self):
         from whisper_key.settings.service import SettingsError

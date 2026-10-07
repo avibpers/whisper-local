@@ -323,7 +323,16 @@ class HotkeyListener:
 
         self.stop_listening()
         self._setup_hotkeys()
-        self.start_listening()
+        try:
+            self.start_listening()
+        except Exception:
+            # The backend dropped every binding before refusing the new one.
+            # Put the old shortcut back so the other hotkeys keep working,
+            # then let the caller report the failure.
+            setattr(self, setting, old_value)
+            self._setup_hotkeys()
+            self.start_listening()
+            raise
 
     def is_active(self) -> bool:
         return self.is_listening

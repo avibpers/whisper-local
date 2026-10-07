@@ -320,6 +320,33 @@ def setup_signal_handlers(shutdown_event):
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
+# A shortcut saved with a key this computer can't register (an older version
+# accepted "~") would stop the app from starting. Put that one back to its
+# default, save the fix, and tell the user once the window opens.
+def repair_unusable_hotkeys(hotkey_config, config_manager):
+    from .platform import hotkeys
+    from .settings.service import HOTKEY_PATHS
+    defaults = config_manager._defaults_baseline.get('hotkey', {})
+    for path in HOTKEY_PATHS:
+        name = path.split('.', 1)[1]
+        saved = hotkey_config.get(name)
+        bad = hotkeys.unsupported_keys(saved) if saved else []
+        if not bad:
+            continue
+        fallback = defaults.get(name)
+        if fallback and hotkeys.unsupported_keys(fallback):
+            fallback = None
+        hotkey_config[name] = fallback
+        config_manager.set_path(path, fallback)
+        shown = ', '.join(f"“{k}”" for k in bad)
+        replacement = f"“{fallback}”" if fallback else "nothing"
+        logging.getLogger(__name__).warning(f"Hotkey {name} '{saved}' has unusable key(s) {bad}; reset to {fallback!r}")
+        print(f"   ⚠ The shortcut '{saved}' uses {shown}, which can't be a hotkey here; set to {replacement}.")
+        STARTUP_NOTICES.append({'kind': 'hotkey', 'message': f"Your shortcut “{saved}” uses {shown}, which can't be "
+                                f"used as a hotkey on this computer, so it was set to {replacement}. Pick another "
+                                f"in Settings → Hotkeys."})
+
+
 def setup_hotkey_listener(hotkey_config, state_manager, voice_commands_enabled=True):
     return HotkeyListener(
         state_manager=state_manager,
@@ -693,6 +720,7 @@ def main():
             state_manager.overlay_factory = UiHost.overlay_factory
         state_manager.attach_components(audio_recorder, system_tray)
         
+        repair_unusable_hotkeys(hotkey_config, config_manager)
         try:
             hotkey_listener = setup_hotkey_listener(hotkey_config, state_manager, voice_commands_config['enabled'])
             state_manager.set_hotkey_listener(hotkey_listener)

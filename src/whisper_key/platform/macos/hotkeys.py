@@ -121,6 +121,15 @@ def _parse_hotkey_string(hotkey_str: str) -> tuple[int, int | None]:
     return modifiers, keycode
 
 
+# The keys in a hotkey string this backend doesn't know, as typed. Mirrors
+# the Windows check so the settings page can refuse them before saving;
+# _parse_hotkey_string() would otherwise just drop them with a warning.
+def unsupported_keys(hotkey_str: str) -> list:
+    known = {'win', 'window', 'windows', 'super'}
+    parts = [p.strip().lower() for p in str(hotkey_str or '').split('+')]
+    return [p for p in parts if not p or (p not in known and p not in MODIFIER_FLAGS and p not in KEY_CODES)]
+
+
 def _parse_binding(binding: list) -> ParsedBinding:
     hotkey_str = binding[0]
     press_cb = binding[1]

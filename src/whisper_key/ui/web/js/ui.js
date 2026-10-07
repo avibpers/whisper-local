@@ -162,7 +162,11 @@ function keyName(e) {
   if (/^F\d+$/.test(c)) return c.toLowerCase();
   const map = { Space: 'space', Escape: 'esc', Enter: 'enter', Tab: 'tab', Backspace: 'backspace',
     Delete: 'delete', Insert: 'insert', Home: 'home', End: 'end', PageUp: 'pageup', PageDown: 'pagedown',
-    ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' };
+    ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
+    // Punctuation by physical key, so Shift+` records as shift+` (not "~")
+    // and a non-English layout records the same key names.
+    Backquote: '`', Minus: '-', Equal: '=', BracketLeft: '[', BracketRight: ']', Backslash: '\\',
+    Semicolon: ';', Quote: "'", Comma: ',', Period: '.', Slash: '/' };
   return map[c] || (e.key && e.key.length === 1 ? e.key.toLowerCase() : null);
 }
 
