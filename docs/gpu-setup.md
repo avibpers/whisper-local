@@ -4,7 +4,7 @@ GPU acceleration lets you run bigger Whisper models with faster transcription. O
 
 ## Automatic Setup (Recommended)
 
-On first launch, Whisper Local detects your GPU and offers to install the required runtime libraries automatically:
+On first launch, Koli detects your GPU and offers to install the required runtime libraries automatically:
 
 ```
 🖥️ System check...
@@ -50,7 +50,7 @@ Note: `cuda` applies to both [NVIDIA](#nvidia-cuda) and [AMD](#amd--rdna-2-rocm)
 pip install nvidia-cuda-runtime-cu12 nvidia-cublas-cu12 nvidia-cudnn-cu12
 ```
 
-Install them into the same Python environment Whisper Local runs in. Whisper Local finds them in `site-packages\nvidia\*\bin` on its own, so there's no need to copy DLLs anywhere. Run `whisper-local --doctor` to confirm: the **CUDA libraries** line should read `[OK]`.
+Install them into the same Python environment Koli runs in. Koli finds them in `site-packages\nvidia\*\bin` on its own, so there's no need to copy DLLs anywhere. Run `koli --doctor` to confirm: the **CUDA libraries** line should read `[OK]`.
 
 ### Option B: CUDA Toolkit installer
 
@@ -60,7 +60,7 @@ winget install Nvidia.CUDA --version 12.9
 ```
 Or download from [nvidia.com/cuda-downloads](https://developer.nvidia.com/cuda-downloads)
 
-Then verify with `nvidia-smi`, set `device: cuda` and `compute_type: float16`, and restart Whisper Local.
+Then verify with `nvidia-smi`, set `device: cuda` and `compute_type: float16`, and restart Koli.
 
 ## AMD — RDNA 2+ (ROCm)
 
@@ -89,7 +89,7 @@ Then install the ROCm CTranslate2 wheel:
 ### Portable exe
 
 1. Build a release exe locally (see [`pyapp-build/CLAUDE.md`](../pyapp-build/CLAUDE.md))
-2. Run `whisper-local.exe`
+2. Run `koli.exe`
 3. Set `device: cuda` and `compute_type: float16`
 
 ### pip
@@ -99,16 +99,16 @@ Then install the ROCm CTranslate2 wheel:
    pip install ctranslate2-4.7.1-cp313-cp313-win_amd64.whl --force-reinstall --no-deps
    ```
 2. Set `device: cuda` and `compute_type: float16`
-3. Restart Whisper Local
+3. Restart Koli
 
 ### pipx
 
 1. Install the ROCm CTranslate2 wheel into the pipx venv from [ctranslate2-rocm-wheels](https://github.com/PinW/ctranslate2-rocm-wheels/releases/tag/v4.7.1-rocm72):
    ```
-   pipx runpip whisper-local install ctranslate2-4.7.1-cp313-cp313-win_amd64.whl --force-reinstall --no-deps
+   pipx runpip koli install ctranslate2-4.7.1-cp313-cp313-win_amd64.whl --force-reinstall --no-deps
    ```
 2. Set `device: cuda` and `compute_type: float16`
-3. Restart Whisper Local
+3. Restart Koli
 
 ## AMD — RDNA 1 (ROCm 6.2)
 
@@ -118,9 +118,9 @@ Then install the ROCm CTranslate2 wheel:
 
 1. Follow the instructions at **[ctranslate2-rocm-rdna1](https://github.com/PinW/ctranslate2-rocm-rdna1)** to install the custom wheel and prerequisites
    - For pip: `pip install <wheel> --force-reinstall --no-deps`
-   - For pipx: `pipx runpip whisper-local install <wheel> --force-reinstall --no-deps`
+   - For pipx: `pipx runpip koli install <wheel> --force-reinstall --no-deps`
 2. Set `device: cuda` and `compute_type: float16`
-3. Restart Whisper Local
+3. Restart Koli
 
 ## CPU (no setup needed)
 

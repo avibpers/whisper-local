@@ -2,7 +2,7 @@
 
 **Goal:** Detect open windows, focused window, available fields, and insert text programmatically.
 
-## Use Cases for Whisper-Key
+## Use Cases for Koli
 
 1. **Smart text insertion** - Insert transcription into specific app/field
 2. **Context-aware behavior** - Different actions based on active window
@@ -706,7 +706,7 @@ For Win32 window/message inspection. Limited UIA support.
 - **ValuePattern.SetValue()** replaces all text, cannot insert at cursor
 - **uiautomation** library preferred over pywinauto for lightweight focus monitoring
 
-**Recommended approach for Whisper-Key:**
+**Recommended approach for Koli:**
 1. Detect focused window: `win32gui.GetForegroundWindow()` + psutil for exe name
 2. Detect if text field: `uiautomation.GetFocusedControl()` → check ControlTypeName
 3. Insert text: Clipboard paste with preservation (current approach is good)

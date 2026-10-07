@@ -2,19 +2,19 @@
 
 ## Overview
 
-Wrap CLI tools with `whisper-key <command>` to provide voice input directly to the wrapped process without keyboard simulation or clipboard operations.
+Wrap CLI tools with `koli <command>` to provide voice input directly to the wrapped process without keyboard simulation or clipboard operations.
 
 ```
-whisper-key claude
-whisper-key python
-whisper-key ssh user@host
+koli claude
+koli python
+koli ssh user@host
 ```
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  whisper-key wrapper                                        │
+│  koli wrapper                                        │
 │                                                             │
 │  ┌──────────────┐     ┌──────────────┐     ┌─────────────┐ │
 │  │ Audio Capture│────►│ Transcription│────►│ PTY Write   │ │
@@ -60,7 +60,7 @@ Reserve bottom line for status, give child process the rest:
 │ █                                       │
 │                                         │
 ├─────────────────────────────────────────┤
-│ 🎤 Recording... [2.3s]        whisper-key│  ← Status bar (row N)
+│ 🎤 Recording... [2.3s]        koli│  ← Status bar (row N)
 └─────────────────────────────────────────┘
 ```
 
@@ -189,10 +189,10 @@ while proc.isalive():
 Minimal, informative:
 
 ```
-│ 🎤 Recording... [2.3s]        whisper-key│  Recording
-│ ⏳ Transcribing...            whisper-key│  Processing
-│ ✓ Ready                       whisper-key│  Idle
-│ ✗ Error: No speech detected   whisper-key│  Error
+│ 🎤 Recording... [2.3s]        koli│  Recording
+│ ⏳ Transcribing...            koli│  Processing
+│ ✓ Ready                       koli│  Idle
+│ ✗ Error: No speech detected   koli│  Error
 ```
 
 Use ANSI escape codes:
@@ -206,7 +206,7 @@ def draw_status(message):
 
 ## Hotkey Considerations
 
-Current whisper-key uses global hotkeys (F13, etc.). In wrapper mode:
+Current koli uses global hotkeys (F13, etc.). In wrapper mode:
 
 **Option A: Same global hotkey**
 - Works across windows
@@ -230,7 +230,7 @@ Current whisper-key uses global hotkeys (F13, etc.). In wrapper mode:
 
 ### Phase 2: Status Bar
 - Reserve bottom line
-- Show whisper-key status
+- Show koli status
 - Handle resize
 
 ### Phase 3: Voice Integration

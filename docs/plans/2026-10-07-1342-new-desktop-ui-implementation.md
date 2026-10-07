@@ -1,6 +1,6 @@
 # New Desktop UI: Floating Bar + App Window
 
-As a *Whisper Local user* I want **a real desktop app: a small floating bar while I work, and a full window when I open it, with simple and advanced modes** so I can see what the app hears and does, and change any setting instantly without editing YAML or restarting.
+As a *Koli user* I want **a real desktop app: a small floating bar while I work, and a full window when I open it, with simple and advanced modes** so I can see what the app hears and does, and change any setting instantly without editing YAML or restarting.
 
 Mockup (source of truth for layout and copy): https://claude.ai/artifact/L6ujxPkwgG1MSAEu7wZ2Rt
 Boards: Floating bar states · Live (light/dark) · Simple Home · Simple Settings · Advanced Settings · History & insights · Vocabulary · Commands & AI · Apps & profiles · Diagnostics.
@@ -67,7 +67,7 @@ Your global instructions say to ask before breaking the file structure. These ar
 |---|---|---|---|---|
 | D1 | UI technology | **pywebview** (WebView2 on Windows, WKWebView on macOS), in the same Python process | The mockup is HTML/CSS and ports almost 1:1. Small dependency. Direct access to StateManager, no IPC. | PySide6/Qt (rewrite the mockup, 150 MB+), Tauri/Electron with a Python sidecar (two runtimes, IPC), keep Tk (cannot reach the design) |
 | D2 | Frontend stack | **Preact + htm, vendored, no build step** | Components and reactive state for ~10 screens, but nothing to compile. `pip install -e .` and run. Works offline. | Vanilla JS (too much DOM plumbing), React/Svelte + Vite (needs Node in dev and CI) |
-| D3 | New folders | `src/whisper_key/ui/` (host, bridge, bar, events, tasks, web assets), `src/whisper_key/settings/` (schema, service, appliers, simple mode), `src/whisper_key/services/` (screen data) | Keeps the 70 existing modules untouched in place. New code is grouped by role. | Flat files next to existing modules (would add ~25 files to an already flat package) |
+| D3 | New folders | `src/koli/ui/` (host, bridge, bar, events, tasks, web assets), `src/koli/settings/` (schema, service, appliers, simple mode), `src/koli/services/` (screen data) | Keeps the 70 existing modules untouched in place. New code is grouped by role. | Flat files next to existing modules (would add ~25 files to an already flat package) |
 | D4 | Fonts | Bundle **Geist + Geist Mono** woff2 with their OFL licence | The app must work offline. The mockup loads them from Google Fonts. | System fonts (Segoe UI) |
 | D5 | Single instance | Launching again **opens the existing window** via local IPC. Takeover stays behind `--replace`. | With a window, "launch again" means "show me the app". Today it kills and replaces the running instance. | Keep takeover |
 | D6 | Legacy Tk UI | Keep behind `--legacy-ui` for one release, then delete | Safety net while the new UI matures | Delete immediately |
@@ -76,20 +76,20 @@ Your global instructions say to ask before breaking the file structure. These ar
 ## How to run during development (CLI only)
 
 ```powershell
-cd S:\whisper-local-new-ui
+cd S:\koli-new-ui
 py -3.13 -m venv .venv
 .venv\Scripts\pip install -e .
 
-.venv\Scripts\whisper-local                    # new UI: floating bar + tray; window opens on first run
-.venv\Scripts\whisper-local --open             # also open the main window at start
-.venv\Scripts\whisper-local --open --page settings/audio   # open straight on a screen/section
-.venv\Scripts\whisper-local --ui-dev           # DevTools, reload web files on change, verbose UI log
-.venv\Scripts\whisper-local --test --open      # separate test instance (own mutex), safe next to your daily one
-.venv\Scripts\whisper-local --legacy-ui        # old Tk windows (until Phase 11)
-.venv\Scripts\whisper-local --replace          # old behaviour: kill the running instance and take over
+.venv\Scripts\koli                    # new UI: floating bar + tray; window opens on first run
+.venv\Scripts\koli --open             # also open the main window at start
+.venv\Scripts\koli --open --page settings/audio   # open straight on a screen/section
+.venv\Scripts\koli --ui-dev           # DevTools, reload web files on change, verbose UI log
+.venv\Scripts\koli --test --open      # separate test instance (own mutex), safe next to your daily one
+.venv\Scripts\koli --legacy-ui        # old Tk windows (until Phase 11)
+.venv\Scripts\koli --replace          # old behaviour: kill the running instance and take over
 ```
 
-Frontend-only work without Python: open `src/whisper_key/ui/web/index.html?mock=1` in Chrome or Edge. `js/mock-api.js` serves fixture data and fakes live events (waveform, logs, task progress). This is how screens get built and reviewed quickly.
+Frontend-only work without Python: open `src/koli/ui/web/index.html?mock=1` in Chrome or Edge. `js/mock-api.js` serves fixture data and fakes live events (waveform, logs, task progress). This is how screens get built and reviewed quickly.
 
 ## Implementation Plan
 
@@ -140,7 +140,7 @@ Milestones: **M1** after Phase 4 (you can run it and see the Live screen and the
 - [ ] Event push: subscribe to the bus, batch per animation frame (~16–50 ms), call `window.evaluate_js("wl.receive(batch)")` only for windows that are visible (bar: always; main: when shown)
 - [ ] `main.py`: `--open`, `--page`, `--ui-dev`, `--legacy-ui`, `--replace`; build the app as today, then hand the main thread to `UiHost` instead of `app.run_event_loop`
 - [ ] `ui/instance_ipc.py` + `instance_manager.py`: second launch sends "open [page]" to the running instance over a local named pipe with an auth key, then exits. `--replace` keeps today's takeover
-- [ ] Tray: add "Open Whisper Local" (default item, double-click) and route it to `UiHost.show(page)`
+- [ ] Tray: add "Open Koli" (default item, double-click) and route it to `UiHost.show(page)`
 - [ ] Native dialogs through the bridge (`create_file_dialog` for files/folders); external links open in the default browser via an allow-list; no navigation away from local pages
 - [ ] Security: load only packaged local files; strict Content-Security-Policy in both HTML files; no remote scripts, fonts or images; bridge validates every path and value
 - [ ] Crash isolation: a JS error is logged (forwarded to `log`) and never stops dictation; if the webview dies, dictation, hotkeys and tray keep running and the tray offers "Reopen window"
@@ -600,24 +600,24 @@ New (needs your OK, decision D3):
 
 | Path | Purpose |
 |---|---|
-| `src/whisper_key/ui/host.py` | pywebview windows and main-thread loop |
-| `src/whisper_key/ui/bridge.py` | `js_api` surface |
-| `src/whisper_key/ui/events.py` | EventBus with throttling |
-| `src/whisper_key/ui/log_stream.py` | log handler + ring buffer |
-| `src/whisper_key/ui/tasks.py` | background TaskManager |
-| `src/whisper_key/ui/floating_bar.py` | LevelOverlay-compatible bar adapter |
-| `src/whisper_key/ui/instance_ipc.py` | "open the running app" pipe |
-| `src/whisper_key/settings/schema.py` | one entry per setting |
-| `src/whisper_key/settings/service.py` | set / validate / apply / undo |
-| `src/whisper_key/settings/appliers.py` | live and background appliers |
-| `src/whisper_key/settings/simple_mode.py` | Simple question ↔ settings mapping |
-| `src/whisper_key/services/{history,insights,vocabulary,commands,rules,models,diagnostics,system}.py` | screen data, thin wrappers |
-| `src/whisper_key/ui/web/index.html`, `bar.html` | the two windows |
-| `src/whisper_key/ui/web/css/{tokens,components}.css` | design tokens, shared components |
-| `src/whisper_key/ui/web/js/{api,mock-api,store,router,app}.js` | runtime |
-| `src/whisper_key/ui/web/js/components/*.js` | toggle, segmented, key capture, tag input, table editor, toast, modal, popover |
-| `src/whisper_key/ui/web/js/screens/*.js` | live, home, history, vocabulary, commands, apps, settings, simple-settings, diagnostics, welcome |
-| `src/whisper_key/ui/web/{vendor,fonts,fixtures}/` | Preact/htm, Geist fonts + OFL, mock data |
+| `src/koli/ui/host.py` | pywebview windows and main-thread loop |
+| `src/koli/ui/bridge.py` | `js_api` surface |
+| `src/koli/ui/events.py` | EventBus with throttling |
+| `src/koli/ui/log_stream.py` | log handler + ring buffer |
+| `src/koli/ui/tasks.py` | background TaskManager |
+| `src/koli/ui/floating_bar.py` | LevelOverlay-compatible bar adapter |
+| `src/koli/ui/instance_ipc.py` | "open the running app" pipe |
+| `src/koli/settings/schema.py` | one entry per setting |
+| `src/koli/settings/service.py` | set / validate / apply / undo |
+| `src/koli/settings/appliers.py` | live and background appliers |
+| `src/koli/settings/simple_mode.py` | Simple question ↔ settings mapping |
+| `src/koli/services/{history,insights,vocabulary,commands,rules,models,diagnostics,system}.py` | screen data, thin wrappers |
+| `src/koli/ui/web/index.html`, `bar.html` | the two windows |
+| `src/koli/ui/web/css/{tokens,components}.css` | design tokens, shared components |
+| `src/koli/ui/web/js/{api,mock-api,store,router,app}.js` | runtime |
+| `src/koli/ui/web/js/components/*.js` | toggle, segmented, key capture, tag input, table editor, toast, modal, popover |
+| `src/koli/ui/web/js/screens/*.js` | live, home, history, vocabulary, commands, apps, settings, simple-settings, diagnostics, welcome |
+| `src/koli/ui/web/{vendor,fonts,fixtures}/` | Preact/htm, Geist fonts + OFL, mock data |
 
 Modified:
 
@@ -647,8 +647,8 @@ Removed in Phase 11: `settings_ui.py`, `history_window.py`, `cheat_sheet.py`, `f
 
 ## Success Criteria
 
-- [ ] `whisper-local` starts with the floating bar and tray; `--open` shows the window; closing the window leaves the bar and dictation running
-- [ ] Launching `whisper-local` again while it runs opens the existing window instead of replacing the process
+- [ ] `koli` starts with the floating bar and tray; `--open` shows the window; closing the window leaves the bar and dictation running
+- [ ] Launching `koli` again while it runs opens the existing window instead of replacing the process
 - [ ] Live shows waveform, input level, VAD probability with thresholds, silence countdown, foreground app and matched rule, and the four-step trace of the last dictation, all updating in real time
 - [ ] The console shows new log lines within 250 ms, filters by level and text, and pauses without losing lines
 - [ ] Every setting in `config.defaults.yaml` (plus `ui.*` and `server.*`) is editable in Advanced; the schema coverage test fails if a key is added to `config.defaults.yaml` without a UI entry

@@ -59,11 +59,11 @@ jobs:
           $dir = Get-ChildItem -Directory -Filter "pyapp-v*" | Select-Object -First 1
           if (-not $dir) { $dir = Get-ChildItem -Directory -Filter "pyapp-*" | Select-Object -First 1 }
           "PYAPP_DIR=$($dir.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
-      - name: Build whisper-local.exe
+      - name: Build koli.exe
         shell: pwsh
         env:
           PYAPP_PYTHON_VERSION: '3.12'
-          PYAPP_EXEC_CODE: 'from whisper_key.main import main; main()'
+          PYAPP_EXEC_CODE: 'from koli.main import main; main()'
           PYAPP_PASS_LOCATION: '1'
         run: |
           $wheel = (Get-ChildItem dist\*.whl | Select-Object -First 1).FullName
@@ -74,13 +74,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
           Pop-Location
           New-Item -ItemType Directory -Force -Path exe | Out-Null
-          Copy-Item "$env:PYAPP_DIR\target\release\pyapp.exe" "exe\whisper-local.exe" -Force
-          Get-Item "exe\whisper-local.exe" | Format-List Name, Length
+          Copy-Item "$env:PYAPP_DIR\target\release\pyapp.exe" "exe\koli.exe" -Force
+          Get-Item "exe\koli.exe" | Format-List Name, Length
       - name: Compute checksum
         shell: pwsh
         run: |
-          $hash = (Get-FileHash exe\whisper-local.exe -Algorithm SHA256).Hash.ToLower()
-          "$hash  whisper-local.exe" | Out-File -FilePath exe\whisper-local.exe.sha256 -Encoding ascii
+          $hash = (Get-FileHash exe\koli.exe -Algorithm SHA256).Hash.ToLower()
+          "$hash  koli.exe" | Out-File -FilePath exe\koli.exe.sha256 -Encoding ascii
           Write-Host "SHA256: $hash"
       - uses: actions/upload-artifact@v4
         with:
@@ -129,7 +129,7 @@ jobs:
             ## Install
 
             **Option 1 — Standalone Windows app (no Python needed)**
-            Download `whisper-local.exe` below and double-click it. Windows
+            Download `koli.exe` below and double-click it. Windows
             SmartScreen will warn (unsigned app) — click **More info → Run anyway**.
             First launch takes a few minutes: it sets up a private Python runtime,
             then downloads the default Whisper `base` model (~141 MB). After that
@@ -137,9 +137,9 @@ jobs:
 
             **Option 2 — pip (Windows / macOS, needs Python 3.11+)**
             ```bash
-            pip install whisper-local==${{ needs.build.outputs.version }}
+            pip install koli==${{ needs.build.outputs.version }}
             ```
-            Update later with `pip install --upgrade whisper-local`.
+            Update later with `pip install --upgrade koli`.
 
             ---
-            Verify the .exe download with `whisper-local.exe.sha256`.
+            Verify the .exe download with `koli.exe.sha256`.

@@ -1,6 +1,6 @@
 # Real-time streaming preview (experimental)
 
-Whisper Local can show your words **in the overlay as you speak**, before the
+Koli can show your words **in the overlay as you speak**, before the
 final transcription lands — the Wispr-style live feedback. This page explains
 what it does, how to turn it on, and an important design decision about *where*
 streamed text goes.
@@ -50,7 +50,7 @@ undo history, and fighting your cursor. The *final* Whisper pass is also more
 accurate than the small streaming model, so committing partials would actually
 *lower* quality.
 
-By default Whisper Local shows partials only in the **overlay** (safe, disposable)
+By default Koli shows partials only in the **overlay** (safe, disposable)
 and delivers the single accurate Whisper result to your cursor.
 
 ## Type-as-you-go: commit-on-endpoint delivery (opt-in)

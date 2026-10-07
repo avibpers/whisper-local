@@ -34,7 +34,7 @@ List available input devices, highlight the current default:
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│ Which microphone should Whisper Key use?                │
+│ Which microphone should Koli use?                │
 │                                                         │
 │ [1] MacBook Pro Microphone (default)                    │
 │ [2] External USB Mic                                    │
@@ -82,9 +82,9 @@ On macOS, if user selects Yes:
 ### 6. Completion
 
 ```
-Setup complete! Starting Whisper Key...
+Setup complete! Starting Koli...
 
-Your settings are saved in: ~/.whisper-key/config.yaml
+Your settings are saved in: ~/.koli/config.yaml
 Press [fn+control] to start recording.
 ```
 

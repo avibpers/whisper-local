@@ -1,5 +1,5 @@
 """make_mock_data.py
-Writes src/whisper_key/ui/web/js/mock-data.json: the default settings, the
+Writes src/koli/ui/web/js/mock-data.json: the default settings, the
 settings schema, and the shipped rules, commands, transforms and profiles, so
 the browser mock (index.html?mock=1) shows the same shapes as the real app.
 Run it after changing config.defaults.yaml or the settings schema."""
@@ -14,13 +14,13 @@ sys.path.insert(0, str(ROOT / 'src'))
 
 import yaml  # noqa: E402
 
-from whisper_key import app_rules, profiles, transforms, voice_commands  # noqa: E402
-from whisper_key import defaults_merge as dm  # noqa: E402
-from whisper_key.config_manager import _resolve_platform_values  # noqa: E402
-from whisper_key.services.commands import _action_of  # noqa: E402
-from whisper_key.settings import schema, simple_mode  # noqa: E402
+from koli import app_rules, profiles, transforms, voice_commands  # noqa: E402
+from koli import defaults_merge as dm  # noqa: E402
+from koli.config_manager import _resolve_platform_values  # noqa: E402
+from koli.services.commands import _action_of  # noqa: E402
+from koli.settings import schema, simple_mode  # noqa: E402
 
-OUT = ROOT / 'src' / 'whisper_key' / 'ui' / 'web' / 'js' / 'mock-data.json'
+OUT = ROOT / 'src' / 'koli' / 'ui' / 'web' / 'js' / 'mock-data.json'
 
 
 def shipped(defaults_file, section, id_key=None, mapping=False):
@@ -36,7 +36,7 @@ def shipped(defaults_file, section, id_key=None, mapping=False):
 def main():
     # Resolved for Windows, as ConfigManager does ("ctrl+win | macos: fn+ctrl").
     defaults = _resolve_platform_values(yaml.safe_load(
-        (ROOT / 'src' / 'whisper_key' / 'config.defaults.yaml').read_text(encoding='utf-8')))
+        (ROOT / 'src' / 'koli' / 'config.defaults.yaml').read_text(encoding='utf-8')))
 
     def has(path):
         node = defaults

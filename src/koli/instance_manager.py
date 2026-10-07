@@ -1,0 +1,135 @@
+# instance_manager.py
+# Enforces a single running copy. Uses a platform mutex/flock plus a pid file, and
+# deliberately prefers TAKEOVER over refusal: launching again SIGTERMs the old
+# instance and waits for the lock, which is what users expect when they
+# double-click the icon or hit tray → Restart. Only a genuinely unresponsive
+# holder produces a failure, and that message is surfaced via a dialog because
+# the .exe / autostart launch is windowless and would otherwise close silently.
+
+import logging
+import os
+import signal
+import sys
+import time
+from pathlib import Path
+
+from .platform import instance_lock
+from .utils import get_user_app_data_path
+
+logger = logging.getLogger(__name__)
+
+_LOCK_RETRY_TIMEOUT = 5.0
+_LOCK_RETRY_INTERVAL = 0.1
+
+
+def _pid_file(app_name: str) -> Path:
+    return Path(get_user_app_data_path()) / f"{app_name}.pid"
+
+
+def _read_existing_pid(app_name: str):
+    path = _pid_file(app_name)
+    if not path.exists():
+        return None
+    try:
+        return int(path.read_text().strip())
+    except (ValueError, OSError):
+        return None
+
+
+def _write_pid(app_name: str):
+    try:
+        _pid_file(app_name).write_text(str(os.getpid()))
+    except OSError as e:
+        logger.warning(f"Could not write pid file: {e}")
+
+
+def _terminate(pid: int) -> bool:
+    try:
+        os.kill(pid, signal.SIGTERM)
+        return True
+    except (ProcessLookupError, PermissionError, OSError) as e:
+        logger.warning(f"Could not terminate PID {pid}: {e}")
+        return False
+
+
+def _wait_for_lock(app_name: str):
+    deadline = time.monotonic() + _LOCK_RETRY_TIMEOUT
+    while time.monotonic() < deadline:
+        time.sleep(_LOCK_RETRY_INTERVAL)
+        handle = instance_lock.acquire_lock(app_name)
+        if handle is not None:
+            return handle
+    return None
+
+
+def guard_against_multiple_instances(app_name: str = "Koli"):
+    try:
+        handle = instance_lock.acquire_lock(app_name)
+
+        if handle is None:
+            existing_pid = _read_existing_pid(app_name)
+            if existing_pid:
+                print(f"\nKoli already running (PID {existing_pid}); replacing it...")
+                _terminate(existing_pid)
+            else:
+                print("\nKoli lock held by unknown process; waiting...")
+
+            handle = _wait_for_lock(app_name)
+            if handle is None:
+                _fail_takeover()
+
+            print("Lock acquired. Continuing startup.\n")
+
+        logger.info("Primary instance acquired mutex")
+        _write_pid(app_name)
+        return handle
+
+    except Exception as e:
+        logger.error(f"Error with single instance check: {e}")
+        raise
+
+
+def cleanup_pid_file(app_name: str = "Koli"):
+    try:
+        path = _pid_file(app_name)
+        if path.exists():
+            path.unlink()
+    except OSError:
+        pass
+
+
+# Surface a message even when there's no visible console — the standalone .exe
+# and autostart (pythonw) launch windowless, so a bare print() vanishes and the
+# app appears to "silently close". Falls back to print when a console exists or
+# off Windows. Best-effort: any failure here must not mask the real exit.
+# GetConsoleWindow() == 0 means no attached console window (windowless launch).
+# Split out so tests can stub it — a real MessageBoxW is a *blocking modal*, so
+# it must never fire in a headless/test/CI process (which has no console and
+# nobody to click OK).
+def _console_attached() -> bool:
+    try:
+        import ctypes
+        return ctypes.windll.kernel32.GetConsoleWindow() != 0
+    except Exception:
+        return True  # non-Windows / no ctypes → assume a console, show no dialog
+
+
+def _notify_no_console(title: str, message: str):
+    print(f"\n{message}\n")
+    if _console_attached():
+        return
+    try:
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(0, message, title, 0x10)  # MB_ICONERROR
+    except Exception:
+        pass
+
+
+def _fail_takeover():
+    _notify_no_console(
+        "Koli",
+        "Koli is already running but isn't responding, so this copy "
+        "can't start.\n\nEnd the existing koli / python process in Task "
+        "Manager, then launch again.",
+    )
+    sys.exit(1)

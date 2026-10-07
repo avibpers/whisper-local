@@ -1,4 +1,4 @@
-# Whisper Local - Roadmap
+# Koli - Roadmap
 @completed.md
 
 ## Next
@@ -23,7 +23,7 @@
 - As a *user* I want **command aliases** so I can define multiple trigger phrases for the same command (e.g., "open browser", "launch chrome", and "start browser" all execute the same action)
 - As a *user* I want **semantic command matching** so commands are matched intelligently instead of requiring exact phrases (e.g., "open up chrome" still matches "open browser")
 - As a *user* I want **parameterized commands** so I can define command templates with variables that are extracted from speech (e.g., "open {filename}" or "search for {query}")
-- As a *user* I want **voice commands API** so other apps can do things from whisper key commands
+- As a *user* I want **voice commands API** so other apps can do things from koli commands
 - As a *user* I want **verbal stop recording** command so I don't need to hit the hotkey
 
 ### Terminal UI
@@ -36,17 +36,17 @@
 - As a *user*, I want **wrapped model downloading** so I see a clean progress display and get helpful error messages instead of raw HuggingFace output (symlink errors, cluttered progress bars)
 
 ### CLI
-- As a *user* I want a **short command alias (`wk`)** in `[project.scripts]` so I can launch the app by typing `wk` instead of `whisper-key`
+- As a *user* I want a **short command alias (`wk`)** in `[project.scripts]` so I can launch the app by typing `wk` instead of `koli`
 - As a *user* I want a **CLI interface** so other tools and agents can invoke transcription programmatically
-- As a *user* I want to **wrap CLI tools** (e.g., `whisper-key claude`) so I can voice-input directly into any command-line application without switching windows
+- As a *user* I want to **wrap CLI tools** (e.g., `koli claude`) so I can voice-input directly into any command-line application without switching windows
   - As a *user* I want **additional instances with custom hotkeys** so that I can be keyboard-only when dictating to multiple agents
   - As a *user* I want **hotkey instance management** so that multiple instances will be allowed and work together
-- As a *user* I want **agent skill packages** so CLI agents (Claude Code, Codex, OpenClaw, etc.) can install a whisper-key skill from a marketplace and use the CLI
+- As a *user* I want **agent skill packages** so CLI agents (Claude Code, Codex, OpenClaw, etc.) can install a koli skill from a marketplace and use the CLI
 - As a *user* I want **voice command CLI management** so I can list, add, run, and delete voice commands from the command line
-  - `whisper-key commands list` — list all configured voice commands
-  - `whisper-key commands add` — add a new voice command
-  - `whisper-key commands run <command>` — execute a voice command directly
-  - `whisper-key commands delete <command>` — remove a voice command
+  - `koli commands list` — list all configured voice commands
+  - `koli commands add` — add a new voice command
+  - `koli commands run <command>` — execute a voice command directly
+  - `koli commands delete <command>` — remove a voice command
 
 ### Onboarding
 - As a *new user* I want **first-run onboarding** so I can configure model, audio device, and auto-paste without editing YAML
@@ -91,7 +91,7 @@
 - As a *user* I want **meeting mode** so I can transcribe an entire meeting in real-time
 
 ### Cross-Platform
-- As a *Linux user* I want **Linux desktop support** so I can use Whisper Key on my Linux machine — add `platform/linux/` with evdev-based global hotkeys and key simulation, XDG paths, and fcntl instance locking ([research](../research/2026-02-16-linux-support-research.md))
+- As a *Linux user* I want **Linux desktop support** so I can use Koli on my Linux machine — add `platform/linux/` with evdev-based global hotkeys and key simulation, XDG paths, and fcntl instance locking ([research](../research/2026-02-16-linux-support-research.md))
   - As a *Linux user* I want **global hotkeys via evdev** so hotkey detection works on both X11 and Wayland
   - As a *Linux user* I want **key simulation via evdev UInput** so auto-paste works on both X11 and Wayland
   - As a *Linux user* I want **input group permission guidance** so I get clear setup instructions when evdev access is missing

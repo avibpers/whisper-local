@@ -1,6 +1,6 @@
 Local faster-whisper speech-to-text app with global hotkeys for Windows 10+ and macOS
 
-Open-source project maintained as `drajb/whisper-local` by Rohit Burani. Internal Python module name remains `whisper_key`; the config directory remains `%APPDATA%\whisperkey` (`~/.whisperkey` on macOS).
+Koli is a fork of `drajb/whisper-local` by Rohit Burani (repo `avibpers/whisper-local`). The Python package is `koli`, the command is `koli`, and settings live in `%APPDATA%\koli` (`~/.koli` on macOS).
 
 - Start here: `state_manager.py` coordinates all components workflow
 - The app window and floating bar: `ui/host.py` runs them, `ui/bridge.py` is everything the pages can call, and `ui/web/` holds the pages. See [App window and floating bar](#app-window-and-floating-bar).
@@ -97,15 +97,16 @@ browser; `tools/make_mock_data.py` refreshes the mock's data from the defaults.
 ## Project Structure
 
 ```
-whisper-local/
-├── whisper-local.py                   # Development wrapper script
+koli/
+├── run-koli.py               # Development wrapper script
+├── koli.cmd                  # Double-click launcher (uses .venv)
 ├── pyproject.toml                     # Dependencies & PyPI config
 ├── CLAUDE.md                          # Claude AI project instructions
 ├── README.md                          # Project documentation
 ├── CHANGELOG.md                       # Version history and changes
 │
 ├── src/
-│   └── whisper_key/                   # Python package
+│   └── koli/                   # Python package
 │       ├── __init__.py                # Package initialization
 │       ├── main.py                    # Main application entry point
 │       ├── config.defaults.yaml       # Default configuration template

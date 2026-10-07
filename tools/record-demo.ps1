@@ -20,7 +20,7 @@ public class Win {
 Write-Host @"
 
 ==============================================
-   Whisper Local - Demo Recording Helper
+   Koli - Demo Recording Helper
 ==============================================
 
 This script:

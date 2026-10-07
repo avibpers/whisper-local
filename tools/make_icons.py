@@ -8,7 +8,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[1]
-ASSETS = ROOT / 'src' / 'whisper_key' / 'platform' / 'windows' / 'assets'
+ASSETS = ROOT / 'src' / 'koli' / 'platform' / 'windows' / 'assets'
 
 TURQUOISE = (21, 180, 212, 255)   # idle: JumboMail's brand colour
 RED = (224, 63, 63, 255)          # recording
@@ -60,7 +60,7 @@ def main():
         # The wave is dropped at tray size, where it would only blur.
         draw_mark(colour, with_wave=False).resize((32, 32), Image.LANCZOS).save(ASSETS / name)
     big = draw_mark(TURQUOISE)
-    big.save(ASSETS / 'whisperkey-icon.ico', sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
+    big.save(ASSETS / 'koli-icon.ico', sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
     print(f"Wrote tray icons and the app icon to {ASSETS.relative_to(ROOT)}")
 
 

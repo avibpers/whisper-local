@@ -138,7 +138,7 @@ Both stem from CTranslate2 consuming as many CPU resources as it can get, withou
 
 ### Step 1: Confirm CPU Saturation Theory
 - Run the app on macOS and trigger transcription
-- Monitor `Activity Monitor` during transcription: check CPU usage for `python`/`whisper-key` process
+- Monitor `Activity Monitor` during transcription: check CPU usage for `python`/`koli` process
 - Note: CTranslate2's threads show as part of the Python process
 - Check if CPU usage spikes to 400-800% (multi-core)
 

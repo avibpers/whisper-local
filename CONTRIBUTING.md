@@ -1,8 +1,8 @@
-# Contributing to Whisper Local
+# Contributing to Koli
 
 Thank you for wanting to make this better! **All contributions are welcome** — bug reports, fixes, new features, docs, tests, even just sharing how you use it.
 
-This project is maintained by **Rohit Burani** ([@drajb](https://github.com/drajb)) on a best-effort basis. Whisper Local is **provided to anyone who wants it** as a free, open-source MIT-licensed project — see [`AUTHORS.md`](AUTHORS.md) for the full credit list.
+This project is maintained by **Rohit Burani** ([@drajb](https://github.com/drajb)) on a best-effort basis. Koli is **provided to anyone who wants it** as a free, open-source MIT-licensed project — see [`AUTHORS.md`](AUTHORS.md) for the full credit list.
 
 ## Ground rules
 
@@ -17,7 +17,7 @@ This project is maintained by **Rohit Burani** ([@drajb](https://github.com/draj
 
 ```bash
 git clone https://github.com/drajb/whisper-local.git
-cd whisper-local
+cd koli
 pip install -e .
 python -m unittest tests.test_smoke
 ```
@@ -27,9 +27,9 @@ All smoke tests should pass (40 at time of writing). CI runs the same suite on e
 To run the app from source while developing:
 
 ```bash
-python -m whisper_key.main          # or `whisper-local` after pip install -e .
-python -m whisper_key.main --doctor
-python -m whisper_key.main --settings
+python -m koli.main          # or `koli` after pip install -e .
+python -m koli.main --doctor
+python -m koli.main --settings
 ```
 
 ## Reporting bugs
@@ -38,8 +38,8 @@ Use the [Bug report template](https://github.com/drajb/whisper-local/issues/new?
 
 1. What you expected to happen
 2. What actually happened
-3. The relevant section of `%APPDATA%\whisperkey\whisperkey.log`
-4. Output from `whisper-local --doctor`
+3. The relevant section of `%APPDATA%\koli\koli.log`
+4. Output from `koli --doctor`
 5. Your OS, Python version, and Whisper backend
 
 ## Feature requests

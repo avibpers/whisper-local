@@ -1,6 +1,6 @@
 param(
     [string]$ProjectRoot = (Split-Path -Parent $PSScriptRoot),
-    [string]$AppName = "whisper-local",
+    [string]$AppName = "koli",
     [switch]$Clean
 )
 
@@ -72,7 +72,7 @@ if (-not (Test-Path (Join-Path $PyAppSourcePath "Cargo.toml"))) {
     exit 1
 }
 
-$IconPath = Join-Path $ProjectRoot "src\whisper_key\platform\windows\assets\whisperkey-icon.ico"
+$IconPath = Join-Path $ProjectRoot "src\koli\platform\windows\assets\koli-icon.ico"
 if (Test-Path $IconPath) {
     Write-Host "Patching icon support..." -ForegroundColor Yellow
     Patch-IconSupport $PyAppSourcePath $IconPath
@@ -84,10 +84,10 @@ Write-Host "Starting pyapp build for $AppName v$AppVersion..." -ForegroundColor 
 Write-Host "PyApp source: $PyAppSourcePath" -ForegroundColor Gray
 Write-Host "Distribution: $DistPath" -ForegroundColor Gray
 
-$env:PYAPP_PROJECT_NAME = "whisper-local"
+$env:PYAPP_PROJECT_NAME = "koli"
 $env:PYAPP_PROJECT_VERSION = $AppVersion
 $env:PYAPP_PYTHON_VERSION = "3.12"
-$env:PYAPP_EXEC_CODE = 'from whisper_key.main import main; main()'
+$env:PYAPP_EXEC_CODE = 'from koli.main import main; main()'
 $env:PYAPP_SELF_COMMAND = "self"
 $env:PYAPP_PASS_LOCATION = "true"
 

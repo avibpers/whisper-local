@@ -35,7 +35,7 @@ body:
     id: privacy
     attributes:
       label: Privacy check
-      description: Whisper Local is a privacy-first tool. Confirm one of the following:
+      description: Koli is a privacy-first tool. Confirm one of the following:
       options:
         - label: This feature works fully offline (no audio or transcript leaves the machine).
         - label: This feature requires an external service, and that should be opt-in.

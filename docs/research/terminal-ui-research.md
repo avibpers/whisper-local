@@ -2,7 +2,7 @@
 
 *2026-02-13*
 
-How Sidecar, Claude Code, lazygit, and other terminal-based dev tools build their terminal UIs -- frameworks, rendering strategies, input handling, and what's relevant for a Python app like Whisper Key.
+How Sidecar, Claude Code, lazygit, and other terminal-based dev tools build their terminal UIs -- frameworks, rendering strategies, input handling, and what's relevant for a Python app like Koli.
 
 ---
 
@@ -100,7 +100,7 @@ Event -> Update(model, msg) -> (new model, cmd) -> View(model) -> terminal outpu
 
 ---
 
-## Python Options for Whisper Key
+## Python Options for Koli
 
 ### Option 1: Rich Only (Minimal Migration)
 
@@ -158,7 +158,7 @@ Strong for interactive input (autocomplete, history, key bindings). Less useful 
 
 ## Integration Patterns (Adding TUI to Existing App)
 
-For an app like Whisper Key that currently uses `print()` and `logging`:
+For an app like Koli that currently uses `print()` and `logging`:
 
 1. **Redirect logging**: custom `logging.Handler` routing to a TUI widget instead of stdout
 2. **Redirect stdout/stderr**: replace with file-like objects pointing at TUI panels
@@ -174,7 +174,7 @@ Three terminal modes: **cooked** (line-buffered, OS handles editing), **cbreak**
 
 ---
 
-## Recommendation Path for Whisper Key
+## Recommendation Path for Koli
 
 **Immediate**: Rich for logging + status display (minimal effort, big visual upgrade)
 **Later**: Textual if a full interactive TUI with settings control, model selection, and real-time status is desired

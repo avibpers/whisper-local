@@ -27,11 +27,11 @@ Config-driven (YAML) command definitions with trigger phrases.
 
 ## Phase 3: Local API Server
 
-Transform Whisper Key into a voice command platform:
+Transform Koli into a voice command platform:
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│                   Whisper Key                        │
+│                   Koli                        │
 │  ┌─────────────┐    ┌──────────────────────────┐   │
 │  │ Streaming   │───▶│ Local API Server         │   │
 │  │ Recognizer  │    │ (localhost:PORT)         │   │

@@ -8,7 +8,7 @@
 
 ## 1. Executive Summary
 
-Linux support for Whisper Key is **feasible but non-trivial**, primarily because of the X11 vs Wayland fragmentation. The project's existing platform abstraction layer (`platform/{windows,macos}/`) is well-designed for adding a third `platform/linux/` directory with mirrored APIs.
+Linux support for Koli is **feasible but non-trivial**, primarily because of the X11 vs Wayland fragmentation. The project's existing platform abstraction layer (`platform/{windows,macos}/`) is well-designed for adding a third `platform/linux/` directory with mirrored APIs.
 
 **What works already (cross-platform):**
 - Audio capture via `sounddevice` (PortAudio) -- works on Linux with minor caveats
@@ -22,7 +22,7 @@ Linux support for Whisper Key is **feasible but non-trivial**, primarily because
 - Global hotkeys (the hardest problem -- X11 vs Wayland split)
 - Key simulation for auto-paste
 - Instance locking (can reuse macOS `fcntl` approach directly)
-- Paths (`~/.config/whisperkey` via XDG)
+- Paths (`~/.config/koli` via XDG)
 - File opening (`xdg-open`)
 - Console management (no-op, like macOS)
 - Permissions (input group membership check)
@@ -198,12 +198,12 @@ The `None` value triggers auto-detection, which works on Linux.
 
 ### 2.9 Paths (`paths.py`)
 
-**Windows:** `%APPDATA%\whisperkey`
-**macOS:** `~/Library/Application Support/whisperkey`
+**Windows:** `%APPDATA%\koli`
+**macOS:** `~/Library/Application Support/koli`
 
 **Linux (XDG standard):**
-- Config/data: `$XDG_CONFIG_HOME/whisperkey` (defaults to `~/.config/whisperkey`)
-- Or `$XDG_DATA_HOME/whisperkey` (defaults to `~/.local/share/whisperkey`)
+- Config/data: `$XDG_CONFIG_HOME/koli` (defaults to `~/.config/koli`)
+- Or `$XDG_DATA_HOME/koli` (defaults to `~/.local/share/koli`)
 - File opening: `subprocess.run(['xdg-open', str(path)])`
 
 ```python
@@ -213,8 +213,8 @@ from pathlib import Path
 def get_app_data_path():
     xdg_config = os.environ.get('XDG_CONFIG_HOME', '')
     if xdg_config:
-        return Path(xdg_config) / 'whisperkey'
-    return Path.home() / '.config' / 'whisperkey'
+        return Path(xdg_config) / 'koli'
+    return Path.home() / '.config' / 'koli'
 
 def open_file(path):
     subprocess.run(['xdg-open', str(path)])
@@ -467,25 +467,25 @@ The bulk of the work is in `hotkeys.py` and `keyboard.py`. Everything else is sm
 
 | File | Change |
 |------|--------|
-| `src/whisper_key/platform/__init__.py` | Add Linux detection, IS_LINUX flag, import linux modules |
-| `src/whisper_key/config_manager.py` | Extend `_parse_platform_value()` for `\| linux:` syntax |
-| `src/whisper_key/config.defaults.yaml` | Add Linux path docs, Linux hotkey defaults |
+| `src/koli/platform/__init__.py` | Add Linux detection, IS_LINUX flag, import linux modules |
+| `src/koli/config_manager.py` | Extend `_parse_platform_value()` for `\| linux:` syntax |
+| `src/koli/config.defaults.yaml` | Add Linux path docs, Linux hotkey defaults |
 | `pyproject.toml` | Add `evdev` Linux dependency, update description |
 
 ## 9. New Files Needed
 
 | File | Based On |
 |------|----------|
-| `src/whisper_key/platform/linux/__init__.py` | Windows/macOS pattern |
-| `src/whisper_key/platform/linux/app.py` | Windows version (polling loop) |
-| `src/whisper_key/platform/linux/console.py` | macOS version (no-op) |
-| `src/whisper_key/platform/linux/hotkeys.py` | New (evdev-based) |
-| `src/whisper_key/platform/linux/keyboard.py` | New (evdev UInput) |
-| `src/whisper_key/platform/linux/icons.py` | Windows version (same pattern) |
-| `src/whisper_key/platform/linux/instance_lock.py` | macOS version (identical) |
-| `src/whisper_key/platform/linux/paths.py` | New (XDG standard) |
-| `src/whisper_key/platform/linux/permissions.py` | New (input group check) |
-| `src/whisper_key/platform/linux/assets/` | Copy tray icons |
+| `src/koli/platform/linux/__init__.py` | Windows/macOS pattern |
+| `src/koli/platform/linux/app.py` | Windows version (polling loop) |
+| `src/koli/platform/linux/console.py` | macOS version (no-op) |
+| `src/koli/platform/linux/hotkeys.py` | New (evdev-based) |
+| `src/koli/platform/linux/keyboard.py` | New (evdev UInput) |
+| `src/koli/platform/linux/icons.py` | Windows version (same pattern) |
+| `src/koli/platform/linux/instance_lock.py` | macOS version (identical) |
+| `src/koli/platform/linux/paths.py` | New (XDG standard) |
+| `src/koli/platform/linux/permissions.py` | New (input group check) |
+| `src/koli/platform/linux/assets/` | Copy tray icons |
 
 ---
 

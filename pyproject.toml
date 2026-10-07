@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "whisper-local"
+name = "koli"
 version = "0.21.0"
 description = "Free, open-source, fully offline AI dictation for Windows and macOS. Hold a hotkey, speak, get text at the cursor. 100% local. Powered by Whisper."
 readme = "README.md"
@@ -83,12 +83,11 @@ whispercpp = ["pywhispercpp>=1.2"]
 noise = ["noisereduce>=3.0.0"]
 
 # System-audio (loopback) capture — transcribe what you hear (meetings, videos)
-# via `whisper-local --transcribe-system`. Windows/macOS. EXPERIMENTAL.
+# via `koli --transcribe-system`. Windows/macOS. EXPERIMENTAL.
 loopback = ["soundcard>=0.4.2"]
 
 [project.scripts]
-whisper-local = "whisper_key.main:main"
-wl = "whisper_key.main:main"
+koli = "koli.main:main"
 
 [project.urls]
 Homepage = "https://github.com/drajb/whisper-local"
@@ -103,4 +102,4 @@ Changelog = "https://github.com/drajb/whisper-local/blob/master/CHANGELOG.md"
 where = ["src"]
 
 [tool.setuptools.package-data]
-"whisper_key" = ["assets/**/*", "platform/*/assets/*", "ui/web/**/*", "config.defaults.yaml", "commands.defaults.yaml", "profiles.defaults.yaml", "app_rules.defaults.yaml", "transforms.defaults.yaml"]
+"koli" = ["assets/**/*", "platform/*/assets/*", "ui/web/**/*", "config.defaults.yaml", "commands.defaults.yaml", "profiles.defaults.yaml", "app_rules.defaults.yaml", "transforms.defaults.yaml"]

@@ -1,6 +1,6 @@
 # Authors
 
-Whisper Local exists thanks to the people listed here.
+Koli exists thanks to the people listed here.
 
 ## Maintainer
 
@@ -14,7 +14,7 @@ Everyone whose pull requests have been merged. Add yourself here in your first P
 
 ## Open-source projects we build on
 
-Whisper Local stands on the shoulders of a lot of excellent work:
+Koli stands on the shoulders of a lot of excellent work:
 
 - [OpenAI Whisper](https://github.com/openai/whisper) — the underlying transcription model
 - [faster-whisper](https://github.com/SYSTRAN/faster-whisper) / [CTranslate2](https://github.com/OpenNMT/CTranslate2) — fast inference runtime

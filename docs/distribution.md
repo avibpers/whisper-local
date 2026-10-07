@@ -1,12 +1,12 @@
 # Distribution Guide
 
-How Whisper Local gets into users' hands, and how to ship a new release.
+How Koli gets into users' hands, and how to ship a new release.
 Written for someone new to this — every step is spelled out.
 
 There are three distribution channels, in order of how many people they reach:
 
 1. **Standalone `.exe`** (Windows, no Python needed) — built automatically in CI.
-2. **PyPI** (`pip install whisper-local`) — built automatically in CI.
+2. **PyPI** (`pip install koli`) — built automatically in CI.
 3. **Package managers** (winget on Windows, Homebrew on macOS) — manual, after a release.
 
 ---
@@ -18,7 +18,7 @@ Actions (`.github/workflows/release.yml`) automatically:
 
 1. Runs the test suite.
 2. Builds the Python wheel + sdist.
-3. Builds `whisper-local.exe` (standalone Windows app) from that wheel.
+3. Builds `koli.exe` (standalone Windows app) from that wheel.
 4. Publishes the wheel to PyPI *(once you've done the one-time PyPI setup below)*.
 5. Creates a **GitHub Release** with the `.exe`, its `.sha256`, the wheel, and
    auto-generated release notes.
@@ -47,9 +47,9 @@ You do this **once**:
 
 1. Create an account at <https://pypi.org>.
 2. Go to <https://pypi.org/manage/account/publishing/> → **Add a pending publisher**:
-   - PyPI project name: `whisper-local`
+   - PyPI project name: `koli`
    - Owner: `drajb`
-   - Repository: `whisper-local`
+   - Repository: `koli`
    - Workflow filename: `release.yml`
    - Environment name: `pypi`
 3. In GitHub: repo **Settings → Environments → New environment** named `pypi`.
@@ -63,7 +63,7 @@ That's it. The next tag push publishes to PyPI automatically.
 
 ## Channel 1 — Standalone `.exe` (automatic)
 
-Nothing to do: every release attaches `whisper-local.exe`. Users download and
+Nothing to do: every release attaches `koli.exe`. Users download and
 double-click it. Under the hood it's [pyapp](https://ofek.dev/pyapp): a tiny Rust
 launcher that, on first run, downloads a private CPython and pip-installs the
 embedded wheel. First launch is slow (it's bootstrapping); subsequent launches
@@ -76,7 +76,7 @@ embed the app icon (CI skips the icon for simplicity). See `pyapp-build/CLAUDE.m
 ```powershell
 cd pyapp-build
 ./setup-build-env.ps1 -UseLocalWheel   # downloads Rust + pyapp, builds a wheel
-./build-pyapp.ps1                       # produces dist/whisper-local.exe
+./build-pyapp.ps1                       # produces dist/koli.exe
 ```
 
 **Code signing (future):** the `.exe` is unsigned, so Windows SmartScreen will
@@ -90,7 +90,7 @@ it's noted here as a future polish item, not a blocker.
 Once trusted publishing is set up, every tag publishes. Users then:
 
 ```bash
-pip install whisper-local      # or: pip install 'whisper-local[whispercpp]' for the cpp backend
+pip install koli      # or: pip install 'koli[whispercpp]' for the cpp backend
 ```
 
 To test a release on TestPyPI first, see `docs/publishing-to-pypi.md`.
@@ -107,28 +107,28 @@ After a release exists (so the `.exe` URL and its SHA256 are live):
    wingetcreate new https://github.com/drajb/whisper-local/releases/download/v0.10.1/whisper-local.exe
    ```
    It will prompt for metadata and auto-compute the SHA256. Use
-   `PackageIdentifier: drajb.WhisperLocal`, installer type `portable`.
+   `PackageIdentifier: drajb.Koli`, installer type `portable`.
 3. It opens a PR against [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs).
-   Once merged, users can `winget install drajb.WhisperLocal`.
+   Once merged, users can `winget install drajb.Koli`.
 
-A reference manifest is in `packaging/winget/whisper-local.installer.yaml`
+A reference manifest is in `packaging/winget/koli.installer.yaml`
 (the SHA256 there is a placeholder — `wingetcreate` fills the real one in).
 
 ---
 
 ## Channel 3b — Homebrew (macOS package manager)
 
-Whisper Local's dependency tree is too heavy to vendor for homebrew-core, so use
+Koli's dependency tree is too heavy to vendor for homebrew-core, so use
 a **personal tap** (your own mini Homebrew repo):
 
 1. Create a public GitHub repo named `homebrew-tap` under your account.
-2. Copy `packaging/homebrew/whisper-local.rb` into it as `Formula/whisper-local.rb`.
+2. Copy `packaging/homebrew/koli.rb` into it as `Formula/koli.rb`.
 3. Fill in `<VERSION>` and `<SDIST_SHA256>` (get the sha with
    `curl -sL <pypi-sdist-url> | shasum -a 256`).
 4. Commit + push. Users then:
    ```bash
    brew tap drajb/tap
-   brew install whisper-local
+   brew install koli
    ```
 
 The formula installs the PyPI package into an isolated virtualenv so it never
@@ -144,9 +144,9 @@ touches the user's system Python.
 [ ] Smoke tests green locally: python -m unittest tests.test_smoke
 [ ] git tag vX.Y.Z && git push origin master --tags
 [ ] Actions run is green (test → build → build-exe → publish-pypi → github-release)
-[ ] GitHub Release has whisper-local.exe + .sha256 + wheel
+[ ] GitHub Release has koli.exe + .sha256 + wheel
 [ ] (optional) winget: wingetcreate update / new
-[ ] (optional) homebrew: bump Formula/whisper-local.rb in the tap
+[ ] (optional) homebrew: bump Formula/koli.rb in the tap
 ```
 
 ---

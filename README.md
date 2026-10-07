@@ -1,6 +1,6 @@
 <div align="center">
 
-# Whisper Local
+# Koli
 
 ### Free, Open-Source, **100% Offline** AI Dictation for Windows & macOS
 
@@ -15,17 +15,17 @@ No cloud. No subscription. No telemetry. Powered by [OpenAI Whisper](https://git
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-lightgrey.svg)](#-quick-start)
 [![Code of Conduct](https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg)](CODE_OF_CONDUCT.md)
 
-[**Quick Start**](#-quick-start) · [**Features**](#-features) · [**vs. Wispr Flow / Dragon**](#-why-whisper-local) · [**Voice Commands**](#-voice-commands) · [**Contributing**](#-contributing)
+[**Quick Start**](#-quick-start) · [**Features**](#-features) · [**vs. Wispr Flow / Dragon**](#-why-koli) · [**Voice Commands**](#-voice-commands) · [**Contributing**](#-contributing)
 
 </div>
 
-![Whisper Local — press, speak, type](docs/hero.svg)
+![Koli — press, speak, type](docs/hero.svg)
 
 <sub>Want a real screen-recording demo here? See [`docs/demo-recording.md`](docs/demo-recording.md) — drop a `docs/demo.gif` in and uncomment the line below.</sub>
 <!-- ![Demo](docs/demo.gif) -->
 
 
-Whisper Local is a **free, open-source, fully offline alternative to Wispr Flow, Dragon, and Otter** for power users who want **AI dictation without sending audio to the cloud**. Built on [`faster-whisper`](https://github.com/SYSTRAN/faster-whisper) (CTranslate2), it delivers **push-to-talk speech-to-text in any application** — chat apps, code editors, browsers, terminals, design tools, anywhere a cursor blinks. Self-hosted, hackable, MIT-licensed.
+Koli is a **free, open-source, fully offline alternative to Wispr Flow, Dragon, and Otter** for power users who want **AI dictation without sending audio to the cloud**. Built on [`faster-whisper`](https://github.com/SYSTRAN/faster-whisper) (CTranslate2), it delivers **push-to-talk speech-to-text in any application** — chat apps, code editors, browsers, terminals, design tools, anywhere a cursor blinks. Self-hosted, hackable, MIT-licensed.
 
 **Looking for:** *Wispr Flow alternative*, *offline voice typing*, *local Whisper dictation*, *free Dragon NaturallySpeaking alternative*, *privacy-first speech-to-text*, *Windows voice dictation without cloud*, *macOS push-to-talk transcription*. You found it.
 
@@ -35,7 +35,7 @@ Whisper Local is a **free, open-source, fully offline alternative to Wispr Flow,
 
 Most AI dictation tools are great — until you check the privacy policy. Your audio goes to a server, gets processed, and (sometimes) stored. You pay a monthly fee or get cut off.
 
-Whisper Local exists because **you shouldn't have to choose between accuracy and privacy.**
+Koli exists because **you shouldn't have to choose between accuracy and privacy.**
 
 - 🔒 Your voice never leaves your machine — not even metadata
 - 🆓 Free forever — no account, no API key, no subscription
@@ -51,9 +51,9 @@ This is a **community tool**, not a product. There's no support SLA, no roadmap 
 
 ---
 
-## ✨ Why Whisper Local?
+## ✨ Why Koli?
 
-| Feature | **Whisper Local** | Wispr Flow | Dragon / Dragon Anywhere | Otter.ai | Windows Speech Recognition |
+| Feature | **Koli** | Wispr Flow | Dragon / Dragon Anywhere | Otter.ai | Windows Speech Recognition |
 |---|:---:|:---:|:---:|:---:|:---:|
 | **Runs 100% offline** | ✅ | ❌ | ❌ (Anywhere) | ❌ | ✅ |
 | **Audio never leaves your machine** | ✅ | ❌ | ❌ | ❌ | partial |
@@ -89,30 +89,30 @@ This is a **community tool**, not a product. There's no support SLA, no roadmap 
 - 🌐 **Translation mode** — speak any language, get English; tray → Profile → Translate
 - 🔁 **Continuous dictation mode** — for long-form notes, the app auto-restarts recording after each delivery
 - 📋 **Fallback window** — if no text field is focused, the transcript appears in a small window (pre-selected, copy button, already on clipboard)
-- ⏸ **Pause-all hotkey** — `Ctrl+Alt+Win` disables every Whisper Local hotkey until you press it again
+- ⏸ **Pause-all hotkey** — `Ctrl+Alt+Win` disables every Koli hotkey until you press it again
 - 📋 **Auto-paste at cursor** — transcript lands wherever you're typing, optionally followed by Enter (auto-send)
 - 🔒 **100 % local & private** — no network calls during use; Whisper models cached on disk
 - 🚀 **GPU acceleration** — NVIDIA CUDA and AMD ROCm supported, CPU works out of the box
 - 🗣️ **Voice commands** — say a trigger phrase to send a hotkey, type pre-written text, or run a shell command
 - 🔁 **Hot-reload** — edit `commands.yaml` and your change applies on the next transcription, no restart
-- 🩺 **Built-in diagnostics** — `whisper-local --doctor` checks audio devices, model cache, hotkeys, and recent errors
+- 🩺 **Built-in diagnostics** — `koli --doctor` checks audio devices, model cache, hotkeys, and recent errors
 - 🎛️ **Profiles** — switch between Dictation / Chat / Code / Notes presets from the tray
 - 🪟 **Per-app rules** — different behaviour *and* formatting per foreground app: auto-send in Slack, copy-only + verbatim (no auto-caps/periods) in VS Code, full sentences in email, suppress in 1Password
 - ⌨️ **Type-as-you-speak** *(experimental, opt-in)* — `streaming.deliver_to_cursor` commits finalized phrases to the cursor live, Wispr-Flow style (trades full-Whisper accuracy for latency; see [docs/streaming.md](docs/streaming.md))
 - 🧹 **Optional LLM cleanup** — pipe transcripts through a local [Ollama](https://ollama.ai) model for punctuation / capitalisation polish (off by default, fully local)
 - 📜 **Recent transcriptions** — last 10 results in the tray menu, click to copy back
 - 🔧 **Settings backup/restore** — `--export-settings` / `--import-settings` for portability
-- 🖥️ **Settings UI** — `whisper-local --settings` opens a GUI settings window (no YAML editing required)
-- 📜 **Transcript history** — `whisper-local --history` opens a searchable log of everything you've dictated
+- 🖥️ **Settings UI** — `koli --settings` opens a GUI settings window (no YAML editing required)
+- 📜 **Transcript history** — `koli --history` opens a searchable log of everything you've dictated
 - 📖 **Vocabulary corrections** — map one canonical spelling to every way Whisper mishears it (`CAPEX: [cap x, copics]`), applied in a single pass with longest-match-wins
 - 🧠 **Self-improving accuracy** — from the history window, turn any misrecognition into a permanent correction ("Fix this everywhere…"), or let it mine your own history for names to add to your dictionary ("Suggest hotwords"). All offline; corrections apply on your next dictation, no restart
-- 🔊 **System-audio capture** *(experimental)* — `whisper-local --transcribe-system` transcribes what you *hear* (meetings, videos), not just the mic (`pip install 'whisper-local[loopback]'`, Windows-first)
+- 🔊 **System-audio capture** *(experimental)* — `koli --transcribe-system` transcribes what you *hear* (meetings, videos), not just the mic (`pip install 'koli[loopback]'`, Windows-first)
 - 🔔 **Opt-in update notifications** — daily GitHub release check, fully offline by default (`update_check.enabled: true` to opt in)
-- 🎚️ **Noise suppression** — spectral gating via `noisereduce`, off by default (`pip install 'whisper-local[noise]'`)
+- 🎚️ **Noise suppression** — spectral gating via `noisereduce`, off by default (`pip install 'koli[noise]'`)
 - 🩺 **`--selftest`** — one-command sanity check (mic, model, transcription, clipboard) — perfect for first-launch
-- 🎯 **Hotkey cheat sheet** — `whisper-local --cheat-sheet` or tray menu — shows your *current* configured hotkeys at a glance
+- 🎯 **Hotkey cheat sheet** — `koli --cheat-sheet` or tray menu — shows your *current* configured hotkeys at a glance
 - 📦 **`--bundle-logs`** — zip up redacted logs + diagnostics for bug reports with one command
-- 🌐 **Local OpenAI-compatible API** — `whisper-local --serve` exposes `POST /v1/audio/transcriptions` on `localhost:7777` for Cursor, Open WebUI, anything that speaks OpenAI Whisper API
+- 🌐 **Local OpenAI-compatible API** — `koli --serve` exposes `POST /v1/audio/transcriptions` on `localhost:7777` for Cursor, Open WebUI, anything that speaks OpenAI Whisper API
 - 🛡️ **Auto-recovery** — silently reconnects when a USB mic is unplugged mid-recording
 - 🛡️ **Crash reports** — uncaught errors write a self-contained dump to disk
 - 🪟 **System tray UI** — model selection, mic selection, profile switch, diagnostics
@@ -124,22 +124,22 @@ This is a **community tool**, not a product. There's no support SLA, no roadmap 
 
 ### Option 1 — Standalone Windows app (no Python needed)
 
-1. Download **`whisper-local.exe`** from the [latest release](https://github.com/drajb/whisper-local/releases/latest).
+1. Download **`koli.exe`** from the [latest release](https://github.com/drajb/whisper-local/releases/latest).
 2. Double-click it. Windows SmartScreen will warn because the app isn't code-signed (a paid certificate) — click **More info → Run anyway**. The source is fully open if you'd rather audit first.
 3. First launch takes a few minutes: it sets up a private Python runtime, then downloads the Whisper model. Every launch after that is instant.
 
 ### Option 2 — pip (Windows / macOS, Python 3.11–3.13)
 
 ```bash
-pip install whisper-local
-whisper-local
+pip install koli
+koli
 ```
 
 ### Option 3 — from source
 
 ```bash
 git clone https://github.com/drajb/whisper-local.git
-cd whisper-local
+cd koli
 pip install -e .
 ```
 
@@ -147,9 +147,9 @@ pip install -e .
 
 | | |
 |---|---|
-| **Terminal** | `whisper-local` (or `wl` for short) |
-| **Double-click** | `whisper-local.cmd` (Windows) |
-| **Start on login** | Turn on **Start on login** in Settings, or run `whisper-local --enable-autostart`. Disable anytime the same way. |
+| **Terminal** | `koli` |
+| **Double-click** | `koli.cmd` (Windows) |
+| **Start on login** | Turn on **Start on login** in Settings, or run `koli --enable-autostart`. Disable anytime the same way. |
 
 First launch downloads the default [`base`](https://huggingface.co/Systran/faster-whisper-base) Whisper model (~141 MB) into your HuggingFace cache. After that, **everything runs offline**. (Prefer a smaller/faster download? Set `whisper.model: tiny` — ~75 MB.)
 
@@ -157,8 +157,8 @@ First launch downloads the default [`base`](https://huggingface.co/Systran/faste
 > model from a machine that has internet and import it on the one that doesn't —
 > no admin rights needed:
 > ```bash
-> whisper-local --export-model            # machine WITH internet — writes to your Desktop
-> whisper-local --import-model "<the folder you copied over>"   # the offline machine
+> koli --export-model            # machine WITH internet — writes to your Desktop
+> koli --import-model "<the folder you copied over>"   # the offline machine
 > ```
 > Pass a path to `--export-model` (a USB drive, say) to put it somewhere else.
 > Network-share and internal-mirror setups are covered in
@@ -166,14 +166,14 @@ First launch downloads the default [`base`](https://huggingface.co/Systran/faste
 
 ### The app
 
-Whisper Local has two faces:
+Koli has two faces:
 
 - **The floating bar.** A small handle at the edge of the screen. It shows the
   level while you talk, then what happened: pasted, copied, nothing heard.
   Hover it for the shortcut, or right-click it for quick actions: profile,
   language, paste last, transforms, recent dictations.
 - **The app window.** Open it from the tray, the bar, or by launching
-  `whisper-local` again. **Simple** mode asks plain questions (which microphone,
+  `koli` again. **Simple** mode asks plain questions (which microphone,
   which language, how your text should look). **Advanced** mode has every
   setting, a live view of what the engine hears and does, and the log.
 
@@ -181,7 +181,7 @@ Every change applies the moment you make it; there is no Save button. A change
 that needs part of the app to reload, such as a new model or microphone,
 happens in the background while dictation keeps working.
 
-`whisper-local --legacy-ui` brings back the previous Tk windows for this
+`koli --legacy-ui` brings back the previous Tk windows for this
 release. On Windows the app window needs the Microsoft Edge WebView2 runtime,
 which Windows 11 includes.
 
@@ -198,7 +198,7 @@ which Windows 11 includes.
 ### Verify everything works
 
 ```bash
-whisper-local --doctor
+koli --doctor
 ```
 
 Runs through Python version, dependencies, config validation, audio devices, model cache, hotkey backend, and recent log errors. Exit 0 = clean.
@@ -240,8 +240,8 @@ postprocess:
 
 Speak a trigger to run keyboard shortcuts, type snippets, or launch programs. Defined in:
 
-- **Windows:** `%APPDATA%\whisperkey\commands.yaml`
-- **macOS:** `~/.whisperkey/commands.yaml`
+- **Windows:** `%APPDATA%\koli\commands.yaml`
+- **macOS:** `~/.koli/commands.yaml`
 
 ```yaml
 commands:
@@ -266,7 +266,7 @@ Edits hot-reload — no app restart required. See **[docs/voice-commands.md](doc
 
 ## ⚡ GPU Acceleration
 
-On first launch, Whisper Local detects your GPU and offers one-press install of the required runtime libraries. Supports **NVIDIA CUDA** and **AMD ROCm**.
+On first launch, Koli detects your GPU and offers one-press install of the required runtime libraries. Supports **NVIDIA CUDA** and **AMD ROCm**.
 
 For manual setup or AMD RDNA 1, see **[docs/gpu-setup.md](docs/gpu-setup.md)**.
 
@@ -274,11 +274,11 @@ For manual setup or AMD RDNA 1, see **[docs/gpu-setup.md](docs/gpu-setup.md)**.
 
 ## 🌐 Local OpenAI-Compatible API
 
-Whisper Local doubles as a **drop-in local replacement for the OpenAI Whisper API** — fully offline. Point any tool that speaks `POST /v1/audio/transcriptions` at it (Cursor, VS Code Continue, Open WebUI, n8n, custom scripts, anything else).
+Koli doubles as a **drop-in local replacement for the OpenAI Whisper API** — fully offline. Point any tool that speaks `POST /v1/audio/transcriptions` at it (Cursor, VS Code Continue, Open WebUI, n8n, custom scripts, anything else).
 
 ```bash
-whisper-local --serve            # listens on http://127.0.0.1:7777
-whisper-local --serve --serve-port 8080
+koli --serve            # listens on http://127.0.0.1:7777
+koli --serve --serve-port 8080
 ```
 
 ```bash
@@ -302,15 +302,15 @@ Switch between presets from the tray icon → **Profile**:
 | **Code** | Copy-only mode for editors, never auto-sends |
 | **Notes** | Quiet copy-to-clipboard, voice commands disabled |
 
-Edit or add new profiles in `%APPDATA%\whisperkey\profiles.yaml`.
+Edit or add new profiles in `%APPDATA%\koli\profiles.yaml`.
 
 ---
 
 ## 🪟 Per-app rules
 
-Different apps want different behaviour. Whisper Local detects the
+Different apps want different behaviour. Koli detects the
 foreground window before delivering each transcription and matches it
-against rules in `%APPDATA%\whisperkey\app_rules.yaml`:
+against rules in `%APPDATA%\koli\app_rules.yaml`:
 
 ```yaml
 rules:
@@ -336,7 +336,7 @@ context (`initial_prompt`, `language`, `task`), **and** formatting
 
 ## 🧹 Optional LLM cleanup
 
-If you have [Ollama](https://ollama.ai) running locally, Whisper Local can
+If you have [Ollama](https://ollama.ai) running locally, Koli can
 pipe each transcript through a small local model for punctuation and
 capitalisation polish. **Off by default and fully local** — set
 `postprocess.ollama.enabled: true` in `user_settings.yaml` to enable.
@@ -357,8 +357,8 @@ postprocess:
 
 Local settings live at:
 
-- **Windows:** `%APPDATA%\whisperkey\user_settings.yaml`
-- **macOS:** `~/.whisperkey/user_settings.yaml`
+- **Windows:** `%APPDATA%\koli\user_settings.yaml`
+- **macOS:** `~/.koli/user_settings.yaml`
 
 Every option is also in the app window (Settings, Advanced mode), and changes
 there save to this file at once. Edits you make to the file by hand are picked
@@ -385,34 +385,34 @@ Highlights:
 | `voice_commands.enabled` | `true` | Enable command mode |
 | `audio.host` | `null` | `WASAPI` recommended on Windows for low latency |
 
-Full reference: [`config.defaults.yaml`](src/whisper_key/config.defaults.yaml).
+Full reference: [`config.defaults.yaml`](src/koli/config.defaults.yaml).
 
 ---
 
 ## 🛠️ CLI Reference
 
 ```bash
-whisper-local                      # Run the app (or use `wl`)
-whisper-local --setup              # Interactive setup wizard (model, mode, mic)
-whisper-local --doctor             # Run diagnostics
-whisper-local --stats              # Transcription history & time saved
-whisper-local --version            # Print version
-whisper-local --quit               # Stop the running instance
-whisper-local --export-settings DIR        # Back up user_settings + commands
-whisper-local --import-settings DIR        # Restore from a backup
-whisper-local --export-transcripts FILE    # Dump history (.txt/.md/.csv)
-whisper-local --import-vocab FOLDER        # Mine a folder for hotwords
-whisper-local --open               # Start with the app window open
-whisper-local --settings           # Open the app on Settings
-whisper-local --history            # Open the app on History
-whisper-local --cheat-sheet        # Open the app on Diagnostics, which lists your shortcuts
-whisper-local --legacy-ui          # Use the previous Tk windows instead of the app window
-whisper-local --replace            # Replace a running instance instead of opening its window
-whisper-local --selftest           # Run an automated self-test (mic, model, transcription)
-whisper-local --bundle-logs        # Create a redacted diagnostic zip for bug reports
-whisper-local --serve              # Run a local OpenAI-compatible Whisper API on :7777
-whisper-local --enable-autostart   # Launch automatically at login (--disable-autostart to undo)
-whisper-local --test               # Run a separate test instance (own mutex)
+koli                      # Run the app
+koli --setup              # Interactive setup wizard (model, mode, mic)
+koli --doctor             # Run diagnostics
+koli --stats              # Transcription history & time saved
+koli --version            # Print version
+koli --quit               # Stop the running instance
+koli --export-settings DIR        # Back up user_settings + commands
+koli --import-settings DIR        # Restore from a backup
+koli --export-transcripts FILE    # Dump history (.txt/.md/.csv)
+koli --import-vocab FOLDER        # Mine a folder for hotwords
+koli --open               # Start with the app window open
+koli --settings           # Open the app on Settings
+koli --history            # Open the app on History
+koli --cheat-sheet        # Open the app on Diagnostics, which lists your shortcuts
+koli --legacy-ui          # Use the previous Tk windows instead of the app window
+koli --replace            # Replace a running instance instead of opening its window
+koli --selftest           # Run an automated self-test (mic, model, transcription)
+koli --bundle-logs        # Create a redacted diagnostic zip for bug reports
+koli --serve              # Run a local OpenAI-compatible Whisper API on :7777
+koli --enable-autostart   # Launch automatically at login (--disable-autostart to undo)
+koli --test               # Run a separate test instance (own mutex)
 ```
 
 Launching while an instance is already running **opens its window** instead of
@@ -446,12 +446,12 @@ versions did, and `--quit` asks it to quit cleanly.
 
 ## 🔒 Privacy pledge
 
-Whisper Local makes the following network calls and **no others**:
+Koli makes the following network calls and **no others**:
 
 1. **First launch only:** downloads the Whisper model from `huggingface.co` into your local cache.
 2. **GPU onboarding (opt-in):** if you accept the GPU setup prompt, `pip install` pulls CUDA / ROCm runtime packages from PyPI / `repo.radeon.com`.
 
-After setup, **zero network traffic**. Confirm by running `whisper-local --doctor` and inspecting the source — every network entry point lives in [`onboarding.py`](src/whisper_key/onboarding.py) and is gated behind explicit user prompts.
+After setup, **zero network traffic**. Confirm by running `koli --doctor` and inspecting the source — every network entry point lives in [`onboarding.py`](src/koli/onboarding.py) and is gated behind explicit user prompts.
 
 ---
 
@@ -472,7 +472,7 @@ After setup, **zero network traffic**. Confirm by running `whisper-local --docto
 - **[docs/gpu-setup.md](docs/gpu-setup.md)** — manual GPU setup for NVIDIA / AMD
 - **[CHANGELOG.md](CHANGELOG.md)** — release notes
 
-Hit a wall? Run `whisper-local --doctor` or `whisper-local --selftest` first — they catch 90% of issues.
+Hit a wall? Run `koli --doctor` or `koli --selftest` first — they catch 90% of issues.
 
 ---
 
@@ -494,7 +494,7 @@ Good first issues are tagged [here](https://github.com/drajb/whisper-local/issue
 
 ## ☕ Support
 
-Whisper Local is free and always will be. If it saves you time or a monthly subscription, consider starring the repo and sharing it with people who'd find it useful — it helps the project grow.
+Koli is free and always will be. If it saves you time or a monthly subscription, consider starring the repo and sharing it with people who'd find it useful — it helps the project grow.
 
 No pressure. Starring the repo and sharing it with people who'd find it useful is just as helpful.
 
@@ -502,7 +502,7 @@ No pressure. Starring the repo and sharing it with people who'd find it useful i
 
 ## 🙏 Credit
 
-Whisper Local builds on a lot of excellent open-source work. The full list is in [`AUTHORS.md`](AUTHORS.md).
+Koli builds on a lot of excellent open-source work. The full list is in [`AUTHORS.md`](AUTHORS.md).
 
 MIT licensed; see [`LICENSE`](LICENSE).
 

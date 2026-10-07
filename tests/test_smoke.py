@@ -9,7 +9,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 
 # ── Faking the platform layer ─────────────────────────────────────────────────
-# whisper_key.platform imports the OS backend (pyobjc / pywin32 / PIL), which
+# koli.platform imports the OS backend (pyobjc / pywin32 / PIL), which
 # the lean CI env doesn't install, so a test that needs a module importing it
 # swaps in a stand-in for the WHOLE package. Faking only a submodule is not
 # enough: `from .platform import app` still runs the real package __init__.
@@ -39,58 +39,58 @@ def _stand_in_module(name):
 # sys.modules entries for a stand-in platform package. `app_attrs` are set on
 # the fake platform.app (TK_MAIN_THREAD_ONLY defaults to False).
 def fake_platform_modules(**app_attrs) -> dict:
-    modules = {f'whisper_key.platform.{m}': _stand_in_module(f'whisper_key.platform.{m}')
+    modules = {f'koli.platform.{m}': _stand_in_module(f'koli.platform.{m}')
                for m in _PLATFORM_SUBMODULES}
-    package = _stand_in_module('whisper_key.platform')
+    package = _stand_in_module('koli.platform')
     package.IS_MACOS = package.IS_WINDOWS = False
     package.PLATFORM = 'unsupported'
     for m in _PLATFORM_SUBMODULES:
-        setattr(package, m, modules[f'whisper_key.platform.{m}'])
-    app = modules['whisper_key.platform.app']
+        setattr(package, m, modules[f'koli.platform.{m}'])
+    app = modules['koli.platform.app']
     app.TK_MAIN_THREAD_ONLY = False
     for key, value in app_attrs.items():
         setattr(app, key, value)
-    modules['whisper_key.platform'] = package
+    modules['koli.platform'] = package
     return modules
 
 
 # For the rest of `test`: patch sys.modules with `fakes` and drop the app's own
 # modules so they re-import against them. Everything (including the attributes
-# the re-imports bind on the whisper_key package) is restored afterwards, so
+# the re-imports bind on the koli package) is restored afterwards, so
 # nothing faked leaks into later tests.
 def reimport_under(test, fakes: dict):
     import unittest.mock as mock
-    import whisper_key
-    saved_attrs = dict(vars(whisper_key))
+    import koli
+    saved_attrs = dict(vars(koli))
     patcher = mock.patch.dict(sys.modules, fakes)
     patcher.start()
 
     def restore():
         patcher.stop()
-        for key in [k for k in vars(whisper_key) if k not in saved_attrs]:
-            delattr(whisper_key, key)
+        for key in [k for k in vars(koli) if k not in saved_attrs]:
+            delattr(koli, key)
         for key, value in saved_attrs.items():
-            setattr(whisper_key, key, value)
+            setattr(koli, key, value)
     test.addCleanup(restore)
     for name in [n for n in sys.modules
-                 if n.startswith('whisper_key.') and n not in fakes
-                 and not n.startswith('whisper_key.platform') and n != 'whisper_key.utils']:
+                 if n.startswith('koli.') and n not in fakes
+                 and not n.startswith('koli.platform') and n != 'koli.utils']:
         sys.modules.pop(name)
 
 
 class HotkeyParsingTests(unittest.TestCase):
     def test_parse_hotkey_splits_on_plus(self):
-        from whisper_key.utils import parse_hotkey
+        from koli.utils import parse_hotkey
         self.assertEqual(parse_hotkey("ctrl+a"), ["ctrl", "a"])
         self.assertEqual(parse_hotkey("Ctrl+Shift+F1"), ["ctrl", "shift", "f1"])
 
     def test_parse_hotkey_handles_empty(self):
-        from whisper_key.utils import parse_hotkey
+        from koli.utils import parse_hotkey
         self.assertEqual(parse_hotkey(""), [])
         self.assertEqual(parse_hotkey(None), [])
 
     def test_beautify_hotkey_uppercases(self):
-        from whisper_key.utils import beautify_hotkey
+        from koli.utils import beautify_hotkey
         self.assertEqual(beautify_hotkey("ctrl+a"), "CTRL+A")
         self.assertEqual(beautify_hotkey(""), "")
 
@@ -100,7 +100,7 @@ class DocumentationStandardTests(unittest.TestCase):
     # describing its purpose. Enforced here so the standard can't silently decay
     # as new modules are added — a new file without a header fails the suite.
     def test_every_module_has_a_header_comment(self):
-        pkg = ROOT / "src" / "whisper_key"
+        pkg = ROOT / "src" / "koli"
         missing = []
         for path in sorted(pkg.rglob("*.py")):
             if "__pycache__" in path.as_posix() or path.name == "__init__.py":
@@ -130,36 +130,36 @@ class VersionMetadataTests(unittest.TestCase):
         import tomllib
         with open(ROOT / "pyproject.toml", "rb") as f:
             data = tomllib.load(f)
-        self.assertEqual(data["project"]["name"], "whisper-local")
-        self.assertIn("whisper-local", data["project"]["scripts"])
-        self.assertIn("wl", data["project"]["scripts"])
+        self.assertEqual(data["project"]["name"], "koli")
+        self.assertIn("koli", data["project"]["scripts"])
+        self.assertNotIn("wl", data["project"]["scripts"])
 
     def test_no_orphan_update_checker(self):
-        self.assertFalse((ROOT / "src" / "whisper_key" / "update_checker.py").exists())
+        self.assertFalse((ROOT / "src" / "koli" / "update_checker.py").exists())
 
     def test_main_does_not_import_update_checker(self):
-        main_src = (ROOT / "src" / "whisper_key" / "main.py").read_text(encoding="utf-8")
+        main_src = (ROOT / "src" / "koli" / "main.py").read_text(encoding="utf-8")
         self.assertNotIn("update_checker", main_src)
         self.assertNotIn("check_for_updates", main_src)
 
 
 class VoiceCommandsDefaultsTests(unittest.TestCase):
     def test_no_registry_writes_in_defaults(self):
-        defaults = (ROOT / "src" / "whisper_key" / "commands.defaults.yaml").read_text(encoding="utf-8")
+        defaults = (ROOT / "src" / "koli" / "commands.defaults.yaml").read_text(encoding="utf-8")
         self.assertNotIn("reg add", defaults.lower())
 
 
 class WhisperBackendTests(unittest.TestCase):
     def test_default_backend_is_faster_whisper(self):
         from ruamel.yaml import YAML
-        path = ROOT / "src" / "whisper_key" / "config.defaults.yaml"
+        path = ROOT / "src" / "koli" / "config.defaults.yaml"
         with open(path, encoding="utf-8") as f:
             cfg = YAML().load(f)
         self.assertEqual(cfg["whisper"].get("backend"), "faster_whisper")
 
     def test_whisper_cpp_module_imports_lazily(self):
         # Import the module — the heavy pywhispercpp import is lazy inside __init__
-        from whisper_key import whisper_engine_cpp
+        from koli import whisper_engine_cpp
         self.assertTrue(hasattr(whisper_engine_cpp, 'WhisperEngineCpp'))
 
     def test_optional_dep_declared(self):
@@ -173,40 +173,40 @@ class WhisperBackendTests(unittest.TestCase):
 
 class InstanceManagerTests(unittest.TestCase):
     def test_exposes_cleanup_pid_file(self):
-        src = (ROOT / "src" / "whisper_key" / "instance_manager.py").read_text(encoding="utf-8")
+        src = (ROOT / "src" / "koli" / "instance_manager.py").read_text(encoding="utf-8")
         self.assertIn("def cleanup_pid_file", src)
         self.assertIn("os.kill", src)
         self.assertIn("_wait_for_lock", src)
 
     def test_main_calls_cleanup_pid_file(self):
-        main_src = (ROOT / "src" / "whisper_key" / "main.py").read_text(encoding="utf-8")
+        main_src = (ROOT / "src" / "koli" / "main.py").read_text(encoding="utf-8")
         self.assertIn("cleanup_pid_file(instance_name)", main_src)
 
 
 class TextPostprocessTests(unittest.TestCase):
     def test_strip_filler_words(self):
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         cfg = {'strip_filler_words': True}
         self.assertEqual(postprocess("um, hello like world", cfg), "hello world")
 
     def test_capitalize_first(self):
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         cfg = {'capitalize_first': True}
         self.assertEqual(postprocess("hello world", cfg), "Hello world")
 
     def test_ensure_punctuation(self):
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         cfg = {'ensure_punctuation': True}
         self.assertEqual(postprocess("hello world", cfg), "hello world.")
         self.assertEqual(postprocess("hello world.", cfg), "hello world.")
 
     def test_postprocess_passthrough_when_empty(self):
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         self.assertEqual(postprocess("hello", {}), "hello")
         self.assertEqual(postprocess("", {'capitalize_first': True}), "")
 
     def test_strip_trailing_period(self):
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         cfg = {'strip_trailing_period': True}
         self.assertEqual(postprocess("hello world.", cfg), "hello world")
         self.assertEqual(postprocess("done.\n", cfg), "done\n")
@@ -214,14 +214,14 @@ class TextPostprocessTests(unittest.TestCase):
         self.assertEqual(postprocess("no period here", cfg), "no period here")
 
     def test_inline_formatting_basics(self):
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         cfg = {'inline_formatting': True}
         self.assertEqual(postprocess("hello comma world period", cfg), "hello, world.")
         self.assertEqual(postprocess("what time is it question mark", cfg), "what time is it?")
 
     def test_inline_formatting_custom_replaces_defaults(self):
         # Custom list replaces the English defaults (non-English use case).
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         cfg = {
             'inline_formatting': True,
             'inline_formatting_replacements': [
@@ -235,7 +235,7 @@ class TextPostprocessTests(unittest.TestCase):
         self.assertEqual(postprocess("hello comma world", cfg), "hello comma world")
 
     def test_inline_formatting_extend_keeps_defaults(self):
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         cfg = {
             'inline_formatting': True,
             'inline_formatting_extend': True,
@@ -247,7 +247,7 @@ class TextPostprocessTests(unittest.TestCase):
     def test_absorb_cleans_whisper_prosody_punctuation(self):
         # Whisper adds its own commas/periods around spoken cue words; absorb should
         # eat them so the output isn't polluted (Discussion #1 bug report).
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         cfg = {
             'inline_formatting': True,
             'inline_formatting_absorb_punctuation': True,
@@ -262,7 +262,7 @@ class TextPostprocessTests(unittest.TestCase):
 
     def test_absorb_off_leaves_prosody_artifacts(self):
         # Documents that WITHOUT absorb the artifacts remain (opt-in, no regression).
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         cfg = {
             'inline_formatting': True,
             'inline_formatting_replacements': [{'phrase': 'comma', 'replacement': ','}],
@@ -271,7 +271,7 @@ class TextPostprocessTests(unittest.TestCase):
 
     def test_absorb_with_builtins_does_not_glue_or_eat_breaks(self):
         # SEC #4: absorb + built-in English cue words must keep spacing and newlines.
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         cfg = {'inline_formatting': True, 'inline_formatting_absorb_punctuation': True}
         self.assertEqual(postprocess("Hello, comma, world.", cfg), "Hello, world.")
         # "new paragraph" break must survive a following cue's absorb
@@ -280,7 +280,7 @@ class TextPostprocessTests(unittest.TestCase):
 
     def test_absorb_respects_word_boundary(self):
         # "comma" must not fire inside "commander"/"Common".
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         cfg = {
             'inline_formatting': True,
             'inline_formatting_absorb_punctuation': True,
@@ -292,7 +292,7 @@ class TextPostprocessTests(unittest.TestCase):
 
     def test_inline_formatting_replacement_is_literal(self):
         # A replacement containing regex-special chars must be inserted literally.
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         cfg = {
             'inline_formatting': True,
             'inline_formatting_replacements': [{'phrase': 'backref', 'replacement': r'\1\g<0>'}],
@@ -300,14 +300,14 @@ class TextPostprocessTests(unittest.TestCase):
         self.assertEqual(postprocess("x backref y", cfg), r"x \1\g<0> y")
 
     def test_ollama_polish_handles_curly_braces_in_text(self):
-        from whisper_key.text_postprocess import _ollama_polish
+        from koli.text_postprocess import _ollama_polish
         cfg = {'enabled': True, 'endpoint': 'http://127.0.0.1:0', 'timeout': 0.1,
                'prompt': 'Polish:\n\n{text}'}
         result = _ollama_polish("config = {a: 1, b: 2}", cfg)
         self.assertEqual(result, '')
 
     def test_ollama_polish_handles_curly_braces_in_prompt(self):
-        from whisper_key.text_postprocess import _ollama_polish
+        from koli.text_postprocess import _ollama_polish
         cfg = {'enabled': True, 'endpoint': 'http://127.0.0.1:0', 'timeout': 0.1,
                'prompt': 'Format: {format_var} not a placeholder. {text}'}
         result = _ollama_polish("hi", cfg)
@@ -315,29 +315,29 @@ class TextPostprocessTests(unittest.TestCase):
 
     # --- Post-transcription replacements (correction-learning backing store) ---
     def test_replacement_literal_whole_word(self):
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         cfg = {'replacements': [{'from': 'see translate two', 'to': 'CTranslate2'}]}
         self.assertEqual(postprocess("we use see translate two here", cfg),
                          "we use CTranslate2 here")
 
     def test_replacement_whole_word_does_not_match_substring(self):
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         cfg = {'replacements': [{'from': 'cat', 'to': 'dog'}]}
         self.assertEqual(postprocess("the category cat", cfg), "the category dog")
 
     def test_replacement_case_insensitive_by_default(self):
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         cfg = {'replacements': [{'from': 'my sequel', 'to': 'MySQL'}]}
         self.assertEqual(postprocess("I love My Sequel", cfg), "I love MySQL")
 
     def test_replacement_to_text_is_literal(self):
         # Replacement text with regex-special chars is inserted verbatim.
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         cfg = {'replacements': [{'from': 'foo', 'to': r'\1$&'}]}
         self.assertEqual(postprocess("a foo b", cfg), r"a \1$& b")
 
     def test_replacement_invalid_regex_is_skipped(self):
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         cfg = {'replacements': [{'from': '(unclosed', 'to': 'x', 'regex': True}]}
         # Must not raise; text passes through unchanged.
         self.assertEqual(postprocess("hello (unclosed world", cfg),
@@ -345,7 +345,7 @@ class TextPostprocessTests(unittest.TestCase):
 
     def test_replacement_matches_punctuation_edged_terms(self):
         # Regression: \b…\b silently dropped C++ / C# / .NET (non-word edges).
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         cfg = {'replacements': [
             {'from': 'C++', 'to': 'CPP'},
             {'from': '.NET', 'to': 'dotnet'},
@@ -354,68 +354,68 @@ class TextPostprocessTests(unittest.TestCase):
                          "I love CPP and dotnet here")
 
     def test_replacement_whole_word_still_holds_for_normal_terms(self):
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         cfg = {'replacements': [{'from': 'cat', 'to': 'dog'}]}
         self.assertEqual(postprocess("category cat scatter", cfg),
                          "category dog scatter")
 
     # --- Deterministic smart formatting ---
     def test_smart_formatting_times(self):
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         cfg = {'smart_formatting': {'times': True}}
         self.assertEqual(postprocess("meet at 3 p.m. sharp", cfg), "meet at 3 PM sharp")
         self.assertEqual(postprocess("call at 3:30pm", cfg), "call at 3:30 PM")
 
     def test_smart_formatting_times_does_not_touch_words(self):
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         cfg = {'smart_formatting': {'times': True}}
         self.assertEqual(postprocess("spam and jam", cfg), "spam and jam")
 
     def test_smart_formatting_times_ignores_digit_suffixed_token(self):
         # Regression: "pm2.5" must not be mangled into a time.
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         cfg = {'smart_formatting': {'times': True}}
         self.assertEqual(postprocess("pm2.5 was high at 3 pm2 station", cfg),
                          "pm2.5 was high at 3 pm2 station")
 
     def test_smart_formatting_email(self):
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         cfg = {'smart_formatting': {'emails': True}}
         self.assertEqual(postprocess("email john at example dot com please", cfg),
                          "email john@example.com please")
 
     def test_smart_formatting_email_ignores_plain_prose(self):
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         cfg = {'smart_formatting': {'emails': True}}
         self.assertEqual(postprocess("let us meet at noon", cfg), "let us meet at noon")
 
     def test_smart_formatting_url(self):
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         cfg = {'smart_formatting': {'urls': True}}
         self.assertEqual(postprocess("go to example dot com now", cfg),
                          "go to example.com now")
 
     def test_smart_formatting_off_by_default(self):
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         # No smart_formatting key → spoken forms left untouched.
         self.assertEqual(postprocess("john at example dot com", {'inline_formatting': False}),
                          "john at example dot com")
 
     # --- Voice editing ("scratch that") ---
     def test_voice_editing_scratch_that(self):
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         cfg = {'voice_editing': True}
         self.assertEqual(postprocess("book the flight. scratch that cancel it", cfg),
                          "book the flight. cancel it")
 
     def test_voice_editing_delete_and_strike_variants(self):
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         cfg = {'voice_editing': True}
         self.assertEqual(postprocess("hello world delete that", cfg), "")  # nothing survives
         self.assertEqual(postprocess("first. junk here strike that", cfg), "first.")
 
     def test_voice_editing_off_leaves_phrase(self):
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         self.assertEqual(postprocess("please scratch that itch", {'voice_editing': False}),
                          "please scratch that itch")
 
@@ -423,7 +423,7 @@ class TextPostprocessTests(unittest.TestCase):
         # A hand-edited user_settings.yaml can put a scalar where a mapping/list
         # belongs. That's a config mistake, but it must never take down the
         # transcription pipeline — degrade to "feature off" instead.
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         for bad in (
             {'smart_formatting': 'not-a-dict'},
             {'smart_formatting': True},
@@ -442,7 +442,7 @@ class TextPostprocessTests(unittest.TestCase):
         # this budget is ~100x the measured time, so it only fires on a genuine
         # complexity regression, not on slow CI hardware.
         import time
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         text = "comma " * 3000 + "scratch that " * 200 + "word " * 3000
         cfg = {
             'inline_formatting': True,
@@ -460,7 +460,7 @@ class TextPostprocessTests(unittest.TestCase):
     def test_absorb_equivalence_on_representative_inputs(self):
         # The absorb pass was rewritten from a regex to find-then-expand; these
         # pin the exact behaviour that rewrite had to preserve.
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         cfg = {'inline_formatting': True, 'inline_formatting_absorb_punctuation': True,
                'inline_formatting_replacements': [{'phrase': 'comma', 'replacement': ', '},
                                                   {'phrase': 'arrow', 'replacement': ' -> '}]}
@@ -475,7 +475,7 @@ class TextPostprocessTests(unittest.TestCase):
     def test_voice_editing_preserves_line_break_after_command(self):
         # Regression: the trailing class must not eat the newline separating the
         # scratched clause from the next line.
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         cfg = {'voice_editing': True}
         self.assertEqual(postprocess("alpha. beta scratch that\ngamma", cfg),
                          "alpha.\ngamma")
@@ -484,7 +484,7 @@ class TextPostprocessTests(unittest.TestCase):
 class AppRulesShapeTests(unittest.TestCase):
     def test_defaults_yaml_is_valid(self):
         from ruamel.yaml import YAML
-        path = ROOT / "src" / "whisper_key" / "app_rules.defaults.yaml"
+        path = ROOT / "src" / "koli" / "app_rules.defaults.yaml"
         self.assertTrue(path.exists())
         with open(path, encoding="utf-8") as f:
             data = YAML().load(f)
@@ -496,7 +496,7 @@ class AppRulesShapeTests(unittest.TestCase):
 
 class AppRulesFormattingTests(unittest.TestCase):
     def test_formatting_overrides_extracts_only_format_keys(self):
-        from whisper_key.app_rules import formatting_overrides
+        from koli.app_rules import formatting_overrides
         rule = {
             'match': ['code.exe'],
             'auto_paste': False,          # delivery key, not a formatting key
@@ -509,13 +509,13 @@ class AppRulesFormattingTests(unittest.TestCase):
         )
 
     def test_formatting_overrides_empty_and_none(self):
-        from whisper_key.app_rules import formatting_overrides
+        from koli.app_rules import formatting_overrides
         self.assertEqual(formatting_overrides(None), {})
         self.assertEqual(formatting_overrides({'match': ['x'], 'auto_send': True}), {})
 
     def test_merge_overrides_global_postprocess(self):
         # Simulate the pipeline merge: rule formatting overrides global config.
-        from whisper_key.app_rules import formatting_overrides
+        from koli.app_rules import formatting_overrides
         global_cfg = {'capitalize_first': True, 'ensure_punctuation': True, 'inline_formatting': True}
         rule = {'capitalize_first': False, 'ensure_punctuation': False}
         merged = {**global_cfg, **formatting_overrides(rule)}
@@ -527,7 +527,7 @@ class AppRulesFormattingTests(unittest.TestCase):
 class TransformsShapeTests(unittest.TestCase):
     def test_defaults_yaml_is_valid(self):
         from ruamel.yaml import YAML
-        path = ROOT / "src" / "whisper_key" / "transforms.defaults.yaml"
+        path = ROOT / "src" / "koli" / "transforms.defaults.yaml"
         self.assertTrue(path.exists())
         with open(path, encoding="utf-8") as f:
             data = YAML().load(f)
@@ -542,7 +542,7 @@ class TransformsShapeTests(unittest.TestCase):
         # and a test has no business touching a real install.
         import tempfile
         import unittest.mock as mock
-        import whisper_key.transforms as tr
+        import koli.transforms as tr
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(tr, 'get_user_app_data_path', return_value=tmp):
                 manager = tr.TransformsManager()
@@ -554,7 +554,7 @@ class TransformsShapeTests(unittest.TestCase):
 class StreakComputationTests(unittest.TestCase):
     def test_streak_basic(self):
         import datetime
-        from whisper_key.stats import _compute_streaks
+        from koli.stats import _compute_streaks
         today = datetime.date(2026, 5, 18)
         active = {
             '2026-05-18', '2026-05-17', '2026-05-16',
@@ -566,7 +566,7 @@ class StreakComputationTests(unittest.TestCase):
 
     def test_streak_breaks_yesterday(self):
         import datetime
-        from whisper_key.stats import _compute_streaks
+        from koli.stats import _compute_streaks
         today = datetime.date(2026, 5, 18)
         active = {'2026-05-10'}
         current, longest = _compute_streaks(active, today)
@@ -577,7 +577,7 @@ class StreakComputationTests(unittest.TestCase):
 class ProfilesShapeTests(unittest.TestCase):
     def test_defaults_yaml_is_valid(self):
         from ruamel.yaml import YAML
-        path = ROOT / "src" / "whisper_key" / "profiles.defaults.yaml"
+        path = ROOT / "src" / "koli" / "profiles.defaults.yaml"
         self.assertTrue(path.exists())
         with open(path, encoding="utf-8") as f:
             data = YAML().load(f)
@@ -587,12 +587,12 @@ class ProfilesShapeTests(unittest.TestCase):
 
 class UtilsTests(unittest.TestCase):
     def test_resolve_asset_path_relative(self):
-        from whisper_key.utils import resolve_asset_path
+        from koli.utils import resolve_asset_path
         result = resolve_asset_path("config.defaults.yaml")
         self.assertTrue(result.endswith("config.defaults.yaml"))
 
     def test_resolve_asset_path_absolute_passthrough(self):
-        from whisper_key.utils import resolve_asset_path
+        from koli.utils import resolve_asset_path
         absolute = os.path.abspath(__file__)
         self.assertEqual(resolve_asset_path(absolute), absolute)
 
@@ -602,10 +602,10 @@ class NoiseSuppresionTests(unittest.TestCase):
         import sys
         import unittest.mock as mock
         import numpy as np
-        sys.modules.pop('whisper_key.noise_suppression', None)
+        sys.modules.pop('koli.noise_suppression', None)
         import importlib
         with mock.patch.dict(sys.modules, {'noisereduce': None}):
-            import whisper_key.noise_suppression as ns_mod
+            import koli.noise_suppression as ns_mod
             importlib.reload(ns_mod)
             audio = np.zeros(16000, dtype=np.float32)
             result = ns_mod.apply_noise_reduction(audio, 16000, 0.75)
@@ -613,7 +613,7 @@ class NoiseSuppresionTests(unittest.TestCase):
 
     def test_config_in_defaults(self):
         from ruamel.yaml import YAML
-        path = ROOT / "src" / "whisper_key" / "config.defaults.yaml"
+        path = ROOT / "src" / "koli" / "config.defaults.yaml"
         with open(path, encoding="utf-8") as f:
             cfg = YAML().load(f)
         ns = cfg["audio"]["noise_suppression"]
@@ -623,21 +623,21 @@ class NoiseSuppresionTests(unittest.TestCase):
 
 class UpdateCheckTests(unittest.TestCase):
     def test_is_newer_basic(self):
-        from whisper_key.update_check import _is_newer
+        from koli.update_check import _is_newer
         self.assertTrue(_is_newer("1.0.0", "0.9.0"))
         self.assertFalse(_is_newer("0.9.0", "1.0.0"))
         self.assertFalse(_is_newer("0.9.0", "0.9.0"))
 
     def test_no_network_when_disabled(self):
         import unittest.mock as mock
-        from whisper_key.update_check import maybe_check_for_update
-        with mock.patch('whisper_key.update_check._check_in_background') as m:
+        from koli.update_check import maybe_check_for_update
+        with mock.patch('koli.update_check._check_in_background') as m:
             maybe_check_for_update(lambda _: None, {'enabled': False})
             m.assert_not_called()
 
     def test_update_check_in_config_defaults(self):
         from ruamel.yaml import YAML
-        path = ROOT / "src" / "whisper_key" / "config.defaults.yaml"
+        path = ROOT / "src" / "koli" / "config.defaults.yaml"
         with open(path, encoding="utf-8") as f:
             cfg = YAML().load(f)
         self.assertIn("update_check", cfg)
@@ -648,9 +648,9 @@ class TranscriptLogTests(unittest.TestCase):
     def test_record_and_load(self):
         import tempfile
         import unittest.mock as mock
-        from whisper_key import transcript_log
+        from koli import transcript_log
         with tempfile.TemporaryDirectory() as tmpdir:
-            with mock.patch('whisper_key.transcript_log.get_user_app_data_path', return_value=tmpdir):
+            with mock.patch('koli.transcript_log.get_user_app_data_path', return_value=tmpdir):
                 transcript_log.record_transcript("Hello world", app="test.exe", duration_s=1.5)
                 entries = transcript_log.load_transcripts()
         self.assertEqual(len(entries), 1)
@@ -660,9 +660,9 @@ class TranscriptLogTests(unittest.TestCase):
     def test_empty_text_not_logged(self):
         import tempfile
         import unittest.mock as mock
-        from whisper_key import transcript_log
+        from koli import transcript_log
         with tempfile.TemporaryDirectory() as tmpdir:
-            with mock.patch('whisper_key.transcript_log.get_user_app_data_path', return_value=tmpdir):
+            with mock.patch('koli.transcript_log.get_user_app_data_path', return_value=tmpdir):
                 transcript_log.record_transcript("", app="test.exe")
                 entries = transcript_log.load_transcripts()
         self.assertEqual(len(entries), 0)
@@ -670,14 +670,14 @@ class TranscriptLogTests(unittest.TestCase):
 
 class SettingsUiModuleTests(unittest.TestCase):
     def test_module_importable(self):
-        from whisper_key import settings_ui
+        from koli import settings_ui
         self.assertTrue(hasattr(settings_ui, 'run_settings_window'))
 
 
 class ModelTransferTests(unittest.TestCase):
     # Offline model transfer for locked-down networks where huggingface.co is
     # blocked. These use a stub model folder so they never need a real download.
-    def _stub_model(self, root, name="whisper-local-model-base"):
+    def _stub_model(self, root, name="koli-model-base"):
         from pathlib import Path
         folder = Path(root) / name
         folder.mkdir(parents=True)
@@ -693,7 +693,7 @@ class ModelTransferTests(unittest.TestCase):
         import tempfile
         import unittest.mock as mock
         from pathlib import Path
-        from whisper_key import model_transfer
+        from koli import model_transfer
         # export_model pulls ModelRegistry -> faster_whisper, absent in lean CI.
         try:
             import faster_whisper  # noqa: F401
@@ -703,12 +703,12 @@ class ModelTransferTests(unittest.TestCase):
             dest = Path(root) / "transfer.v2"
             snapshot = self._stub_model(root, name="snap")
             with mock.patch.object(model_transfer, '_find_cached_snapshot', return_value=snapshot):
-                with mock.patch('whisper_key.config_manager.ConfigManager') as CM:
+                with mock.patch('koli.config_manager.ConfigManager') as CM:
                     CM.return_value.get_whisper_config.return_value = {'model': 'base', 'models': {}}
                     rc = model_transfer.export_model(str(dest))
             # Assert INSIDE the context — the temp tree is gone once it exits.
             self.assertEqual(rc, 0)
-            self.assertTrue((dest / "whisper-local-model-base" / "model.bin").exists(),
+            self.assertTrue((dest / "koli-model-base" / "model.bin").exists(),
                             "export must land inside the dotted destination, not a truncated one")
             self.assertFalse((Path(root) / "transfer").exists(),
                              "must not create a truncated path")
@@ -721,7 +721,7 @@ class ModelTransferTests(unittest.TestCase):
         import io
         import contextlib
         from pathlib import Path
-        from whisper_key import model_transfer
+        from koli import model_transfer
         if sys.platform != 'win32':
             self.skipTest("drive-letter validation is Windows-only")
         # Find a drive letter that genuinely doesn't exist on this machine.
@@ -738,14 +738,14 @@ class ModelTransferTests(unittest.TestCase):
 
     def test_export_default_destination_is_usable(self):
         from pathlib import Path
-        from whisper_key import model_transfer
+        from koli import model_transfer
         default = model_transfer._default_export_dir()
         self.assertTrue(Path(default).is_dir(), "default export dir must exist")
         self.assertEqual(model_transfer._validate_destination(Path(default)), "")
 
     def test_import_rejects_non_model_folder(self):
         import tempfile
-        from whisper_key import model_transfer
+        from koli import model_transfer
         with tempfile.TemporaryDirectory() as d:
             self.assertEqual(model_transfer.import_model(d), 1)  # empty dir
             self.assertEqual(model_transfer.import_model(d + "/nope"), 1)  # missing
@@ -755,7 +755,7 @@ class ModelTransferTests(unittest.TestCase):
         import unittest.mock as mock
         from pathlib import Path
         from ruamel.yaml import YAML
-        from whisper_key import model_transfer
+        from koli import model_transfer
         with tempfile.TemporaryDirectory() as src_root, tempfile.TemporaryDirectory() as appdata:
             bundle = self._stub_model(src_root)
             with mock.patch.object(model_transfer, 'get_user_app_data_path', return_value=appdata):
@@ -776,7 +776,7 @@ class ModelTransferTests(unittest.TestCase):
         import unittest.mock as mock
         from pathlib import Path
         from ruamel.yaml import YAML
-        from whisper_key import model_transfer
+        from koli import model_transfer
         with tempfile.TemporaryDirectory() as src_root, tempfile.TemporaryDirectory() as appdata:
             bundle = self._stub_model(src_root)
             with mock.patch.object(model_transfer, 'get_user_app_data_path', return_value=appdata):
@@ -792,7 +792,7 @@ class ModelTransferTests(unittest.TestCase):
         # app never tries to reach huggingface.co for it.
         import tempfile
         try:
-            from whisper_key.model_registry import ModelRegistry
+            from koli.model_registry import ModelRegistry
         except Exception:
             self.skipTest("model_registry not importable (faster_whisper absent)")
         with tempfile.TemporaryDirectory() as d:
@@ -809,7 +809,7 @@ class ModelTransferTests(unittest.TestCase):
         import unittest.mock as mock
         from pathlib import Path
         from ruamel.yaml import YAML
-        from whisper_key import model_transfer
+        from koli import model_transfer
         with tempfile.TemporaryDirectory() as src_root, tempfile.TemporaryDirectory() as appdata:
             settings = Path(appdata) / "user_settings.yaml"
             settings.write_text(
@@ -838,7 +838,7 @@ class SystemAudioTests(unittest.TestCase):
         saved = sys.modules.get('soundcard')
         sys.modules['soundcard'] = None
         try:
-            from whisper_key import system_audio
+            from koli import system_audio
             self.assertFalse(system_audio.is_available())
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
@@ -880,7 +880,7 @@ class SystemAudioTests(unittest.TestCase):
         fake.get_microphone = lambda id, include_loopback=False: _Mic()
         sys.modules['soundcard'] = fake
         try:
-            from whisper_key import system_audio
+            from koli import system_audio
             out = system_audio.capture_loopback(1, samplerate=16000)
             self.assertIsNotNone(out)
             self.assertEqual(out.ndim, 1)              # collapsed to mono
@@ -894,7 +894,7 @@ class ModelDownloadHintTests(unittest.TestCase):
     # First-run UX: the download message names an approximate size per model.
     def test_size_hint_for_known_models(self):
         try:
-            from whisper_key.whisper_engine import _model_size_hint
+            from koli.whisper_engine import _model_size_hint
         except Exception:
             self.skipTest("whisper_engine not importable (faster_whisper absent)")
         self.assertEqual(_model_size_hint('base'), '~141 MB')
@@ -912,7 +912,7 @@ class InstanceManagerNoConsoleTests(unittest.TestCase):
         # instance_manager pulls `.platform`, which eagerly imports the OS backend
         # (win32api / AppKit) — absent in the lean CI env, so skip there.
         try:
-            from whisper_key import instance_manager
+            from koli import instance_manager
         except Exception:
             self.skipTest("instance_manager not importable on this platform")
         buf = io.StringIO()
@@ -930,7 +930,7 @@ class CorrectionsTests(unittest.TestCase):
         import tempfile
         import unittest.mock as mock
         d = tempfile.mkdtemp()
-        from whisper_key import corrections as cmod
+        from koli import corrections as cmod
         patcher = mock.patch.object(cmod, 'get_user_app_data_path', return_value=d)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -978,14 +978,14 @@ class CorrectionsTests(unittest.TestCase):
         # End-to-end: what corrections.py writes must be consumable by postprocess.
         cmod, _ = self._with_temp_settings()
         cmod.add_replacement('my sequel', 'MySQL')
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         cfg = {'replacements': cmod.list_replacements()}
         self.assertEqual(postprocess('I use my sequel daily', cfg), 'I use MySQL daily')
 
 
 class HotwordSuggestTests(unittest.TestCase):
     def test_suggest_picks_frequent_proper_nouns(self):
-        from whisper_key.dictionary import suggest_hotwords
+        from koli.dictionary import suggest_hotwords
         texts = [
             "We deployed Kubernetes today.",
             "The Kubernetes cluster is fine. Kubernetes again.",
@@ -996,13 +996,13 @@ class HotwordSuggestTests(unittest.TestCase):
         self.assertEqual(got['Kubernetes'], 3)  # sentence-initial one not counted
 
     def test_suggest_excludes_known_hotwords(self):
-        from whisper_key.dictionary import suggest_hotwords
+        from koli.dictionary import suggest_hotwords
         texts = ["Use Redis now.", "Redis is great with Redis.", "More Redis here."]
         got = dict(suggest_hotwords(texts, known={'redis'}, min_count=2))
         self.assertNotIn('Redis', got)
 
     def test_suggest_ignores_plain_sentence_starts(self):
-        from whisper_key.dictionary import suggest_hotwords
+        from koli.dictionary import suggest_hotwords
         texts = ["Today was good.", "Today is better.", "Today we ship."]
         # "Today" only ever appears sentence-initial → not a suggestion.
         self.assertEqual(suggest_hotwords(texts, min_count=2), [])
@@ -1015,7 +1015,7 @@ class OnboardingBannerTests(unittest.TestCase):
         import io
         import contextlib
         import unittest.mock as mock
-        from whisper_key import onboarding_tutorial
+        from koli import onboarding_tutorial
         seen = {}
 
         def fake_notify(msg):
@@ -1050,7 +1050,7 @@ class PostprocessHotReloadTests(unittest.TestCase):
         # config_manager pulls `.platform`, which eagerly imports the OS-specific
         # backend (win32api / AppKit) — absent in the lean CI env, so skip there.
         try:
-            from whisper_key import config_manager as cm_mod
+            from koli import config_manager as cm_mod
         except Exception:
             self.skipTest("config_manager not importable on this platform")
         with tempfile.TemporaryDirectory() as d:
@@ -1070,7 +1070,7 @@ class SettingsResetTests(unittest.TestCase):
     def test_reset_preserves_hotwords(self):
         import tempfile, os
         from ruamel.yaml import YAML
-        from whisper_key.settings_ui import reset_settings_preserving_hotwords
+        from koli.settings_ui import reset_settings_preserving_hotwords
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, 'user_settings.yaml')
             with open(path, 'w', encoding='utf-8') as f:
@@ -1088,7 +1088,7 @@ class SettingsResetTests(unittest.TestCase):
     def test_reset_with_no_hotwords_removes_file(self):
         import tempfile, os
         from ruamel.yaml import YAML
-        from whisper_key.settings_ui import reset_settings_preserving_hotwords
+        from koli.settings_ui import reset_settings_preserving_hotwords
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, 'user_settings.yaml')
             with open(path, 'w', encoding='utf-8') as f:
@@ -1099,7 +1099,7 @@ class SettingsResetTests(unittest.TestCase):
 
 class HistoryWindowModuleTests(unittest.TestCase):
     def test_module_importable(self):
-        from whisper_key import history_window
+        from koli import history_window
         self.assertTrue(hasattr(history_window, 'show_history'))
 
 
@@ -1127,13 +1127,13 @@ class PyprojectOptionalDepsTests(unittest.TestCase):
 
 class SelftestModuleTests(unittest.TestCase):
     def test_module_importable(self):
-        from whisper_key import selftest
+        from koli import selftest
         self.assertTrue(hasattr(selftest, 'run_selftest'))
 
     def test_report_helper(self):
         import io
         import sys
-        from whisper_key.selftest import _report
+        from koli.selftest import _report
         failures = []
         old_stdout = sys.stdout
         sys.stdout = io.StringIO()
@@ -1150,28 +1150,28 @@ class FirstRunTests(unittest.TestCase):
     def test_flag_file_lifecycle(self):
         import tempfile
         import unittest.mock as mock
-        from whisper_key import first_run
+        from koli import first_run
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            with mock.patch('whisper_key.first_run.get_user_app_data_path', return_value=tmpdir):
+            with mock.patch('koli.first_run.get_user_app_data_path', return_value=tmpdir):
                 self.assertTrue(first_run.is_first_run())
                 first_run.mark_first_run_complete()
                 self.assertFalse(first_run.is_first_run())
 
     def test_show_welcome_module_importable(self):
-        from whisper_key import first_run
+        from koli import first_run
         self.assertTrue(hasattr(first_run, 'show_welcome_window'))
 
 
 class CheatSheetTests(unittest.TestCase):
     def test_module_importable(self):
-        from whisper_key import cheat_sheet
+        from koli import cheat_sheet
         self.assertTrue(hasattr(cheat_sheet, 'show_cheat_sheet'))
 
 
 class BundleLogsTests(unittest.TestCase):
     def test_redaction_replaces_usernames(self):
-        from whisper_key.bundle_logs import _redact
+        from koli.bundle_logs import _redact
         sample = "Path: C:\\Users\\rohit\\AppData\\Roaming and email me at test@example.com"
         red = _redact(sample)
         self.assertNotIn("rohit", red.lower())
@@ -1180,8 +1180,8 @@ class BundleLogsTests(unittest.TestCase):
         self.assertIn("<EMAIL>", red)
 
     def test_redaction_macos_linux_paths(self):
-        from whisper_key.bundle_logs import _redact
-        self.assertIn("<USER>", _redact("/Users/alice/.whisperkey/"))
+        from koli.bundle_logs import _redact
+        self.assertIn("<USER>", _redact("/Users/alice/.koli/"))
         self.assertIn("<USER>", _redact("/home/bob/log.txt"))
 
     def test_bundle_creates_zip(self):
@@ -1190,7 +1190,7 @@ class BundleLogsTests(unittest.TestCase):
         import tempfile
         import unittest.mock as mock
         import zipfile
-        from whisper_key import bundle_logs
+        from koli import bundle_logs
 
         with tempfile.TemporaryDirectory() as appdata:
             with tempfile.TemporaryDirectory() as out:
@@ -1198,8 +1198,8 @@ class BundleLogsTests(unittest.TestCase):
                 old_stdout = sys.stdout
                 sys.stdout = io.StringIO()
                 try:
-                    with mock.patch('whisper_key.bundle_logs.get_user_app_data_path', return_value=appdata), \
-                         mock.patch('whisper_key.bundle_logs._capture_doctor', return_value='[doctor mocked]'):
+                    with mock.patch('koli.bundle_logs.get_user_app_data_path', return_value=appdata), \
+                         mock.patch('koli.bundle_logs._capture_doctor', return_value='[doctor mocked]'):
                         rc = bundle_logs.bundle_logs(output)
                 finally:
                     sys.stdout = old_stdout
@@ -1212,7 +1212,7 @@ class BundleLogsTests(unittest.TestCase):
 
 class LocalServerTests(unittest.TestCase):
     def test_module_importable(self):
-        from whisper_key import local_server
+        from koli import local_server
         self.assertTrue(hasattr(local_server, 'run_server'))
         self.assertEqual(local_server.DEFAULT_PORT, 7777)
 
@@ -1220,7 +1220,7 @@ class LocalServerTests(unittest.TestCase):
         import io
         import wave
         import numpy as np
-        from whisper_key.local_server import _decode_wav_fallback
+        from koli.local_server import _decode_wav_fallback
 
         with io.BytesIO() as buf:
             with wave.open(buf, 'wb') as wf:
@@ -1239,7 +1239,7 @@ class LocalServerTests(unittest.TestCase):
 
 class MainCliFlagsTests(unittest.TestCase):
     def test_main_registers_new_flags(self):
-        main_src = (ROOT / "src" / "whisper_key" / "main.py").read_text(encoding="utf-8")
+        main_src = (ROOT / "src" / "koli" / "main.py").read_text(encoding="utf-8")
         for flag in ('--selftest', '--cheat-sheet', '--bundle-logs', '--serve'):
             self.assertIn(flag, main_src, f"main.py should register {flag}")
 
@@ -1293,7 +1293,7 @@ def _build_multipart(boundary: str, file_bytes: bytes) -> bytes:
 class LocalServerSecurityTests(unittest.TestCase):
     # SRV-1: binary audio ending in 0x2D ('-') must NOT be truncated.
     def test_parse_multipart_preserves_trailing_dashes(self):
-        from whisper_key.local_server import _parse_multipart
+        from koli.local_server import _parse_multipart
         audio = b'\x00\x01\x02\x2d\x2d\x2d'  # ends in three dashes
         body = _build_multipart('BoUnDaRy123', audio)
         fields = _parse_multipart(_FakeHandler(body, 'BoUnDaRy123'))
@@ -1301,7 +1301,7 @@ class LocalServerSecurityTests(unittest.TestCase):
 
     # SRV-2: oversized Content-Length is rejected before the body is read.
     def test_oversized_content_length_rejected(self):
-        from whisper_key import local_server
+        from koli import local_server
         huge = local_server.MAX_UPLOAD_BYTES + 1
         handler = _FakeHandler(b'x', 'B', content_length=huge)
         with self.assertRaises(ValueError):
@@ -1309,7 +1309,7 @@ class LocalServerSecurityTests(unittest.TestCase):
 
     # SEC #3: negative Content-Length must be rejected (read(-1) would drain socket).
     def test_negative_content_length_rejected(self):
-        from whisper_key import local_server
+        from koli import local_server
         handler = _FakeHandler(b'x', 'B', content_length=-1)
         with self.assertRaises(ValueError):
             local_server._parse_multipart(handler)
@@ -1319,7 +1319,7 @@ class BundleRedactionTests(unittest.TestCase):
     # SEC #2: URL credentials + secret query params masked in ALL bundled files
     # (this is what protects doctor.txt, not just user_settings.yaml).
     def test_redact_masks_url_credentials_and_tokens(self):
-        from whisper_key.bundle_logs import _redact
+        from koli.bundle_logs import _redact
         out = _redact("Ollama post-edit: http://user:s3cret@ollama.host:11434 reachable")
         self.assertNotIn("s3cret", out)
         self.assertIn("<REDACTED>@", out)
@@ -1329,7 +1329,7 @@ class BundleRedactionTests(unittest.TestCase):
 
     # PRIV-1: sensitive config fields are masked in user_settings.yaml.
     def test_redact_yaml_masks_sensitive_fields(self):
-        from whisper_key.bundle_logs import _redact_yaml
+        from koli.bundle_logs import _redact_yaml
         sample = (
             "whisper:\n"
             "  hotwords: [SecretName, CodeWord]\n"
@@ -1346,7 +1346,7 @@ class BundleRedactionTests(unittest.TestCase):
         self.assertIn('<REDACTED>', out)
 
     def test_redact_yaml_masks_block_hotwords(self):
-        from whisper_key.bundle_logs import _redact_yaml
+        from koli.bundle_logs import _redact_yaml
         sample = "whisper:\n  hotwords:\n    - Alpha\n    - Bravo\n  model: tiny\n"
         out = _redact_yaml(sample)
         self.assertNotIn('Alpha', out)
@@ -1358,13 +1358,13 @@ class VoiceCommandQuotingTests(unittest.TestCase):
     # VC-1: clipboard content is shell-quoted when expanded into a run: command.
     def test_shell_safe_quotes_clipboard(self):
         try:
-            from whisper_key.voice_commands import VoiceCommandManager
+            from koli.voice_commands import VoiceCommandManager
         except Exception:
             self.skipTest("voice_commands not importable on this platform")
         import shlex
         import unittest.mock as mock
         vc = VoiceCommandManager.__new__(VoiceCommandManager)
-        with mock.patch('whisper_key.voice_commands.pyperclip.paste', return_value='; rm -rf ~'):
+        with mock.patch('koli.voice_commands.pyperclip.paste', return_value='; rm -rf ~'):
             safe = vc._expand_template('echo ${clipboard}', shell_safe=True)
             raw = vc._expand_template('echo ${clipboard}', shell_safe=False)
         self.assertEqual(safe, 'echo ' + shlex.quote('; rm -rf ~'))
@@ -1373,32 +1373,32 @@ class VoiceCommandQuotingTests(unittest.TestCase):
 
 class AutostartTests(unittest.TestCase):
     def test_module_and_api(self):
-        from whisper_key import autostart
+        from koli import autostart
         for fn in ('is_supported', 'is_enabled', 'enable', 'disable', 'toggle'):
             self.assertTrue(callable(getattr(autostart, fn, None)), f"missing {fn}")
 
     def test_is_supported_matches_platform(self):
         import sys
-        from whisper_key import autostart
+        from koli import autostart
         self.assertEqual(autostart.is_supported(), sys.platform in ('win32', 'darwin'))
 
     def test_launch_command_nonempty(self):
-        from whisper_key import autostart
+        from koli import autostart
         cmd = autostart._launch_command()
         self.assertIsInstance(cmd, list)
         self.assertTrue(cmd and cmd[0])
 
     def test_pyapp_autostart_uses_exe_not_bare_interpreter(self):
         # Regression for issue #2. Under pyapp, sys.executable is the private
-        # unpacked CPython, NOT whisper-local.exe. Using it put a bare interpreter
+        # unpacked CPython, NOT koli.exe. Using it put a bare interpreter
         # in the Run key, so boot opened an interactive Python console instead of
         # the app. $PYAPP carries the real .exe path (PYAPP_PASS_LOCATION=1).
         import tempfile
         import unittest.mock as mock
         from pathlib import Path
-        from whisper_key import autostart
+        from koli import autostart
         with tempfile.TemporaryDirectory() as d:
-            fake_exe = Path(d) / "whisper-local.exe"
+            fake_exe = Path(d) / "koli.exe"
             fake_exe.write_text("stub", encoding="utf-8")
             unpacked_python = str(Path(d) / "python.exe")
             with mock.patch.dict(os.environ, {"PYAPP": str(fake_exe)}):
@@ -1412,31 +1412,31 @@ class AutostartTests(unittest.TestCase):
     def test_broken_bare_interpreter_detection(self):
         # The repair must fire on the broken issue-#2 value and on nothing else,
         # so it can never clobber a healthy or user-customised Run entry.
-        from whisper_key.autostart import _is_broken_bare_interpreter as broken
+        from koli.autostart import _is_broken_bare_interpreter as broken
         # Broken: a lone interpreter, no script to run.
         self.assertTrue(broken(r"C:\pyapp\python.exe"))
         self.assertTrue(broken(r'"C:\Program Files\pyapp\python.exe"'))
         self.assertTrue(broken(r"C:\x\pythonw.exe"))
         self.assertTrue(broken(r"C:\x\python3.exe"))
         # Healthy: has arguments, or is the app executable itself.
-        self.assertFalse(broken(r"C:\x\pythonw.exe -m whisper_key.main"))
-        self.assertFalse(broken(r'"C:\Program Files\py\pythonw.exe" -m whisper_key.main'))
-        self.assertFalse(broken(r"C:\apps\whisper-local.exe"))
+        self.assertFalse(broken(r"C:\x\pythonw.exe -m koli.main"))
+        self.assertFalse(broken(r'"C:\Program Files\py\pythonw.exe" -m koli.main'))
+        self.assertFalse(broken(r"C:\apps\koli.exe"))
         self.assertFalse(broken(""))
         self.assertFalse(broken("   "))
 
     def test_repair_is_noop_when_not_enabled(self):
         import unittest.mock as mock
-        from whisper_key import autostart
+        from koli import autostart
         with mock.patch.object(autostart, '_win_is_enabled', return_value=False):
             self.assertFalse(autostart.repair_if_broken())
 
     def test_repair_rewrites_only_broken_entry(self):
         import unittest.mock as mock
-        from whisper_key import autostart
+        from koli import autostart
         if sys.platform != 'win32':
             self.skipTest("registry repair is Windows-only")
-        good = r"C:\x\pythonw.exe -m whisper_key.main"
+        good = r"C:\x\pythonw.exe -m koli.main"
         with mock.patch.object(autostart, '_win_is_enabled', return_value=True):
             # Healthy entry -> untouched.
             with mock.patch.object(autostart, '_win_stored_command', return_value=good):
@@ -1454,7 +1454,7 @@ class AutostartTests(unittest.TestCase):
         import tempfile
         import unittest.mock as mock
         from pathlib import Path
-        from whisper_key import autostart
+        from koli import autostart
         if sys.platform != 'win32':
             self.skipTest("pythonw.exe selection is Windows-only")
         with tempfile.TemporaryDirectory() as d:
@@ -1466,13 +1466,13 @@ class AutostartTests(unittest.TestCase):
             with mock.patch.dict(os.environ, env, clear=True):
                 with mock.patch.object(autostart.sys, 'executable', str(py)):
                     cmd = autostart._launch_command()
-        self.assertEqual(cmd, [str(pyw), "-m", "whisper_key.main"])
+        self.assertEqual(cmd, [str(pyw), "-m", "koli.main"])
 
     def test_missing_pythonw_falls_back_without_crashing(self):
         import tempfile
         import unittest.mock as mock
         from pathlib import Path
-        from whisper_key import autostart
+        from koli import autostart
         if sys.platform != 'win32':
             self.skipTest("pythonw.exe selection is Windows-only")
         with tempfile.TemporaryDirectory() as d:
@@ -1484,27 +1484,27 @@ class AutostartTests(unittest.TestCase):
                     with mock.patch.object(autostart.sys, '_base_executable', str(py)):
                         cmd = autostart._launch_command()
         # Falls back to console python, but still passes -m so the APP runs.
-        self.assertEqual(cmd, [str(py), "-m", "whisper_key.main"])
+        self.assertEqual(cmd, [str(py), "-m", "koli.main"])
 
     def test_macos_plist_roundtrip(self):
         import tempfile
         import unittest.mock as mock
         from pathlib import Path
-        from whisper_key import autostart
+        from koli import autostart
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / 'agent.plist'
-            with mock.patch('whisper_key.autostart._mac_plist_path', return_value=p):
+            with mock.patch('koli.autostart._mac_plist_path', return_value=p):
                 self.assertFalse(autostart._mac_is_enabled())
                 autostart._mac_enable()
                 self.assertTrue(autostart._mac_is_enabled())
                 content = p.read_text(encoding='utf-8')
                 self.assertIn('RunAtLoad', content)
-                self.assertIn('com.drajb.whisper-local', content)
+                self.assertIn('com.drajb.koli', content)
                 autostart._mac_disable()
                 self.assertFalse(autostart._mac_is_enabled())
 
     def test_main_registers_autostart_flags(self):
-        main_src = (ROOT / "src" / "whisper_key" / "main.py").read_text(encoding="utf-8")
+        main_src = (ROOT / "src" / "koli" / "main.py").read_text(encoding="utf-8")
         self.assertIn('--enable-autostart', main_src)
         self.assertIn('--disable-autostart', main_src)
 
@@ -1512,7 +1512,7 @@ class AutostartTests(unittest.TestCase):
 class DefaultsTests(unittest.TestCase):
     def test_default_model_and_recording_mode(self):
         from ruamel.yaml import YAML
-        path = ROOT / "src" / "whisper_key" / "config.defaults.yaml"
+        path = ROOT / "src" / "koli" / "config.defaults.yaml"
         with open(path, encoding="utf-8") as f:
             cfg = YAML().load(f)
         self.assertEqual(cfg["whisper"]["model"], "base")
@@ -1520,7 +1520,7 @@ class DefaultsTests(unittest.TestCase):
 
     def test_profiles_no_tiny_downgrade(self):
         from ruamel.yaml import YAML
-        path = ROOT / "src" / "whisper_key" / "profiles.defaults.yaml"
+        path = ROOT / "src" / "koli" / "profiles.defaults.yaml"
         with open(path, encoding="utf-8") as f:
             data = YAML().load(f)
         for name, prof in data["profiles"].items():
@@ -1529,7 +1529,7 @@ class DefaultsTests(unittest.TestCase):
 
     def test_export_covers_all_user_files(self):
         # backup/restore must include every user-editable config file.
-        from whisper_key.settings_io import EXPORTABLE_FILES
+        from koli.settings_io import EXPORTABLE_FILES
         for f in ("user_settings.yaml", "commands.yaml", "profiles.yaml",
                   "app_rules.yaml", "transforms.yaml"):
             self.assertIn(f, EXPORTABLE_FILES)
@@ -1538,7 +1538,7 @@ class DefaultsTests(unittest.TestCase):
 class ReviewFixTests(unittest.TestCase):
     # update_check must not crash on a "-dev" suffixed local version.
     def test_is_newer_handles_dev_suffix(self):
-        from whisper_key.update_check import _is_newer
+        from koli.update_check import _is_newer
         self.assertTrue(_is_newer("0.12.0", "0.11.0-dev"))
         self.assertFalse(_is_newer("0.11.0", "0.11.0-dev"))   # same core, not newer
         self.assertFalse(_is_newer("1.2", "1.2.0"))           # padded equal
@@ -1546,7 +1546,7 @@ class ReviewFixTests(unittest.TestCase):
 
     # settings_ui._coerce must keep free-text settings as strings even when numeric-looking.
     def test_coerce_is_type_aware(self):
-        from whisper_key.settings_ui import _coerce
+        from koli.settings_ui import _coerce
         sentinel = object()  # not a BooleanVar
         self.assertEqual(_coerce(sentinel, "2024", "whisper.initial_prompt"), "2024")
         self.assertEqual(_coerce(sentinel, "3", "postprocess.ollama.model"), "3")
@@ -1560,9 +1560,9 @@ class ReviewFixTests(unittest.TestCase):
             self.skipTest("toggle round-trip exercised via macOS plist path only")
         import tempfile, unittest.mock as mock
         from pathlib import Path
-        from whisper_key import autostart
+        from koli import autostart
         with tempfile.TemporaryDirectory() as d:
-            with mock.patch("whisper_key.autostart._mac_plist_path", return_value=Path(d) / "a.plist"):
+            with mock.patch("koli.autostart._mac_plist_path", return_value=Path(d) / "a.plist"):
                 self.assertTrue(autostart.toggle())
                 self.assertFalse(autostart.toggle())
 
@@ -1572,27 +1572,27 @@ class StreamingDeliveryDecisionTests(unittest.TestCase):
         return {'deliver_to_cursor': on}
 
     def test_off_by_default(self):
-        from whisper_key.streaming_delivery import decide_stream_delivery
+        from koli.streaming_delivery import decide_stream_delivery
         self.assertFalse(decide_stream_delivery({}, True, True, True, None))
 
     def test_all_conditions_met(self):
-        from whisper_key.streaming_delivery import decide_stream_delivery
+        from koli.streaming_delivery import decide_stream_delivery
         self.assertTrue(decide_stream_delivery(self._cfg(), True, True, True, None))
 
     def test_requires_streaming_available(self):
-        from whisper_key.streaming_delivery import decide_stream_delivery
+        from koli.streaming_delivery import decide_stream_delivery
         self.assertFalse(decide_stream_delivery(self._cfg(), False, True, True, None))
 
     def test_requires_auto_paste(self):
-        from whisper_key.streaming_delivery import decide_stream_delivery
+        from koli.streaming_delivery import decide_stream_delivery
         self.assertFalse(decide_stream_delivery(self._cfg(), True, False, True, None))
 
     def test_requires_textable_foreground(self):
-        from whisper_key.streaming_delivery import decide_stream_delivery
+        from koli.streaming_delivery import decide_stream_delivery
         self.assertFalse(decide_stream_delivery(self._cfg(), True, True, False, None))
 
     def test_respects_app_rule_suppress_and_copyonly(self):
-        from whisper_key.streaming_delivery import decide_stream_delivery
+        from koli.streaming_delivery import decide_stream_delivery
         self.assertFalse(decide_stream_delivery(self._cfg(), True, True, True, {'suppress': True}))
         self.assertFalse(decide_stream_delivery(self._cfg(), True, True, True, {'auto_paste': False}))
         # a rule that doesn't touch delivery is fine
@@ -1601,7 +1601,7 @@ class StreamingDeliveryDecisionTests(unittest.TestCase):
 
 class StreamingDeliveryWorkerTests(unittest.TestCase):
     def test_segments_delivered_in_order_and_recorded(self):
-        from whisper_key.streaming_delivery import StreamingDelivery
+        from koli.streaming_delivery import StreamingDelivery
         delivered = []
         sd = StreamingDelivery(deliver_fn=delivered.append)
         sd.start()
@@ -1613,7 +1613,7 @@ class StreamingDeliveryWorkerTests(unittest.TestCase):
         self.assertTrue(sd.submitted_any)
 
     def test_blank_segments_ignored(self):
-        from whisper_key.streaming_delivery import StreamingDelivery
+        from koli.streaming_delivery import StreamingDelivery
         delivered = []
         sd = StreamingDelivery(deliver_fn=delivered.append)
         sd.start()
@@ -1624,7 +1624,7 @@ class StreamingDeliveryWorkerTests(unittest.TestCase):
         self.assertFalse(sd.submitted_any)
 
     def test_stop_is_idempotent(self):
-        from whisper_key.streaming_delivery import StreamingDelivery
+        from koli.streaming_delivery import StreamingDelivery
         sd = StreamingDelivery(deliver_fn=lambda s: None)
         sd.start()
         sd.submit_final("x")
@@ -1632,7 +1632,7 @@ class StreamingDeliveryWorkerTests(unittest.TestCase):
         self.assertEqual(sd.stop(), "x")  # second stop returns same, no error
 
     def test_deliver_fn_exception_does_not_crash_and_flags_failure(self):
-        from whisper_key.streaming_delivery import StreamingDelivery
+        from koli.streaming_delivery import StreamingDelivery
         def boom(_):
             raise RuntimeError("boom")
         sd = StreamingDelivery(deliver_fn=boom)
@@ -1643,7 +1643,7 @@ class StreamingDeliveryWorkerTests(unittest.TestCase):
         self.assertTrue(sd.had_failure)
 
     def test_no_failure_flag_on_clean_delivery(self):
-        from whisper_key.streaming_delivery import StreamingDelivery
+        from koli.streaming_delivery import StreamingDelivery
         sd = StreamingDelivery(deliver_fn=lambda s: None)
         sd.start()
         sd.submit_final("ok")
@@ -1652,7 +1652,7 @@ class StreamingDeliveryWorkerTests(unittest.TestCase):
 
     def test_submit_after_stop_is_ignored(self):
         # Closes the submit/stop race: a late segment after stop is dropped, not enqueued.
-        from whisper_key.streaming_delivery import StreamingDelivery
+        from koli.streaming_delivery import StreamingDelivery
         delivered = []
         sd = StreamingDelivery(deliver_fn=delivered.append)
         sd.start()
@@ -1674,7 +1674,7 @@ class MergedFeatureTests(unittest.TestCase):
     def test_amd_gpu_classification(self):
         import importlib.util
         spec = importlib.util.spec_from_file_location(
-            'wk_gpu', str(ROOT / 'src' / 'whisper_key' / 'platform' / 'windows' / 'gpu.py'))
+            'wk_gpu', str(ROOT / 'src' / 'koli' / 'platform' / 'windows' / 'gpu.py'))
         gpu = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(gpu)
         cases = [
@@ -1696,7 +1696,7 @@ class MergedFeatureTests(unittest.TestCase):
 
     # --- Vocabulary corrections ---
     def test_corrections_map_many_variants_to_one_term(self):
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         cfg = {'corrections': {'CAPEX': ['cap x', 'copics'], 'MySQL': ['my sequel']}}
         self.assertEqual(postprocess('the cap x budget', cfg), 'the CAPEX budget')
         self.assertEqual(postprocess('we use copics here', cfg), 'we use CAPEX here')
@@ -1704,19 +1704,19 @@ class MergedFeatureTests(unittest.TestCase):
 
     def test_corrections_prefer_longest_variant(self):
         # "cap" must not shadow "cap x" and leave a dangling "x".
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         cfg = {'corrections': {'CAP': ['cap'], 'CAPEX': ['cap x']}}
         self.assertEqual(postprocess('the cap x budget', cfg), 'the CAPEX budget')
 
     def test_corrections_are_whole_word_and_case_insensitive(self):
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         cfg = {'corrections': {'MySQL': ['my sequel']}}
         self.assertEqual(postprocess('MY SEQUEL rocks', cfg), 'MySQL rocks')
         cfg2 = {'corrections': {'DOG': ['cat']}}
         self.assertEqual(postprocess('category cat', cfg2), 'category DOG')
 
     def test_corrections_tolerate_malformed_config(self):
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         for bad in ({'corrections': 'nope'}, {'corrections': {'A': None}},
                     {'corrections': {'A': 123}}, {'corrections': []},
                     {'corrections': {'A': {'not': 'a list'}}}):
@@ -1724,30 +1724,30 @@ class MergedFeatureTests(unittest.TestCase):
 
     def test_corrections_and_replacements_coexist(self):
         # Our per-entry `replacements` must still work alongside the new map.
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         cfg = {'corrections': {'CAPEX': ['cap x']},
                'replacements': [{'from': 'budget', 'to': 'spend'}]}
         self.assertEqual(postprocess('the cap x budget', cfg), 'the CAPEX spend')
 
     # --- Terminal tab title ---
     def test_terminal_title_parses_static_and_animated_states(self):
-        from whisper_key.terminal_title import TerminalTitle
+        from koli.terminal_title import TerminalTitle
         t = TerminalTitle({'idle': '', 'recording': [['R', 0.1], ['  ', 0.2]],
                            'processing': '...'})
-        self.assertEqual(t._frames['idle'], [('Whisper Local', 60.0)])
+        self.assertEqual(t._frames['idle'], [('Koli', 60.0)])
         self.assertEqual(t._frames['recording'],
-                         [('R Whisper Local', 0.1), ('   Whisper Local', 0.2)])
-        self.assertEqual(t._frames['processing'], [('... Whisper Local', 60.0)])
+                         [('R Koli', 0.1), ('   Koli', 0.2)])
+        self.assertEqual(t._frames['processing'], [('... Koli', 60.0)])
 
     def test_terminal_title_falls_back_on_bad_frames(self):
-        from whisper_key.terminal_title import TerminalTitle
+        from koli.terminal_title import TerminalTitle
         t = TerminalTitle({'recording': [['R', 'not-a-number']], 'idle': {'bad': 1}})
         # Bad frames fall back to the shipped defaults rather than raising.
         self.assertTrue(t._frames['recording'])
-        self.assertEqual(t._frames['idle'], [('Whisper Local', 60.0)])
+        self.assertEqual(t._frames['idle'], [('Koli', 60.0)])
 
     def test_terminal_title_lifecycle_is_safe_without_a_tty(self):
-        from whisper_key.terminal_title import TerminalTitle
+        from koli.terminal_title import TerminalTitle
         t = TerminalTitle({})
         t.update_state('recording')
         t.start()
@@ -1758,11 +1758,11 @@ class MergedFeatureTests(unittest.TestCase):
         import inspect
         # The asset must ship regardless of whether the audio backend is
         # installed, so assert that before the import that may be skipped.
-        asset = ROOT / 'src' / 'whisper_key' / 'assets' / 'sounds' / 'app_ready.wav'
+        asset = ROOT / 'src' / 'koli' / 'assets' / 'sounds' / 'app_ready.wav'
         self.assertTrue(asset.is_file(), 'app_ready.wav must ship with the package')
         # audio_feedback pulls playsound3, which the lean CI env lacks.
         try:
-            from whisper_key.audio_feedback import AudioFeedback
+            from koli.audio_feedback import AudioFeedback
         except Exception:
             self.skipTest('audio_feedback not importable (playsound3 absent)')
         params = inspect.signature(AudioFeedback.__init__).parameters
@@ -1773,7 +1773,7 @@ class MergedFeatureTests(unittest.TestCase):
     # --- config defaults for all of the above ---
     def test_new_config_sections_present_and_inert(self):
         from ruamel.yaml import YAML
-        with open(ROOT / 'src' / 'whisper_key' / 'config.defaults.yaml', encoding='utf-8') as f:
+        with open(ROOT / 'src' / 'koli' / 'config.defaults.yaml', encoding='utf-8') as f:
             cfg = YAML().load(f)
         self.assertEqual(cfg['postprocess']['corrections'], {})
         self.assertTrue(cfg['audio_feedback']['ready_enabled'])
@@ -1783,7 +1783,7 @@ class MergedFeatureTests(unittest.TestCase):
         for state in ('idle', 'recording', 'processing'):
             self.assertIn(state, cfg['terminal_title'])
         # Shipping defaults must not alter ordinary text.
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         self.assertEqual(postprocess('hello world', dict(cfg['postprocess'])), 'hello world')
 
 
@@ -1799,7 +1799,7 @@ class ReportedIssueTests(unittest.TestCase):
         if sys.platform != 'win32':
             self.skipTest('global-hotkeys is Windows-only')
         try:
-            from whisper_key.platform.windows import hotkeys
+            from koli.platform.windows import hotkeys
         except Exception:
             self.skipTest('global_hotkeys not installed')
         full = [['ctrl+shift+f13', lambda: None, None],
@@ -1823,7 +1823,7 @@ class ReportedIssueTests(unittest.TestCase):
     def test_windows_register_clears_first(self):
         # The mechanism behind the fix: register() must have replace semantics,
         # matching the macOS mirror, per docs/platform-abstraction.md.
-        source = (ROOT / 'src' / 'whisper_key' / 'platform' / 'windows' / 'hotkeys.py').read_text(encoding='utf-8')
+        source = (ROOT / 'src' / 'koli' / 'platform' / 'windows' / 'hotkeys.py').read_text(encoding='utf-8')
         self.assertIn('clear_hotkeys()', source,
                       'register() must clear before registering (issue #6)')
 
@@ -1832,7 +1832,7 @@ class ReportedIssueTests(unittest.TestCase):
         # argv[0] for a pip console script is the launcher path, and pip ships
         # only a compiled .exe stub there — handing it to python.exe fails with
         # "can't open file". The command must invoke the module instead.
-        from whisper_key.utils import build_relaunch_command
+        from koli.utils import build_relaunch_command
         import os
         saved = os.environ.pop('PYAPP', None)
         try:
@@ -1841,10 +1841,10 @@ class ReportedIssueTests(unittest.TestCase):
             if saved is not None:
                 os.environ['PYAPP'] = saved
         self.assertIn('-m', cmd)
-        self.assertIn('whisper_key.main', cmd)
+        self.assertIn('koli.main', cmd)
         for part in cmd:
             self.assertFalse(
-                part.endswith('Scripts\\whisper-local') or part.endswith('Scripts/whisper-local'),
+                part.endswith('Scripts\\koli') or part.endswith('Scripts/koli'),
                 f'relaunch command must not reference the console script: {cmd}')
 
     def test_relaunch_command_prefers_pyapp_executable(self):
@@ -1854,9 +1854,9 @@ class ReportedIssueTests(unittest.TestCase):
         import tempfile
         import unittest.mock as mock
         from pathlib import Path
-        from whisper_key import utils
+        from koli import utils
         with tempfile.TemporaryDirectory() as d:
-            fake = Path(d) / 'whisper-local.exe'
+            fake = Path(d) / 'koli.exe'
             fake.write_text('stub', encoding='utf-8')
             with mock.patch.dict(os.environ, {'PYAPP': str(fake)}):
                 with mock.patch.object(utils.sys, 'executable', str(Path(d) / 'python.exe')):
@@ -1868,7 +1868,7 @@ class ReportedIssueTests(unittest.TestCase):
         import os
         if sys.platform != 'win32':
             self.skipTest('pythonw selection is Windows-only')
-        from whisper_key.utils import build_relaunch_command
+        from koli.utils import build_relaunch_command
         saved = os.environ.pop('PYAPP', None)
         try:
             windowed = build_relaunch_command(windowless=False)
@@ -1883,15 +1883,15 @@ class ReportedIssueTests(unittest.TestCase):
         # The two call sites disagreed once (autostart fixed for #2, tray left
         # broken for #3). They must share one implementation now.
         try:
-            from whisper_key import autostart
+            from koli import autostart
         except Exception:
             self.skipTest('autostart not importable on this platform')
-        from whisper_key.utils import build_relaunch_command
+        from koli.utils import build_relaunch_command
         self.assertEqual(autostart._launch_command(), build_relaunch_command(windowless=True))
 
     # --- #4: macOS hotkeys must be able to suppress the underlying key ---
     def test_macos_hotkeys_use_event_tap_with_fallback(self):
-        source = (ROOT / 'src' / 'whisper_key' / 'platform' / 'macos' / 'hotkeys.py').read_text(encoding='utf-8')
+        source = (ROOT / 'src' / 'koli' / 'platform' / 'macos' / 'hotkeys.py').read_text(encoding='utf-8')
         self.assertIn('CGEventTapCreate', source, 'event tap needed to consume keystrokes')
         # The NSEvent monitor must survive as the no-permission fallback.
         self.assertIn('addGlobalMonitorForEventsMatchingMask_handler_', source)
@@ -1906,7 +1906,7 @@ class ReportedIssueHandlerTests(unittest.TestCase):
     def _listener(self):
         import unittest.mock as mock
         try:
-            from whisper_key.hotkey_listener import HotkeyListener
+            from koli.hotkey_listener import HotkeyListener
         except Exception:
             self.skipTest('hotkey_listener not importable on this platform')
         # Build without __init__ so no real hotkeys are registered by construction.
@@ -1933,7 +1933,7 @@ class ReportedIssueHandlerTests(unittest.TestCase):
         import unittest.mock as mock
         listener = self._listener()
         try:
-            from whisper_key.platform import hotkeys as hk
+            from koli.platform import hotkeys as hk
         except Exception:
             self.skipTest('platform hotkeys not importable')
 
@@ -1995,7 +1995,7 @@ class ReportedIssueHandlerTests(unittest.TestCase):
     def test_tray_restart_spawns_a_runnable_command(self):
         import unittest.mock as mock
         try:
-            from whisper_key.system_tray import SystemTray
+            from koli.system_tray import SystemTray
         except Exception:
             self.skipTest('system_tray not importable on this platform')
         tray = SystemTray.__new__(SystemTray)
@@ -2012,13 +2012,13 @@ class ReportedIssueHandlerTests(unittest.TestCase):
         # It must be runnable: either the app executable, or python -m.
         if len(cmd) > 1:
             self.assertIn('-m', cmd)
-            self.assertIn('whisper_key.main', cmd)
+            self.assertIn('koli.main', cmd)
 
     def test_tray_restart_does_not_exit_when_spawn_fails(self):
         # A failed relaunch must never leave the user with no app at all.
         import unittest.mock as mock
         try:
-            from whisper_key.system_tray import SystemTray
+            from koli.system_tray import SystemTray
         except Exception:
             self.skipTest('system_tray not importable on this platform')
         tray = SystemTray.__new__(SystemTray)
@@ -2040,7 +2040,7 @@ class MacOSHotkeyTests(unittest.TestCase):
         if sys.platform != 'darwin':
             self.skipTest('macOS-only')
         try:
-            from whisper_key.platform.macos import hotkeys
+            from koli.platform.macos import hotkeys
         except Exception as e:
             self.skipTest(f'pyobjc not available: {e}')
         return hotkeys
@@ -2086,7 +2086,7 @@ class UninstallSafetyTests(unittest.TestCase):
         import tempfile
         import unittest.mock as mock
         from pathlib import Path
-        from whisper_key import uninstall
+        from koli import uninstall
         with tempfile.TemporaryDirectory() as d:
             hub = Path(d) / 'hub'
             hub.mkdir()
@@ -2108,7 +2108,7 @@ class UninstallSafetyTests(unittest.TestCase):
     def test_no_models_selected_when_cache_absent(self):
         import unittest.mock as mock
         from pathlib import Path
-        from whisper_key import uninstall
+        from koli import uninstall
         with mock.patch.object(uninstall, '_hf_hub_root', return_value=Path('/nonexistent-xyz')):
             self.assertEqual(uninstall._our_cached_models(), [])
 
@@ -2119,9 +2119,9 @@ class UninstallSafetyTests(unittest.TestCase):
         import tempfile
         import unittest.mock as mock
         from pathlib import Path
-        from whisper_key import uninstall
+        from koli import uninstall
         with tempfile.TemporaryDirectory() as d:
-            cfg = Path(d) / 'whisperkey'
+            cfg = Path(d) / 'koli'
             cfg.mkdir()
             (cfg / 'user_settings.yaml').write_text('x', encoding='utf-8')
             with mock.patch.object(uninstall, 'get_user_app_data_path', return_value=str(cfg)),                  mock.patch.object(uninstall, '_our_cached_models', return_value=[]),                  mock.patch.object(uninstall, '_confirm', return_value=False):
@@ -2139,9 +2139,9 @@ class UninstallSafetyTests(unittest.TestCase):
         import tempfile
         import unittest.mock as mock
         from pathlib import Path
-        from whisper_key import uninstall
+        from koli import uninstall
         with tempfile.TemporaryDirectory() as d:
-            cfg = Path(d) / 'whisperkey'; cfg.mkdir()
+            cfg = Path(d) / 'koli'; cfg.mkdir()
             model = Path(d) / 'models--Systran--faster-whisper-base'; model.mkdir()
             (model / 'model.bin').write_bytes(b'x' * 100)
             answers = iter([True, False])   # yes to settings, NO to models
@@ -2155,7 +2155,7 @@ class UninstallSafetyTests(unittest.TestCase):
         import io
         import contextlib
         import unittest.mock as mock
-        from whisper_key import autostart, uninstall
+        from koli import autostart, uninstall
         # The real Start-on-login entry must not decide this test.
         with mock.patch.object(uninstall, 'get_user_app_data_path', return_value='/nonexistent-xyz'),              mock.patch.object(uninstall, '_our_cached_models', return_value=[]),              mock.patch.object(autostart, 'is_enabled', return_value=False),              mock.patch.object(uninstall, '_confirm', side_effect=AssertionError('must not prompt')):
             buf = io.StringIO()
@@ -2179,7 +2179,7 @@ class UserReportedSeptemberTests(unittest.TestCase):
         return cfg
 
     def test_filler_stripping_preserves_line_structure(self):
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         text = 'alpha like period new paragraph bravo new line charlie'
         without = postprocess(text, self._fmt_cfg(strip_filler_words=False))
         with_strip = postprocess(text, self._fmt_cfg(strip_filler_words=True))
@@ -2188,7 +2188,7 @@ class UserReportedSeptemberTests(unittest.TestCase):
         self.assertIn(LF + LF, with_strip, 'paragraph break must survive (issue #9)')
 
     def test_filler_stripping_still_removes_fillers(self):
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         got = postprocess('um hello uh there you know friend', {'strip_filler_words': True})
         for filler in ('um ', 'uh ', 'you know'):
             self.assertNotIn(filler, got)
@@ -2197,7 +2197,7 @@ class UserReportedSeptemberTests(unittest.TestCase):
     def test_filler_stripping_does_not_collapse_paragraphs(self):
         # The second half of the bug: even newlines that survived the filler
         # pattern were flattened by a blanket whitespace collapse.
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         self.assertEqual(postprocess('one' + LF + LF + 'two', {'strip_filler_words': True}),
                          'one' + LF + LF + 'two')
         # Runs of plain spaces SHOULD still collapse.
@@ -2211,7 +2211,7 @@ class UserReportedSeptemberTests(unittest.TestCase):
         for module, func in (('history_window', 'show_history'),
                              ('cheat_sheet', 'show_cheat_sheet')):
             try:
-                mod = __import__('whisper_key.' + module, fromlist=[func])
+                mod = __import__('koli.' + module, fromlist=[func])
             except Exception:
                 self.skipTest(module + ' not importable on this platform')
             source = inspect.getsource(getattr(mod, func))
@@ -2219,7 +2219,7 @@ class UserReportedSeptemberTests(unittest.TestCase):
                           func + ' must return its thread so the CLI can join it (issue #10)')
 
     def test_history_cli_joins_instead_of_sleeping(self):
-        source = (ROOT / 'src' / 'whisper_key' / 'main.py').read_text(encoding='utf-8')
+        source = (ROOT / 'src' / 'koli' / 'main.py').read_text(encoding='utf-8')
         block = source[source.index('if args.history:'):source.index('if args.enable_autostart:')]
         self.assertIn('.join()', block)
         self.assertNotIn('time.sleep(0.5)', block,
@@ -2230,7 +2230,7 @@ class UserReportedSeptemberTests(unittest.TestCase):
         # clipboard_manager pulls the platform keyboard backend and PIL,
         # neither of which the lean CI env installs.
         try:
-            from whisper_key.clipboard_manager import ClipboardManager
+            from koli.clipboard_manager import ClipboardManager
         except Exception:
             self.skipTest('clipboard_manager not importable in this env')
         c = ClipboardManager.__new__(ClipboardManager)
@@ -2247,7 +2247,7 @@ class UserReportedSeptemberTests(unittest.TestCase):
 
     def test_fallback_window_respects_clipboard_policy(self):
         import inspect
-        from whisper_key import fallback_window
+        from koli import fallback_window
         params = inspect.signature(fallback_window.FallbackWindow.show).parameters
         self.assertIn('allow_clipboard', params)
         body = inspect.getsource(fallback_window.FallbackWindow._run_window)
@@ -2257,7 +2257,7 @@ class UserReportedSeptemberTests(unittest.TestCase):
         self.assertIn('def _copy_again', body)
 
     def test_recovery_paths_check_the_policy(self):
-        source = (ROOT / 'src' / 'whisper_key' / 'state_manager.py').read_text(encoding='utf-8')
+        source = (ROOT / 'src' / 'koli' / 'state_manager.py').read_text(encoding='utf-8')
         self.assertEqual(source.count('silent_copy_allowed'), 2,
                          'both recovery paths (suppress + no-text-field) must check it')
 
@@ -2265,7 +2265,7 @@ class UserReportedSeptemberTests(unittest.TestCase):
     def test_copy_only_is_announced_once_per_rule(self):
         import unittest.mock as mock
         try:
-            from whisper_key.state_manager import StateManager
+            from koli.state_manager import StateManager
         except Exception:
             self.skipTest('state_manager not importable on this platform')
         sm = StateManager.__new__(StateManager)
@@ -2286,7 +2286,7 @@ class UserReportedSeptemberTests(unittest.TestCase):
         # Importing the platform package loads the OS backend (win32api /
         # AppKit), which the lean CI env doesn't install.
         try:
-            from whisper_key.platform import app as platform_app
+            from koli.platform import app as platform_app
         except Exception:
             self.skipTest('platform backend not importable in this env')
         self.assertTrue(hasattr(platform_app, 'run_on_ui_thread'))
@@ -2298,7 +2298,7 @@ class UserReportedSeptemberTests(unittest.TestCase):
         # Every AppKit-touching write must go through _on_ui_thread. A direct
         # assignment from a worker thread is an instant SIGTRAP on macOS 27.
         import re
-        source = (ROOT / 'src' / 'whisper_key' / 'system_tray.py').read_text(encoding='utf-8')
+        source = (ROOT / 'src' / 'koli' / 'system_tray.py').read_text(encoding='utf-8')
         offenders = []
         for i, line in enumerate(source.splitlines(), 1):
             stripped = line.strip()
@@ -2310,7 +2310,7 @@ class UserReportedSeptemberTests(unittest.TestCase):
                          'tray writes must be marshalled to the UI thread (issue #13)')
 
     def test_macos_marshal_uses_main_queue(self):
-        source = (ROOT / 'src' / 'whisper_key' / 'platform' / 'macos' / 'app.py').read_text(encoding='utf-8')
+        source = (ROOT / 'src' / 'koli' / 'platform' / 'macos' / 'app.py').read_text(encoding='utf-8')
         self.assertIn('NSThread.isMainThread()', source, 'fast path when already on main')
         self.assertIn('mainQueue', source, 'must dispatch to the main queue')
 
@@ -2323,7 +2323,7 @@ class UserReportedLateSeptemberTests(unittest.TestCase):
     def _load(self, relative_path, name):
         import importlib.util
         spec = importlib.util.spec_from_file_location(
-            name, str(ROOT / 'src' / 'whisper_key' / relative_path))
+            name, str(ROOT / 'src' / 'koli' / relative_path))
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         return module
@@ -2331,7 +2331,7 @@ class UserReportedLateSeptemberTests(unittest.TestCase):
     # --- #15: pip-installed CUDA libraries were on no DLL search path ---
     def test_nvidia_dll_dirs_are_found_in_site_packages(self):
         import tempfile
-        from whisper_key.utils import find_nvidia_dll_dirs
+        from koli.utils import find_nvidia_dll_dirs
         with tempfile.TemporaryDirectory() as root:
             for lib in ('cublas', 'cudnn', 'cuda_runtime'):
                 (Path(root) / 'nvidia' / lib / 'bin').mkdir(parents=True)
@@ -2342,7 +2342,7 @@ class UserReportedLateSeptemberTests(unittest.TestCase):
 
     def test_nvidia_dll_path_registers_both_loaders_on_windows(self):
         import unittest.mock as mock
-        from whisper_key import utils
+        from koli import utils
         dirs = [os.path.join('sp', 'nvidia', 'cublas', 'bin'),
                 os.path.join('sp', 'nvidia', 'cudnn', 'bin')]
         added = []
@@ -2360,14 +2360,14 @@ class UserReportedLateSeptemberTests(unittest.TestCase):
 
     def test_nvidia_dll_path_is_a_no_op_off_windows(self):
         import unittest.mock as mock
-        from whisper_key import utils
+        from koli import utils
         with mock.patch.object(utils.sys, 'platform', 'darwin'), \
              mock.patch.object(utils, 'find_nvidia_dll_dirs') as finder:
             utils.setup_nvidia_dll_path()
         finder.assert_not_called()
 
     def test_dll_path_is_set_up_before_the_ml_stack_imports(self):
-        source = (ROOT / 'src' / 'whisper_key' / 'main.py').read_text(encoding='utf-8')
+        source = (ROOT / 'src' / 'koli' / 'main.py').read_text(encoding='utf-8')
         self.assertLess(source.index('setup_nvidia_dll_path()'),
                         source.index('from .whisper_engine import'))
 
@@ -2435,7 +2435,7 @@ class UserReportedLateSeptemberTests(unittest.TestCase):
 
     def _fake_hardware_detection(self, missing):
         import types
-        fake = types.ModuleType('whisper_key.hardware_detection')
+        fake = types.ModuleType('koli.hardware_detection')
         fake.missing_gpu_libraries = lambda: list(missing)
         return fake
 
@@ -2452,9 +2452,9 @@ class UserReportedLateSeptemberTests(unittest.TestCase):
         fake_fw.WhisperModel = mock.Mock(name='WhisperModel')
         with mock.patch.dict(sys.modules, {
                 'faster_whisper': fake_fw,
-                'whisper_key.hardware_detection': self._fake_hardware_detection(['cudnn_ops64_9.dll'])}):
-            sys.modules.pop('whisper_key.whisper_engine', None)
-            from whisper_key.whisper_engine import WhisperEngine
+                'koli.hardware_detection': self._fake_hardware_detection(['cudnn_ops64_9.dll'])}):
+            sys.modules.pop('koli.whisper_engine', None)
+            from koli.whisper_engine import WhisperEngine
             # The engine prints emoji progress lines; main() switches stdout to
             # UTF-8 first, but a cp1252 test console (Windows CI) would choke.
             with self.assertRaises(RuntimeError) as ctx, contextlib.redirect_stdout(io.StringIO()):
@@ -2472,9 +2472,9 @@ class UserReportedLateSeptemberTests(unittest.TestCase):
         fake_fw.WhisperModel = mock.Mock(name='WhisperModel')
         with mock.patch.dict(sys.modules, {
                 'faster_whisper': fake_fw,
-                'whisper_key.hardware_detection': self._fake_hardware_detection(['cublas64_12.dll'])}):
-            sys.modules.pop('whisper_key.whisper_engine', None)
-            from whisper_key.whisper_engine import WhisperEngine
+                'koli.hardware_detection': self._fake_hardware_detection(['cublas64_12.dll'])}):
+            sys.modules.pop('koli.whisper_engine', None)
+            from koli.whisper_engine import WhisperEngine
             with contextlib.redirect_stdout(io.StringIO()):  # emoji vs a cp1252 console
                 WhisperEngine(model_key='base', device='cpu', compute_type='int8')
             fake_fw.WhisperModel.assert_called_once()
@@ -2487,7 +2487,7 @@ class UserReportedLateSeptemberTests(unittest.TestCase):
         import contextlib
         import unittest.mock as mock
         reimport_under(self, fake_platform_modules(getch=lambda: self.fail('must not wait for a keypress')))
-        from whisper_key import onboarding
+        from koli import onboarding
         with mock.patch.object(onboarding.sys, 'stdin', None), \
              mock.patch.object(onboarding, 'prompt_choice') as prompt, \
              contextlib.redirect_stdout(io.StringIO()):
@@ -2498,14 +2498,14 @@ class UserReportedLateSeptemberTests(unittest.TestCase):
         import io
         import contextlib
         import unittest.mock as mock
-        from whisper_key import doctor
+        from koli import doctor
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             with mock.patch.dict(sys.modules, {
-                    'whisper_key.hardware_detection': self._fake_hardware_detection(['cublas64_12.dll'])}):
+                    'koli.hardware_detection': self._fake_hardware_detection(['cublas64_12.dll'])}):
                 self.assertEqual(doctor._check_gpu_libraries(), 1)
             with mock.patch.dict(sys.modules, {
-                    'whisper_key.hardware_detection': self._fake_hardware_detection([])}):
+                    'koli.hardware_detection': self._fake_hardware_detection([])}):
                 self.assertEqual(doctor._check_gpu_libraries(), 0)
         self.assertIn('cublas64_12.dll', out.getvalue())
 
@@ -2513,13 +2513,13 @@ class UserReportedLateSeptemberTests(unittest.TestCase):
     def test_platform_app_mirrors_declare_the_tk_constraint(self):
         import re
         for plat, expected in (('macos', 'True'), ('windows', 'False')):
-            source = (ROOT / 'src' / 'whisper_key' / 'platform' / plat / 'app.py').read_text(encoding='utf-8')
+            source = (ROOT / 'src' / 'koli' / 'platform' / plat / 'app.py').read_text(encoding='utf-8')
             self.assertRegex(source, r'(?m)^TK_MAIN_THREAD_ONLY = ' + re.escape(expected) + '$',
                              plat + ' app.py must declare TK_MAIN_THREAD_ONLY (mirrored API)')
 
     def test_tk_constraint_helper(self):
         import unittest.mock as mock
-        from whisper_key.utils import tk_requires_main_thread
+        from koli.utils import tk_requires_main_thread
         for constraint in (True, False):
             with mock.patch.dict(sys.modules, fake_platform_modules(TK_MAIN_THREAD_ONLY=constraint)):
                 self.assertIs(tk_requires_main_thread(), constraint)
@@ -2578,11 +2578,11 @@ class UserReportedLateSeptemberTests(unittest.TestCase):
 
     def test_overlay_stands_down_where_tk_is_main_thread_only(self):
         import unittest.mock as mock
-        from whisper_key.level_overlay import LevelOverlay
+        from koli.level_overlay import LevelOverlay
         overlay = LevelOverlay(level_provider=lambda: 0.0)
         overlay._available = True  # as if tkinter were importable
-        with mock.patch('whisper_key.utils.tk_requires_main_thread', return_value=True), \
-             mock.patch('whisper_key.level_overlay.threading.Thread') as thread:
+        with mock.patch('koli.utils.tk_requires_main_thread', return_value=True), \
+             mock.patch('koli.level_overlay.threading.Thread') as thread:
             overlay.start()
         thread.assert_not_called()
         self.assertFalse(overlay._available, 'every later overlay call must be a no-op')
@@ -2592,7 +2592,7 @@ class UserReportedLateSeptemberTests(unittest.TestCase):
     def test_welcome_runs_inline_on_macos_and_threaded_elsewhere(self):
         import threading
         import unittest.mock as mock
-        from whisper_key import first_run
+        from koli import first_run
         seen = []
         done = threading.Event()
 
@@ -2601,9 +2601,9 @@ class UserReportedLateSeptemberTests(unittest.TestCase):
             done.set()
         event = threading.Event()
         with mock.patch.object(first_run, '_run_welcome', fake_run):
-            with mock.patch('whisper_key.utils.tk_requires_main_thread', return_value=True):
+            with mock.patch('koli.utils.tk_requires_main_thread', return_value=True):
                 first_run.show_welcome_window(shutdown_event=event)
-            with mock.patch('whisper_key.utils.tk_requires_main_thread', return_value=False):
+            with mock.patch('koli.utils.tk_requires_main_thread', return_value=False):
                 done.clear()
                 first_run.show_welcome_window(shutdown_event=event)
                 self.assertTrue(done.wait(2))
@@ -2657,7 +2657,7 @@ class UserReportedLateSeptemberTests(unittest.TestCase):
         tkinter.Frame = tkinter.Label = tkinter.Button = tkinter.Checkbutton = Widget
         tkinter.BooleanVar = BooleanVar
         on_close = mock.Mock()
-        from whisper_key import first_run
+        from koli import first_run
         with mock.patch.dict(sys.modules, {'tkinter': tkinter}), \
              mock.patch.object(first_run, 'mark_first_run_complete') as mark:
             first_run._run_welcome(on_close, 'CTRL+WIN', shutdown_event)
@@ -2684,7 +2684,7 @@ class UserReportedLateSeptemberTests(unittest.TestCase):
         on_close.assert_not_called()
 
     def test_main_hands_the_welcome_window_the_shutdown_event(self):
-        source = (ROOT / 'src' / 'whisper_key' / 'main.py').read_text(encoding='utf-8')
+        source = (ROOT / 'src' / 'koli' / 'main.py').read_text(encoding='utf-8')
         call = source[source.index('show_welcome_window('):]
         call = call[:call.index(')\n')]
         self.assertIn('shutdown_event=shutdown_event', call)
@@ -2692,8 +2692,8 @@ class UserReportedLateSeptemberTests(unittest.TestCase):
     # --- #14 follow-through: every other Tk window on macOS ---
     def test_windows_stay_in_process_where_tk_threads_are_fine(self):
         import unittest.mock as mock
-        from whisper_key import window_launcher
-        with mock.patch('whisper_key.utils.tk_requires_main_thread', return_value=False), \
+        from koli import window_launcher
+        with mock.patch('koli.utils.tk_requires_main_thread', return_value=False), \
              mock.patch.object(window_launcher.subprocess, 'Popen') as popen:
             self.assertFalse(window_launcher.open_in_child_process('cheat-sheet'))
         popen.assert_not_called()
@@ -2701,9 +2701,9 @@ class UserReportedLateSeptemberTests(unittest.TestCase):
     def test_macos_windows_open_in_a_child_with_the_payload_on_stdin(self):
         import json
         import unittest.mock as mock
-        from whisper_key import window_launcher
+        from koli import window_launcher
         child = mock.Mock()
-        with mock.patch('whisper_key.utils.tk_requires_main_thread', return_value=True), \
+        with mock.patch('koli.utils.tk_requires_main_thread', return_value=True), \
              mock.patch.object(window_launcher.subprocess, 'Popen', return_value=child) as popen, \
              mock.patch.object(window_launcher.threading, 'Thread'):
             handled = window_launcher.open_in_child_process('fallback', {'transcript': 'secret words'})
@@ -2717,22 +2717,22 @@ class UserReportedLateSeptemberTests(unittest.TestCase):
 
     def test_failed_spawn_never_falls_back_to_in_process_tk(self):
         import unittest.mock as mock
-        from whisper_key import window_launcher
-        with mock.patch('whisper_key.utils.tk_requires_main_thread', return_value=True), \
+        from koli import window_launcher
+        with mock.patch('koli.utils.tk_requires_main_thread', return_value=True), \
              mock.patch.object(window_launcher.subprocess, 'Popen', side_effect=OSError('nope')):
             self.assertTrue(window_launcher.open_in_child_process('add-word'))
 
     def test_child_runs_each_window_blocking_on_its_main_thread(self):
         import io
         import unittest.mock as mock
-        from whisper_key import window_launcher
-        for name, target in (('cheat-sheet', 'whisper_key.cheat_sheet.show_cheat_sheet'),
-                             ('add-word', 'whisper_key.dictionary.show_add_word_dialog'),
-                             ('history', 'whisper_key.history_window.show_history')):
+        from koli import window_launcher
+        for name, target in (('cheat-sheet', 'koli.cheat_sheet.show_cheat_sheet'),
+                             ('add-word', 'koli.dictionary.show_add_word_dialog'),
+                             ('history', 'koli.history_window.show_history')):
             with mock.patch(target) as show:
                 self.assertEqual(window_launcher.run_window(name, io.StringIO('')), 0)
             self.assertTrue(show.call_args.kwargs.get('blocking'), name + ' must run blocking')
-        with mock.patch('whisper_key.fallback_window.FallbackWindow._run_window') as run:
+        with mock.patch('koli.fallback_window.FallbackWindow._run_window') as run:
             code = window_launcher.run_window(
                 'fallback', io.StringIO('{"transcript": "hi", "reason": "r", "allow_clipboard": false}'))
         self.assertEqual(code, 0)
@@ -2741,11 +2741,11 @@ class UserReportedLateSeptemberTests(unittest.TestCase):
 
     def test_fallback_window_hands_off_instead_of_threading(self):
         import unittest.mock as mock
-        from whisper_key.fallback_window import FallbackWindow
+        from koli.fallback_window import FallbackWindow
         window = FallbackWindow()
         window._available = True
-        with mock.patch('whisper_key.window_launcher.open_in_child_process', return_value=True) as launch, \
-             mock.patch('whisper_key.fallback_window.threading.Thread') as thread:
+        with mock.patch('koli.window_launcher.open_in_child_process', return_value=True) as launch, \
+             mock.patch('koli.fallback_window.threading.Thread') as thread:
             window.show('dictated text', allow_clipboard=False)
         thread.assert_not_called()
         payload = launch.call_args.args[1]
@@ -2754,8 +2754,8 @@ class UserReportedLateSeptemberTests(unittest.TestCase):
         self.assertTrue(payload['reason'], 'the default reason must travel with it')
 
     def test_window_flag_choices_match_the_launcher(self):
-        from whisper_key.window_launcher import WINDOW_NAMES
-        source = (ROOT / 'src' / 'whisper_key' / 'main.py').read_text(encoding='utf-8')
+        from koli.window_launcher import WINDOW_NAMES
+        source = (ROOT / 'src' / 'koli' / 'main.py').read_text(encoding='utf-8')
         line = source[source.index("'--window'"):]
         line = line[:line.index('\n')]
         for name in WINDOW_NAMES:
@@ -2768,7 +2768,7 @@ class WisprStyleFeatureTests(unittest.TestCase):
 
     # --- Backtrack ---
     def test_backtrack_replaces_the_value_it_corrects(self):
-        from whisper_key.dictation_cleanup import apply_backtrack
+        from koli.dictation_cleanup import apply_backtrack
         cases = {
             "Let's meet at 2, actually 3 tomorrow.": "Let's meet at 3 tomorrow.",
             'Tuesday, no wait, Wednesday works.': 'Wednesday works.',
@@ -2781,7 +2781,7 @@ class WisprStyleFeatureTests(unittest.TestCase):
             self.assertEqual(apply_backtrack(spoken), typed, spoken)
 
     def test_backtrack_leaves_ordinary_prose_alone(self):
-        from whisper_key.dictation_cleanup import apply_backtrack
+        from koli.dictation_cleanup import apply_backtrack
         for text in ('I actually like it.', 'Sorry, 3 people are here.',
                      'It was 2. Actually 3 would be better.',   # never reaches across a sentence
                      'Meet Tuesday at 2, actually Friday.'):    # class mismatch picks the weekday
@@ -2790,21 +2790,21 @@ class WisprStyleFeatureTests(unittest.TestCase):
 
     def test_backtrack_is_linear_on_huge_dictations(self):
         import time
-        from whisper_key.dictation_cleanup import apply_backtrack
+        from koli.dictation_cleanup import apply_backtrack
         text = 'I actually think ' * 20000 + 'at 2 actually 3'
         start = time.monotonic()
         self.assertTrue(apply_backtrack(text).endswith('at 3'))
         self.assertLess(time.monotonic() - start, 2.0, 'must stay O(n)')
 
     def test_backtrack_runs_only_when_enabled(self):
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         self.assertEqual(postprocess('at 2 actually 3', {'voice_editing': False}), 'at 2 actually 3')
         self.assertEqual(postprocess('at 2 actually 3', {'backtrack': {'enabled': True}}), 'at 3')
         self.assertEqual(postprocess('at 2 swap 3', {'backtrack': {'enabled': True, 'cues': ['swap']}}), 'at 3')
 
     # --- Stutters ---
     def test_repeated_words_collapse_but_real_doubles_stay(self):
-        from whisper_key.dictation_cleanup import remove_repeated_words
+        from koli.dictation_cleanup import remove_repeated_words
         self.assertEqual(remove_repeated_words('I I think the the cat'), 'I think the cat')
         self.assertEqual(remove_repeated_words('We, we should go'), 'We should go')
         for keep in ('I had had enough', 'very very good', 'Bye bye', '11 11'):
@@ -2812,7 +2812,7 @@ class WisprStyleFeatureTests(unittest.TestCase):
 
     # --- Spoken lists ---
     def test_spoken_list_becomes_a_list(self):
-        from whisper_key.dictation_cleanup import apply_list_formatting
+        from koli.dictation_cleanup import apply_list_formatting
         self.assertEqual(apply_list_formatting('My list: first, milk. Second, eggs. Third, bread.'),
                          'My list:\n1. Milk\n2. Eggs\n3. Bread')
         self.assertEqual(apply_list_formatting('One, buy milk. Two, call mom, and three, pay rent.'),
@@ -2821,25 +2821,25 @@ class WisprStyleFeatureTests(unittest.TestCase):
                          '- Milk\n- Eggs')
 
     def test_prose_that_counts_is_not_a_list(self):
-        from whisper_key.dictation_cleanup import apply_list_formatting
+        from koli.dictation_cleanup import apply_list_formatting
         for text in ('One of the two options is fine.', 'First, we go.',
                      'First of all, hello. Second, world.'):
             self.assertEqual(apply_list_formatting(text), text)
 
     def test_list_takes_no_closing_period(self):
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         self.assertEqual(postprocess('first, milk. second, eggs.',
                                      {'list_formatting': True, 'ensure_punctuation': True}),
                          '1. Milk\n2. Eggs')
 
     # --- Lowercase / styles ---
     def test_lowercase_keeps_acronyms_mixed_case_and_taught_terms(self):
-        from whisper_key.dictation_cleanup import apply_lowercase
+        from koli.dictation_cleanup import apply_lowercase
         self.assertEqual(apply_lowercase('Hello There, NASA and iPhone and Rohit.', protected=['Rohit']),
                          'hello there, NASA and iPhone and Rohit.')
 
     def test_style_resolution(self):
-        from whisper_key.styles import resolve_style
+        from koli.styles import resolve_style
         self.assertTrue(resolve_style('very casual')['lowercase'])
         self.assertEqual(resolve_style('nope'), {}, 'unknown styles are ignored')
         self.assertEqual(resolve_style(''), {})
@@ -2847,7 +2847,7 @@ class WisprStyleFeatureTests(unittest.TestCase):
         self.assertEqual(custom, {'capitalize_first': True}, 'a style can only set formatting toggles')
 
     def test_style_precedence(self):
-        from whisper_key.app_rules import effective_postprocess_config
+        from koli.app_rules import effective_postprocess_config
         global_cfg = {'style': 'formal', 'capitalize_first': False}
         cfg = effective_postprocess_config(global_cfg)
         self.assertTrue(cfg['capitalize_first'], 'the global style wins over global toggles')
@@ -2859,14 +2859,14 @@ class WisprStyleFeatureTests(unittest.TestCase):
         self.assertFalse(cfg['lowercase'], "a rule's own toggle beats its style")
 
     def test_postprocess_applies_a_style_key(self):
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         self.assertEqual(postprocess('Hello There', {'style': 'formal'}), 'Hello There.')
         self.assertEqual(postprocess('Hello There.', {'style': 'very_casual'}), 'hello there')
 
     def test_shipped_app_rules_use_known_styles(self):
         from ruamel.yaml import YAML
-        from whisper_key.styles import STYLE_PRESETS
-        rules = YAML().load((ROOT / 'src' / 'whisper_key' / 'app_rules.defaults.yaml').read_text(encoding='utf-8'))['rules']
+        from koli.styles import STYLE_PRESETS
+        rules = YAML().load((ROOT / 'src' / 'koli' / 'app_rules.defaults.yaml').read_text(encoding='utf-8'))['rules']
         styles = [r['style'] for r in rules if 'style' in r]
         self.assertTrue(styles)
         for style in styles:
@@ -2880,13 +2880,13 @@ class WisprStyleFeatureTests(unittest.TestCase):
                  {'nonsense': True}, 'not even a dict']
 
     def test_snippet_expands_inline(self):
-        from whisper_key.snippets import expand_snippets
+        from koli.snippets import expand_snippets
         self.assertEqual(expand_snippets('Thanks. My signature.', self._SNIPPETS), ('Thanks. Best,\nRohit', False))
         self.assertEqual(expand_snippets('Thanks. my work signature', self._SNIPPETS)[0],
                          'Thanks. Rohit B.\nEngineer', 'the longer trigger wins')
 
     def test_whole_utterance_snippet_is_delivered_verbatim(self):
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         cfg = {'capitalize_first': True, 'ensure_punctuation': True, 'snippets': self._SNIPPETS}
         self.assertEqual(postprocess('My signature.', cfg), 'Best,\nRohit')
         self.assertEqual(postprocess('My address', cfg), '1 Main St')
@@ -2895,20 +2895,20 @@ class WisprStyleFeatureTests(unittest.TestCase):
 
     def test_snippet_expansion_is_literal_and_variables_fill_in(self):
         import datetime
-        from whisper_key.snippets import expand_snippets
+        from koli.snippets import expand_snippets
         self.assertEqual(expand_snippets('weird', self._SNIPPETS)[0], r'\1 $0 (.*)')
         today = datetime.date.today().strftime('%Y-%m-%d')
         text, _ = expand_snippets('stamp', [{'trigger': 'stamp', 'expansion': 'On ${date}'}])
         self.assertEqual(text, 'On ' + today)
 
     def test_lowercase_style_never_touches_a_snippet(self):
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         cfg = {'style': 'very_casual', 'snippets': self._SNIPPETS}
         self.assertEqual(postprocess('Thanks. My signature.', cfg), 'thanks. Best,\nRohit')
 
     # --- Double-tap lock ---
     def _latch(self, recording=True):
-        from whisper_key.hotkey_gestures import TapLatch
+        from koli.hotkey_gestures import TapLatch
         now = [0.0]
         timers = []
 
@@ -2972,8 +2972,8 @@ class WisprStyleFeatureTests(unittest.TestCase):
                      'faster_whisper', 'playsound3'):
             fakes[name] = _stand_in_module(name)
         reimport_under(self, fakes)
-        from whisper_key.hotkey_listener import HotkeyListener
-        from whisper_key.state_manager import StateManager
+        from koli.hotkey_listener import HotkeyListener
+        from koli.state_manager import StateManager
         return HotkeyListener, StateManager
 
     def _state_manager(self, last=None, state='idle'):
@@ -3050,8 +3050,8 @@ class WisprStyleFeatureTests(unittest.TestCase):
     def test_startup_resets_a_saved_shortcut_with_an_unusable_key(self):
         import unittest.mock as mock
         self._import_app_modules()
-        import whisper_key.main as main
-        from whisper_key.platform import hotkeys
+        import koli.main as main
+        from koli.platform import hotkeys
         hotkeys.unsupported_keys = lambda combo: [k for k in combo.split('+') if k == '~']
         cm = mock.Mock()
         cm._defaults_baseline = {'hotkey': {'recording_hotkey': 'ctrl+win'}}
@@ -3072,7 +3072,7 @@ class WisprStyleFeatureTests(unittest.TestCase):
             import numpy as np
         except ImportError:
             self.skipTest('numpy not installed')
-        from whisper_key.audio_gain import boost_quiet_audio, TARGET_PEAK
+        from koli.audio_gain import boost_quiet_audio, TARGET_PEAK
         t = np.linspace(0, 1, 16000, dtype=np.float32)
         quiet = (0.1 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)  # needs 6x, under the 8x cap
         boosted = boost_quiet_audio(quiet, max_gain=8.0)
@@ -3088,7 +3088,7 @@ class WisprStyleFeatureTests(unittest.TestCase):
     # --- Config & settings ---
     def test_new_settings_ship_with_safe_defaults(self):
         from ruamel.yaml import YAML
-        cfg = YAML().load((ROOT / 'src' / 'whisper_key' / 'config.defaults.yaml').read_text(encoding='utf-8'))
+        cfg = YAML().load((ROOT / 'src' / 'koli' / 'config.defaults.yaml').read_text(encoding='utf-8'))
         pp = cfg['postprocess']
         self.assertFalse(pp['backtrack']['enabled'])
         self.assertFalse(pp['remove_repeated_words'])
@@ -3106,25 +3106,25 @@ class ReleaseReviewFixTests(unittest.TestCase):
     come back."""
 
     def test_backtrack_handles_decimals_and_money(self):
-        from whisper_key.dictation_cleanup import apply_backtrack
+        from koli.dictation_cleanup import apply_backtrack
         self.assertEqual(apply_backtrack('The rate is 2.5, actually 3'), 'The rate is 3')
         self.assertEqual(apply_backtrack('It costs $1.50, sorry, $2'), 'It costs $2')
         self.assertEqual(apply_backtrack('Version 3.1, I mean 4'), 'Version 4')
 
     def test_backtrack_am_pm_needs_a_word_end(self):
-        from whisper_key.dictation_cleanup import apply_backtrack
+        from koli.dictation_cleanup import apply_backtrack
         self.assertEqual(apply_backtrack('I have 2 amazing kids, actually 3'), 'I have 3 amazing kids')
 
     def test_backtrack_leaves_prose_after_a_cue_alone(self):
-        from whisper_key.dictation_cleanup import apply_backtrack
+        from koli.dictation_cleanup import apply_backtrack
         for text in ('We saw 3 movies, actually one of them was great',
                      'I have 2 questions, actually one more thing',
                      'Invite 2 guests, actually 3 amazing people'):
             self.assertEqual(apply_backtrack(text), text)
 
     def test_backtrack_string_cue_is_one_cue(self):
-        from whisper_key.dictation_cleanup import apply_backtrack
-        from whisper_key.text_postprocess import postprocess
+        from koli.dictation_cleanup import apply_backtrack
+        from koli.text_postprocess import postprocess
         self.assertEqual(apply_backtrack('I bought 2 apples and a 3 pack', 'actually'),
                          'I bought 2 apples and a 3 pack')
         self.assertEqual(postprocess('at 2 actually 3', {'backtrack': {'enabled': True, 'cues': 'actually'}}),
@@ -3132,7 +3132,7 @@ class ReleaseReviewFixTests(unittest.TestCase):
 
     def test_backtrack_stays_linear_with_many_corrections(self):
         import time
-        from whisper_key.dictation_cleanup import apply_backtrack
+        from koli.dictation_cleanup import apply_backtrack
         text = 'at 2 tomorrow actually 3. ' * 20000
         start = time.monotonic()
         result = apply_backtrack(text)
@@ -3140,37 +3140,37 @@ class ReleaseReviewFixTests(unittest.TestCase):
         self.assertTrue(result.startswith('at 3 tomorrow. at 3 tomorrow.'))
 
     def test_stutter_removal_respects_contractions_and_clauses(self):
-        from whisper_key.dictation_cleanup import remove_repeated_words
+        from koli.dictation_cleanup import remove_repeated_words
         for text in ("Thank you, you're welcome.", "You can, can't you?",
                      "If you want it, it's yours.", 'Whatever you choose, choose wisely.'):
             self.assertEqual(remove_repeated_words(text), text)
         self.assertEqual(remove_repeated_words('Ok. I, I think so'), 'Ok. I think so')
 
     def test_list_ends_at_its_last_sentence(self):
-        from whisper_key.dictation_cleanup import apply_list_formatting
+        from koli.dictation_cleanup import apply_list_formatting
         self.assertEqual(apply_list_formatting('Groceries: first, milk. second, eggs. See you tonight.'),
                          'Groceries:\n1. Milk\n2. Eggs\n\nSee you tonight.')
 
     def test_odd_case_folding_never_raises(self):
-        from whisper_key.dictation_cleanup import apply_list_formatting
-        from whisper_key.snippets import expand_snippets
+        from koli.dictation_cleanup import apply_list_formatting
+        from koli.snippets import expand_snippets
         self.assertEqual(apply_list_formatting('FİRST, milk. second, eggs.'), 'FİRST, milk. second, eggs.')
         expand_snippets('say fİve now', [{'trigger': 'five', 'expansion': '5'}])
 
     def test_snippet_keeps_sentence_punctuation_mid_text(self):
-        from whisper_key.snippets import expand_snippets
+        from koli.snippets import expand_snippets
         text, _ = expand_snippets('Send it to my email, then call me. My email.',
                                   [{'trigger': 'my email', 'expansion': 'me@x.com'}])
         self.assertEqual(text, 'Send it to me@x.com, then call me. me@x.com')
 
     def test_lowercase_keeps_contracted_i_and_multiword_terms(self):
-        from whisper_key.dictation_cleanup import apply_lowercase
+        from koli.dictation_cleanup import apply_lowercase
         self.assertEqual(apply_lowercase("I'm sure Rohit Burani and I'll Go", protected=['Rohit Burani']),
                          "I'm sure Rohit Burani and I'll go")
 
     def test_settings_save_keeps_custom_styles_and_corrections(self):
         reimport_under(self, fake_platform_modules())  # config_manager imports the platform layer
-        from whisper_key.config_manager import _compute_overrides
+        from koli.config_manager import _compute_overrides
         defaults = {'postprocess': {'styles': {}, 'corrections': {}, 'style': ''}}
         user = {'postprocess': {'styles': {'shouty': {'capitalize_first': True}},
                                 'corrections': {'CAPEX': ['cap x']}, 'style': 'shouty'}}
@@ -3179,13 +3179,13 @@ class ReleaseReviewFixTests(unittest.TestCase):
         self.assertIn('CAPEX', kept['corrections'])
 
     def test_verbatim_keeps_spoken_formatting(self):
-        from whisper_key.styles import resolve_style
+        from koli.styles import resolve_style
         self.assertNotIn('inline_formatting', resolve_style('verbatim'),
                          '"new line" / "comma" must keep working in code editors')
 
     def test_specific_app_rules_come_before_title_matches(self):
         from ruamel.yaml import YAML
-        rules = YAML().load((ROOT / 'src' / 'whisper_key' / 'app_rules.defaults.yaml').read_text(encoding='utf-8'))['rules']
+        rules = YAML().load((ROOT / 'src' / 'koli' / 'app_rules.defaults.yaml').read_text(encoding='utf-8'))['rules']
         order = [r['match'][0] for r in rules]
         self.assertLess(order.index('code.exe'), order.index('slack.exe'),
                         'a VS Code window titled "slack_bot.py" must not auto-send')
@@ -3193,7 +3193,7 @@ class ReleaseReviewFixTests(unittest.TestCase):
 
     # --- Hands-free lock vs a stop key inside the record chord ---
     def _latch(self, recording=True):
-        from whisper_key.hotkey_gestures import TapLatch
+        from koli.hotkey_gestures import TapLatch
         now = [0.0]
         events = []
 
@@ -3256,7 +3256,7 @@ class ReleaseReviewFixTests(unittest.TestCase):
         helper.addCleanup = self.addCleanup
         helper.skipTest = self.skipTest
         helper._import_app_modules()
-        from whisper_key.audio_recorder import AudioRecorder
+        from koli.audio_recorder import AudioRecorder
         parse = AudioRecorder._parse_whisper_mode
         self.assertIsNone(parse(True))
         self.assertIsNone(parse({'enabled': False}))
@@ -3265,22 +3265,22 @@ class ReleaseReviewFixTests(unittest.TestCase):
         self.assertEqual(parse({'enabled': True, 'max_gain': 4}), 4.0)
 
     def test_whisper_mode_boosts_after_silence_trimming(self):
-        source = (ROOT / 'src' / 'whisper_key' / 'audio_recorder.py').read_text(encoding='utf-8')
+        source = (ROOT / 'src' / 'koli' / 'audio_recorder.py').read_text(encoding='utf-8')
         body = source[source.index('def _build_audio_array'):source.index('def _parse_whisper_mode')]
         self.assertLess(body.index('_trim_trailing_silence(audio_array)'), body.index('boost_quiet_audio('),
                         'a boosted noise floor would defeat the anti-hallucination trims')
 
     def test_settings_window_tolerates_non_mapping_sections(self):
-        source = (ROOT / 'src' / 'whisper_key' / 'settings_ui.py').read_text(encoding='utf-8')
+        source = (ROOT / 'src' / 'koli' / 'settings_ui.py').read_text(encoding='utf-8')
         self.assertIn("wm = wm if isinstance(wm, dict) else {}", source)
         self.assertIn("bt = bt if isinstance(bt, dict) else {}", source)
 
     def test_bad_numeric_hotkey_setting_falls_back(self):
-        source = (ROOT / 'src' / 'whisper_key' / 'main.py').read_text(encoding='utf-8')
+        source = (ROOT / 'src' / 'koli' / 'main.py').read_text(encoding='utf-8')
         self.assertIn("_int_setting(hotkey_config.get('double_tap_window_ms'), 400)", source)
 
     def test_yaml_no_means_off(self):
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         self.assertEqual(postprocess('first, milk. second, eggs', {'list_formatting': 'no'}),
                          'first, milk. second, eggs')
         self.assertEqual(postprocess('first, milk. second, eggs', {'list_formatting': 'yes'}),
@@ -3325,7 +3325,7 @@ class LayeredDefaultsTests(unittest.TestCase):
 
     def _load_rules(self):
         import unittest.mock as mock
-        import whisper_key.app_rules as ar
+        import koli.app_rules as ar
         with mock.patch.object(ar, 'get_user_app_data_path', return_value=str(self.dir)):
             return ar.AppRules().rules
 
@@ -3341,7 +3341,7 @@ class LayeredDefaultsTests(unittest.TestCase):
         # An id-less shipped rule could never be overridden or disabled, and a
         # migration would keep re-adding the user's copy of it as a duplicate.
         from ruamel.yaml import YAML
-        path = ROOT / 'src' / 'whisper_key' / 'app_rules.defaults.yaml'
+        path = ROOT / 'src' / 'koli' / 'app_rules.defaults.yaml'
         with open(path, encoding='utf-8') as f:
             shipped = YAML().load(f)['rules']
         ids = [r.get('id') for r in shipped]
@@ -3428,7 +3428,7 @@ class LayeredDefaultsTests(unittest.TestCase):
     def test_a_broken_package_falls_back_to_the_user_file(self):
         # Losing the shipped file must not throw the user's own rules away.
         import unittest.mock as mock
-        import whisper_key.defaults_merge as dm
+        import koli.defaults_merge as dm
         self._write('app_rules.yaml', 'format: 2\nrules:\n  - match: ["mytool.exe"]\n')
         with mock.patch.object(dm, 'resolve_asset_path', return_value=str(self.dir / 'nope.yaml')):
             merged, _ = dm.load_layered('nope.yaml', self.dir / 'app_rules.yaml',
@@ -3437,7 +3437,7 @@ class LayeredDefaultsTests(unittest.TestCase):
 
     def test_profiles_active_falls_back_to_the_shipped_default(self):
         import unittest.mock as mock
-        import whisper_key.profiles as pf
+        import koli.profiles as pf
         with mock.patch.object(pf, 'get_user_app_data_path', return_value=str(self.dir)):
             manager = pf.ProfileManager(config_manager=mock.MagicMock())
         self.assertEqual(manager.active, 'dictation')
@@ -3446,7 +3446,7 @@ class LayeredDefaultsTests(unittest.TestCase):
 
     def test_profiles_migration_preserves_the_active_choice(self):
         import unittest.mock as mock
-        import whisper_key.profiles as pf
+        import koli.profiles as pf
         self._write('profiles.yaml',
                     'active: code\nprofiles:\n  code:\n    description: Mine\n')
         with mock.patch.object(pf, 'get_user_app_data_path', return_value=str(self.dir)):
@@ -3458,7 +3458,7 @@ class LayeredDefaultsTests(unittest.TestCase):
     def test_transform_override_inherits_the_prompt(self):
         import unittest.mock as mock
         try:
-            import whisper_key.transforms as tr
+            import koli.transforms as tr
         except ImportError as e:
             self.skipTest(f'transforms needs deps the lean env lacks: {e}')
         self._write('transforms.yaml',
@@ -3478,7 +3478,7 @@ class LayeredDefaultsTests(unittest.TestCase):
         import unittest.mock as mock
         reimport_under(self, fake_platform_modules())
         try:
-            import whisper_key.voice_commands as vc
+            import koli.voice_commands as vc
         except ImportError as e:
             self.skipTest(f'voice_commands needs deps the lean env lacks: {e}')
         self._write('commands.yaml',
@@ -3491,7 +3491,7 @@ class LayeredDefaultsTests(unittest.TestCase):
         self.assertEqual(swapped['type'], 'maximised')
 
     def test_dispatcher_tests_action_values_not_key_presence(self):
-        source = (ROOT / 'src' / 'whisper_key' / 'voice_commands.py').read_text(encoding='utf-8')
+        source = (ROOT / 'src' / 'koli' / 'voice_commands.py').read_text(encoding='utf-8')
         body = source[source.index('def _execute_action'):]
         body = body[:body.index('def ', 10)]
         for key in ('run', 'hotkey', 'type', 'rephrase'):
@@ -3501,7 +3501,7 @@ class LayeredDefaultsTests(unittest.TestCase):
     def test_doctor_reports_the_effective_counts(self):
         # The user file holds overrides only, so counting its entries would tell
         # someone they have 0 rules while five are in force.
-        source = (ROOT / 'src' / 'whisper_key' / 'doctor.py').read_text(encoding='utf-8')
+        source = (ROOT / 'src' / 'koli' / 'doctor.py').read_text(encoding='utf-8')
         self.assertIn('rules in effect', source)
         self.assertIn('Voice commands in effect', source)
 
@@ -3519,7 +3519,7 @@ class LayeredDefaultsTests(unittest.TestCase):
         self.assertEqual(chat[0]['match'], ['slack.exe', 'telegram.exe'])
         self.assertEqual([r for r in rules if not r.get('id')], [],
                          'it should have become an override, not a rule of its own')
-        import whisper_key.app_rules as ar
+        import koli.app_rules as ar
         matcher = ar.AppRules._matches
         self.assertFalse(any(matcher(None, r, 'discord.exe', '') for r in rules),
                          'discord was removed from the list but still matches')
@@ -3542,7 +3542,7 @@ class LayeredDefaultsTests(unittest.TestCase):
         # A list-shaped section must not come back as a dict just because the
         # shipped file is unreadable: the callers iterate it.
         import unittest.mock as mock
-        import whisper_key.defaults_merge as dm
+        import koli.defaults_merge as dm
         missing = str(self.dir / 'nope.yaml')
         with mock.patch.object(dm, 'resolve_asset_path', return_value=missing):
             commands, _ = dm.load_layered('nope.yaml', self.dir / 'commands.yaml',
@@ -3554,7 +3554,7 @@ class LayeredDefaultsTests(unittest.TestCase):
 
     def test_a_corrupt_shipped_file_does_not_crash_the_loader(self):
         import unittest.mock as mock
-        import whisper_key.defaults_merge as dm
+        import koli.defaults_merge as dm
         bad = self.dir / 'bad.defaults.yaml'
         bad.write_text('rules:' + LF + '  - match: ["a.exe"' + LF, encoding='utf-8')
         self._write('app_rules.yaml', 'format: 2' + LF + 'rules: []' + LF)
@@ -3570,9 +3570,9 @@ class LayeredDefaultsTests(unittest.TestCase):
 
 def _defaults_getter():
     import yaml
-    from whisper_key.config_manager import _resolve_platform_values
+    from koli.config_manager import _resolve_platform_values
     defaults = _resolve_platform_values(yaml.safe_load(
-        (ROOT / 'src' / 'whisper_key' / 'config.defaults.yaml').read_text(encoding='utf-8')))
+        (ROOT / 'src' / 'koli' / 'config.defaults.yaml').read_text(encoding='utf-8')))
 
     def get(path):
         node = defaults
@@ -3587,7 +3587,7 @@ def _defaults_getter():
 class SimpleModeTests(unittest.TestCase):
     def test_factory_defaults_match_a_named_text_style(self):
         # A new user must see one of the choices picked, not "custom".
-        from whisper_key.settings import simple_mode
+        from koli.settings import simple_mode
         _, get = _defaults_getter()
         self.assertEqual(simple_mode.from_settings(get)['look'], 'standard')
 
@@ -3597,7 +3597,7 @@ class GpuFailureWithoutPromptTests(unittest.TestCase):
         # With the app window there may be no console to answer a prompt, so a
         # GPU load failure must never block on one.
         import unittest.mock as mock
-        from whisper_key import onboarding
+        from koli import onboarding
         with mock.patch.object(onboarding, 'prompt_choice') as ask, \
                 mock.patch.object(onboarding, 'restart_or_exit') as restart:
             onboarding.handle_gpu_failure(RuntimeError('CUDA libraries not found'), mock.MagicMock(), ask=False)
@@ -3609,12 +3609,12 @@ class FirstLaunchModeTests(unittest.TestCase):
     def test_settings_the_app_writes_by_itself_do_not_make_an_upgrade(self):
         # On first start the app saves the audio driver it picked and the GPU
         # onboarding state; a brand-new user must still get the welcome steps.
-        from whisper_key.settings import simple_mode
+        from koli.settings import simple_mode
         fresh = {'audio': {'host': 'Windows WASAPI'}, 'onboarding': {'gpu': 'no_gpu'}, 'server': {'enabled': False}}
         self.assertFalse(simple_mode.is_existing_user(fresh))
 
     def test_a_changed_setting_means_an_existing_user(self):
-        from whisper_key.settings import simple_mode
+        from koli.settings import simple_mode
         self.assertTrue(simple_mode.is_existing_user({'audio': {'host': 'MME', 'channels': 2}}))
         self.assertTrue(simple_mode.is_existing_user({'whisper': {'model': 'small'}}))
 
@@ -3623,14 +3623,14 @@ class InstanceIpcTests(unittest.TestCase):
     def setUp(self):
         import tempfile
         import unittest.mock as mock
-        from whisper_key.ui import instance_ipc
+        from koli.ui import instance_ipc
         self.ipc = instance_ipc
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         patcher = mock.patch.object(instance_ipc, 'get_user_app_data_path', return_value=tmp.name)
         patcher.start()
         self.addCleanup(patcher.stop)
-        self.name = f'WhisperKeyLocal_unittest_{os.getpid()}_{self._testMethodName[-12:]}'
+        self.name = f'Koli_unittest_{os.getpid()}_{self._testMethodName[-12:]}'
 
     def _listen(self, **handlers):
         import threading
@@ -3667,7 +3667,7 @@ class SettingsSchemaTests(unittest.TestCase):
     # Fails if a new key is added to config.defaults.yaml without a schema
     # entry (it would be missing from the app's Settings screen).
     def test_every_default_setting_has_a_schema_entry(self):
-        from whisper_key.settings import schema
+        from koli.settings import schema
         defaults, _ = _defaults_getter()
         missing = [p for p in schema.leaf_paths(defaults) if schema.get(p) is None]
         self.assertEqual(missing, [])
@@ -3675,7 +3675,7 @@ class SettingsSchemaTests(unittest.TestCase):
     # Fails if an entry points at a key that doesn't exist (a typo, or a key
     # that was renamed), unless it is marked optional.
     def test_every_schema_entry_points_at_a_real_setting(self):
-        from whisper_key.settings import schema
+        from koli.settings import schema
         defaults, _ = _defaults_getter()
 
         def exists(path):
@@ -3689,7 +3689,7 @@ class SettingsSchemaTests(unittest.TestCase):
         self.assertEqual(broken, [])
 
     def test_choices_coerce_from_strings_and_reject_unknown_values(self):
-        from whisper_key.settings import schema
+        from koli.settings import schema
         channels = schema.get('audio.channels')
         self.assertEqual(schema.coerce(channels, '2'), 2)
         with self.assertRaises(ValueError):
@@ -3703,7 +3703,7 @@ class SimpleModeRoundTripTests(unittest.TestCase):
     # the Simple screen would show a different choice than the one picked.
     def test_answers_read_back_after_they_are_applied(self):
         import copy
-        from whisper_key.settings import simple_mode
+        from koli.settings import simple_mode
         defaults, _ = _defaults_getter()
         cases = [('look', 'clean'), ('look', 'relaxed'), ('look', 'exact'), ('look', 'standard'),
                  ('where', 'copy'), ('where', 'type'), ('start', 'press'), ('start', 'hold'),
@@ -3751,7 +3751,7 @@ class _FakeConfig:
 
 class SettingsServiceTests(unittest.TestCase):
     def setUp(self):
-        from whisper_key.settings.service import SettingsService
+        from koli.settings.service import SettingsService
         defaults, _ = _defaults_getter()
         self.cm = _FakeConfig(defaults)
         self.svc = SettingsService(self.cm)
@@ -3771,7 +3771,7 @@ class SettingsServiceTests(unittest.TestCase):
         self.assertTrue(self.cm.get_path('audio_feedback.enabled'))
 
     def test_a_shortcut_already_in_use_is_refused(self):
-        from whisper_key.settings.service import SettingsError
+        from koli.settings.service import SettingsError
         taken = self.cm.get_path('hotkey.paste_last_hotkey')
         with self.assertRaises(SettingsError):
             self.svc.set('hotkey.recording_hotkey', taken)
@@ -3781,9 +3781,9 @@ class SettingsServiceTests(unittest.TestCase):
     # the page shows the error and the previous shortcut stays.
     def test_a_key_the_backend_cannot_register_is_refused(self):
         import unittest.mock as mock
-        from whisper_key.settings.service import SettingsError
+        from koli.settings.service import SettingsError
         modules = fake_platform_modules()
-        modules['whisper_key.platform.hotkeys'].unsupported_keys = (
+        modules['koli.platform.hotkeys'].unsupported_keys = (
             lambda combo: [k for k in combo.split('+') if k == '~'])
         before = self.cm.get_path('hotkey.recording_hotkey')
         with mock.patch.dict(sys.modules, modules):
@@ -3796,7 +3796,7 @@ class SettingsServiceTests(unittest.TestCase):
     # If registering still fails while applying, the saved value goes back too.
     def test_a_shortcut_that_fails_to_register_is_not_kept(self):
         import unittest.mock as mock
-        from whisper_key.settings.service import SettingsError
+        from koli.settings.service import SettingsError
         self.svc.appliers = mock.Mock()
         self.svc.appliers.apply.side_effect = Exception('not a valid virtual keystroke')
         before = self.cm.get_path('hotkey.recording_hotkey')
@@ -3807,7 +3807,7 @@ class SettingsServiceTests(unittest.TestCase):
 
     def test_windows_backend_names_the_keys_it_cannot_register(self):
         try:
-            from whisper_key.platform.windows.hotkeys import unsupported_keys
+            from koli.platform.windows.hotkeys import unsupported_keys
         except Exception:
             self.skipTest('global_hotkeys not installed')
         self.assertEqual(unsupported_keys('ctrl+~'), ['~'])
@@ -3816,12 +3816,12 @@ class SettingsServiceTests(unittest.TestCase):
             self.assertEqual(unsupported_keys(ok), [], ok)
 
     def test_settings_the_app_manages_cannot_be_changed_from_the_page(self):
-        from whisper_key.settings.service import SettingsError
+        from koli.settings.service import SettingsError
         with self.assertRaises(SettingsError):
             self.svc.set('ui.welcome_done', True)
 
     def test_a_change_is_announced_to_the_window(self):
-        from whisper_key.ui import events
+        from koli.ui import events
         seen = []
         unsubscribe = events.get_bus().subscribe('settings', lambda t, p: seen.append(p))
         self.addCleanup(unsubscribe)
@@ -3831,7 +3831,7 @@ class SettingsServiceTests(unittest.TestCase):
 
 class EventBusTests(unittest.TestCase):
     def test_a_broken_subscriber_does_not_stop_the_others(self):
-        from whisper_key.ui.events import EventBus
+        from koli.ui.events import EventBus
         bus = EventBus()
         got = []
 
@@ -3843,7 +3843,7 @@ class EventBusTests(unittest.TestCase):
         self.assertEqual(got, [('state', {'state': 'recording'})])
 
     def test_unsubscribe_stops_delivery(self):
-        from whisper_key.ui.events import EventBus
+        from koli.ui.events import EventBus
         bus = EventBus()
         got = []
         off = bus.subscribe('level', lambda t, p: got.append(p))
@@ -3855,9 +3855,9 @@ class EventBusTests(unittest.TestCase):
 class LogStreamTests(unittest.TestCase):
     def test_records_are_kept_in_order_for_the_console(self):
         import logging
-        from whisper_key.ui.log_stream import LogStreamHandler
+        from koli.ui.log_stream import LogStreamHandler
         handler = LogStreamHandler()
-        log = logging.getLogger('whisper_key.test_log_stream')
+        log = logging.getLogger('koli.test_log_stream')
         log.addHandler(handler)
         log.setLevel(logging.DEBUG)
         self.addCleanup(log.removeHandler, handler)
@@ -3875,7 +3875,7 @@ class PostprocessTraceTests(unittest.TestCase):
     # The Live screen's "Clean-up" step lists what changed; it must name the
     # steps that changed the text and only those.
     def test_trace_names_the_steps_that_changed_the_text(self):
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         defaults, _ = _defaults_getter()
         cfg = dict(defaults['postprocess'], strip_filler_words=True)
         trace = []
@@ -3884,7 +3884,7 @@ class PostprocessTraceTests(unittest.TestCase):
         self.assertIn('filler_words', trace)
 
     def test_unchanged_text_leaves_an_empty_trace(self):
-        from whisper_key.text_postprocess import postprocess
+        from koli.text_postprocess import postprocess
         defaults, _ = _defaults_getter()
         trace = []
         postprocess('Hello there.', defaults['postprocess'], trace=trace)
@@ -3894,18 +3894,18 @@ class PostprocessTraceTests(unittest.TestCase):
 class LayeredWriteApiTests(unittest.TestCase):
     def setUp(self):
         import tempfile
-        from whisper_key import app_rules
+        from koli import app_rules
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.user = Path(tmp.name) / 'app_rules.yaml'
         self.defaults = app_rules.DEFAULTS_FILE
 
     def _view(self):
-        from whisper_key import defaults_merge as dm
+        from koli import defaults_merge as dm
         return dm.layered_view(self.defaults, self.user, 'rules', '', id_key='id')
 
     def test_own_rule_is_added_before_the_shipped_ones_and_can_be_deleted(self):
-        from whisper_key import defaults_merge as dm
+        from koli import defaults_merge as dm
         new_id = dm.save_entry(self.defaults, self.user, 'rules', '', {'match': ['notepad.exe'], 'auto_paste': False})
         view = self._view()
         self.assertEqual(view[0]['origin'], 'yours')
@@ -3914,7 +3914,7 @@ class LayeredWriteApiTests(unittest.TestCase):
         self.assertNotIn('yours', [v['origin'] for v in self._view()])
 
     def test_turning_off_a_shipped_rule_keeps_it_listed_as_off(self):
-        from whisper_key import defaults_merge as dm
+        from koli import defaults_merge as dm
         dm.set_entry_disabled(self.defaults, self.user, 'rules', '', 'terminals', True)
         terminals = [v for v in self._view() if v['id'] == 'terminals'][0]
         self.assertTrue(terminals['disabled'])
@@ -3927,7 +3927,7 @@ class BridgeEnvelopeTests(unittest.TestCase):
     # Every page call gets {ok, data} or {ok: False, error}; an exception must
     # never reach the page as a pywebview failure.
     def test_results_and_errors_are_wrapped(self):
-        from whisper_key.ui.bridge import _api
+        from koli.ui.bridge import _api
 
         class Fake:
             @_api
@@ -3942,7 +3942,7 @@ class BridgeEnvelopeTests(unittest.TestCase):
 
 
 class WebPagesTests(unittest.TestCase):
-    WEB = ROOT / 'src' / 'whisper_key' / 'ui' / 'web'
+    WEB = ROOT / 'src' / 'koli' / 'ui' / 'web'
 
     # The app shows every question in an in-page dialog; browser popups block
     # the window and look broken.
@@ -3981,18 +3981,18 @@ class UiModulesImportTests(unittest.TestCase):
         import importlib
         import unittest.mock as mock
         with mock.patch.dict(sys.modules, {'webview': None}):
-            for name in ('whisper_key.ui.events', 'whisper_key.ui.log_stream', 'whisper_key.ui.tasks',
-                         'whisper_key.ui.instance_ipc', 'whisper_key.settings.schema',
-                         'whisper_key.settings.simple_mode', 'whisper_key.settings.service'):
+            for name in ('koli.ui.events', 'koli.ui.log_stream', 'koli.ui.tasks',
+                         'koli.ui.instance_ipc', 'koli.settings.schema',
+                         'koli.settings.simple_mode', 'koli.settings.service'):
                 importlib.import_module(name)
-            from whisper_key.ui import host
+            from koli.ui import host
             ok, reason = host.ui_available()
             self.assertFalse(ok)
             self.assertTrue(reason)
 
     def test_missing_webview2_falls_back_with_a_reason(self):
         import unittest.mock as mock
-        from whisper_key.ui import host, win32
+        from koli.ui import host, win32
         if host.ui_available()[1].startswith('pywebview'):
             self.skipTest('pywebview not installed here')
         with mock.patch.object(win32, 'IS_WINDOWS', True), mock.patch.object(win32, 'webview2_version', return_value=None):
@@ -4005,7 +4005,7 @@ class SlimTrayMenuTests(unittest.TestCase):
     def _tray(self):
         import unittest.mock as mock
         reimport_under(self, fake_platform_modules())
-        from whisper_key import system_tray
+        from koli import system_tray
         sm = mock.MagicMock()
         sm.list_profiles.return_value = ['dictation', 'chat']
         sm.get_active_profile.return_value = 'chat'
@@ -4055,7 +4055,7 @@ class ColourContrastTests(unittest.TestCase):
     @staticmethod
     def _themes():
         import re
-        css = (ROOT / 'src' / 'whisper_key' / 'ui' / 'web' / 'css' / 'tokens.css').read_text(encoding='utf-8')
+        css = (ROOT / 'src' / 'koli' / 'ui' / 'web' / 'css' / 'tokens.css').read_text(encoding='utf-8')
         blocks = re.findall(r'(:root(?:\[data-theme="dark"\])?)\s*\{(.*?)\}', css, re.S)
         light = dict(re.findall(r'--([\w-]+):\s*(#[0-9A-Fa-f]{6})', blocks[0][1]))
         dark = dict(light, **dict(re.findall(r'--([\w-]+):\s*(#[0-9A-Fa-f]{6})', blocks[1][1])))
@@ -4086,7 +4086,7 @@ class BrokenSettingsFileTests(unittest.TestCase):
     def _cm(self, d):
         import unittest.mock as mock
         try:
-            from whisper_key import config_manager as cm_mod
+            from koli import config_manager as cm_mod
         except Exception:
             self.skipTest("config_manager not importable on this platform")
         import contextlib
@@ -4142,18 +4142,67 @@ class OwnWindowLookupTests(unittest.TestCase):
     # Two copies of the app (the normal one and --test) have windows with the
     # same title; each must find its own, never the other's.
     def test_only_this_process_windows_match(self):
-        from whisper_key.ui import win32
+        from koli.ui import win32
         windows = [(101, 'Koli', 5000), (102, 'Koli', 6000), (103, 'Koli · bubble', 6000)]
         self.assertEqual(win32.pick_window(windows, 'Koli', 6000), 102)
         self.assertEqual(win32.pick_window(windows, 'Koli · bubble', 6000), 103)
         self.assertEqual(win32.pick_window(windows, 'Koli', 7000), 0)
 
 
+class CustomTitleBarTests(unittest.TestCase):
+    # The app window draws its own title bar. Windows still has to know where
+    # the top edge is (resize) and keep a maximized window's content on screen.
+    def test_top_edge_resizes_only_while_not_maximized(self):
+        from koli.ui import win32
+        rect = (100, 100, 1100, 800)
+        self.assertEqual(win32.top_edge_hit(500, 103, rect, 8, False), win32.HTTOP)
+        self.assertEqual(win32.top_edge_hit(105, 103, rect, 8, False), win32.HTTOPLEFT)
+        self.assertEqual(win32.top_edge_hit(1095, 103, rect, 8, False), win32.HTTOPRIGHT)
+        self.assertIsNone(win32.top_edge_hit(500, 130, rect, 8, False))
+        self.assertIsNone(win32.top_edge_hit(500, 103, rect, 8, True))
+
+    def test_maximized_content_starts_on_screen(self):
+        from koli.ui import win32
+        # Maximized windows hang over the screen edge by their frame width.
+        self.assertEqual(win32.caption_free_client_top(-8, True, 8), 0)
+        self.assertEqual(win32.caption_free_client_top(100, False, 8), 100)
+
+    def _host(self, maximized):
+        import unittest.mock as mock
+        from koli.ui import host as host_mod
+        h = object.__new__(host_mod.UiHost)
+        h.main = mock.MagicMock()
+        h._maximized = maximized
+        h.custom_frame = True
+        return h
+
+    def test_toggle_maximize_follows_the_tracked_state(self):
+        h = self._host(maximized=True)
+        h.toggle_maximize()
+        h.main.window.restore.assert_called_once()
+        h = self._host(maximized=False)
+        h.toggle_maximize()
+        h.main.window.maximize.assert_called_once()
+
+    def test_page_learns_whether_to_draw_window_buttons(self):
+        h = self._host(maximized=True)
+        self.assertEqual(h.frame_state(), {'custom': True, 'maximized': True})
+
+    def test_top_bar_has_window_buttons_and_a_drag_region(self):
+        web = ROOT / 'src' / 'koli' / 'ui' / 'web'
+        app_js = (web / 'js' / 'app.js').read_text(encoding='utf-8')
+        for call in ('window_minimize', 'window_toggle_maximize', 'window_close'):
+            self.assertIn(call, app_js)
+        css = (web / 'css' / 'components.css').read_text(encoding='utf-8')
+        self.assertIn('app-region: drag', css)
+        self.assertIn('app-region: no-drag', css)
+
+
 class BarPlacementTests(unittest.TestCase):
     def _host(self, work_area, scale, position):
         import unittest.mock as mock
-        from whisper_key.ui import host as host_mod
-        from whisper_key.ui import win32
+        from koli.ui import host as host_mod
+        from koli.ui import win32
         h = object.__new__(host_mod.UiHost)
         h.bar_hwnd = 1
         h.settings = mock.MagicMock()
@@ -4192,7 +4241,7 @@ class BarPlacementTests(unittest.TestCase):
         self.assertEqual(h._bar_origin(200, 56), (48, (1080 - 70) // 2))
 
     def test_edge_positions_are_settings_choices(self):
-        from whisper_key.settings import schema
+        from koli.settings import schema
         choices = [c[0] for c in schema.get('overlay.position').choices]
         self.assertIn('right-edge', choices)
         self.assertIn('left-edge', choices)
@@ -4208,7 +4257,7 @@ class BackgroundChangeFailureTests(unittest.TestCase):
     def test_a_failed_background_change_puts_the_old_value_back(self):
         import threading
         import unittest.mock as mock
-        from whisper_key.settings.appliers import Appliers
+        from koli.settings.appliers import Appliers
         ctx = mock.MagicMock()
         reverted = threading.Event()
         ctx.settings.revert_silently.side_effect = lambda path, old: reverted.set()
@@ -4225,7 +4274,7 @@ class BackgroundChangeFailureTests(unittest.TestCase):
         import threading
         import time
         import unittest.mock as mock
-        from whisper_key.settings.appliers import Appliers
+        from koli.settings.appliers import Appliers
         ctx = mock.MagicMock()
         reverted = threading.Event()
         ctx.settings.revert_silently.side_effect = lambda path, old: reverted.set()
@@ -4243,7 +4292,7 @@ class BackgroundChangeFailureTests(unittest.TestCase):
 class HandsFreeLockSignalTests(unittest.TestCase):
     # The floating bar shows "Hands-free" once a double-tap locks recording.
     def test_double_tap_reports_the_lock(self):
-        from whisper_key.hotkey_gestures import TapLatch
+        from koli.hotkey_gestures import TapLatch
         now = [0.0]
         timers = []
 
@@ -4271,8 +4320,8 @@ class OptionalPackageTests(unittest.TestCase):
     # on must say so (the app window then offers the install).
     def test_turning_on_noise_suppression_without_its_package_warns(self):
         import unittest.mock as mock
-        from whisper_key.services import system
-        from whisper_key.settings.service import SettingsService
+        from koli.services import system
+        from koli.settings.service import SettingsService
         defaults, _ = _defaults_getter()
         svc = SettingsService(_FakeConfig(defaults))
         with mock.patch.object(system, 'extra_installed', return_value=False):
@@ -4284,7 +4333,7 @@ class OptionalPackageTests(unittest.TestCase):
         self.assertEqual(res['warnings'], [])
 
     def test_unknown_extras_are_refused(self):
-        from whisper_key.services import system
+        from koli.services import system
         with self.assertRaises(ValueError):
             system.extra_install('anything; rm -rf', reporter=None)
 
@@ -4294,7 +4343,7 @@ class UnknownModelFallbackTests(unittest.TestCase):
     # (removed in an update, a typo, a key from another branch) used to stop
     # the app from starting. It falls back to the default model instead.
     def _registry(self):
-        from whisper_key.model_registry import ModelRegistry
+        from koli.model_registry import ModelRegistry
         defaults, _ = _defaults_getter()
         return ModelRegistry(whisper_models_config=defaults['whisper']['models'])
 
@@ -4316,7 +4365,7 @@ class GraphicsCardChoiceTests(unittest.TestCase):
 
     def test_cards_are_listed_in_the_order_cuda_uses(self):
         import unittest.mock as mock
-        from whisper_key.services import system
+        from koli.services import system
         done = mock.MagicMock(returncode=0, stdout=self.SMI)
         with mock.patch.object(system.subprocess, 'run', return_value=done):
             cards = system.gpu_list()
@@ -4326,7 +4375,7 @@ class GraphicsCardChoiceTests(unittest.TestCase):
 
     def test_no_nvidia_driver_means_no_cards(self):
         import unittest.mock as mock
-        from whisper_key.services import system
+        from koli.services import system
         with mock.patch.object(system.subprocess, 'run', side_effect=FileNotFoundError('nvidia-smi')):
             self.assertEqual(system.gpu_list(), [])
 
@@ -4335,7 +4384,7 @@ class GraphicsCardChoiceTests(unittest.TestCase):
         import unittest.mock as mock
         import contextlib
         import io
-        from whisper_key import whisper_engine
+        from koli import whisper_engine
         with mock.patch.object(whisper_engine, 'WhisperModel') as model, \
                 mock.patch.object(whisper_engine.WhisperEngine, '_verify_gpu_runtime'), \
                 contextlib.redirect_stdout(io.StringIO()):  # it prints emoji cp1252 can't encode
@@ -4343,8 +4392,8 @@ class GraphicsCardChoiceTests(unittest.TestCase):
         self.assertEqual(model.call_args.kwargs.get('device_index'), 1)
 
     def test_changing_the_card_rebuilds_the_engine_in_the_background(self):
-        from whisper_key.settings import schema
-        from whisper_key.settings.appliers import _HANDLERS, Appliers
+        from koli.settings import schema
+        from koli.settings.appliers import _HANDLERS, Appliers
         self.assertEqual(schema.get('whisper.device_index').apply, schema.BACKGROUND)
         self.assertIs(_HANDLERS['whisper.device_index'], Appliers.engine_rebuild)
 
@@ -4367,7 +4416,7 @@ class _FakeMediaBackend:
 
 class MediaControlTests(unittest.TestCase):
     def _control(self, volume=0.6):
-        from whisper_key.media_control import MediaControl
+        from koli.media_control import MediaControl
         backend = _FakeMediaBackend(volume)
         return MediaControl(backend, run_async=lambda fn: fn()), backend
 
@@ -4409,7 +4458,7 @@ class MediaControlTests(unittest.TestCase):
         self.assertEqual(backend.paused, 1)
 
     def test_lower_volume_is_in_the_settings(self):
-        from whisper_key.settings import schema
+        from koli.settings import schema
         self.assertIsNotNone(schema.get('audio.lower_volume.enabled'))
         self.assertIsNotNone(schema.get('audio.lower_volume.level'))
 
@@ -4420,7 +4469,7 @@ class HuggingFaceCacheLocationTests(unittest.TestCase):
     # downloaded", and live preview failed right after its download finished.
     def _cache(self, env):
         import unittest.mock as mock
-        from whisper_key import utils
+        from koli import utils
         keep = {k: v for k, v in os.environ.items()
                 if k not in ('HF_HUB_CACHE', 'HUGGINGFACE_HUB_CACHE', 'HF_HOME', 'XDG_CACHE_HOME')}
         with mock.patch.dict(os.environ, dict(keep, **env), clear=True):
@@ -4437,7 +4486,7 @@ class HuggingFaceCacheLocationTests(unittest.TestCase):
 
     def test_every_model_lookup_uses_it(self):
         import unittest.mock as mock
-        from whisper_key import utils
-        from whisper_key.model_registry import ModelRegistry
+        from koli import utils
+        from koli.model_registry import ModelRegistry
         with mock.patch.object(utils, 'hf_hub_cache', return_value=r'E:\AI\hf_cache\hub'):
             self.assertEqual(ModelRegistry({}, {}).get_hf_cache_path(), r'E:\AI\hf_cache\hub')

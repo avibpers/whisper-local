@@ -30,6 +30,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
   "take over" behaviour of a second launch.
 
 ### Changed
+- **The app window draws its own title bar** (Windows). Minimize, maximize and
+  close sit at the right of the top bar; the window still drags, snaps and
+  resizes from every edge like any other window. The taskbar shows the Koli
+  icon instead of Python's.
+- **The app is now called Koli.** The command is `koli` (`wl` is gone), the
+  Python package is `koli`, the launchers are `koli.cmd` and `run-koli.py`,
+  and settings live in `%APPDATA%\koli` (`~/.koli` on macOS). Settings in the
+  old `whisperkey` folder are not read; move the folder to keep them.
 - **Launching again opens the running app's window** instead of replacing the
   running instance.
 - **`--quit` shuts the app down cleanly** (settings saved, tray removed) when

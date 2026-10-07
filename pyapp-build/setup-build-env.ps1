@@ -6,7 +6,7 @@ $ErrorActionPreference = 'Stop'
 $BuildDir = $PSScriptRoot
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 
-Write-Host "Whisper Local - pyapp build environment setup" -ForegroundColor Cyan
+Write-Host "Koli - pyapp build environment setup" -ForegroundColor Cyan
 Write-Host "==============================================" -ForegroundColor Cyan
 Write-Host ""
 
@@ -93,5 +93,5 @@ Write-Host ""
 Write-Host "Setup complete. Now run:" -ForegroundColor Cyan
 Write-Host "  .\pyapp-build\build-pyapp.ps1" -ForegroundColor White
 Write-Host ""
-Write-Host "Note: by default pyapp downloads 'whisper-local' from PyPI at first launch." -ForegroundColor DarkYellow
+Write-Host "Note: by default pyapp downloads 'koli' from PyPI at first launch." -ForegroundColor DarkYellow
 Write-Host "If you haven't published yet, re-run with -UseLocalWheel to build against the local wheel." -ForegroundColor DarkYellow

@@ -1,0 +1,130 @@
+# vocab_import.py
+# `--import-vocab`: scans a folder of the user's own documents, ranks the terms
+# that look like domain jargon or proper nouns, and merges the top hits into
+# whisper.hotwords. A bulk shortcut to the same accuracy win the dictionary and
+# history-mining paths provide one word at a time.
+import logging
+import re
+from collections import Counter
+from pathlib import Path
+from typing import Iterable
+
+from ruamel.yaml import YAML
+
+from .utils import get_user_app_data_path
+
+logger = logging.getLogger(__name__)
+
+WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9_\-']{4,30}")
+
+COMMON_WORDS = {
+    'about', 'after', 'again', 'against', 'because', 'before', 'being',
+    'between', 'could', 'doing', 'during', 'either', 'every', 'first',
+    'from', 'have', 'having', 'into', 'itself', 'just', 'might', 'never',
+    'only', 'other', 'over', 'same', 'should', 'since', 'some', 'still',
+    'such', 'than', 'that', 'their', 'them', 'then', 'there', 'these',
+    'they', 'this', 'those', 'through', 'under', 'until', 'used', 'very',
+    'were', 'what', 'when', 'where', 'which', 'while', 'with', 'within',
+    'without', 'would', 'your',
+}
+
+TEXT_EXTENSIONS = {
+    '.txt', '.md', '.markdown', '.rst', '.py', '.js', '.ts', '.tsx',
+    '.jsx', '.go', '.rs', '.java', '.cs', '.cpp', '.c', '.h', '.hpp',
+    '.rb', '.php', '.swift', '.kt', '.scala', '.lua', '.sh', '.bash',
+    '.yaml', '.yml', '.toml', '.json', '.xml', '.html', '.css',
+    '.tex', '.org', '.log', '.csv', '.tsv',
+}
+
+
+def import_vocab(source: str, top_n: int = 50, write: bool = True) -> int:
+    src_path = Path(source).expanduser().resolve()
+    if not src_path.exists():
+        print(f"Path not found: {src_path}")
+        return 1
+
+    counter: Counter = Counter()
+    files_scanned = 0
+    for path in _iter_files(src_path):
+        files_scanned += 1
+        try:
+            text = path.read_text(encoding='utf-8', errors='replace')
+        except OSError:
+            continue
+        for word in WORD_RE.findall(text):
+            lower = word.lower()
+            if lower in COMMON_WORDS:
+                continue
+            counter[word] += 1
+
+    if not counter:
+        print(f"No candidate words found across {files_scanned} files.")
+        return 1
+
+    candidates = [w for w, _ in counter.most_common(top_n * 4) if not w.islower()]
+    if len(candidates) < top_n:
+        candidates += [w for w, _ in counter.most_common(top_n * 4) if w.islower() and w not in candidates]
+    picks = candidates[:top_n]
+
+    print(f"\nScanned {files_scanned} file(s) under {src_path}")
+    print(f"Suggested hotwords (top {len(picks)}, ranked by frequency, common words filtered):\n")
+    for w in picks:
+        print(f"  {counter[w]:>5}  {w}")
+
+    if not write:
+        return 0
+
+    answer = input("\nMerge these into user_settings.yaml whisper.hotwords? [Y/n] ").strip().lower()
+    if answer in ('n', 'no'):
+        print("Aborted; no changes made.")
+        return 0
+
+    _merge_hotwords(picks)
+    print(f"\nMerged {len(picks)} hotwords into user_settings.yaml. Restart koli to apply.")
+    return 0
+
+
+SKIP_DIRS = {'node_modules', 'venv', '.venv', '__pycache__', 'dist', 'build',
+             '.git', '.idea', '.vscode', 'target', '.next', '.cache', 'site-packages'}
+MAX_FILE_SIZE = 2_000_000
+
+
+def _iter_files(root: Path) -> Iterable[Path]:
+    if root.is_file():
+        yield root
+        return
+    for path in root.rglob('*'):
+        try:
+            if not path.is_file():
+                continue
+            if path.suffix.lower() not in TEXT_EXTENSIONS:
+                continue
+            try:
+                relative_parts = path.relative_to(root).parts
+            except ValueError:
+                relative_parts = path.parts
+            if any(part.startswith('.') for part in relative_parts):
+                continue
+            if any(part in SKIP_DIRS for part in relative_parts):
+                continue
+            if path.stat().st_size > MAX_FILE_SIZE:
+                continue
+            yield path
+        except OSError:
+            continue
+
+
+def _merge_hotwords(words):
+    user_path = Path(get_user_app_data_path()) / 'user_settings.yaml'
+    yaml = YAML()
+    if user_path.exists():
+        with open(user_path, encoding='utf-8') as f:
+            data = yaml.load(f) or {}
+    else:
+        data = {}
+    whisper = data.setdefault('whisper', {})
+    current = list(whisper.get('hotwords') or [])
+    merged = list(dict.fromkeys(current + list(words)))
+    whisper['hotwords'] = merged
+    with open(user_path, 'w', encoding='utf-8') as f:
+        yaml.dump(data, f)

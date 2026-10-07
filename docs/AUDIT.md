@@ -1,4 +1,4 @@
-# Whisper Local — Code Audit & Improvement Backlog
+# Koli — Code Audit & Improvement Backlog
 
 **Last updated:** 2026-09-28
 **Audited versions:** 0.10.0 (Round 1, below) and 0.11.x (Round 2, next section)
@@ -232,7 +232,7 @@ without surrendering anything already here.
   the `app_ready.wav` asset. A cold start is slow and the app has no window; an
   audible cue is the clearest "the hotkey is live now" signal.
 - **UP-3 (Feature)** `terminal_title.py` — animated terminal tab title following
-  idle/recording/processing, retitled to "Whisper Local". Self-disables when
+  idle/recording/processing, retitled to "Koli". Self-disables when
   stdout is not a TTY, so a windowless launch pays nothing and no escape codes
   reach redirected logs. All eight `system_tray.update_state()` call sites in
   StateManager now route through one `_update_ui_state()` fan-out, so the tray
@@ -545,7 +545,7 @@ code before fixing (many agent "findings" were over-reported and dropped).
 **Fix:** add redaction rules for `hotwords:`, `endpoint:`, `initial_prompt:` (and consider an allowlist approach — only bundle known-safe keys). Mention in the bundle's `about.txt` exactly which fields were scrubbed.
 
 ### SPAWN-1 — Windowless launch double-spawns a second instance (startup)
-**Verified during this session.** Launching via `pythonw.exe whisper-local.py` *or* `pythonw.exe -m whisper_key.main` reliably produces two processes: the launched one (parent) spawns a child running the same entrypoint under the **system** Python (`...\Programs\Python\Python312\pythonw.exe`), and the child takes the lock. The canonical `whisper-local.cmd` (console, system python) does **not** reproduce it — exactly one instance. Root cause **not yet identified**: it is not the `.py` file association (reproduces with `-m`), not `instance_manager` (it only SIGTERMs + locks, never spawns), and not `multiprocessing` (that would use the venv `sys.executable`, but the child is system python). Something resolves an interpreter via PATH/registry and re-execs only under the no-console condition.
+**Verified during this session.** Launching via `pythonw.exe run-koli.py` *or* `pythonw.exe -m koli.main` reliably produces two processes: the launched one (parent) spawns a child running the same entrypoint under the **system** Python (`...\Programs\Python\Python312\pythonw.exe`), and the child takes the lock. The canonical `koli.cmd` (console, system python) does **not** reproduce it — exactly one instance. Root cause **not yet identified**: it is not the `.py` file association (reproduces with `-m`), not `instance_manager` (it only SIGTERMs + locks, never spawns), and not `multiprocessing` (that would use the venv `sys.executable`, but the child is system python). Something resolves an interpreter via PATH/registry and re-execs only under the no-console condition.
 **Impact:** two instances briefly (or persistently) contend for global hotkeys → "hotkey already registered" + double-trigger. Only affects windowless autostart; the shipped `.cmd` launcher is safe.
 **Next step:** instrument startup — log `sys.executable`, `sys.argv`, `os.getpid()`, parent pid at the very top of `main()`; reproduce under `pythonw`; bisect by disabling subsystems (tray, sherpa-onnx streaming, ten-vad, playsound3) to find which import/init re-execs. Suspect a dependency calling `freeze_support()`/relaunch or a console-acquisition shim.
 
@@ -614,7 +614,7 @@ Recorded so future audits don't re-tread:
 - **Privacy pledge overall**: the only network touchpoints are HuggingFace model download (first run), opt-in GPU install, opt-in update check, and user-local Ollama (`localhost`). No undisclosed calls. **Verified by grep across `src/`.**
 - **level_overlay**: correct cross-thread pattern (`_call` → `root.after`).
 - **system_tray**: launches settings/history/cheat-sheet/doctor as subprocesses — the safest way to avoid multi-Tk-root conflicts.
-- **Packaging**: `package-data` includes all five `*.defaults.yaml`, assets, platform assets, and the bundled `portaudio.dll`. Entry points (`whisper-local`, `wl`) correct.
+- **Packaging**: `package-data` includes all five `*.defaults.yaml`, assets, platform assets, and the bundled `portaudio.dll`. Entry point (`koli`) correct.
 - **README feature/flag claims**: all 21 CLI flags exist; every feature bullet maps to real code; hotkey table matches `config.defaults.yaml`.
 - **Utility modules** found clean: `selftest`, `transforms`, `noise_suppression`, `text_postprocess`, `app_rules`, `profiles`, `settings_io`, `vocab_import`, `audit_log`, `doctor`.
 

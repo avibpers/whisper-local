@@ -1,6 +1,6 @@
 # Security Policy
 
-Whisper Local is a privacy-first tool. We take security reports seriously.
+Koli is a privacy-first tool. We take security reports seriously.
 
 ## Reporting a vulnerability
 
@@ -22,7 +22,7 @@ We're particularly interested in reports about:
 - **Audio exfiltration** — any code path where audio or transcripts leave the machine without explicit user opt-in (the only allowed network calls are the Whisper model download, the opt-in GPU install, and the opt-in update check — see `onboarding.py` and `update_check.py`)
 - **Clipboard hijacking** — bugs in the `paste_preserve_clipboard` logic that could leak previous clipboard contents
 - **Privilege escalation** — the app should never need admin/sudo. If you find a code path that does, report it
-- **Dependency vulnerabilities** that affect users of `whisper-local` specifically
+- **Dependency vulnerabilities** that affect users of `koli` specifically
 
 Out of scope:
 

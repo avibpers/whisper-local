@@ -1,6 +1,6 @@
-# Using Whisper Local without HuggingFace access
+# Using Koli without HuggingFace access
 
-Whisper Local downloads its speech model once, from `huggingface.co`. After that
+Koli downloads its speech model once, from `huggingface.co`. After that
 it never touches the network again — transcription is fully local.
 
 But many corporate networks block `huggingface.co`, or require it to go through
@@ -18,31 +18,31 @@ same domain and is blocked identically. Pick one of the options below instead.
 Best when you have a personal machine with internet and a work machine without.
 No admin rights or IT involvement needed.
 
-**On a machine WITH internet** (run Whisper Local once first so the model is
+**On a machine WITH internet** (run Koli once first so the model is
 downloaded):
 
 ```bash
-whisper-local --export-model
+koli --export-model
 ```
 
 That writes to your Desktop — four files, about 148 MB for the default `base`
-model. Copy the resulting `whisper-local-model-base` folder to a USB stick, or
+model. Copy the resulting `koli-model-base` folder to a USB stick, or
 anywhere the offline machine can read.
 
 To send it somewhere else, pass a folder that exists on your machine:
 
 ```bash
-whisper-local --export-model E:\
+koli --export-model E:\
 ```
 
 **On the offline machine**, point at the folder you copied over:
 
 ```bash
-whisper-local --import-model "E:\whisper-local-model-base"
+koli --import-model "E:\koli-model-base"
 ```
 
 That installs the model into your app-data folder, registers it, and makes it
-active. Restart Whisper Local (tray → Restart) and you're done. The app will
+active. Restart Koli (tray → Restart) and you're done. The app will
 never try to reach HuggingFace for it again.
 
 ## Option 2 — One shared copy on a network drive
@@ -53,7 +53,7 @@ machine — every user points at the same folder.
 Put an exported model folder on a share, then on each machine:
 
 ```bash
-whisper-local --import-model "\\fileserver\tools\whisper-model-base" --keep-in-place
+koli --import-model "\\fileserver\tools\whisper-model-base" --keep-in-place
 ```
 
 `--keep-in-place` registers the share path directly instead of copying it. UNC
@@ -69,7 +69,7 @@ works through it:
 setx HF_ENDPOINT https://hf-mirror.your-company.com
 ```
 
-Whisper Local doesn't implement this itself — it's honoured by the underlying
+Koli doesn't implement this itself — it's honoured by the underlying
 `huggingface_hub` library, so it applies to the model download as a whole.
 
 ## Option 4 — Ask IT to allowlist the exact download
@@ -93,7 +93,7 @@ during, or after.
 ## Verifying you're actually offline
 
 ```bash
-whisper-local --doctor
+koli --doctor
 ```
 
 Look for `Model '<name>' cached` under **Whisper model cache**. If that's green,

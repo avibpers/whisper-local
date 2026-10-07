@@ -1,7 +1,7 @@
 ---
 description: Build pyapp executable
 argument-hint: "[-Clean (clean Rust build)] [-Test (run exe after build)]"
-allowed-tools: Bash(powershell.exe:*), Bash(whisper-local.exe:*)
+allowed-tools: Bash(powershell.exe:*), Bash(koli.exe:*)
 ---
 [FLAGS]=$ARGUMENTS
 
@@ -11,8 +11,8 @@ allowed-tools: Bash(powershell.exe:*), Bash(whisper-local.exe:*)
 3. Note the executable path from output
 
 If -Test in [FLAGS]:
-4. Convert exe path to bash-compatible format and run: `"<path>/whisper-local.exe"`
-   - C:\Users\... → `"/mnt/c/Users/.../whisper-local.exe"`
+4. Convert exe path to bash-compatible format and run: `"<path>/koli.exe"`
+   - C:\Users\... → `"/mnt/c/Users/.../koli.exe"`
 5. Watch for "Application ready!" message (success) or errors
 6. KillShell to terminate
 7. Ignore exit code 137 (expected from KillShell)

@@ -77,7 +77,7 @@ When no GPU is detected, set `gpu_class: integrated_cpu` and `gpu: skipped`. Lat
 
 ### Update integration
 
-For AMD users, `pip install --upgrade whisper-local` (from auto-update) replaces the ROCm CT2 wheel with the standard CUDA build from PyPI. The `update_checker.py` module reads `onboarding.gpu_class` from config and re-installs the correct CT2 wheel after upgrading.
+For AMD users, `pip install --upgrade koli` (from auto-update) replaces the ROCm CT2 wheel with the standard CUDA build from PyPI. The `update_checker.py` module reads `onboarding.gpu_class` from config and re-installs the correct CT2 wheel after upgrading.
 
 The CT2 wheel URL mapping lives in `onboarding.py` and is imported by `update_checker.py`. Note: `run_update(version)` currently only takes `version` — needs `config_manager` added as a parameter. GPU restore must happen after pip upgrade but before the pyapp restart (`subprocess.Popen`):
 
@@ -160,7 +160,7 @@ One prompt. Non-technical. Shows what they have, what's needed, and why.
 4. If AMD: pip install --force-reinstall CT2 ROCm wheel
 5. Set config: device: cuda, compute_type: float16
 6. Set config: onboarding.gpu: complete, onboarding.gpu_class: <class>
-7. Print "   GPU acceleration installed. Please restart Whisper Key."
+7. Print "   GPU acceleration installed. Please restart Koli."
 8. sys.exit(0)
 ```
 
@@ -197,7 +197,7 @@ subprocess.run(
   - ✅ `gpu: pending` and `gpu_class: null` defaults added
 
 3. Create onboarding module
-- [x] Create `src/whisper_key/onboarding.py`
+- [x] Create `src/koli/onboarding.py`
 - [x] Implement decision tree
   - ✅ Skips if gpu status is complete/skipped
   - ✅ Auto-sets integrated_cpu + skipped when no GPU

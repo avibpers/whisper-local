@@ -1,4 +1,4 @@
-# Publishing whisper-local to PyPI
+# Publishing koli to PyPI
 
 `pyproject.toml` is configured for PyPI. Follow these steps once to publish, then a shorter loop for each release after.
 
@@ -8,8 +8,8 @@
 2. **Enable 2FA** (PyPI requires it for upload).
 3. **Generate a project-scoped API token**:
    - Go to https://pypi.org/manage/account/token/
-   - Token name: `whisper-local-publisher`
-   - Scope: "Project: whisper-local" (after first upload — see below)
+   - Token name: `koli-publisher`
+   - Scope: "Project: koli" (after first upload — see below)
    - Save the token starting with `pypi-...`
 4. **Test on TestPyPI first** (recommended for first release):
    - Register at https://test.pypi.org/account/register/
@@ -18,7 +18,7 @@
 ## First release flow
 
 ```powershell
-# From G:\Git\whisper-local
+# From G:\Git\koli
 
 # 1. Bump version in pyproject.toml if needed
 #    (currently 0.9.0)
@@ -37,7 +37,7 @@ python -m twine upload --repository testpypi dist\*
 # 5. Install from TestPyPI to verify
 pip install --index-url https://test.pypi.org/simple/ \
             --extra-index-url https://pypi.org/simple \
-            whisper-local
+            koli
 
 # 6. Once happy, upload to real PyPI
 python -m twine upload dist\*
@@ -47,8 +47,8 @@ python -m twine upload dist\*
 After step 6, anyone can run:
 
 ```bash
-pip install whisper-local
-whisper-local
+pip install koli
+koli
 ```
 
 ## Subsequent releases
@@ -87,10 +87,10 @@ After this, `twine upload dist\*` runs without prompts.
 Once published:
 
 ```bash
-pip install whisper-local                    # base install
-pip install 'whisper-local[whispercpp]'      # with whisper.cpp backend
-whisper-local --setup                        # interactive setup
-whisper-local                                # run the app
+pip install koli                    # base install
+pip install 'koli[whispercpp]'      # with whisper.cpp backend
+koli --setup                        # interactive setup
+koli                                # run the app
 ```
 
 ## Troubleshooting

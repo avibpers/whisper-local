@@ -349,7 +349,7 @@ Key considerations:
 
 The shim `.py` file must be accessible from Windows. Options:
 
-1. **Store on DrvFS:** Place the shim at `/mnt/c/Users/<user>/AppData/Local/whisperkey/hotkey_shim.py`. Windows sees `C:\Users\<user>\AppData\Local\whisperkey\hotkey_shim.py`.
+1. **Store on DrvFS:** Place the shim at `/mnt/c/Users/<user>/AppData/Local/koli/hotkey_shim.py`. Windows sees `C:\Users\<user>\AppData\Local\koli\hotkey_shim.py`.
 
 2. **Use `wslpath`:** Convert WSL paths to Windows paths at runtime:
    ```python
@@ -488,7 +488,7 @@ The audio path: Microphone -> Windows -> RDP -> WSLg PulseAudio -> ALSA shim -> 
 
 ### 7.3 sounddevice Compatibility
 
-The `sounddevice` library (which whisper-key uses) relies on PortAudio. With the ALSA-to-PulseAudio shim configured, PortAudio can see the RDP audio devices and record from the microphone.
+The `sounddevice` library (which koli uses) relies on PortAudio. With the ALSA-to-PulseAudio shim configured, PortAudio can see the RDP audio devices and record from the microphone.
 
 ```bash
 python3 -c "import sounddevice as sd; print(sd.query_devices())"
@@ -574,7 +574,7 @@ This means the Windows shim would need to handle two directions:
 ├─────────────────── WSL2 VM ─────────────────────────────┼───┤
 │                                                         │   │
 │  ┌──────────────────────────┐     ┌──────────────────┐  │   │
-│  │  whisper-key (main app)  │     │ WslHotkeyBridge  │◄─┘   │
+│  │  koli (main app)  │     │ WslHotkeyBridge  │◄─┘   │
 │  │                          │◄────│ (TCP server)     │      │
 │  │  state_manager.py        │     └──────────────────┘      │
 │  │  audio_recorder.py       │                               │
@@ -677,7 +677,7 @@ No existing project was found that specifically builds a "global hotkey bridge" 
 
 ### Phase 1: Proof of Concept (Wrapping Mode Only)
 
-1. Create `src/whisper_key/platform/wsl/` directory mirroring the platform contract
+1. Create `src/koli/platform/wsl/` directory mirroring the platform contract
 2. Implement `detect_wsl()` in `platform/__init__.py`
 3. Create the hotkey shim (`hotkey_shim.py`) -- single file, pure ctypes
 4. Create `WslHotkeyBridge` class implementing the `hotkeys` platform module API (`register()`, `start()`, `stop()`)
@@ -705,7 +705,7 @@ platform/wsl/
 ├── icons.py             # Tray icons (Linux/WSLg or no-op)
 ├── instance_lock.py     # fcntl-based (same as macOS)
 ├── keyboard.py          # No-op for wrapping mode; shim-delegated for standalone
-├── paths.py             # XDG paths (~/.config/whisperkey)
+├── paths.py             # XDG paths (~/.config/koli)
 ├── permissions.py       # Check WSLg, PulseAudio, python.exe availability
 └── assets/
     └── hotkey_shim.py   # The Windows-side shim script

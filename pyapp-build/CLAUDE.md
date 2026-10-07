@@ -1,4 +1,4 @@
-Builds `whisper-local.exe` using [pyapp](https://github.com/ofek/pyapp) (Rust wrapper that bootstraps Python + pip install at first launch).
+Builds `koli.exe` using [pyapp](https://github.com/ofek/pyapp) (Rust wrapper that bootstraps Python + pip install at first launch).
 
 ## One-time setup
 
@@ -22,14 +22,14 @@ powershell.exe -ExecutionPolicy Bypass -File pyapp-build\build-pyapp.ps1
 `-Clean` flag forces full Rust rebuild.
 
 Produces two executables in `dist\`:
-- `whisper-local.exe` — console (visible terminal)
-- `whisper-local-hideable.exe` — GUI subsystem (for `console.start_hidden`/minimize-to-tray)
+- `koli.exe` — console (visible terminal)
+- `koli-hideable.exe` — GUI subsystem (for `console.start_hidden`/minimize-to-tray)
 
 ## How it works
 
-At first launch, `whisper-local.exe` runs the embedded pyapp logic:
-1. Creates a private venv under `%LOCALAPPDATA%\pyapp\data\whisper-local\<hash>\<version>\`
-2. Runs `pip install whisper-local==<your version>` into that venv
+At first launch, `koli.exe` runs the embedded pyapp logic:
+1. Creates a private venv under `%LOCALAPPDATA%\pyapp\data\koli\<hash>\<version>\`
+2. Runs `pip install koli==<your version>` into that venv
 3. Spawns the actual Python entry point from that venv
 
 So the user never needs Python installed system-wide. They just double-click the exe.
@@ -37,7 +37,7 @@ So the user never needs Python installed system-wide. They just double-click the
 ## Two distribution flows
 
 **A. PyPI (recommended once published):**
-- Publish `whisper-local` to PyPI (see [docs/publishing-to-pypi.md](../docs/publishing-to-pypi.md))
+- Publish `koli` to PyPI (see [docs/publishing-to-pypi.md](../docs/publishing-to-pypi.md))
 - Build the exe with default `setup-build-env.ps1` flow
 - Distribute the exe; first launch pulls from PyPI
 
@@ -51,6 +51,6 @@ So the user never needs Python installed system-wide. They just double-click the
 
 **`cargo: command not found`**: re-open the terminal after `rustup-init`.
 
-**`pip install whisper-local` fails at first launch**: the version in `pyproject.toml` isn't on PyPI yet. Either publish, or use the local-wheel flow.
+**`pip install koli` fails at first launch**: the version in `pyproject.toml` isn't on PyPI yet. Either publish, or use the local-wheel flow.
 
 **Slow first launch (~30s)**: normal — pyapp is downloading deps. Subsequent launches reuse the venv.
