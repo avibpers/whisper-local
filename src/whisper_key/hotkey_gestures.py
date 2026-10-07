@@ -18,10 +18,13 @@ class TapLatch:
     # is_recording reports the recorder's real state, so the latch resyncs when
     # a recording ends some other way (silence timeout, cancel key) and the
     # next tap starts a new one instead of being swallowed as a "stop".
+    # on_latch, if given, is told when a double-tap locks recording (the
+    # floating bar shows it as hands-free).
     def __init__(self, start, stop, window_ms: int = 400, is_recording=None,
-                 clock=time.monotonic, timer_factory=None):
+                 clock=time.monotonic, timer_factory=None, on_latch=None):
         self._start = start
         self._stop = stop
+        self._on_latch = on_latch
         self._is_recording = is_recording
         self.window = max(50, int(window_ms)) / 1000.0
         self._clock = clock
@@ -64,7 +67,7 @@ class TapLatch:
             elif state == self.PENDING:
                 self._cancel_timer()
                 self.state = self.LATCHED
-                action = None
+                action = self._on_latch
             elif state == self.LATCHED:
                 self.state = self.IDLE
                 action = self._stop

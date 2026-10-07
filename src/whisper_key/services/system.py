@@ -166,24 +166,54 @@ def gpu_install(gpu_class: str, reporter) -> dict:
                     [sys.executable, '-m', 'pip', 'install', '--force-reinstall', '--no-deps', url]]
     else:
         raise RuntimeError("This graphics card needs manual setup")
+    _run_pip(commands, 'GPU libraries', reporter)
+    # Make the freshly installed DLLs findable without restarting.
+    from ..utils import setup_nvidia_dll_path
+    setup_nvidia_dll_path()
+    return {'installed': gpu_class}
+
+
+# Run pip commands one after another, streaming their output to the task.
+def _run_pip(commands: list, what: str, reporter):
     for n, cmd in enumerate(commands, start=1):
-        reporter.report((n - 1) / len(commands), 'Downloading GPU libraries…')
+        reporter.report((n - 1) / len(commands), f'Downloading {what}…')
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                                 creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         for line in proc.stdout:
             line = line.strip()
             if line:
-                logger.info(f"[gpu install] {line}")
+                logger.info(f"[pip] {line}")
                 reporter.report(None, line[:120])
             if reporter.cancelled:
                 proc.kill()
-                raise RuntimeError("GPU install cancelled")
+                raise RuntimeError("Install cancelled")
         if proc.wait() != 0:
-            raise RuntimeError("pip could not install the GPU libraries; see the log for details")
-    # Make the freshly installed DLLs findable without restarting.
-    from ..utils import setup_nvidia_dll_path
-    setup_nvidia_dll_path()
-    return {'installed': gpu_class}
+            raise RuntimeError(f"pip could not install the {what}; see the log for details")
+
+
+# ── Optional packages ────────────────────────────────────────────────────────
+
+# The optional extras the app window can install: name -> (module to import,
+# pip requirements). Matches [project.optional-dependencies] in pyproject.toml.
+EXTRAS = {
+    'noise': ('noisereduce', ['noisereduce>=3.0.0']),
+}
+
+
+def extra_installed(name: str) -> bool:
+    import importlib.util
+    module, _ = EXTRAS[name]
+    return importlib.util.find_spec(module) is not None
+
+
+def extra_install(name: str, reporter) -> dict:
+    if name not in EXTRAS:
+        raise ValueError(f"Unknown optional package: {name}")
+    _, requirements = EXTRAS[name]
+    _run_pip([[sys.executable, '-m', 'pip', 'install', '--no-cache-dir'] + requirements], f'{name} package', reporter)
+    import importlib
+    importlib.invalidate_caches()
+    return {'installed': name}
 
 
 # ── Updates ──────────────────────────────────────────────────────────────────

@@ -38,6 +38,7 @@ class HotkeyListener:
                 stop=self._push_to_talk_released,
                 window_ms=double_tap_window_ms,
                 is_recording=lambda: self.state_manager.audio_recorder.get_recording_status(),
+                on_latch=self._hands_free_locked,
             )
         self.keys_armed = True
         self.is_listening = False
@@ -258,6 +259,12 @@ class HotkeyListener:
         self.logger.info(f"Paste-last hotkey: {self.paste_last_hotkey}")
         threading.Thread(target=self.state_manager.paste_last_transcription,
                          daemon=True, name='paste-last').start()
+
+    # A double-tap locked recording on; the app window and bar show it.
+    def _hands_free_locked(self):
+        notify = getattr(self.state_manager, 'set_hands_free', None)
+        if notify:
+            notify(True)
 
     def _pause_hotkey_pressed(self):
         self.is_paused = not self.is_paused

@@ -47,6 +47,7 @@ function wire() {
       suppressed: ['warn', `Not delivered in ${app}`],
       fallback: ['acc', 'No text field · saved'],
       failed: ['fail', "Couldn't paste"],
+      empty: ['warn', 'Nothing to type'],
     };
     const [kind, message] = map[p.outcome] || ['ok', 'Done'];
     flash(kind, message, { outcome: p.outcome, text: p.text }, p.outcome === 'pasted' ? 2400 : 4500);
@@ -158,8 +159,10 @@ function Status() {
   if (st.state === 'recording') {
     const command = st.mode === 'command';
     const rephrase = st.mode === 'rephrase';
+    const handsFree = st.hands_free || (settings.audio && settings.audio.continuous_mode);
     return html`<div class="pill" style=${command || rephrase ? 'box-shadow:inset 0 0 0 2px var(--bar-acc)' : ''}>
       ${command ? html`<${Icon} name="command" /><span class="acc">Command</span>` : rephrase ? html`<${Icon} name="pen" /><span class="acc">Rephrase</span>` : html`<span class="recdot"></span>`}
+      ${handsFree && !command && !rephrase && html`<span class="acc" title="Recording without holding the keys. Tap them again to stop.">Hands-free</span>`}
       <${Wave} />
       ${streaming && !command ? html`<span class="text" dir="auto">…${streaming.slice(-48)}</span>` : html`<${Timer} />`}
       <button type="button" class="pbtn" onClick=${() => call('dictation_cancel')}>Cancel</button>
@@ -167,7 +170,7 @@ function Status() {
     </div>`;
   }
   if (st.state === 'processing') {
-    return html`<div class="pill" style="padding-inline-end:14px"><span class="dots"><span></span><span></span><span></span></span>Transcribing</div>`;
+    return html`<div class="pill" style="padding-inline-end:14px"><span class="dots"><span></span><span></span><span></span></span>Transcribing <span class="muted"><${Timer} /></span></div>`;
   }
   if (fl) {
     const icon = { ok: 'check', fail: 'alert', warn: 'alert', acc: 'copy', info: 'check' }[fl.kind] || 'check';

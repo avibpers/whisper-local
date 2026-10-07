@@ -115,7 +115,26 @@ export function SettingControl({ s }) {
 
 const WIDE = new Set(['textarea', 'tags']);
 
+// An optional package a setting needs (noise suppression → noisereduce):
+// says so while it is missing and installs it in the background.
+const EXTRA_FOR = { 'audio.noise_suppression.enabled': 'noise' };
+
+export function ExtraInstall({ name }) {
+  const [installed, setInstalled] = useState(true);
+  const tasks = app.use((s) => s.tasks);
+  const running = Object.values(tasks).find((t) => t.kind === 'install' && t.status === 'running');
+  useEffect(() => { call('extra_status', name).then((r) => setInstalled(r.installed)).catch(() => {}); }, [name, running && running.id]);
+  if (installed) return null;
+  return html`<div class="notice warn" style="margin-top:8px;align-items:center">
+    <span class="grow">${running ? (running.detail || 'Installing…') : "This needs an extra package that isn't installed yet, so it has no effect for now."}</span>
+    ${!running && html`<button type="button" class="btn sm" onClick=${() => call('extra_install', name).catch((e) => toast(e.message, { kind: 'err' }))}>Install</button>`}
+  </div>`;
+}
+
 export function SettingRow({ s, highlight = false, extra = null }) {
+  const needs = EXTRA_FOR[s.path];
+  const on = useSetting(s.path);
+  if (needs && on && !extra) extra = html`<${ExtraInstall} name=${needs} />`;
   return html`<div class=${'srow' + (WIDE.has(s.control) ? ' top' : '') + (highlight ? ' hl' : '')} id=${'s-' + s.path}>
     <div class="slabel"><b>${s.label}${s.apply === 'background' && html`<${BgBadge} />`}</b>
       ${s.help && html`<small>${s.help}</small>`}

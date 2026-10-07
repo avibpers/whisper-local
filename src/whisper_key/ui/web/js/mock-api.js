@@ -47,6 +47,7 @@ export function createMock(emit) {
   let state = { state: 'idle', mode: 'dictate', paused: false, model: 'small', device: 'cpu' };
   let profile = 'dictation';
   let seq = 0;
+  let extraInstalled = false;
 
   const log = (lv, msg, mod = 'whisper_key.state_manager') => {
     seq += 1;
@@ -175,6 +176,8 @@ export function createMock(emit) {
       streaming: ['tiny', 'base'],
     }),
     model_download: (key) => ok(runTask(`Downloading ${key}`, 'download', 4)),
+    extra_status: () => ok({ installed: extraInstalled }),
+    extra_install: (name) => { const id = runTask(`Installing the ${name} package`, 'install', 3); setTimeout(() => { extraInstalled = true; }, 3100); return ok(id); },
     gpu_detect: () => ok({ name: 'NVIDIA GeForce RTX 3060', class: 'nvidia', ready: false, vram_gb: 12 }),
     gpu_install: () => ok(runTask('Installing GPU support', 'gpu', 6)),
 

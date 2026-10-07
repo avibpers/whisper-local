@@ -4112,3 +4112,52 @@ class BackgroundChangeFailureTests(unittest.TestCase):
         self.assertEqual(result['applied'], 'background')
         self.assertTrue(reverted.wait(5))
         ctx.settings.revert_silently.assert_called_once_with('whisper.model', 'base')
+
+
+class HandsFreeLockSignalTests(unittest.TestCase):
+    # The floating bar shows "Hands-free" once a double-tap locks recording.
+    def test_double_tap_reports_the_lock(self):
+        from whisper_key.hotkey_gestures import TapLatch
+        now = [0.0]
+        timers = []
+
+        class FakeTimer:
+            def __init__(self, seconds, callback):
+                self.callback = callback
+                timers.append(self)
+
+            def cancel(self):
+                pass
+        locked = []
+        latch = TapLatch(start=lambda: None, stop=lambda: None, window_ms=400, is_recording=lambda: True,
+                         clock=lambda: now[0], timer_factory=FakeTimer, on_latch=lambda: locked.append(True))
+        latch.press()
+        now[0] = 0.1
+        latch.release()
+        self.assertEqual(locked, [])
+        now[0] = 0.2
+        latch.press()
+        self.assertEqual(locked, [True])
+
+
+class OptionalPackageTests(unittest.TestCase):
+    # Noise suppression silently did nothing without its package; turning it
+    # on must say so (the app window then offers the install).
+    def test_turning_on_noise_suppression_without_its_package_warns(self):
+        import unittest.mock as mock
+        from whisper_key.services import system
+        from whisper_key.settings.service import SettingsService
+        defaults, _ = _defaults_getter()
+        svc = SettingsService(_FakeConfig(defaults))
+        with mock.patch.object(system, 'extra_installed', return_value=False):
+            res = svc.set('audio.noise_suppression.enabled', True)
+        self.assertTrue(any('noise' in w.lower() for w in res['warnings']))
+        with mock.patch.object(system, 'extra_installed', return_value=True):
+            svc.set('audio.noise_suppression.enabled', False)
+            res = svc.set('audio.noise_suppression.enabled', True)
+        self.assertEqual(res['warnings'], [])
+
+    def test_unknown_extras_are_refused(self):
+        from whisper_key.services import system
+        with self.assertRaises(ValueError):
+            system.extra_install('anything; rm -rf', reporter=None)

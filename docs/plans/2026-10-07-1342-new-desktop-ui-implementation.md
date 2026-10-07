@@ -320,6 +320,35 @@ Bugs found by running the real app and fixed:
 - The quick-actions menu was cut off by a fixed 640 px cap; the bar could also start off screen on small displays.
 - Dialogs didn't take or return focus; two colours were under 4.5:1.
 
+#### Audit of Phases 1–10 against the code (2026-10-07)
+
+About 85 of the 110 checklist items match the plan as written; the rest were
+built differently on purpose (a small store instead of Preact signals, one
+mock data file instead of fixtures, up/down buttons instead of drag to reorder
+rules) or had gaps. Gaps closed after the audit:
+- The bar and Live show **hands-free** when a double-tap locks recording, the
+  bar shows elapsed time while transcribing, and "nothing to type" has its own
+  message.
+- A failed GPU switch offers **Install GPU support** in the window.
+- Noise suppression without its package now warns and offers **Install**
+  (Settings and Simple mode), instead of silently doing nothing.
+- A maximized window opens maximized again.
+- Diagnostics lists the window's own shortcuts.
+
+Still open, by choice or for later:
+- **First launch shows nothing while the model downloads** (about 141 MB for
+  `base`): the engine loads before the UI. The installer (Phase 13) downloads
+  the model during install; until then the console shows the progress.
+- "Recommended for this computer" in Simple mode is a fixed choice (Balanced),
+  not a benchmark.
+- The Live Context card has no "effective prompt" row, and Today shows speaking
+  pace instead of average latency.
+- Ctrl+K searches screens and settings, not commands or past dictations.
+- `doctor` and `selftest` are reused by wrapping them, not refactored.
+- The bar doesn't hide while a fullscreen app is in front (optional item).
+- Tests don't yet cover the applier dispatch order, the background swap queue
+  or the save debounce.
+
 13. Production packaging and installer (later — not part of the CLI phase)
 - [ ] Build a frozen app (PyInstaller or Nuitka) instead of pyapp's first-run Python download, so install works offline and starts fast
 - [ ] Windows installer (Inno Setup): install location, Start menu + optional desktop shortcut, start on login, **GPU acceleration page** (detect NVIDIA/AMD, show download size, install CUDA/ROCm runtime or skip), download a model now or import an offline model, language preselect, WebView2 runtime bootstrapper when missing

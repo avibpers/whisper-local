@@ -76,7 +76,7 @@ function NowCard() {
   const audio = useAudio();
   const streaming = app.use((s) => s.streaming);
   const cur = audio && audio.current;
-  const label = st.paused ? 'Hotkeys paused' : recording ? (st.mode === 'command' ? 'Listening for a command' : st.mode === 'rephrase' ? 'Listening for an instruction' : 'Recording')
+  const label = st.paused ? 'Hotkeys paused' : recording ? (st.mode === 'command' ? 'Listening for a command' : st.mode === 'rephrase' ? 'Listening for an instruction' : st.hands_free ? 'Recording hands-free · tap the keys to stop' : 'Recording')
     : st.state === 'processing' ? 'Transcribing…' : st.state === 'model_loading' ? 'Loading the model…' : 'Ready';
   return html`<section class="card pad stack" style="grid-column:span 2;min-width:0" aria-label="Current recording">
     <div class="row-flex" style="justify-content:space-between">

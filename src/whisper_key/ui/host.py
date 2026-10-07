@@ -162,6 +162,11 @@ class UiHost:
             text_select=True, background_color='#0D0E11' if theme_dark else '#F4F4F1')
         self.main.window.events.loaded += lambda: self._on_loaded(self.main)
         self.main.window.events.closing += self._on_main_closing
+        # A window left maximized opens maximized next time (on its first show).
+        self._restore_maximized = bool(win.get('maximized'))
+        self._maximized = False
+        self.main.window.events.maximized += lambda: self._remember_maximized(True)
+        self.main.window.events.restored += lambda: self._remember_maximized(False)
         self.main.window.events.resized += lambda w, h: self._remember_geometry()
         self.main.window.events.moved += lambda x, y: self._remember_geometry()
 
@@ -264,7 +269,11 @@ class UiHost:
             publish('window', {'action': 'navigate', 'page': page})
         try:
             self.main.window.show()
-            self.main.window.restore()
+            if getattr(self, '_restore_maximized', False) or getattr(self, '_maximized', False):
+                self._restore_maximized = False
+                self.main.window.maximize()
+            else:
+                self.main.window.restore()
         except Exception as e:
             logger.debug(f"Show window failed: {e}")
         if self.main_hwnd:
@@ -295,9 +304,17 @@ class UiHost:
         threading.Thread(target=self.hide_main, daemon=True).start()
         return False
 
+    def _remember_maximized(self, maximized):
+        self._maximized = maximized
+        try:
+            self.ctx.config_manager.set_path('ui.window.maximized', bool(maximized))
+        except Exception:
+            pass
+
     def _remember_geometry(self):
         w = self.main.window
-        if w is None or not self.main_visible:
+        # The size to come back to is the normal one, not the maximized one.
+        if w is None or not self.main_visible or getattr(self, '_maximized', False):
             return
         cm = self.ctx.config_manager
         try:

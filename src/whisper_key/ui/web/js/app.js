@@ -105,7 +105,14 @@ function wireEvents() {
     const prev = app.get().tasks[t.id];
     app.set((s) => ({ tasks: { ...s.tasks, [t.id]: t } }));
     if (prev && prev.status === 'running' && t.status === 'done') toast(`Done · ${t.label}`);
-    if (t.status === 'failed' && (!prev || prev.status === 'running')) toast(`${t.label} failed: ${t.error}`, { kind: 'err', timeout: 9000 });
+    if (t.status === 'failed' && (!prev || prev.status === 'running')) {
+      // A GPU switch that failed for missing CUDA libraries can be fixed here.
+      const cuda = /cuda|cublas|cudnn/i.test(t.error || '');
+      toast(`${t.label} didn't work, so the previous setting is back. ${t.error}`, {
+        kind: 'err', timeout: cuda ? 0 : 9000,
+        action: cuda ? { label: 'Install GPU support', run: () => call('gpu_install').then(() => toast('Installing GPU support in the background')).catch((e) => toast(e.message, { kind: 'err' })) } : null,
+      });
+    }
   });
   on('settings', (p) => {
     applySettingLocally(p.path, p.new);

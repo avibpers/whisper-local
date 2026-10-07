@@ -282,6 +282,18 @@ class Bridge:
         return self._settings.set('whisper.models', models)
 
     @_api
+    def extra_status(self, name):
+        from ..services import system
+        return {'installed': system.extra_installed(name)}
+
+    @_api
+    def extra_install(self, name):
+        from ..services import system
+        if name not in system.EXTRAS:
+            raise ValueError(f"Unknown optional package: {name}")
+        return self._task(f"Installing the {name} package", lambda r: system.extra_install(name, r), kind='install')
+
+    @_api
     def gpu_detect(self):
         from ..services import system
         return system.gpu_detect(self._settings.get('whisper.device', 'cpu'))

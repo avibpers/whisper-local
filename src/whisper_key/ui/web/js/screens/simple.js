@@ -8,7 +8,7 @@ import { html, useEffect, useState } from '../../vendor/preact-htm.module.js';
 import { call } from '../api.js';
 import { app, saveSetting, toast, undo } from '../store.js';
 import { HotkeyCapture, Icon, Select, Toggle } from '../ui.js';
-import { MicSelect, MicTest } from './shared.js';
+import { ExtraInstall, MicSelect, MicTest } from './shared.js';
 
 const LANGUAGES = [['auto', 'Detect automatically'], ['en', 'English'], ['he', 'Hebrew · עברית'], ['ar', 'Arabic'],
   ['es', 'Spanish'], ['fr', 'French'], ['de', 'German'], ['ru', 'Russian'], ['it', 'Italian'], ['pt', 'Portuguese'],
@@ -58,6 +58,7 @@ export function SimpleSettingsScreen() {
         <p class="muted" style="margin:0;font-size:13.5px">Say something while testing. The bars should move. If they don't, pick another microphone above.</p>
       </div>
       <${Line} title="Reduce background noise" help="For fans, air conditioning or a noisy office."><${Toggle} checked=${a.noise} label="Reduce background noise" onChange=${(v) => set('noise', v)} /></${Line}>
+      ${a.noise && html`<div style="padding:0 22px 14px"><${ExtraInstall} name="noise" /></div>`}
       <${Line} title="I speak quietly" help="Turns up soft voices, for whispering in an open office."><${Toggle} checked=${a.quiet} label="I speak quietly" onChange=${(v) => set('quiet', v)} /></${Line}>
       <${Line} title="Pause my music while I talk" help="Pauses Spotify, YouTube and others. Press play again yourself."><${Toggle} checked=${a.music} label="Pause music" onChange=${(v) => set('music', v)} /></${Line}>
       <${Line} title="Stop listening when I go quiet" help="Ends the recording by itself if you forget.">

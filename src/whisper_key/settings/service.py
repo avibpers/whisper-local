@@ -184,6 +184,11 @@ class SettingsService:
             warnings.append("“Speech ends at” is higher than “Speech starts at”, so detection may flicker.")
         if path == 'vad.vad_onset_threshold' and value < (self.cm.get_path('vad.vad_offset_threshold') or 0):
             warnings.append("“Speech starts at” is lower than “Speech ends at”, so detection may flicker.")
+        if path == 'audio.noise_suppression.enabled' and value:
+            from ..services import system
+            if not system.extra_installed('noise'):
+                warnings.append("Noise suppression needs an extra package that isn't installed yet. "
+                                "Install it from Settings → Microphone & audio.")
         if path == 'server.host' and str(value).strip() not in ('127.0.0.1', 'localhost', '::1'):
             warnings.append(schema.get(path).warn)
         return warnings

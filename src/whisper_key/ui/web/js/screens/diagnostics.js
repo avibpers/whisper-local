@@ -60,6 +60,10 @@ function SelfTest() {
   </section>`;
 }
 
+// Keys that work inside the app window and on the floating bar.
+const APP_KEYS = [['Search settings and screens', 'ctrl+k'], ['Close a dialog or the bar menu', 'esc'],
+  ['Quick actions on the floating bar', '']];
+
 function Shortcuts() {
   const [rows, setRows] = useState([]);
   useEffect(() => { call('diag_shortcuts').then(setRows).catch(() => {}); }, []);
@@ -67,7 +71,10 @@ function Shortcuts() {
     <div class="card-head"><div><h2 id="h-keys">Your shortcuts</h2><p>The keys in effect right now.</p></div>
       <button type="button" class="btn ghost sm" onClick=${() => navigate('settings/hotkeys')}>Change</button></div>
     <div style="padding:0 18px 12px">${rows.map((r, i) => html`<div class="row-flex" style="justify-content:space-between;padding:8px 0;font-size:13px;${i ? 'border-top:1px solid var(--line)' : ''}">
-      <span>${r.action}</span><${Keys} hotkey=${r.keys.replace(/ /g, '').toLowerCase()} /></div>`)}</div>
+      <span>${r.action}</span><${Keys} hotkey=${r.keys.replace(/ /g, '').toLowerCase()} /></div>`)}
+      <div class="eyebrow" style="padding-top:12px">In this window</div>
+      ${APP_KEYS.map(([action, keys]) => html`<div class="row-flex" style="justify-content:space-between;padding:8px 0;font-size:13px;border-top:1px solid var(--line)">
+        <span>${action}</span>${keys ? html`<${Keys} hotkey=${keys} />` : html`<span class="small muted">Right-click</span>`}</div>`)}</div>
   </section>`;
 }
 

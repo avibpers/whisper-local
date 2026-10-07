@@ -828,8 +828,15 @@ class StateManager:
     # recording it is and whether hotkeys are paused.
     def _publish_state(self, state: str):
         mode = 'command' if self._command_mode else ('rephrase' if self._rephrase_mode else 'dictate')
-        publish('state', {'state': state, 'mode': mode, 'paused': bool(self.is_paused),
-                          'model_loading': bool(self.is_model_loading)})
+        payload = {'state': state, 'mode': mode, 'paused': bool(self.is_paused),
+                   'model_loading': bool(self.is_model_loading)}
+        if state != 'recording':
+            payload['hands_free'] = False  # a lock only lasts one recording
+        publish('state', payload)
+
+    # Recording continues without holding the key (double-tap lock).
+    def set_hands_free(self, on: bool):
+        publish('state', {'hands_free': bool(on)})
 
     # One stage of a dictation, for the Live trace and the floating bar. Text is
     # only ever kept in memory for the UI; the log still follows log_transcriptions.
