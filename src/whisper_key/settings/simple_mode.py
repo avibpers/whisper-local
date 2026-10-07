@@ -21,6 +21,9 @@ _PRESETS = {
 }
 
 _LOOKS = {
+    # The factory settings: Whisper's own capitals and punctuation, untouched.
+    'standard': {'postprocess.style': '', 'postprocess.strip_filler_words': False,
+                 'postprocess.remove_repeated_words': False},
     'exact': {'postprocess.style': 'verbatim', 'postprocess.strip_filler_words': False,
               'postprocess.remove_repeated_words': False},
     'clean': {'postprocess.style': 'formal', 'postprocess.strip_filler_words': True,
@@ -130,3 +133,20 @@ def from_settings(get, ctx: Optional[dict] = None) -> dict:
                 break
     answers['quality_presets'] = presets
     return answers
+
+
+# Settings the app saves by itself on a first start (the audio driver it
+# picked, GPU onboarding, the local API), which say nothing about the user.
+_SELF_WRITTEN = {'onboarding': None, 'server': None, 'audio': {'host'}}
+
+
+# True when user_settings.yaml holds a choice the user made, i.e. they used an
+# earlier version: they get Advanced mode and no welcome steps.
+def is_existing_user(overrides: dict) -> bool:
+    for section, value in (overrides or {}).items():
+        if section not in _SELF_WRITTEN:
+            return True
+        keys = _SELF_WRITTEN[section]
+        if keys is not None and isinstance(value, dict) and set(value) - keys:
+            return True
+    return False

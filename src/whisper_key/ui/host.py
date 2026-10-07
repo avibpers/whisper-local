@@ -61,8 +61,10 @@ class _PageChannel:
 
 
 class UiHost:
-    def __init__(self, ctx, open_page=None, dev=False, instance_name='WhisperKeyLocal'):
+    def __init__(self, ctx, open_page=None, dev=False, instance_name='WhisperKeyLocal', notices=None):
         self.ctx = ctx
+        # Startup problems to show once the window opens (see main.STARTUP_NOTICES).
+        self.notices = list(notices or [])
         self.dev = dev
         self.instance_name = instance_name
         self.settings = SettingsService(ctx.config_manager, Appliers(ctx))
@@ -181,8 +183,7 @@ class UiHost:
         overrides = cm.user_overrides()
         if 'ui' in overrides:
             return
-        meaningful = {k: v for k, v in overrides.items() if k not in ('onboarding', 'server')}
-        if meaningful:
+        if simple_mode.is_existing_user(overrides):
             cm.set_path('ui.mode', 'advanced')
             cm.set_path('ui.welcome_done', True)
             logger.info("Existing settings found; starting the app window in Advanced mode")
@@ -194,7 +195,8 @@ class UiHost:
         self.settings.start_watching()
         try:
             from .instance_ipc import InstanceListener
-            self._listener = InstanceListener(self.instance_name, lambda page: self.show_main(page))
+            self._listener = InstanceListener(self.instance_name, lambda page: self.show_main(page),
+                                              on_quit=self.quit)
             self._listener.start()
         except Exception as e:
             logger.debug(f"Instance listener not started: {e}")
@@ -441,6 +443,7 @@ class UiHost:
             'foreground': self.last_external,
             'profile': self.ctx.state_manager.profile_manager.get_active(),
             'dev': self.dev,
+            'notices': self.notices,
         }
         if which == 'main':
             data['schema'] = schema.export(lambda p: self.settings.has(p))

@@ -1,0 +1,87 @@
+/* tokens.css
+   Design tokens for Whisper Local's app window and floating bar: colours for
+   light and dark, type, spacing and radii. Every other stylesheet uses these
+   variables only, so a theme change is one attribute on <html>. */
+
+@font-face {
+  font-family: 'Geist';
+  src: url('../fonts/Geist-Variable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Geist Mono';
+  src: url('../fonts/GeistMono-Variable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+:root {
+  --bg: #F4F4F1;
+  --panel: #FFFFFF;
+  --sunk: #EEEEEA;
+  --line: #E2E2DC;
+  --line2: #D3D3CC;
+  --ink: #16171B;
+  --ink2: #464A52;
+  --mute: #676B73;
+  --acc: #2D43CC;
+  --acc-ink: #FFFFFF;
+  --acc-soft: #E9ECFC;
+  --rec: #C9431C;
+  --rec-soft: #FBE9E3;
+  --ok: #1B7446;
+  --ok-soft: #E2F2E8;
+  --warn: #8E5400;
+  --warn-soft: #FAEFD9;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .06), 0 8px 24px rgba(0, 0, 0, .06);
+  --shadow-pop: 0 18px 40px rgba(0, 0, 0, .16);
+
+  /* the floating bar stays dark in both themes */
+  --bar: #16171B;
+  --bar2: #26272D;
+  --bar-ink: #F4F4F1;
+  --bar-mute: #A9ACB3;
+  --bar-rec: #FF7B55;
+  --bar-ok: #5BD08F;
+  --bar-acc: #9AA6FF;
+  --bar-warn: #F2B957;
+
+  --font: 'Geist', 'Segoe UI', system-ui, sans-serif;
+  --mono: 'Geist Mono', 'Cascadia Mono', Consolas, monospace;
+  --r-sm: 6px;
+  --r: 9px;
+  --r-lg: 14px;
+  --focus: 0 0 0 2px var(--panel), 0 0 0 4px var(--acc);
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --bg: #0D0E11;
+  --panel: #15161A;
+  --sunk: #1C1D22;
+  --line: #26282E;
+  --line2: #363940;
+  --ink: #ECECE8;
+  --ink2: #C4C6CB;
+  --mute: #9497A0;
+  --acc: #8E9BFF;
+  --acc-ink: #0D0E11;
+  --acc-soft: #1F2348;
+  --rec: #FF7B55;
+  --rec-soft: #36190F;
+  --ok: #57CF8C;
+  --ok-soft: #12291E;
+  --warn: #EFB451;
+  --warn-soft: #2F2310;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .4);
+  --shadow-pop: 0 18px 40px rgba(0, 0, 0, .55);
+  --bar: #2A2B31;
+  --bar2: #383A41;
+  --bar-mute: #B4B7BE;
+  color-scheme: dark;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}

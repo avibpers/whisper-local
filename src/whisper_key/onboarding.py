@@ -46,11 +46,17 @@ GPU_SIZES = {
 }
 
 
-def handle_gpu_failure(error, config_manager):
+# `ask=False` (the app window is running) never prompts: the window shows the
+# problem with an Install button instead, and this session uses the CPU.
+def handle_gpu_failure(error, config_manager, ask=True):
     import logging
     logger = logging.getLogger(__name__)
     logger.error(f"GPU model load failed: {error}")
     print(f"\n{BOLD_RED}GPU acceleration failed:{RESET} {error}\n")
+
+    if not ask:
+        logger.warning("Using the CPU this session; the app window offers GPU setup")
+        return
 
     # Windowless launch (pythonw / autostart): no keyboard can answer the
     # prompt, so waiting on it would hang startup. Use CPU for this session,

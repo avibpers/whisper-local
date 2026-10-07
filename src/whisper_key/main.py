@@ -173,7 +173,13 @@ def setup_streaming(streaming_config, model_registry):
         model_registry=model_registry
     )
 
-def setup_whisper_engine(whisper_config, vad_manager, model_registry, log_transcriptions=False, config_manager=None):
+# Problems found while starting that the app window shows once it opens
+# ({'kind', 'message', 'action'}), since it isn't up yet when they happen.
+STARTUP_NOTICES = []
+
+
+def setup_whisper_engine(whisper_config, vad_manager, model_registry, log_transcriptions=False, config_manager=None,
+                         ask=True):
     backend = whisper_config.get('backend', 'faster_whisper')
 
     if backend == 'whisper_cpp':
@@ -209,7 +215,8 @@ def setup_whisper_engine(whisper_config, vad_manager, model_registry, log_transc
     except RuntimeError as e:
         if whisper_config['device'] != 'cuda' or not config_manager:
             raise
-        return _handle_gpu_failure(e, whisper_config, vad_manager, model_registry, log_transcriptions, config_manager)
+        return _handle_gpu_failure(e, whisper_config, vad_manager, model_registry, log_transcriptions, config_manager,
+                                   ask)
 
 def setup_clipboard_manager(clipboard_config):
     return ClipboardManager(
@@ -275,9 +282,13 @@ def run_gpu_onboarding(config_manager, whisper_config):
     return config_manager.get_whisper_config()
 
 
-def _handle_gpu_failure(error, whisper_config, vad_manager, model_registry, log_transcriptions, config_manager):
+def _handle_gpu_failure(error, whisper_config, vad_manager, model_registry, log_transcriptions, config_manager,
+                        ask=True):
     from .onboarding import handle_gpu_failure
-    handle_gpu_failure(error, config_manager)
+    handle_gpu_failure(error, config_manager, ask=ask)
+    if not ask:
+        STARTUP_NOTICES.append({'kind': 'gpu', 'message': f"The graphics card couldn't be used, so dictation runs on the "
+                                f"CPU for now. {error}", 'action': {'label': 'Install GPU support', 'action': 'gpu_install'}})
     whisper_config['device'] = 'cpu'
     whisper_config['compute_type'] = 'int8'
     return setup_whisper_engine(whisper_config, vad_manager, model_registry, log_transcriptions)
@@ -468,6 +479,12 @@ def main():
         sys.exit(run_doctor())
 
     if args.quit:
+        # The app window version answers on its instance channel and shuts down
+        # cleanly; older instances only have the PID file.
+        from .ui.instance_ipc import send_quit
+        if send_quit(instance_name):
+            print("Asked Whisper Local to quit.")
+            sys.exit(0)
         sys.exit(_send_quit_to_running_instance())
 
     if args.export_settings:
@@ -625,7 +642,8 @@ def main():
         )
         vad_manager = setup_vad(vad_config)
         streaming_manager = setup_streaming(streaming_config, model_registry)
-        whisper_engine = setup_whisper_engine(whisper_config, vad_manager, model_registry, log_transcriptions, config_manager)
+        whisper_engine = setup_whisper_engine(whisper_config, vad_manager, model_registry, log_transcriptions, config_manager,
+                                              ask=not use_ui)
         streaming_manager.initialize()
         clipboard_manager = setup_clipboard_manager(clipboard_config)
         audio_feedback = setup_audio_feedback(audio_feedback_config)
@@ -677,8 +695,8 @@ def main():
                 server=ServerController(lambda: state_manager.whisper_engine),
                 reconfigure_logging=lambda: setup_logging(config_manager),
             )
-            ui_host = UiHost(ctx, open_page=(args.page or 'live') if args.open else None,
-                             dev=args.ui_dev, instance_name=instance_name)
+            ui_host = UiHost(ctx, open_page=(args.page or '') if args.open else None,
+                             dev=args.ui_dev, instance_name=instance_name, notices=STARTUP_NOTICES)
             ui_host.attach()
             server_cfg = config_manager.config.get('server') or {}
             if server_cfg.get('enabled'):

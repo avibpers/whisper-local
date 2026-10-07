@@ -2,7 +2,8 @@
 # "Launch it again" opens the running app's window instead of starting a second
 # copy. The running instance listens on a local named pipe (Windows) / socket
 # file (macOS) protected by a random key stored in the user's data folder;
-# a new launch sends {"cmd": "open", "page": ...} and exits.
+# a new launch sends {"cmd": "open", "page": ...} and exits, and --quit sends
+# {"cmd": "quit"} so the app shuts down cleanly (settings saved, tray removed).
 
 import logging
 import os
@@ -29,6 +30,15 @@ def _key_path(instance_name: str) -> Path:
 
 # Ask a running instance to open its window. True when one answered.
 def send_open(instance_name: str, page: str = None, timeout: float = 2.0) -> bool:
+    return _send(instance_name, {'cmd': 'open', 'page': page}, timeout)
+
+
+# Ask a running instance to quit. True when one answered.
+def send_quit(instance_name: str, timeout: float = 2.0) -> bool:
+    return _send(instance_name, {'cmd': 'quit'}, timeout)
+
+
+def _send(instance_name: str, message: dict, timeout: float) -> bool:
     key_file = _key_path(instance_name)
     if not key_file.exists():
         return False
@@ -41,7 +51,7 @@ def send_open(instance_name: str, page: str = None, timeout: float = 2.0) -> boo
     def attempt():
         try:
             with Client(_address(instance_name), authkey=key) as conn:
-                conn.send({'cmd': 'open', 'page': page})
+                conn.send(message)
                 result['ok'] = conn.recv() == 'ok'
         except Exception as e:
             result['error'] = e
@@ -53,9 +63,10 @@ def send_open(instance_name: str, page: str = None, timeout: float = 2.0) -> boo
 
 
 class InstanceListener:
-    def __init__(self, instance_name: str, on_open):
+    def __init__(self, instance_name: str, on_open, on_quit=None):
         self.instance_name = instance_name
         self.on_open = on_open
+        self.on_quit = on_quit
         self._listener = None
         self._stop = threading.Event()
 
@@ -87,9 +98,12 @@ class InstanceListener:
                 continue
             try:
                 msg = conn.recv()
-                if isinstance(msg, dict) and msg.get('cmd') == 'open':
-                    self.on_open(msg.get('page'))
+                cmd = msg.get('cmd') if isinstance(msg, dict) else None
                 conn.send('ok')
+                if cmd == 'open':
+                    self.on_open(msg.get('page'))
+                elif cmd == 'quit' and self.on_quit:
+                    self.on_quit()
             except Exception as e:
                 logger.debug(f"IPC message failed: {e}")
             finally:

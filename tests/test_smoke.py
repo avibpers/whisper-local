@@ -3519,3 +3519,391 @@ class LayeredDefaultsTests(unittest.TestCase):
             merged, _ = dm.load_layered('bad.defaults.yaml', self.dir / 'app_rules.yaml',
                                         'rules', '', id_key='id')
         self.assertEqual(merged, [])
+
+
+# ── New desktop UI ────────────────────────────────────────────────────────────
+# The settings schema, Simple mode, the settings service, the event bus, the
+# log stream and the web pages behind the app window and the floating bar.
+
+def _defaults_getter():
+    import yaml
+    from whisper_key.config_manager import _resolve_platform_values
+    defaults = _resolve_platform_values(yaml.safe_load(
+        (ROOT / 'src' / 'whisper_key' / 'config.defaults.yaml').read_text(encoding='utf-8')))
+
+    def get(path):
+        node = defaults
+        for key in path.split('.'):
+            if not isinstance(node, dict):
+                return None
+            node = node.get(key)
+        return node
+    return defaults, get
+
+
+class SimpleModeTests(unittest.TestCase):
+    def test_factory_defaults_match_a_named_text_style(self):
+        # A new user must see one of the choices picked, not "custom".
+        from whisper_key.settings import simple_mode
+        _, get = _defaults_getter()
+        self.assertEqual(simple_mode.from_settings(get)['look'], 'standard')
+
+
+class GpuFailureWithoutPromptTests(unittest.TestCase):
+    def test_app_window_mode_falls_back_to_cpu_without_the_console_menu(self):
+        # With the app window there may be no console to answer a prompt, so a
+        # GPU load failure must never block on one.
+        import unittest.mock as mock
+        from whisper_key import onboarding
+        with mock.patch.object(onboarding, 'prompt_choice') as ask, \
+                mock.patch.object(onboarding, 'restart_or_exit') as restart:
+            onboarding.handle_gpu_failure(RuntimeError('CUDA libraries not found'), mock.MagicMock(), ask=False)
+        ask.assert_not_called()
+        restart.assert_not_called()
+
+
+class FirstLaunchModeTests(unittest.TestCase):
+    def test_settings_the_app_writes_by_itself_do_not_make_an_upgrade(self):
+        # On first start the app saves the audio driver it picked and the GPU
+        # onboarding state; a brand-new user must still get the welcome steps.
+        from whisper_key.settings import simple_mode
+        fresh = {'audio': {'host': 'Windows WASAPI'}, 'onboarding': {'gpu': 'no_gpu'}, 'server': {'enabled': False}}
+        self.assertFalse(simple_mode.is_existing_user(fresh))
+
+    def test_a_changed_setting_means_an_existing_user(self):
+        from whisper_key.settings import simple_mode
+        self.assertTrue(simple_mode.is_existing_user({'audio': {'host': 'MME', 'channels': 2}}))
+        self.assertTrue(simple_mode.is_existing_user({'whisper': {'model': 'small'}}))
+
+
+class InstanceIpcTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        import unittest.mock as mock
+        from whisper_key.ui import instance_ipc
+        self.ipc = instance_ipc
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        patcher = mock.patch.object(instance_ipc, 'get_user_app_data_path', return_value=tmp.name)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.name = f'WhisperKeyLocal_unittest_{os.getpid()}_{self._testMethodName[-12:]}'
+
+    def _listen(self, **handlers):
+        import threading
+        got = {}
+        done = threading.Event()
+
+        def record(kind):
+            def handler(*args):
+                got[kind] = args
+                done.set()
+            return handler
+        listener = self.ipc.InstanceListener(self.name, record('open'), on_quit=record('quit'))
+        listener.start()
+        self.addCleanup(listener.stop)
+        return got, done
+
+    def test_a_second_launch_opens_the_running_window(self):
+        got, done = self._listen()
+        self.assertTrue(self.ipc.send_open(self.name, 'history'))
+        done.wait(2)
+        self.assertEqual(got.get('open'), ('history',))
+
+    def test_quit_asks_the_running_app_to_shut_down_cleanly(self):
+        got, done = self._listen()
+        self.assertTrue(self.ipc.send_quit(self.name))
+        done.wait(2)
+        self.assertIn('quit', got)
+
+    def test_nothing_running_answers_false(self):
+        self.assertFalse(self.ipc.send_quit(self.name))
+
+
+class SettingsSchemaTests(unittest.TestCase):
+    # Fails if a new key is added to config.defaults.yaml without a schema
+    # entry (it would be missing from the app's Settings screen).
+    def test_every_default_setting_has_a_schema_entry(self):
+        from whisper_key.settings import schema
+        defaults, _ = _defaults_getter()
+        missing = [p for p in schema.leaf_paths(defaults) if schema.get(p) is None]
+        self.assertEqual(missing, [])
+
+    # Fails if an entry points at a key that doesn't exist (a typo, or a key
+    # that was renamed), unless it is marked optional.
+    def test_every_schema_entry_points_at_a_real_setting(self):
+        from whisper_key.settings import schema
+        defaults, _ = _defaults_getter()
+
+        def exists(path):
+            node = defaults
+            for key in path.split('.'):
+                if not isinstance(node, dict) or key not in node:
+                    return False
+                node = node[key]
+            return True
+        broken = [s.path for s in schema.SCHEMA if not s.optional and not exists(s.path)]
+        self.assertEqual(broken, [])
+
+    def test_choices_coerce_from_strings_and_reject_unknown_values(self):
+        from whisper_key.settings import schema
+        channels = schema.get('audio.channels')
+        self.assertEqual(schema.coerce(channels, '2'), 2)
+        with self.assertRaises(ValueError):
+            schema.coerce(channels, 7)
+        with self.assertRaises(ValueError):
+            schema.coerce(schema.get('vad.vad_silence_timeout_seconds'), 'abc')
+
+
+class SimpleModeRoundTripTests(unittest.TestCase):
+    # Every answer written by to_patch must read back as the same answer, or
+    # the Simple screen would show a different choice than the one picked.
+    def test_answers_read_back_after_they_are_applied(self):
+        import copy
+        from whisper_key.settings import simple_mode
+        defaults, _ = _defaults_getter()
+        cases = [('look', 'clean'), ('look', 'relaxed'), ('look', 'exact'), ('look', 'standard'),
+                 ('where', 'copy'), ('where', 'type'), ('start', 'press'), ('start', 'hold'),
+                 ('sounds', False), ('punctuation', False), ('bar', False), ('stop', 'never'), ('stop', '60')]
+        for question, answer in cases:
+            with self.subTest(question=question, answer=answer):
+                cfg = copy.deepcopy(defaults)
+
+                def get(path, cfg=cfg):
+                    node = cfg
+                    for key in path.split('.'):
+                        node = node.get(key) if isinstance(node, dict) else None
+                    return node
+                for path, value in simple_mode.to_patch(question, answer, {}).items():
+                    node = cfg
+                    keys = path.split('.')
+                    for key in keys[:-1]:
+                        node = node.setdefault(key, {})
+                    node[keys[-1]] = value
+                self.assertEqual(simple_mode.from_settings(get)[question], answer)
+
+
+class _FakeConfig:
+    def __init__(self, data):
+        import copy
+        self.data = copy.deepcopy(data)
+        self._defaults_baseline = copy.deepcopy(data)
+
+    def get_path(self, path, default=None):
+        node = self.data
+        for key in path.split('.'):
+            if not isinstance(node, dict) or key not in node:
+                return default
+            node = node[key]
+        return node
+
+    def set_path(self, path, value):
+        node = self.data
+        keys = path.split('.')
+        for key in keys[:-1]:
+            node = node.setdefault(key, {})
+        node[keys[-1]] = value
+
+
+class SettingsServiceTests(unittest.TestCase):
+    def setUp(self):
+        from whisper_key.settings.service import SettingsService
+        defaults, _ = _defaults_getter()
+        self.cm = _FakeConfig(defaults)
+        self.svc = SettingsService(self.cm)
+
+    def test_a_change_is_saved_and_one_undo_puts_it_back(self):
+        res = self.svc.set('clipboard.auto_paste', False)
+        self.assertEqual((res['old'], res['value']), (True, False))
+        self.assertFalse(self.cm.get_path('clipboard.auto_paste'))
+        self.assertEqual(self.svc.undo()['paths'], ['clipboard.auto_paste'])
+        self.assertTrue(self.cm.get_path('clipboard.auto_paste'))
+        self.assertIsNone(self.svc.undo())
+
+    def test_several_settings_undo_together(self):
+        self.svc.set_many({'clipboard.auto_paste': False, 'audio_feedback.enabled': False}, label='Profile')
+        self.svc.undo()
+        self.assertTrue(self.cm.get_path('clipboard.auto_paste'))
+        self.assertTrue(self.cm.get_path('audio_feedback.enabled'))
+
+    def test_a_shortcut_already_in_use_is_refused(self):
+        from whisper_key.settings.service import SettingsError
+        taken = self.cm.get_path('hotkey.paste_last_hotkey')
+        with self.assertRaises(SettingsError):
+            self.svc.set('hotkey.recording_hotkey', taken)
+        self.assertNotEqual(self.cm.get_path('hotkey.recording_hotkey'), taken)
+
+    def test_settings_the_app_manages_cannot_be_changed_from_the_page(self):
+        from whisper_key.settings.service import SettingsError
+        with self.assertRaises(SettingsError):
+            self.svc.set('ui.welcome_done', True)
+
+    def test_a_change_is_announced_to_the_window(self):
+        from whisper_key.ui import events
+        seen = []
+        unsubscribe = events.get_bus().subscribe('settings', lambda t, p: seen.append(p))
+        self.addCleanup(unsubscribe)
+        self.svc.set('audio_feedback.enabled', False)
+        self.assertEqual([(p['path'], p['new']) for p in seen], [('audio_feedback.enabled', False)])
+
+
+class EventBusTests(unittest.TestCase):
+    def test_a_broken_subscriber_does_not_stop_the_others(self):
+        from whisper_key.ui.events import EventBus
+        bus = EventBus()
+        got = []
+
+        def broken(topic, payload):
+            raise RuntimeError('boom')
+        bus.subscribe('state', broken)
+        bus.subscribe('*', lambda t, p: got.append((t, p)))
+        bus.publish('state', {'state': 'recording'})
+        self.assertEqual(got, [('state', {'state': 'recording'})])
+
+    def test_unsubscribe_stops_delivery(self):
+        from whisper_key.ui.events import EventBus
+        bus = EventBus()
+        got = []
+        off = bus.subscribe('level', lambda t, p: got.append(p))
+        off()
+        bus.publish('level', {'level': 0.5})
+        self.assertEqual(got, [])
+
+
+class LogStreamTests(unittest.TestCase):
+    def test_records_are_kept_in_order_for_the_console(self):
+        import logging
+        from whisper_key.ui.log_stream import LogStreamHandler
+        handler = LogStreamHandler()
+        log = logging.getLogger('whisper_key.test_log_stream')
+        log.addHandler(handler)
+        log.setLevel(logging.DEBUG)
+        self.addCleanup(log.removeHandler, handler)
+        log.info('first')
+        log.warning('second')
+        tail = handler.tail(5)
+        self.assertEqual([(r['lv'], r['mod'], r['msg']) for r in tail],
+                         [('INFO', 'test_log_stream', 'first'), ('WARNING', 'test_log_stream', 'second')])
+        self.assertLess(tail[0]['seq'], tail[1]['seq'])
+        handler.clear()
+        self.assertEqual(handler.tail(5), [])
+
+
+class PostprocessTraceTests(unittest.TestCase):
+    # The Live screen's "Clean-up" step lists what changed; it must name the
+    # steps that changed the text and only those.
+    def test_trace_names_the_steps_that_changed_the_text(self):
+        from whisper_key.text_postprocess import postprocess
+        defaults, _ = _defaults_getter()
+        cfg = dict(defaults['postprocess'], strip_filler_words=True)
+        trace = []
+        out = postprocess('um I will send it', cfg, trace=trace)
+        self.assertNotIn('um', out.lower().split())
+        self.assertIn('filler_words', trace)
+
+    def test_unchanged_text_leaves_an_empty_trace(self):
+        from whisper_key.text_postprocess import postprocess
+        defaults, _ = _defaults_getter()
+        trace = []
+        postprocess('Hello there.', defaults['postprocess'], trace=trace)
+        self.assertEqual(trace, [])
+
+
+class LayeredWriteApiTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        from whisper_key import app_rules
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.user = Path(tmp.name) / 'app_rules.yaml'
+        self.defaults = app_rules.DEFAULTS_FILE
+
+    def _view(self):
+        from whisper_key import defaults_merge as dm
+        return dm.layered_view(self.defaults, self.user, 'rules', '', id_key='id')
+
+    def test_own_rule_is_added_before_the_shipped_ones_and_can_be_deleted(self):
+        from whisper_key import defaults_merge as dm
+        new_id = dm.save_entry(self.defaults, self.user, 'rules', '', {'match': ['notepad.exe'], 'auto_paste': False})
+        view = self._view()
+        self.assertEqual(view[0]['origin'], 'yours')
+        self.assertEqual(view[0]['entry']['match'], ['notepad.exe'])
+        dm.delete_entry(self.defaults, self.user, 'rules', '', new_id)
+        self.assertNotIn('yours', [v['origin'] for v in self._view()])
+
+    def test_turning_off_a_shipped_rule_keeps_it_listed_as_off(self):
+        from whisper_key import defaults_merge as dm
+        dm.set_entry_disabled(self.defaults, self.user, 'rules', '', 'terminals', True)
+        terminals = [v for v in self._view() if v['id'] == 'terminals'][0]
+        self.assertTrue(terminals['disabled'])
+        dm.set_entry_disabled(self.defaults, self.user, 'rules', '', 'terminals', False)
+        terminals = [v for v in self._view() if v['id'] == 'terminals'][0]
+        self.assertFalse(terminals['disabled'])
+
+
+class BridgeEnvelopeTests(unittest.TestCase):
+    # Every page call gets {ok, data} or {ok: False, error}; an exception must
+    # never reach the page as a pywebview failure.
+    def test_results_and_errors_are_wrapped(self):
+        from whisper_key.ui.bridge import _api
+
+        class Fake:
+            @_api
+            def good(self):
+                return 42
+
+            @_api
+            def bad(self):
+                raise ValueError('Not allowed')
+        self.assertEqual(Fake().good(), {'ok': True, 'data': 42})
+        self.assertEqual(Fake().bad(), {'ok': False, 'error': 'Not allowed'})
+
+
+class WebPagesTests(unittest.TestCase):
+    WEB = ROOT / 'src' / 'whisper_key' / 'ui' / 'web'
+
+    # The app shows every question in an in-page dialog; browser popups block
+    # the window and look broken.
+    def test_pages_never_use_browser_popups(self):
+        import re
+        hits = []
+        for path in self.WEB.rglob('*.js'):
+            if 'vendor' in path.parts:
+                continue
+            for n, line in enumerate(path.read_text(encoding='utf-8').splitlines(), 1):
+                if re.search(r'(?<![\w.])(alert|confirm|prompt)\s*\(|window\.(alert|confirm|prompt)', line):
+                    hits.append(f'{path.name}:{n}')
+        self.assertEqual(hits, [])
+
+    def test_pages_only_load_local_files(self):
+        import re
+        for name in ('index.html', 'bar.html'):
+            page = (self.WEB / name).read_text(encoding='utf-8')
+            self.assertIn("script-src 'self'", page)
+            self.assertIsNone(re.search(r'(src|href)="https?://', page), name)
+
+    def test_every_imported_module_exists(self):
+        import re
+        missing = []
+        for path in self.WEB.rglob('*.js'):
+            for target in re.findall(r"from\s+'(\.{1,2}/[^']+)'", path.read_text(encoding='utf-8')):
+                if not (path.parent / target).resolve().exists():
+                    missing.append(f'{path.name} -> {target}')
+        self.assertEqual(missing, [])
+
+
+class UiModulesImportTests(unittest.TestCase):
+    # The window library is optional; without it these must still import so
+    # the app can fall back to the tray.
+    def test_ui_modules_import_without_the_window_library(self):
+        import importlib
+        import unittest.mock as mock
+        with mock.patch.dict(sys.modules, {'webview': None}):
+            for name in ('whisper_key.ui.events', 'whisper_key.ui.log_stream', 'whisper_key.ui.tasks',
+                         'whisper_key.ui.instance_ipc', 'whisper_key.settings.schema',
+                         'whisper_key.settings.simple_mode', 'whisper_key.settings.service'):
+                importlib.import_module(name)
+            from whisper_key.ui import host
+            ok, reason = host.ui_available()
+            self.assertFalse(ok)
+            self.assertTrue(reason)
