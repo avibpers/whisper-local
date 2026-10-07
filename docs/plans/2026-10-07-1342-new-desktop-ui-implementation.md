@@ -270,22 +270,55 @@ Milestones: **M1** after Phase 4 (you can run it and see the Live screen and the
 - [ ] Sets `ui.welcome_done`; reachable later from Diagnostics ("Run setup again")
 - [ ] Replaces `first_run.py` window and the console welcome banner (`onboarding_tutorial`)
 
-11. Retire the legacy UI
-- [ ] Remove after one release: `settings_ui.py`, `history_window.py`, `cheat_sheet.py`, `fallback_window.py`, `first_run.py`, `level_overlay.py`, `window_launcher.py`, the add-word dialog in `dictionary.py`, `onboarding_tutorial.py`
-- [ ] CLI flags `--settings`, `--history`, `--cheat-sheet` open the new window on that page; `--window` removed
-- [ ] Slim the tray menu: Open, Pause hotkeys, Profile, Recent, Quit; everything else lives in the app
-- [ ] Update `docs/project-index.md`, `docs/platform-abstraction.md`, README (screenshots, features), `docs/faq.md`, `docs/troubleshooting.md` (WebView2), CHANGELOG
-- [ ] Keep `DocumentationStandardTests` green: every new module gets its 2–4 line header comment
+11. Retire the legacy UI — **done 2026-10-07, except the deletions, which wait one release (D6)**
+- [ ] Remove after one release: `settings_ui.py`, `history_window.py`, `cheat_sheet.py`, `fallback_window.py`, `first_run.py`, `level_overlay.py`, `window_launcher.py`, the add-word dialog in `dictionary.py`, `onboarding_tutorial.py` (kept behind `--legacy-ui` for this release, per D6)
+- [x] CLI flags `--settings`, `--history`, `--cheat-sheet` open the new window on that page (`--stats` opens History); `--window` stays until the deletions, since `--legacy-ui` still uses it
+- [x] Slim the tray menu: Open, Pause hotkeys, Profile, Recent, Quit; everything else lives in the app (the full menu stays with `--legacy-ui`)
+- [x] Update `docs/project-index.md`, `docs/platform-abstraction.md`, README (features; screenshots still to take), `docs/faq.md`, `docs/troubleshooting.md` (WebView2), CHANGELOG
+- [x] Keep `DocumentationStandardTests` green: every new module gets its 2–4 line header comment
 
-12. Hardening and QA — **Milestone 5**
-- [ ] Performance budget (revised after Phase 0): idle CPU < 0.5%, recording < 3%; memory over today ≤ +250 MB with only the bar, ≤ +300 MB with the window open; measure and record
-- [ ] DPI 100/125/150/200%, two monitors, taskbar on any edge
-- [ ] Accessibility: keyboard-only pass on every screen, focus order, screen-reader labels, 4.5:1 contrast in both themes
-- [ ] Hebrew: RTL transcripts in Live, History, bar preview; Hebrew phrases in tag inputs and tables
-- [ ] Failure paths: Ollama down, no microphone, mic unplugged mid-recording, model download interrupted, disk full, invalid hand-edited YAML, WebView2 missing
-- [ ] Offline: no network calls from the UI (check with the firewall off and on)
-- [ ] `python -m unittest tests.test_smoke` green on Windows, macOS, Linux CI (UI modules import without pywebview present)
-- [ ] Optional: Playwright smoke run against `?mock=1` in CI (every route renders, no console errors)
+12. Hardening and QA — **Milestone 5: done on Windows 2026-10-07, results below; the items left open need hardware or CI**
+- [x] Performance budget (revised after Phase 0): idle CPU < 0.5%, recording < 3%; memory over today ≤ +250 MB with only the bar, ≤ +300 MB with the window open; measure and record
+- [ ] DPI 100/125/150/200%, two monitors, taskbar on any edge (placement maths tested for scaling, every taskbar edge and small screens; not yet tried on a real second monitor or at 200%)
+- [x] Accessibility: keyboard-only pass on every screen, focus order, screen-reader labels, 4.5:1 contrast in both themes
+- [x] Hebrew: RTL transcripts in Live, History, bar preview; Hebrew phrases in tag inputs and tables
+- [ ] Failure paths: Ollama down, no microphone, mic unplugged mid-recording, model download interrupted, disk full, invalid hand-edited YAML, WebView2 missing (done: Ollama down, interrupted background change, invalid YAML, WebView2 missing; open: no microphone, unplug mid-recording, disk full, which need the hardware)
+- [x] Offline: no network calls from the UI (enforced by the page CSP `connect-src 'self'` and a test that pages load no remote URLs; the only outbound calls are the user's own actions: model download, update check, Ollama probe)
+- [ ] `python -m unittest tests.test_smoke` green on Windows, macOS, Linux CI (UI modules import without pywebview present) — green on Windows (329 tests); macOS and Linux CI not run from here
+- [ ] Optional: Playwright smoke run against `?mock=1` in CI (every route renders, no console errors) — done by hand this session, not wired into CI
+
+#### Phase 11–12 results (Windows 11, 24 cores, 5120×1440 at 100%, WebView2 154)
+
+Memory is Task Manager's "private working set" over the whole process tree, WebView2 included.
+
+| Case | Memory | Over the old UI | Budget |
+|---|---|---|---|
+| Old UI (`--legacy-ui`) | 68 MB | — | — |
+| Floating bar only | 291 MB | +223 MB | ≤ +250 MB |
+| App window open | 314 MB | +246 MB | ≤ +300 MB |
+
+CPU, as a share of the whole machine (one core = 4.2%):
+
+| Case | Before tuning | After tuning |
+|---|---|---|
+| Idle, bar only | 0.14% | 0.14% |
+| Idle, window open | 0.13% | 0.13% |
+| Recording, bar only | — | 0.41% |
+| Recording, Live screen open | 4.9% | 1.24% |
+
+Tuning: level bars and meters move with CSS transforms instead of width and
+height, the recording clock redraws on its own, and the pulsing dots step
+instead of animating every frame. Most of what is left while recording is
+Python sending levels to two pages 20 times a second.
+
+Bugs found by running the real app and fixed:
+- A GPU load failure opened a blocking console menu even with the app window; now CPU fallback plus an Install notice.
+- A first start counted as an upgrade (the app saves the audio driver by itself), so new users skipped the welcome steps.
+- `--open` forced the Live screen even in Simple mode and before the welcome steps.
+- `--quit` ignored `--test` and hard-killed the process; it now asks the app to quit over the instance channel.
+- A broken hand edit of `user_settings.yaml` reset the running app to defaults (hotkeys too) and saved them over the file.
+- The quick-actions menu was cut off by a fixed 640 px cap; the bar could also start off screen on small displays.
+- Dialogs didn't take or return focus; two colours were under 4.5:1.
 
 13. Production packaging and installer (later — not part of the CLI phase)
 - [ ] Build a frozen app (PyInstaller or Nuitka) instead of pyapp's first-run Python download, so install works offline and starts fast

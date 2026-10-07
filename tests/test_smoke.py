@@ -4092,3 +4092,23 @@ class BarPlacementTests(unittest.TestCase):
     def test_the_bar_height_is_limited_to_what_fits(self):
         h = self._host((0, 0, 1366, 728), 1.25, 'bottom-right')
         self.assertEqual(h._max_bar_height(), int((728 - 2 * int(28 * 1.25)) / 1.25))
+
+
+class BackgroundChangeFailureTests(unittest.TestCase):
+    # A model download that breaks off (or a microphone that won't open) must
+    # put the previous setting back, so the app keeps working on it.
+    def test_a_failed_background_change_puts_the_old_value_back(self):
+        import threading
+        import unittest.mock as mock
+        from whisper_key.settings.appliers import Appliers
+        ctx = mock.MagicMock()
+        reverted = threading.Event()
+        ctx.settings.revert_silently.side_effect = lambda path, old: reverted.set()
+        appliers = Appliers(ctx)
+
+        def broken(reporter):
+            raise OSError('Connection reset while downloading')
+        result = appliers._background('Switching to small', 'engine', 'whisper.model', 'base', broken)
+        self.assertEqual(result['applied'], 'background')
+        self.assertTrue(reverted.wait(5))
+        ctx.settings.revert_silently.assert_called_once_with('whisper.model', 'base')
