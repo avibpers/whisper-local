@@ -105,6 +105,8 @@ class Bridge:
     @_api
     def bar_resize(self, width, height):
         self._host.resize_bar(int(width), int(height))
+        # The page caps its menu at this height and scrolls the rest.
+        return {'max_height': self._host._max_bar_height()}
 
     @_api
     def pick_folder(self, title='Choose a folder'):

@@ -118,6 +118,7 @@ function wireEvents() {
   on('profile', (p) => app.set({ profile: p.active }));
   on('notify', (n) => {
     if (n.kind === 'fallback') app.set({ notice: n });
+    if (n.kind === 'settings_file') toast(n.message, { kind: 'warn', timeout: 0 });
   });
   on('devices_changed', () => app.set((s) => ({ devicesVersion: (s.devicesVersion || 0) + 1 })));
   on('window', (w) => {

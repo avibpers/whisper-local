@@ -195,6 +195,7 @@ class SettingsService:
             return
 
         def loop():
+            last_error = ''
             while not self._watch_stop.wait(interval):
                 try:
                     changed = self.cm.reload_if_changed_externally()
@@ -203,6 +204,12 @@ class SettingsService:
                     continue
                 for path in changed:
                     self._apply_external(path)
+                error = getattr(self.cm, 'reload_error', '')
+                if error and error != last_error:
+                    publish('notify', {'kind': 'settings_file', 'level': 'warn',
+                                       'message': "user_settings.yaml was edited but can't be read, so the app "
+                                                  f"keeps your current settings. {error}"})
+                last_error = error
 
         self._watch_thread = threading.Thread(target=loop, daemon=True, name='settings-watch')
         self._watch_thread.start()

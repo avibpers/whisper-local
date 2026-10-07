@@ -206,7 +206,12 @@ function Bar() {
     const report = () => {
       const r = el.getBoundingClientRect();
       const key = `${Math.ceil(r.width)}x${Math.ceil(r.height)}`;
-      if (key !== last.current) { last.current = key; call('bar_resize', Math.ceil(r.width), Math.ceil(r.height)).catch(() => {}); }
+      if (key !== last.current) {
+        last.current = key;
+        call('bar_resize', Math.ceil(r.width), Math.ceil(r.height)).then((res) => {
+          if (res && res.max_height) document.documentElement.style.setProperty('--menu-max', `${res.max_height}px`);
+        }).catch(() => {});
+      }
     };
     report();
     const ro = new ResizeObserver(report);

@@ -237,7 +237,7 @@ export function createMock(emit) {
     system_check_update: () => ok({ current: '0.0.0-mock', latest: '0.0.0-mock', newer: false }),
     tasks_list: () => ok(Object.values(tasks)),
     task_result: (id) => ok(tasks[id] || null),
-    bar_resize: () => ok(),
+    bar_resize: () => ok({ max_height: Math.max(20, window.innerHeight - 56) }),
   };
 
   return new Proxy(api, {

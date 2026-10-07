@@ -116,6 +116,11 @@ class ConfigManager:
         self._save_timer = None
         self._own_write_mtime = None
         self._external_seen_mtime = None
+        # Set when user_settings.yaml couldn't be read: at start (the app then
+        # runs on defaults and keeps a copy before its first save over it), or
+        # on a hand edit while running (the edit is ignored until it parses).
+        self._user_file_unreadable = False
+        self.reload_error = ''
         
         self.config_path = self._determine_config_path(use_user_settings, config_path)
         
@@ -211,6 +216,7 @@ class ConfigManager:
                     self.logger.error(f"Error parsing user YAML config: {e}")
                 else:
                     self.logger.error(f"Error loading user config file: {e}")
+                self._user_file_unreadable = os.path.exists(self.config_path)
                 print(f"   ✗ Error loading user settings, using defaults: {e}")
 
         self.logger.info(f"Using default configuration from {self.default_config_path}")
@@ -245,6 +251,7 @@ class ConfigManager:
         yaml.dump(_to_plain(user_config), body)
 
         with self._write_lock:
+            self._keep_copy_of_unreadable_file()
             with open(self.user_settings_path, 'w', encoding='utf-8') as f:
                 f.write(_build_settings_header())
                 f.write(body.getvalue())
@@ -255,6 +262,22 @@ class ConfigManager:
                 self._own_write_mtime = mtime
             except OSError:
                 pass
+
+    # The file couldn't be read when the app started, so it runs on defaults.
+    # Before the first save replaces it, keep what the user had beside it.
+    def _keep_copy_of_unreadable_file(self):
+        if not self._user_file_unreadable:
+            return
+        self._user_file_unreadable = False
+        import datetime
+        import shutil
+        stamp = datetime.datetime.now().strftime('%Y-%m-%d-%H%M%S')
+        backup = f"{self.user_settings_path}.{stamp}.bak"
+        try:
+            shutil.copy2(self.user_settings_path, backup)
+            self.logger.warning(f"user_settings.yaml couldn't be read; your version is kept as {os.path.basename(backup)}")
+        except OSError as e:
+            self.logger.error(f"Could not keep a copy of the unreadable settings file: {e}")
 
     # ── Path access (used by the settings service / app window) ───────────────
 
@@ -317,6 +340,16 @@ class ConfigManager:
         if mtime == self._own_write_mtime or mtime == self._external_seen_mtime:
             return []
         self._external_seen_mtime = mtime
+        # A hand edit that doesn't parse (often half-saved) is ignored, so
+        # the app doesn't drop to defaults and save those over the user's file.
+        try:
+            with open(self.user_settings_path, 'r', encoding='utf-8') as f:
+                YAML().load(f)
+        except Exception as e:
+            self.reload_error = str(e).splitlines()[0] if str(e) else e.__class__.__name__
+            self.logger.warning(f"user_settings.yaml was edited but can't be read, so the change is ignored: {e}")
+            return []
+        self.reload_error = ''
         old = copy.deepcopy(_to_plain(self.config))
         try:
             fresh = self._load_config()

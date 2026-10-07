@@ -3908,6 +3908,16 @@ class UiModulesImportTests(unittest.TestCase):
             self.assertFalse(ok)
             self.assertTrue(reason)
 
+    def test_missing_webview2_falls_back_with_a_reason(self):
+        import unittest.mock as mock
+        from whisper_key.ui import host, win32
+        if host.ui_available()[1].startswith('pywebview'):
+            self.skipTest('pywebview not installed here')
+        with mock.patch.object(win32, 'IS_WINDOWS', True), mock.patch.object(win32, 'webview2_version', return_value=None):
+            ok, reason = host.ui_available()
+        self.assertFalse(ok)
+        self.assertIn('WebView2', reason)
+
 
 class SlimTrayMenuTests(unittest.TestCase):
     def _tray(self):
@@ -3948,3 +3958,137 @@ class SlimTrayMenuTests(unittest.TestCase):
     def test_without_the_app_window_the_full_menu_stays(self):
         tray, _ = self._tray()
         self.assertIn('Settings...', self._labels(tray._create_menu()))
+
+
+class ColourContrastTests(unittest.TestCase):
+    # Text colours must reach 4.5:1 (WCAG AA) on every surface they are used
+    # on, in both themes, and on the floating bar.
+    TEXT_ON_SURFACES = [(t, s) for t in ('ink', 'ink2', 'mute', 'acc', 'rec', 'ok', 'warn')
+                        for s in ('bg', 'panel', 'sunk')]
+    TONE_ON_SOFT = [('acc', 'acc-soft'), ('rec', 'rec-soft'), ('ok', 'ok-soft'), ('warn', 'warn-soft'),
+                    ('acc-ink', 'acc')]
+    BAR = [(t, s) for t in ('bar-ink', 'bar-mute', 'bar-rec', 'bar-ok', 'bar-acc', 'bar-warn')
+           for s in ('bar', 'bar2')]
+
+    @staticmethod
+    def _themes():
+        import re
+        css = (ROOT / 'src' / 'whisper_key' / 'ui' / 'web' / 'css' / 'tokens.css').read_text(encoding='utf-8')
+        blocks = re.findall(r'(:root(?:\[data-theme="dark"\])?)\s*\{(.*?)\}', css, re.S)
+        light = dict(re.findall(r'--([\w-]+):\s*(#[0-9A-Fa-f]{6})', blocks[0][1]))
+        dark = dict(light, **dict(re.findall(r'--([\w-]+):\s*(#[0-9A-Fa-f]{6})', blocks[1][1])))
+        return {'light': light, 'dark': dark}
+
+    @staticmethod
+    def _ratio(a, b):
+        def lum(hex_colour):
+            channels = [int(hex_colour[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+            lin = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+            return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+        hi, lo = sorted((lum(a), lum(b)), reverse=True)
+        return (hi + 0.05) / (lo + 0.05)
+
+    def test_text_is_readable_in_both_themes(self):
+        low = []
+        for theme, tokens in self._themes().items():
+            for text, surface in self.TEXT_ON_SURFACES + self.TONE_ON_SOFT + self.BAR:
+                ratio = self._ratio(tokens[text], tokens[surface])
+                if ratio < 4.5:
+                    low.append(f'{theme}: --{text} on --{surface} is {ratio:.2f}:1')
+        self.assertEqual(low, [])
+
+
+class BrokenSettingsFileTests(unittest.TestCase):
+    BROKEN = 'clipboard:' + LF + '  auto_paste: [broken' + LF
+
+    def _cm(self, d):
+        import unittest.mock as mock
+        try:
+            from whisper_key import config_manager as cm_mod
+        except Exception:
+            self.skipTest("config_manager not importable on this platform")
+        import contextlib
+        import io
+        patcher = mock.patch.object(cm_mod, 'get_user_app_data_path', return_value=d)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        with contextlib.redirect_stdout(io.StringIO()):  # it prints a symbol cp1252 can't encode
+            return cm_mod.ConfigManager(quiet=True)
+
+    @staticmethod
+    def _touch_newer(path, base):
+        os.utime(path, (base + 10, base + 10))
+
+    # A half-typed hand edit must not reset the running app to defaults (which
+    # would also change the hotkeys) or be saved over.
+    def test_a_broken_hand_edit_keeps_the_running_settings(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            cm = self._cm(d)
+            cm.set_path('clipboard.auto_paste', False)
+            cm.flush()
+            path = os.path.join(d, 'user_settings.yaml')
+            base = os.path.getmtime(path)
+            with open(path, 'a', encoding='utf-8') as f:
+                f.write(self.BROKEN)
+            self._touch_newer(path, base)
+            self.assertEqual(cm.reload_if_changed_externally(), [])
+            self.assertFalse(cm.get_path('clipboard.auto_paste'))
+            self.assertTrue(cm.reload_error)
+            with open(path, encoding='utf-8') as f:
+                self.assertIn('[broken', f.read())
+
+    # Started with a file it can't read, the app runs on defaults; its first
+    # save must keep a copy of what the user had.
+    def test_saving_over_an_unreadable_file_keeps_a_copy(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'user_settings.yaml')
+            original = 'whisper:' + LF + '  model: small' + LF + self.BROKEN
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(original)
+            cm = self._cm(d)
+            cm.set_path('clipboard.auto_paste', False)
+            cm.flush()
+            copies = [n for n in os.listdir(d) if n.startswith('user_settings.yaml.') and n.endswith('.bak')]
+            self.assertEqual(len(copies), 1)
+            with open(os.path.join(d, copies[0]), encoding='utf-8') as f:
+                self.assertEqual(f.read(), original)
+
+
+class BarPlacementTests(unittest.TestCase):
+    def _host(self, work_area, scale, position):
+        import unittest.mock as mock
+        from whisper_key.ui import host as host_mod
+        from whisper_key.ui import win32
+        h = object.__new__(host_mod.UiHost)
+        h.bar_hwnd = 1
+        h.settings = mock.MagicMock()
+        h.settings.get.side_effect = lambda path, default=None: position
+        for name, value in (('work_area', lambda: work_area), ('dpi_scale', lambda hwnd: scale)):
+            patcher = mock.patch.object(win32, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return h
+
+    # Taskbar on the left: the work area starts after it, and so does the bar.
+    def test_left_taskbar_and_150_percent_scaling(self):
+        h = self._host((72, 0, 1920, 1080), 1.5, 'bottom-left')
+        x, y = h._bar_origin(200, 40)
+        self.assertEqual((x, y), (72 + 42, 1080 - 60 - 42))
+
+    def test_top_taskbar_with_the_bar_at_the_top(self):
+        h = self._host((0, 48, 2560, 1440), 1.0, 'top-center')
+        self.assertEqual(h._bar_origin(200, 40), ((2560 - 200) // 2, 48 + 28))
+
+    # A bar taller than the screen (the quick-actions menu on a small or
+    # zoomed display) stays on screen instead of starting above it.
+    def test_a_bar_taller_than_the_work_area_stays_on_screen(self):
+        h = self._host((0, 0, 1366, 728), 1.25, 'bottom-right')
+        x, y = h._bar_origin(340, 700)
+        self.assertGreaterEqual(y, 0)
+        self.assertGreaterEqual(x, 0)
+
+    def test_the_bar_height_is_limited_to_what_fits(self):
+        h = self._host((0, 0, 1366, 728), 1.25, 'bottom-right')
+        self.assertEqual(h._max_bar_height(), int((728 - 2 * int(28 * 1.25)) / 1.25))

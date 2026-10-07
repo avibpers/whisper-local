@@ -604,6 +604,8 @@ def main():
     try:
         config_manager = ConfigManager()
         setup_logging(config_manager)
+        if not use_ui and not args.legacy_ui and ui_reason:
+            logging.getLogger(__name__).warning(f"App window unavailable, using the classic interface: {ui_reason}")
 
         # Self-heal an autostart entry left broken by the pre-0.16.2 pyapp bug
         # (issue #2): it pointed at a bare interpreter, so boot opened a Python

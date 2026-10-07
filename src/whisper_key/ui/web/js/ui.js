@@ -232,16 +232,37 @@ export function ModalHost() {
   const modal = app.use((s) => s.modal);
   const [text, setText] = useState('');
   useEffect(() => { if (modal && modal.kind === 'prompt') setText(modal.value || ''); }, [modal]);
+  // Keyboard: focus moves into the dialog, Tab stays inside it, Esc closes
+  // it, and focus goes back to whatever opened it.
   useEffect(() => {
     if (!modal) return undefined;
+    const opener = document.activeElement;
+    const focusables = () => [...document.querySelectorAll('.scrim a[href], .scrim button:not([disabled]), .scrim input:not([disabled]), .scrim select:not([disabled]), .scrim textarea:not([disabled])')];
+    const first = setTimeout(() => {
+      const scrim = document.querySelector('.scrim');
+      if (scrim && !scrim.contains(document.activeElement)) {
+        const list = focusables();
+        (list.find((el) => el.matches('input, textarea, select')) || list[0] || scrim).focus();
+      }
+    }, 0);
     const onKey = (e) => {
       if (e.key === 'Escape') {
         if (modal.resolve) modal.resolve(modal.kind === 'prompt' ? null : false);
         else app.set({ modal: null });
+      } else if (e.key === 'Tab') {
+        const list = focusables();
+        if (!list.length) return;
+        const i = list.indexOf(document.activeElement);
+        if (e.shiftKey && i <= 0) { e.preventDefault(); list[list.length - 1].focus(); }
+        else if (!e.shiftKey && (i === -1 || i === list.length - 1)) { e.preventDefault(); list[0].focus(); }
       }
     };
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    return () => {
+      clearTimeout(first);
+      window.removeEventListener('keydown', onKey);
+      if (opener && opener.isConnected && typeof opener.focus === 'function') opener.focus();
+    };
   }, [modal]);
   if (!modal) return null;
   if (typeof modal === 'function') {

@@ -29,7 +29,7 @@ button { font: inherit; color: inherit; }
 .prog { width: 54px; height: 4px; border-radius: 2px; background: var(--bar2); overflow: hidden; }
 .prog span { display: block; height: 100%; background: var(--bar-warn); }
 
-.menu { width: 340px; padding: 8px; display: flex; flex-direction: column; gap: 2px; }
+.menu { width: 340px; max-height: var(--menu-max, 640px); overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 2px; }
 .mhead { display: flex; align-items: center; justify-content: space-between; padding: 6px 10px 8px; font-size: 13px; font-weight: 600; }
 .eyebrow { font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--bar-mute); font-weight: 600; padding: 6px 10px 4px; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 10px 6px; }

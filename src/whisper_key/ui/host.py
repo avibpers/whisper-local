@@ -337,11 +337,21 @@ class UiHost:
         else:
             x = left + (right - left - pw) // 2
         y = top + margin if pos.startswith('top') else bottom - ph - margin
+        # Never off screen, even when the bar is bigger than the space left.
+        x = max(left, min(x, right - pw))
+        y = max(top, min(y, bottom - ph))
         return x, y
+
+    # The tallest the bar may be (in page pixels) and still fit on screen with
+    # its margins; the quick-actions menu scrolls past that.
+    def _max_bar_height(self):
+        left, top, right, bottom = win32.work_area()
+        scale = win32.dpi_scale(self.bar_hwnd) or 1.0
+        return max(20, int((bottom - top - 2 * int(28 * scale)) / scale))
 
     def resize_bar(self, width, height):
         width = max(40, min(width, 640))
-        height = max(20, min(height, 640))
+        height = max(20, min(height, self._max_bar_height()))
         self._bar_size = (width, height)
         self.place_bar()
 
