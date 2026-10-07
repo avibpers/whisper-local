@@ -32,6 +32,14 @@ class ModelRegistry:
     def get_model(self, key: str):
         return self.whisper_models.get(key)
 
+    # The model to load for `key`: itself when it is defined here, a Hugging
+    # Face repo ("org/name") or a folder; otherwise `fallback`. Returns
+    # (key, fell_back).
+    def usable_key(self, key: str, fallback: str) -> tuple:
+        if key in self.whisper_models or '/' in str(key) or os.path.isdir(str(key)):
+            return key, False
+        return fallback, True
+
     def get_source(self, key: str) -> str:
         model = self.get_model(key)
         return model.source if model else key

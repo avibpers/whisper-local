@@ -182,6 +182,19 @@ def setup_whisper_engine(whisper_config, vad_manager, model_registry, log_transc
                          ask=True):
     backend = whisper_config.get('backend', 'faster_whisper')
 
+    # A model this version doesn't define (removed in an update, a typo) would
+    # stop the app from starting; use the default model for this session.
+    if model_registry is not None:
+        wanted = whisper_config['model']
+        model_key, fell_back = model_registry.usable_key(wanted, 'base')
+        if fell_back:
+            logging.getLogger(__name__).warning(f"Model '{wanted}' isn't defined; using '{model_key}' this session")
+            print(f"   ⚠ The model '{wanted}' isn't known to this version; using '{model_key}' for now.")
+            whisper_config['model'] = model_key
+            STARTUP_NOTICES.append({'kind': 'model', 'message': f"The model “{wanted}” in your settings isn't known to "
+                                    f"this version, so “{model_key}” is used for now. Pick another in Settings → "
+                                    f"Model & engine."})
+
     if backend == 'whisper_cpp':
         from .whisper_engine_cpp import WhisperEngineCpp
         return WhisperEngineCpp(

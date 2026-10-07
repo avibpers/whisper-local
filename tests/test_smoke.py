@@ -4161,3 +4161,25 @@ class OptionalPackageTests(unittest.TestCase):
         from whisper_key.services import system
         with self.assertRaises(ValueError):
             system.extra_install('anything; rm -rf', reporter=None)
+
+
+class UnknownModelFallbackTests(unittest.TestCase):
+    # A model named in user_settings.yaml that this version doesn't define
+    # (removed in an update, a typo, a key from another branch) used to stop
+    # the app from starting. It falls back to the default model instead.
+    def _registry(self):
+        from whisper_key.model_registry import ModelRegistry
+        defaults, _ = _defaults_getter()
+        return ModelRegistry(whisper_models_config=defaults['whisper']['models'])
+
+    def test_an_unknown_model_falls_back_to_the_default(self):
+        self.assertEqual(self._registry().usable_key('hebrew-large-v3-turbo', 'base'), ('base', True))
+
+    def test_known_models_repos_and_folders_are_kept(self):
+        import tempfile
+        registry = self._registry()
+        self.assertEqual(registry.usable_key('small', 'base'), ('small', False))
+        self.assertEqual(registry.usable_key('ivrit-ai/whisper-large-v3-turbo-ct2', 'base'),
+                         ('ivrit-ai/whisper-large-v3-turbo-ct2', False))
+        with tempfile.TemporaryDirectory() as folder:
+            self.assertEqual(registry.usable_key(folder, 'base'), (folder, False))
