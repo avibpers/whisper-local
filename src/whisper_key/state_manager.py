@@ -263,6 +263,7 @@ class StateManager:
         if paused and self.audio_recorder.get_recording_status():
             self.cancel_active_recording()
         self.system_tray.notify("Hotkeys paused" if paused else "Hotkeys resumed")
+        self.system_tray.refresh_menu()  # the tray's Pause/Resume label follows
         self._publish_state(self.get_current_state())
 
     def start_rephrase_recording(self):

@@ -41,8 +41,8 @@ export function MicTest({ big = false }) {
     </div>
     ${on && (big
       ? html`<div style="display:flex;align-items:flex-end;gap:3px;height:36px" aria-label="Sound level">
-          ${levels.slice(-24).map((l) => html`<span style=${`flex:1;border-radius:2px;background:${l > 0.01 ? 'var(--ok)' : 'var(--line2)'};height:${Math.max(10, Math.min(100, l * 600))}%`}></span>`)}</div>`
-      : html`<div class="bar-meter"><span style=${`width:${Math.min(100, level * 400)}%;background:var(--ok)`}></span></div>`)}
+          ${levels.slice(-24).map((l) => html`<span style=${`flex:1;height:100%;border-radius:2px;transform-origin:50% 100%;transform:scaleY(${(Math.max(10, Math.min(100, l * 600)) / 100).toFixed(3)});background:${l > 0.01 ? 'var(--ok)' : 'var(--line2)'}`}></span>`)}</div>`
+      : html`<div class="bar-meter"><span style=${`transform:scaleX(${Math.min(1, level * 4)});background:var(--ok)`}></span></div>`)}
   </div>`;
 }
 

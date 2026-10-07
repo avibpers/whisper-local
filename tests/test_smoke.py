@@ -3907,3 +3907,44 @@ class UiModulesImportTests(unittest.TestCase):
             ok, reason = host.ui_available()
             self.assertFalse(ok)
             self.assertTrue(reason)
+
+
+class SlimTrayMenuTests(unittest.TestCase):
+    def _tray(self):
+        import unittest.mock as mock
+        reimport_under(self, fake_platform_modules())
+        from whisper_key import system_tray
+        sm = mock.MagicMock()
+        sm.list_profiles.return_value = ['dictation', 'chat']
+        sm.get_active_profile.return_value = 'chat'
+        sm.get_recent_transcriptions.return_value = ['Hello there.']
+        sm.is_paused = False
+        tray = system_tray.SystemTray(sm, tray_config={'enabled': False}, config_manager=mock.MagicMock())
+        return tray, sm
+
+    @staticmethod
+    def _labels(menu):
+        import pystray
+        return [item.text for item in menu.items if item is not pystray.Menu.SEPARATOR]
+
+    # With the app window, everything else lives in the app; the tray keeps
+    # only what is handy without opening it.
+    def test_app_window_mode_shows_the_short_menu(self):
+        tray, _ = self._tray()
+        tray.on_open = lambda page: None
+        tray.on_pause = lambda paused: None
+        self.assertEqual(self._labels(tray._create_menu()),
+                         ['Open Whisper Local', 'Pause hotkeys', 'Profile: Chat', 'Recent', 'Quit Whisper Local'])
+
+    def test_pause_item_asks_the_app_to_pause(self):
+        tray, sm = self._tray()
+        tray.on_open = lambda page: None
+        asked = []
+        tray.on_pause = asked.append
+        pause = [i for i in tray._create_menu().items if getattr(i, 'text', '') == 'Pause hotkeys'][0]
+        pause(None)
+        self.assertEqual(asked, [True])
+
+    def test_without_the_app_window_the_full_menu_stays(self):
+        tray, _ = self._tray()
+        self.assertIn('Settings...', self._labels(tray._create_menu()))

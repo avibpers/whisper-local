@@ -17,11 +17,11 @@ button { font: inherit; color: inherit; }
 .pbtn.solid { background: var(--bar-ink); color: var(--bar); }
 .pk { font-family: var(--mono); font-size: 11px; color: var(--bar-mute); }
 .muted { color: var(--bar-mute); }
-.recdot { width: 8px; height: 8px; border-radius: 50%; background: var(--bar-rec); flex: none; animation: pulse 1.2s ease-in-out infinite; }
+.recdot { width: 8px; height: 8px; border-radius: 50%; background: var(--bar-rec); flex: none; animation: pulse 1.2s steps(2, jump-none) infinite; }
 @keyframes pulse { 50% { opacity: .45; } }
 .wv { display: inline-flex; align-items: center; gap: 2px; height: 22px; }
-.wv span { width: 3px; border-radius: 2px; background: var(--bar-rec); transition: height .06s linear; }
-.dots span { display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: var(--bar-ink); margin-inline-end: 3px; animation: blink 1s infinite; }
+.wv span { width: 3px; height: 22px; border-radius: 2px; background: var(--bar-rec); transform: scaleY(.14); will-change: transform; }
+.dots span { display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: var(--bar-ink); margin-inline-end: 3px; animation: blink 1s steps(2, jump-none) infinite; }
 .dots span:nth-child(2) { animation-delay: .2s; } .dots span:nth-child(3) { animation-delay: .4s; }
 @keyframes blink { 50% { opacity: .25; } }
 .text { overflow: hidden; text-overflow: ellipsis; max-width: 360px; }

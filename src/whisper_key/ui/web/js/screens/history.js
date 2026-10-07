@@ -40,7 +40,7 @@ function Charts({ data }) {
       <span class="card-title">Where you dictate</span>
       ${data.apps.length === 0 && html`<span class="muted small">No data yet.</span>`}
       ${data.apps.map((a) => html`<div><div class="row-flex" style="justify-content:space-between"><span>${a.app}</span><span class="mono small muted">${Math.round(a.share * 100)}%</span></div>
-        <div class="bar-meter" style="height:6px;margin-top:4px"><span style=${`width:${a.share * 100}%;background:var(--acc)`}></span></div></div>`)}
+        <div class="bar-meter" style="height:6px;margin-top:4px"><span style=${`transform:scaleX(${a.share});background:var(--acc)`}></span></div></div>`)}
       ${data.languages.length > 0 && html`<div class="row-flex">${data.languages.map((l) => html`<span class="chip">${LANG[l.code] || l.code} ${Math.round(l.share * 100)}%</span>`)}</div>`}
     </section>
   </div>`;

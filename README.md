@@ -149,7 +149,7 @@ pip install -e .
 |---|---|
 | **Terminal** | `whisper-local` (or `wl` for short) |
 | **Double-click** | `whisper-local.cmd` (Windows) |
-| **Start on login** | Tick **Start on login** in the tray menu (or the first-run welcome), or run `whisper-local --enable-autostart`. Disable anytime the same way. |
+| **Start on login** | Turn on **Start on login** in Settings, or run `whisper-local --enable-autostart`. Disable anytime the same way. |
 
 First launch downloads the default [`base`](https://huggingface.co/Systran/faster-whisper-base) Whisper model (~141 MB) into your HuggingFace cache. After that, **everything runs offline**. (Prefer a smaller/faster download? Set `whisper.model: tiny` — ~75 MB.)
 
@@ -163,6 +163,27 @@ First launch downloads the default [`base`](https://huggingface.co/Systran/faste
 > Pass a path to `--export-model` (a USB drive, say) to put it somewhere else.
 > Network-share and internal-mirror setups are covered in
 > **[docs/offline-models.md](docs/offline-models.md)**.
+
+### The app
+
+Whisper Local has two faces:
+
+- **The floating bar.** A small handle at the edge of the screen. It shows the
+  level while you talk, then what happened: pasted, copied, nothing heard.
+  Hover it for the shortcut, or right-click it for quick actions: profile,
+  language, paste last, transforms, recent dictations.
+- **The app window.** Open it from the tray, the bar, or by launching
+  `whisper-local` again. **Simple** mode asks plain questions (which microphone,
+  which language, how your text should look). **Advanced** mode has every
+  setting, a live view of what the engine hears and does, and the log.
+
+Every change applies the moment you make it; there is no Save button. A change
+that needs part of the app to reload, such as a new model or microphone,
+happens in the background while dictation keeps working.
+
+`whisper-local --legacy-ui` brings back the previous Tk windows for this
+release. On Windows the app window needs the Microsoft Edge WebView2 runtime,
+which Windows 11 includes.
 
 ### Use it
 
@@ -339,7 +360,10 @@ Local settings live at:
 - **Windows:** `%APPDATA%\whisperkey\user_settings.yaml`
 - **macOS:** `~/.whisperkey/user_settings.yaml`
 
-Delete the file and restart to reset to defaults. Highlights:
+Every option is also in the app window (Settings, Advanced mode), and changes
+there save to this file at once. Edits you make to the file by hand are picked
+up while the app runs. Delete the file and restart to reset to defaults.
+Highlights:
 
 | Option | Default | Notes |
 |---|---|---|
@@ -378,9 +402,12 @@ whisper-local --export-settings DIR        # Back up user_settings + commands
 whisper-local --import-settings DIR        # Restore from a backup
 whisper-local --export-transcripts FILE    # Dump history (.txt/.md/.csv)
 whisper-local --import-vocab FOLDER        # Mine a folder for hotwords
-whisper-local --settings           # Open the settings GUI (no YAML editing required)
-whisper-local --history            # Browse and search transcript history
-whisper-local --cheat-sheet        # Show your currently configured hotkeys
+whisper-local --open               # Start with the app window open
+whisper-local --settings           # Open the app on Settings
+whisper-local --history            # Open the app on History
+whisper-local --cheat-sheet        # Open the app on Diagnostics, which lists your shortcuts
+whisper-local --legacy-ui          # Use the previous Tk windows instead of the app window
+whisper-local --replace            # Replace a running instance instead of opening its window
 whisper-local --selftest           # Run an automated self-test (mic, model, transcription)
 whisper-local --bundle-logs        # Create a redacted diagnostic zip for bug reports
 whisper-local --serve              # Run a local OpenAI-compatible Whisper API on :7777
@@ -388,7 +415,9 @@ whisper-local --enable-autostart   # Launch automatically at login (--disable-au
 whisper-local --test               # Run a separate test instance (own mutex)
 ```
 
-Launching while an instance is already running **takes over** — the old one is replaced cleanly, no manual quit needed.
+Launching while an instance is already running **opens its window** instead of
+starting a second copy. `--replace` replaces the running instance, as earlier
+versions did, and `--quit` asks it to quit cleanly.
 
 ---
 

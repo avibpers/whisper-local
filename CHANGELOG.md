@@ -2,6 +2,48 @@
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **A new app window and floating bar.** The bar sits at the edge of the
+  screen: a thin handle at rest, the level and a timer while you talk, then
+  what happened (pasted, copied, nothing heard, no text field). Right-click it
+  for quick actions. The app window opens from the tray, the bar, or by
+  launching again.
+- **Simple and Advanced modes.** Simple mode asks plain questions: which
+  microphone, which language, how your text should look, whether to start on
+  login. Advanced mode has every setting, grouped and searchable (Ctrl+K).
+- **Changes apply at once, with Undo.** There is no Save button. A new model
+  or microphone loads in the background while dictation keeps working, and
+  switches over between dictations.
+- **Live view.** Advanced mode shows the level, speech detection and silence
+  timer as you talk, each dictation step (captured, Whisper, clean-up,
+  delivered), and the log as it is written.
+- **Screens for everything that used to need a file.** Vocabulary,
+  corrections, replacements and snippets; voice commands and transforms with a
+  phrase tester; per-app rules (with "rule for that app") and profiles;
+  history with charts; diagnostics with the health check, self-test and bug
+  report zip.
+- **Welcome steps** for new users: language, microphone test, graphics card
+  (only when one is found), and a first try.
+- `--open` starts with the window open. `--replace` restores the old
+  "take over" behaviour of a second launch.
+
+### Changed
+- **Launching again opens the running app's window** instead of replacing the
+  running instance.
+- **`--quit` shuts the app down cleanly** (settings saved, tray removed) when
+  it runs the app window, and works with `--test`.
+- **The tray menu is short:** Open, Pause hotkeys, Profile, Recent and Quit.
+  Everything else is in the app window.
+- `--settings`, `--history` and `--cheat-sheet` open the app window on the
+  matching screen.
+- A failed GPU load no longer waits for a key press in the console when the
+  app window runs: dictation uses the CPU, and the window offers to install
+  GPU support.
+- The previous Tk windows remain for this release behind `--legacy-ui`, and
+  are used automatically when the app window can't start.
+
 ## [0.21.0]
 
 ### Changed

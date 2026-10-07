@@ -29,7 +29,11 @@ This creates a zip with redacted logs, `--doctor` output, and recent crashes. At
 | `Ollama unreachable` in tray | Ollama service not running locally | `ollama serve` in a terminal, or disable in Settings → Post-process |
 | Text appears twice in chat apps | `auto_send_key` pressed by accident | The Esc cancel + retry; consider switching off auto-send for that app via `app_rules.yaml` |
 | Audio device unplugged mid-recording | USB mic disconnect | App should auto-recover to default input. If not, restart and tell the maintainer |
-| Settings change didn't take effect | Hotkeys / device changes require restart | Quit and relaunch the app |
+| Settings change didn't take effect | A background change (model, microphone) is still loading | Watch the task chip at the top of the app window; dictation uses the old setting until it finishes. If the chip shows an error, the setting was put back |
+| The app window doesn't open, and the old Tk windows appear | The Microsoft Edge WebView2 runtime is missing, or `pywebview` isn't installed | Install WebView2 from [Microsoft](https://developer.microsoft.com/microsoft-edge/webview2/) (Windows 11 includes it). From source: `pip install pywebview`. The log says why the app window was unavailable |
+| The app window opens blank | WebView2 is broken or blocked by policy | Run `whisper-local --legacy-ui` for now, and repair the WebView2 runtime from Apps & Features |
+| A notice on start says dictation runs on the CPU for now | The GPU's CUDA libraries are missing | Click **Install GPU support** in the notice, or use Diagnostics → Health check |
+| Launching again doesn't start a new copy | That is on purpose: it opens the running app's window | Use `whisper-local --replace` to restart it instead |
 | `pyperclip.PyperclipException` on macOS | Missing `pbcopy`/`pbpaste` permissions | Open System Settings → Privacy → Accessibility, add Terminal |
 | Stale lock prevents launch | Previous instance crashed without cleanup | `whisper-local --quit` clears the lock. As a last resort delete `%APPDATA%\whisperkey\WhisperKeyLocal.pid` |
 

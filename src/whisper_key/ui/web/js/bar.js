@@ -80,7 +80,7 @@ function wire() {
 
 function Wave() {
   const levels = bar.use((s) => s.levels);
-  return html`<span class="wv" aria-hidden="true">${levels.map((l) => html`<span style=${`height:${Math.max(3, Math.min(22, 3 + l * 120))}px`}></span>`)}</span>`;
+  return html`<span class="wv" aria-hidden="true">${levels.map((l) => html`<span style=${`transform:scaleY(${(Math.max(3, Math.min(22, 3 + l * 120)) / 22).toFixed(3)})`}></span>`)}</span>`;
 }
 
 function Timer() {

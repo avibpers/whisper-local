@@ -49,6 +49,7 @@ class SystemTray:
         # legacy Tk/console windows, and quit cleanly through the host.
         self.on_open = None
         self.on_quit = None
+        self.on_pause = None
         self.current_state = "idle"
         self.available = True
         
@@ -242,6 +243,8 @@ class SystemTray:
     # restart/exit); `None` entries are filtered out at the end so a disabled
     # feature simply omits its row.
     def _create_menu(self):
+        if self.on_open:
+            return self._create_app_window_menu()
         try:
             app_state = self.state_manager.get_application_state()
             is_model_loading = app_state.get('model_loading', False)
@@ -353,12 +356,6 @@ class SystemTray:
                 ),
             ]
 
-            if self.on_open:
-                menu_items[0:0] = [
-                    pystray.MenuItem("Open Whisper Local", lambda icon, item: self.on_open(None), default=True),
-                    pystray.Menu.SEPARATOR,
-                ]
-
             profile_items = self._build_profile_menu()
             if profile_items:
                 active_profile = self.state_manager.get_active_profile() or "—"
@@ -402,6 +399,34 @@ class SystemTray:
         except Exception as e:
             self.logger.error(f"Error in _create_menu: {e}")
             raise
+
+    # The short menu used with the app window: everything else lives there.
+    def _create_app_window_menu(self):
+        paused = bool(getattr(self.state_manager, 'is_paused', False))
+        items = [
+            pystray.MenuItem("Open Whisper Local", lambda icon, item: self.on_open(None), default=True),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Resume hotkeys" if paused else "Pause hotkeys",
+                             lambda icon, item: self._toggle_pause(not paused)),
+        ]
+        profile_items = self._build_profile_menu()
+        if profile_items:
+            active_profile = self.state_manager.get_active_profile() or "—"
+            items.append(pystray.MenuItem(f"Profile: {active_profile.title()}", pystray.Menu(*profile_items)))
+        recent_items = self._build_recent_transcriptions_menu()
+        if recent_items:
+            items.append(pystray.MenuItem("Recent", pystray.Menu(*recent_items)))
+        items += [
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Quit Whisper Local", self._quit_application_from_tray),
+        ]
+        return pystray.Menu(*items)
+
+    def _toggle_pause(self, paused: bool):
+        if self.on_pause:
+            self.on_pause(paused)
+        else:
+            self.state_manager.set_paused(paused)
 
     def _open_config_folder(self, icon=None, item=None):
         try:

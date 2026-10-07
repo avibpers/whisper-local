@@ -37,7 +37,7 @@ function fmtClock(sec) {
 function Waveform({ active }) {
   const levels = live.use((s) => s.levels);
   return html`<div class=${'wave' + (active ? '' : ' idle')} aria-label="Live waveform" role="img">
-    ${levels.map((l) => html`<span style=${`height:${Math.max(3, Math.min(80, 3 + l * 420))}px`}></span>`)}
+    ${levels.map((l) => html`<span style=${`transform:scaleY(${(Math.max(3, Math.min(80, 3 + l * 420)) / 80).toFixed(3)})`}></span>`)}
   </div>`;
 }
 
@@ -48,25 +48,30 @@ function Meters({ recording }) {
   const timeout = vad ? vad.timeout_s : setting('vad.vad_silence_timeout_seconds');
   return html`<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px">
     <div><div class="eyebrow">Input level</div>
-      <div class="bar-meter" style="margin-top:8px"><span style=${`width:${Math.min(100, level * 400)}%;background:var(--ok)`}></span></div>
+      <div class="bar-meter" style="margin-top:8px"><span style=${`transform:scaleX(${Math.min(1, level * 4)});background:var(--ok)`}></span></div>
       <div class="small muted" style="margin-top:6px">${recording && db != null ? `${db} dB` : 'Not listening'}${setting('audio.whisper_mode.enabled') ? ' · whisper mode on' : ''}</div></div>
     <div><div class="eyebrow">Speech probability</div>
       <div class="bar-meter" style="margin-top:8px;overflow:visible">
-        <span style=${`width:${vad ? vad.probability * 100 : 0}%;background:var(--acc)`}></span>
+        <span style=${`transform:scaleX(${vad ? vad.probability : 0});background:var(--acc)`}></span>
         ${vad && html`<i title=${`Start ${vad.onset}`} style=${`position:absolute;left:${vad.onset * 100}%;top:-4px;width:2px;height:16px;background:var(--ink)`}></i>
           <i title=${`End ${vad.offset}`} style=${`position:absolute;left:${vad.offset * 100}%;top:-4px;width:2px;height:16px;background:var(--mute)`}></i>`}
       </div>
       <div class="small muted" style="margin-top:6px">${vad ? `${vad.probability.toFixed(2)} · ${vad.speaking ? 'speaking' : 'quiet'} (start ${vad.onset} / end ${vad.offset})` : recording ? 'Voice detection is off' : '—'}</div></div>
     <div><div class="eyebrow">Silence auto-stop</div>
-      <div class="bar-meter" style="margin-top:8px"><span style=${`width:${vad && timeout ? Math.min(100, (vad.silence_s / timeout) * 100) : 0}%;background:var(--warn)`}></span></div>
+      <div class="bar-meter" style="margin-top:8px"><span style=${`transform:scaleX(${vad && timeout ? Math.min(1, vad.silence_s / timeout) : 0});background:var(--warn)`}></span></div>
       <div class="small muted" style="margin-top:6px">${setting('vad.vad_realtime_enabled') ? `${vad ? vad.silence_s.toFixed(1) : '0.0'} s of ${timeout} s silence` : 'Off'}</div></div>
   </div>`;
+}
+
+// Its own component so the 10-per-second tick redraws only the digits.
+function Clock({ state }) {
+  const elapsed = useRecordingClock(state);
+  return html`<span class="mono" style="font-size:28px;font-weight:600">${fmtClock(elapsed)}</span>`;
 }
 
 function NowCard() {
   const st = app.use((s) => s.state);
   const recording = st.state === 'recording';
-  const elapsed = useRecordingClock(st.state);
   const max = useSetting('audio.max_duration');
   const audio = useAudio();
   const streaming = app.use((s) => s.streaming);
@@ -76,7 +81,7 @@ function NowCard() {
   return html`<section class="card pad stack" style="grid-column:span 2;min-width:0" aria-label="Current recording">
     <div class="row-flex" style="justify-content:space-between">
       <div class="row-flex" style="align-items:baseline;gap:12px">
-        <span class="mono" style="font-size:28px;font-weight:600">${fmtClock(elapsed)}</span>
+        <${Clock} state=${st.state} />
         <span class="muted">${label}${recording && max ? ` · max ${Math.round(max / 60)} min` : ''}</span>
       </div>
       <div class="row-flex">

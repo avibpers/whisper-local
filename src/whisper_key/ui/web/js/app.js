@@ -34,6 +34,18 @@ const SCREENS = {
 };
 const SIMPLE_ROUTES = new Set(['home', 'history', 'vocabulary', 'simple-settings', 'welcome']);
 
+// A page asked for from outside (tray, --settings) in Simple mode goes to the
+// Simple screen for the same thing; Advanced-only pages switch to Advanced.
+function routeForMode(route) {
+  const base = route.split('/')[0];
+  const mode = getPath(app.get().settings, 'ui.mode');
+  if (!mode || mode === 'advanced' || SIMPLE_ROUTES.has(base)) return route;
+  if (base === 'settings') return 'simple-settings';
+  if (base === 'live') return 'home';
+  saveSetting('ui.mode', 'advanced', { quiet: true });
+  return route;
+}
+
 // A screen that throws shows a short message (and goes to the log) instead of
 // taking the whole window down; moving to another screen clears it.
 class ScreenBoundary extends Component {
@@ -110,7 +122,7 @@ function wireEvents() {
   on('devices_changed', () => app.set((s) => ({ devicesVersion: (s.devicesVersion || 0) + 1 })));
   on('window', (w) => {
     // Until the welcome steps are done, they stay on screen.
-    if (w.action === 'navigate' && w.page && setting('ui.welcome_done') !== false) navigate(w.page);
+    if (w.action === 'navigate' && w.page && setting('ui.welcome_done') !== false) navigate(routeForMode(w.page));
     if (w.action === 'shown') refresh();
   });
 }

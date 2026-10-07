@@ -133,6 +133,7 @@ class UiHost:
         if tray is not None:
             tray.on_open = lambda page=None: self.show_main(page)
             tray.on_quit = self.quit
+            tray.on_pause = lambda paused: self.bridge.dictation_pause(paused)
             tray.refresh_menu()
 
     # ── Lifecycle ────────────────────────────────────────────────────────────

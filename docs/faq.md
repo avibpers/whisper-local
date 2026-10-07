@@ -71,7 +71,7 @@ Yes! `whisper-local --serve` starts a **local OpenAI-compatible HTTP server** on
 Windows 10/11 hides tray icons by default. Click the `^` arrow on the right of the taskbar and **drag** the Whisper Local icon out into the visible tray area to pin it.
 
 ### How do I autostart on login?
-It's built in (since v0.11.0). Tick **Start on login** in the tray menu, check the box on the first-run welcome window, or run `whisper-local --enable-autostart` (`--disable-autostart` to undo). It launches windowless — no console window at boot. On Windows this uses an `HKCU\…\Run` entry; on macOS a LaunchAgent.
+It's built in (since v0.11.0). Turn on **Start on login** in Settings (it is in both Simple and Advanced mode), or run `whisper-local --enable-autostart` (`--disable-autostart` to undo). It launches windowless — no console window at boot. On Windows this uses an `HKCU\…\Run` entry; on macOS a LaunchAgent.
 
 ### Can I use voice punctuation in another language (e.g. Polish)?
 Yes. The built-in "comma / period / open paren" triggers are English, but you can
@@ -115,7 +115,22 @@ postprocess:
 `Hello, and welcome → Common greeting.`
 
 ### Can I customize hotkeys?
-Yes — Settings → Hotkeys. Or edit `hotkey.*` in `user_settings.yaml` directly. Changes take effect on next app restart.
+Yes. In the app window go to Settings → Hotkeys (Advanced mode) and press the
+new keys. The change works at once, and a combination that is already taken
+is refused. You can also edit `hotkey.*` in `user_settings.yaml`; the running
+app picks that up too.
+
+### Where did the settings and history windows go?
+They are screens in the app window now. Open it from the tray, from the
+floating bar's menu, or by launching `whisper-local` again. Simple mode shows
+the everyday choices, and Advanced mode shows every option. The previous Tk
+windows are still there for this release with `whisper-local --legacy-ui`.
+
+### Do I need to press Save?
+No. Every change applies as soon as you make it. A change that needs part of
+the app to reload, like a new model or microphone, happens in the background,
+and dictation keeps working with the old one until the new one is ready. Each
+change shows an Undo button for a few seconds.
 
 ### Does it work with games / fullscreen apps?
 Mostly yes — hotkeys are registered globally. Some fullscreen-exclusive games (especially anti-cheat-protected) might suppress all global hotkeys. Switch to windowed fullscreen if you hit this.
