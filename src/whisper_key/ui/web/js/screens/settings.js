@@ -8,15 +8,12 @@
 import { html, useEffect, useState } from '../../vendor/preact-htm.module.js';
 import { call } from '../api.js';
 import { app, confirmModal, fmtBytes, navigate, openModal, closeModal, promptModal, saveSetting, toast, undo, useSetting } from '../store.js';
-import { Icon, Toggle } from '../ui.js';
-import { BgBadge, MicTest, SettingRow, settingsBySection } from './shared.js';
+import { Icon, Select, Toggle } from '../ui.js';
+import { BgBadge, MicTest, SettingRow, settingsBySection, TaskProgress, useRunningTasks } from './shared.js';
 
 // ── Models ────────────────────────────────────────────────────────────────
 
-function useTasks(kind) {
-  const tasks = app.use((s) => s.tasks);
-  return Object.values(tasks).filter((t) => t.status === 'running' && (!kind || t.kind === kind));
-}
+const useTasks = useRunningTasks;
 
 function ModelsTable() {
   const current = useSetting('whisper.model');
@@ -28,8 +25,8 @@ function ModelsTable() {
   const finishedCount = Object.values(tasks).filter((t) => t.status !== 'running').length;
   useEffect(() => { reload(); }, [current, modelsVersion, finishedCount]);
   if (!data) return html`<div class="empty">Loading models…</div>`;
-  const download = running.find((t) => t.kind === 'download' || t.kind === 'engine');
-  const progressFor = (key) => download && download.label.includes(key) ? download : null;
+  // Downloads and model switches are tagged with the model they are for.
+  const progressFor = (key) => running.find((t) => t.ref === key && (t.kind === 'download' || t.kind === 'engine')) || null;
   const remove = async (m) => {
     if (!(await confirmModal({ title: `Delete ${m.label}?`, body: `Frees ${fmtBytes(m.size_bytes)}. You can download it again any time.`, confirm: 'Delete', danger: true }))) return;
     call('model_delete', m.key).then(() => { toast(`Deleted ${m.label}`); reload(); }).catch((e) => toast(e.message, { kind: 'err' }));
@@ -57,7 +54,7 @@ function ModelsTable() {
               <td><span style=${m.in_use ? 'font-weight:600' : ''}>${m.label}</span>${m.in_use && html` <span class="chip acc sm">In use</span>`}
                 <div class="small muted mono">${m.source}</div></td>
               <td class="mono">${m.cached ? fmtBytes(m.size_bytes) : m.size_hint || ''}</td>
-              <td>${p ? html`<span class="chip warn">${p.progress != null ? `${Math.round(p.progress * 100)}%` : '…'} ${p.detail || ''}</span>`
+              <td>${p ? html`<${TaskProgress} task=${p} />`
                 : m.cached ? html`<span class="chip ok">${m.local ? 'Your folder' : 'On disk'}</span>`
                 : html`<button type="button" class="btn ghost sm" onClick=${() => call('model_download', m.key).then(() => toast(`Downloading ${m.label}`))}><${Icon} name="download" size="sm" />Download</button>`}</td>
               <td><${Toggle} checked=${m.enabled} label=${`Show ${m.label} in menus`} onChange=${(v) => call('model_set_visible', m.key, v).then(reload)} /></td>
@@ -73,19 +70,35 @@ function ModelsTable() {
     </tbody></table></div>`;
 }
 
+// The graphics card: whether GPU support is installed (with an Install button
+// and its progress), and which card to use when there is more than one.
 function GpuRow() {
   const [gpu, setGpu] = useState(null);
+  const [cards, setCards] = useState([]);
   const installing = useTasks('gpu');
+  const switching = useTasks('engine').find((t) => !t.ref);
+  const device = useSetting('whisper.device');
+  const cardIndex = useSetting('whisper.device_index') || 0;
   useEffect(() => { call('gpu_detect').then(setGpu).catch(() => setGpu({})); }, [installing.length]);
+  useEffect(() => { call('gpu_list').then(setCards).catch(() => setCards([])); }, []);
   const install = async () => {
     if (!(await confirmModal({ title: 'Install GPU support?', body: 'Downloads about 1.2 GB of NVIDIA libraries in the background, then switches dictation to the GPU. You can keep dictating meanwhile.', confirm: 'Install' }))) return;
     call('gpu_install').catch((e) => toast(e.message, { kind: 'err' }));
   };
   if (!gpu) return null;
+  const status = gpu.name ? `${gpu.ready ? 'Ready to use' : gpu.missing && gpu.missing.length ? `Missing ${gpu.missing.join(', ')}` : 'GPU libraries not installed'}.`
+    : 'No supported graphics card found. CPU works fine.';
+  const chosen = cards.find((c) => c.index === cardIndex);
   return html`<div class="srow"><div class="slabel"><b>Graphics card</b>
-      <small>${gpu.name ? `${gpu.name} — ${gpu.ready ? 'ready to use' : gpu.missing && gpu.missing.length ? `missing ${gpu.missing.join(', ')}` : 'GPU libraries not installed'}` : 'No supported graphics card found. CPU works fine.'}</small></div>
-    <div class="sctl">${installing.length ? html`<span class="chip warn">${installing[0].detail || 'Installing…'}</span>`
-      : gpu.name && !gpu.ready && gpu.class !== 'amd_rdna1' && html`<button type="button" class="btn" onClick=${install}>Install GPU support</button>`}</div></div>`;
+      <small>${cards.length > 1 ? `${cards.length} cards found. ` : chosen || cards[0] ? `${(chosen || cards[0]).name}. ` : gpu.name ? `${gpu.name}. ` : ''}${status}${cards.length > 1 && device !== 'cuda' ? ' Your choice applies when “Run on” is GPU.' : ''}</small></div>
+    <div class="sctl" style="flex-direction:column;align-items:flex-end;gap:8px">
+      ${cards.length > 1 && html`<${Select} label="Graphics card" value=${cardIndex} style="max-width:320px"
+        options=${cards.map((c) => [c.index, `${c.index + 1}. ${c.name}${c.memory_gb ? ` · ${c.memory_gb} GB` : ''}`])}
+        onChange=${(v) => saveSetting('whisper.device_index', v)} />`}
+      ${installing.length ? html`<${TaskProgress} task=${installing[0]} cancel=${false} />`
+        : gpu.name && !gpu.ready && gpu.class !== 'amd_rdna1' && html`<button type="button" class="btn" onClick=${install}>Install GPU support</button>`}
+      ${switching && html`<${TaskProgress} task=${switching} />`}
+    </div></div>`;
 }
 
 // ── Voice cue table and styles ────────────────────────────────────────────

@@ -8,6 +8,7 @@ import contextlib
 import io
 import json
 import logging
+import os
 import subprocess
 import sys
 import urllib.request
@@ -135,6 +136,30 @@ def ollama_probe(endpoint: str, timeout: float = 2.0) -> dict:
 
 
 # ── GPU ──────────────────────────────────────────────────────────────────────
+
+# The NVIDIA cards CUDA can use, numbered as CUDA numbers them (by PCI bus,
+# see main.py). Empty without an NVIDIA driver.
+def gpu_list() -> list:
+    os.environ.setdefault('CUDA_DEVICE_ORDER', 'PCI_BUS_ID')
+    try:
+        done = subprocess.run(['nvidia-smi', '--query-gpu=index,name,memory.total', '--format=csv,noheader,nounits'],
+                              capture_output=True, text=True, timeout=5,
+                              creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if done.returncode != 0:
+        return []
+    cards = []
+    for line in done.stdout.splitlines():
+        parts = [p.strip() for p in line.split(',')]
+        if len(parts) >= 3 and parts[0].isdigit():
+            try:
+                memory_gb = round(float(parts[2]) / 1024, 1)
+            except ValueError:
+                memory_gb = None
+            cards.append({'index': int(parts[0]), 'name': parts[1], 'memory_gb': memory_gb})
+    return cards
+
 
 def gpu_detect(configured_device: str = 'cpu') -> dict:
     try:

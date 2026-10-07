@@ -142,6 +142,8 @@ SCHEMA = [
     _S('whisper.device', 'Run on', 'model', 'segmented', apply=BACKGROUND, mode=SIMPLE,
        choices=[['cpu', 'CPU'], ['cuda', 'GPU (CUDA)']],
        help='The GPU runtime installs in the background on first use.'),
+    _S('whisper.device_index', 'Graphics card', 'model', 'gpuselect', apply=BACKGROUND, mode=HIDDEN,
+       help='Which card runs dictation when there is more than one. Shown under Graphics card.'),
     _S('whisper.compute_type', 'Precision', 'model', 'segmented', apply=BACKGROUND, mode=SIMPLE,
        choices=[['int8', 'int8'], ['float16', 'float16'], ['float32', 'float32']],
        help='int8 for CPU. float16 for GPU.'),

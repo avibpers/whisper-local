@@ -115,6 +115,27 @@ export function SettingControl({ s }) {
 
 const WIDE = new Set(['textarea', 'tags']);
 
+// Progress of one background task: a bar (moving when the total isn't known
+// yet), what it is doing ("Downloading 120 of 466 MB") and a Cancel button.
+export function TaskProgress({ task, cancel = true }) {
+  if (!task) return null;
+  const pct = task.progress != null ? Math.round(task.progress * 100) : null;
+  return html`<div class="task-progress" role="status" aria-label=${task.label}>
+    <div class="row-flex" style="justify-content:space-between;gap:8px;font-size:12.5px">
+      <span class="muted" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${task.detail || task.label}</span>
+      <span class="row-flex" style="gap:6px">${pct != null && html`<b class="mono">${pct}%</b>`}
+        ${cancel && html`<button type="button" class="btn ghost sm" onClick=${() => call('task_cancel', task.id)}>Cancel</button>`}</span>
+    </div>
+    <div class=${'bar-meter' + (pct == null ? ' busy' : '')}><span style=${pct != null ? `transform:scaleX(${task.progress});background:var(--acc)` : 'background:var(--acc)'}></span></div>
+  </div>`;
+}
+
+// The running tasks of one kind (or all).
+export function useRunningTasks(kind) {
+  const tasks = app.use((s) => s.tasks);
+  return Object.values(tasks).filter((t) => t.status === 'running' && (!kind || t.kind === kind));
+}
+
 // An optional package a setting needs (noise suppression → noisereduce):
 // says so while it is missing and installs it in the background.
 const EXTRA_FOR = { 'audio.noise_suppression.enabled': 'noise' };
@@ -144,7 +165,8 @@ export function SettingRow({ s, highlight = false, extra = null }) {
 }
 
 export function settingsBySection(schema, section) {
-  return schema ? schema.settings.filter((s) => s.section === section) : [];
+  // Hidden settings are edited by their own controls (e.g. the card picker).
+  return schema ? schema.settings.filter((s) => s.section === section && s.mode !== 'hidden') : [];
 }
 
 export const pathValue = (path) => getPath(app.get().settings, path);

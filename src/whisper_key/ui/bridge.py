@@ -52,8 +52,8 @@ class Bridge:
     def _cm(self):
         return self._host.ctx.config_manager
 
-    def _task(self, label, fn, kind='general'):
-        return self._tasks.run(label, fn, kind=kind).id
+    def _task(self, label, fn, kind='general', ref=None):
+        return self._tasks.run(label, fn, kind=kind, ref=ref).id
 
     # ── App ──────────────────────────────────────────────────────────────────
 
@@ -244,7 +244,8 @@ class Bridge:
     def model_download(self, key):
         from ..services import models as svc
         registry = self._host.ctx.model_registry
-        return self._task(f"Downloading {key}", lambda r: svc.ensure_downloaded(registry, key, r), kind='download')
+        return self._task(f"Downloading {key}", lambda r: svc.ensure_downloaded(registry, key, r), kind='download',
+                          ref=key)
 
     @_api
     def model_delete(self, key):
@@ -292,6 +293,11 @@ class Bridge:
         if name not in system.EXTRAS:
             raise ValueError(f"Unknown optional package: {name}")
         return self._task(f"Installing the {name} package", lambda r: system.extra_install(name, r), kind='install')
+
+    @_api
+    def gpu_list(self):
+        from ..services import system
+        return system.gpu_list()
 
     @_api
     def gpu_detect(self):

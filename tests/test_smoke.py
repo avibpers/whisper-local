@@ -2155,8 +2155,9 @@ class UninstallSafetyTests(unittest.TestCase):
         import io
         import contextlib
         import unittest.mock as mock
-        from whisper_key import uninstall
-        with mock.patch.object(uninstall, 'get_user_app_data_path', return_value='/nonexistent-xyz'),              mock.patch.object(uninstall, '_our_cached_models', return_value=[]),              mock.patch.object(uninstall, '_confirm', side_effect=AssertionError('must not prompt')):
+        from whisper_key import autostart, uninstall
+        # The real Start-on-login entry must not decide this test.
+        with mock.patch.object(uninstall, 'get_user_app_data_path', return_value='/nonexistent-xyz'),              mock.patch.object(uninstall, '_our_cached_models', return_value=[]),              mock.patch.object(autostart, 'is_enabled', return_value=False),              mock.patch.object(uninstall, '_confirm', side_effect=AssertionError('must not prompt')):
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
                 rc = uninstall.run_uninstall()
@@ -4113,6 +4114,24 @@ class BackgroundChangeFailureTests(unittest.TestCase):
         self.assertTrue(reverted.wait(5))
         ctx.settings.revert_silently.assert_called_once_with('whisper.model', 'base')
 
+    def test_a_cancelled_background_change_puts_the_old_value_back(self):
+        import threading
+        import time
+        import unittest.mock as mock
+        from whisper_key.settings.appliers import Appliers
+        ctx = mock.MagicMock()
+        reverted = threading.Event()
+        ctx.settings.revert_silently.side_effect = lambda path, old: reverted.set()
+        appliers = Appliers(ctx)
+
+        def slow(reporter):
+            while True:
+                reporter.check_cancelled()
+                time.sleep(0.01)
+        result = appliers._background('Switching to small', 'engine', 'whisper.model', 'base', slow)
+        appliers.tasks.cancel(result['task_id'])
+        self.assertTrue(reverted.wait(5))
+
 
 class HandsFreeLockSignalTests(unittest.TestCase):
     # The floating bar shows "Hands-free" once a double-tap locks recording.
@@ -4183,3 +4202,41 @@ class UnknownModelFallbackTests(unittest.TestCase):
                          ('ivrit-ai/whisper-large-v3-turbo-ct2', False))
         with tempfile.TemporaryDirectory() as folder:
             self.assertEqual(registry.usable_key(folder, 'base'), (folder, False))
+
+
+class GraphicsCardChoiceTests(unittest.TestCase):
+    SMI = '0, NVIDIA GeForce RTX 5090, 32607' + LF + '1, NVIDIA GeForce RTX 4070 SUPER, 12282' + LF
+
+    def test_cards_are_listed_in_the_order_cuda_uses(self):
+        import unittest.mock as mock
+        from whisper_key.services import system
+        done = mock.MagicMock(returncode=0, stdout=self.SMI)
+        with mock.patch.object(system.subprocess, 'run', return_value=done):
+            cards = system.gpu_list()
+        self.assertEqual(cards, [{'index': 0, 'name': 'NVIDIA GeForce RTX 5090', 'memory_gb': 31.8},
+                                 {'index': 1, 'name': 'NVIDIA GeForce RTX 4070 SUPER', 'memory_gb': 12.0}])
+        self.assertEqual(os.environ.get('CUDA_DEVICE_ORDER'), 'PCI_BUS_ID')
+
+    def test_no_nvidia_driver_means_no_cards(self):
+        import unittest.mock as mock
+        from whisper_key.services import system
+        with mock.patch.object(system.subprocess, 'run', side_effect=FileNotFoundError('nvidia-smi')):
+            self.assertEqual(system.gpu_list(), [])
+
+    # The chosen card reaches faster-whisper.
+    def test_the_engine_loads_on_the_chosen_card(self):
+        import unittest.mock as mock
+        import contextlib
+        import io
+        from whisper_key import whisper_engine
+        with mock.patch.object(whisper_engine, 'WhisperModel') as model, \
+                mock.patch.object(whisper_engine.WhisperEngine, '_verify_gpu_runtime'), \
+                contextlib.redirect_stdout(io.StringIO()):  # it prints emoji cp1252 can't encode
+            whisper_engine.WhisperEngine(model_key='base', device='cuda', compute_type='float16', device_index=1)
+        self.assertEqual(model.call_args.kwargs.get('device_index'), 1)
+
+    def test_changing_the_card_rebuilds_the_engine_in_the_background(self):
+        from whisper_key.settings import schema
+        from whisper_key.settings.appliers import _HANDLERS, Appliers
+        self.assertEqual(schema.get('whisper.device_index').apply, schema.BACKGROUND)
+        self.assertIs(_HANDLERS['whisper.device_index'], Appliers.engine_rebuild)

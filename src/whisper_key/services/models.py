@@ -158,8 +158,8 @@ def ensure_downloaded(registry, key: str, reporter=None) -> Optional[str]:
                 reporter.report(min(0.99, done / expected), f"Downloading {mb:,.0f} of {total_mb:,.0f} MB")
             else:
                 reporter.report(None, f"Downloading… {done / 1e6:,.0f} MB")
-            if reporter.cancelled:
-                raise RuntimeError("Download cancelled")
+            # Stops waiting; the finished part stays in the cache for next time.
+            reporter.check_cancelled()
     if 'e' in error:
         raise RuntimeError(f"Download failed: {error['e']}")
     logger.info(f"Downloaded model {key} ({repo_id}) in {time.time() - started:.0f}s")

@@ -55,17 +55,18 @@ export function createMock(emit) {
   };
   const setState = (patch) => { state = { ...state, ...patch }; emit('state', patch); };
 
-  function runTask(label, kind, seconds = 3) {
+  function runTask(label, kind, seconds = 3, ref = null) {
     const id = `t${Date.now()}`;
-    tasks[id] = { id, label, kind, status: 'running', progress: 0, detail: 'Starting…' };
+    tasks[id] = { id, label, kind, ref, status: 'running', progress: 0, detail: 'Starting…' };
     emit('task', tasks[id]);
     let p = 0;
     const tick = setInterval(() => {
+      if (tasks[id].status !== 'running') { clearInterval(tick); return; }
       p += 0.1;
       if (p >= 1) {
         clearInterval(tick);
         tasks[id] = { ...tasks[id], status: 'done', progress: 1, detail: '', result: [] };
-      } else tasks[id] = { ...tasks[id], progress: p, detail: `${Math.round(p * 100)}%` };
+      } else tasks[id] = { ...tasks[id], progress: p, detail: kind === 'download' ? `Downloading ${Math.round(p * 466)} of 466 MB` : `${Math.round(p * 100)}%` };
       emit('task', tasks[id]);
     }, seconds * 100);
     return id;
@@ -175,7 +176,9 @@ export function createMock(emit) {
       groups: [{ id: 'multilingual', title: 'Every language' }, { id: 'language', title: 'One language' }, { id: 'english', title: 'English only' }, { id: 'custom', title: 'Added by you' }],
       streaming: ['tiny', 'base'],
     }),
-    model_download: (key) => ok(runTask(`Downloading ${key}`, 'download', 4)),
+    model_download: (key) => ok(runTask(`Downloading ${key}`, 'download', 6, key)),
+    gpu_list: () => ok([{ index: 0, name: 'NVIDIA GeForce RTX 5090', memory_gb: 31.8 }, { index: 1, name: 'NVIDIA GeForce RTX 4070 SUPER', memory_gb: 12 }]),
+    task_cancel: (id) => { if (tasks[id]) { tasks[id] = { ...tasks[id], status: 'cancelled' }; emit('task', tasks[id]); } return ok(true); },
     extra_status: () => ok({ installed: extraInstalled }),
     extra_install: (name) => { const id = runTask(`Installing the ${name} package`, 'install', 3); setTimeout(() => { extraInstalled = true; }, 3100); return ok(id); },
     gpu_detect: () => ok({ name: 'NVIDIA GeForce RTX 3060', class: 'nvidia', ready: false, vram_gb: 12 }),

@@ -11,6 +11,11 @@
 # Most --flags short-circuit and exit before the heavy app is even constructed,
 # so utility commands like --version, --doctor, --settings stay fast.
 
+import os as _os
+# Number graphics cards the way nvidia-smi does (by PCI bus), so the card the
+# user picks in Settings is the card CUDA uses. Must be set before CUDA starts.
+_os.environ.setdefault('CUDA_DEVICE_ORDER', 'PCI_BUS_ID')
+
 from .utils import setup_nvidia_dll_path, setup_portaudio_path
 # PortAudio DLLs ship inside the package on Windows; this prepends the right
 # directory to PATH *before* sounddevice tries to load them.
@@ -223,7 +228,8 @@ def setup_whisper_engine(whisper_config, vad_manager, model_registry, log_transc
             task=whisper_config.get('task', 'transcribe'),
             vad_manager=vad_manager,
             model_registry=model_registry,
-            log_transcriptions=log_transcriptions
+            log_transcriptions=log_transcriptions,
+            device_index=int(whisper_config.get('device_index') or 0),
         )
     except RuntimeError as e:
         if whisper_config['device'] != 'cuda' or not config_manager:

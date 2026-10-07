@@ -20,10 +20,11 @@ class TaskCancelled(Exception):
 
 
 class Task:
-    def __init__(self, task_id: int, label: str, kind: str):
+    def __init__(self, task_id: int, label: str, kind: str, ref: Optional[str] = None):
         self.id = task_id
         self.label = label
         self.kind = kind
+        self.ref = ref                          # what it is about, e.g. the model key being downloaded
         self.progress: Optional[float] = None   # 0..1, or None when unknown
         self.status = 'running'                 # running | done | failed | cancelled
         self.detail = ''
@@ -35,7 +36,7 @@ class Task:
 
     def to_dict(self) -> dict:
         return {
-            'id': self.id, 'label': self.label, 'kind': self.kind,
+            'id': self.id, 'label': self.label, 'kind': self.kind, 'ref': self.ref,
             'progress': self.progress, 'status': self.status,
             'detail': self.detail, 'error': self.error,
             'started': self.started, 'finished': self.finished,
@@ -80,8 +81,8 @@ class TaskManager:
     # Start `fn(reporter)` on a thread. `kind` lets callers find a running job
     # of the same sort (one model switch at a time). Returns the Task.
     def run(self, label: str, fn: Callable[[TaskReporter], object], kind: str = 'general',
-            on_done: Optional[Callable[[Task], None]] = None) -> Task:
-        task = Task(next(self._ids), label, kind)
+            on_done: Optional[Callable[[Task], None]] = None, ref: Optional[str] = None) -> Task:
+        task = Task(next(self._ids), label, kind, ref)
         with self._lock:
             self._tasks[task.id] = task
             self._trim()

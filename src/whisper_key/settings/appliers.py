@@ -85,12 +85,15 @@ class Appliers:
         return {'applied': 'live', 'task_id': None}
 
     # Run a background job; on failure put the old value back.
-    def _background(self, label: str, kind: str, path: str, old: Any, fn) -> dict:
+    def _background(self, label: str, kind: str, path: str, old: Any, fn, ref: str = None) -> dict:
         def done(task):
-            if task.status == 'failed' and self.ctx.settings is not None and old is not None:
+            # Failed or cancelled: the old engine/microphone is still the one in
+            # use, so the setting goes back to match it.
+            if task.status in ('failed', 'cancelled') and self.ctx.settings is not None and old is not None:
                 self.ctx.settings.revert_silently(path, old)
-                self.sm.system_tray.notify(f"{label} failed: {task.error}")
-        task = self.tasks.run(label, fn, kind=kind, on_done=done)
+                if task.status == 'failed':
+                    self.sm.system_tray.notify(f"{label} failed: {task.error}")
+        task = self.tasks.run(label, fn, kind=kind, on_done=done, ref=ref)
         return {'applied': 'background', 'task_id': task.id}
 
     # ── Whisper engine ───────────────────────────────────────────────────────
@@ -130,6 +133,7 @@ class Appliers:
         labels = {'whisper.model': f"Switching to the {value} model",
                   'whisper.device': 'Switching to GPU' if value == 'cuda' else 'Switching to CPU',
                   'whisper.compute_type': f"Switching precision to {value}",
+                  'whisper.device_index': 'Switching graphics card',
                   'whisper.backend': f"Switching engine to {value}"}
         label = labels.get(path, 'Reloading the model')
         sm, cm = self.sm, self.cm
@@ -156,7 +160,8 @@ class Appliers:
         if running:
             for t in running:
                 self.tasks.cancel(t.id)
-        return self._background(label, 'engine', path, old, job)
+        # A model switch is "about" the new model, so its row shows the download.
+        return self._background(label, 'engine', path, old, job, ref=value if path == 'whisper.model' else None)
 
     # ── Audio ────────────────────────────────────────────────────────────────
 
@@ -443,6 +448,7 @@ _HANDLERS = {
     'whisper.models': Appliers.models_map,
     'whisper.model': Appliers.engine_rebuild,
     'whisper.device': Appliers.engine_rebuild,
+    'whisper.device_index': Appliers.engine_rebuild,
     'whisper.compute_type': Appliers.engine_rebuild,
     'whisper.backend': Appliers.engine_rebuild,
     'audio.input_device': Appliers.recorder_rebuild,

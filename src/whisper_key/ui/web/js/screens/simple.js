@@ -8,7 +8,7 @@ import { html, useEffect, useState } from '../../vendor/preact-htm.module.js';
 import { call } from '../api.js';
 import { app, saveSetting, toast, undo } from '../store.js';
 import { HotkeyCapture, Icon, Select, Toggle } from '../ui.js';
-import { ExtraInstall, MicSelect, MicTest } from './shared.js';
+import { ExtraInstall, MicSelect, MicTest, TaskProgress, useRunningTasks } from './shared.js';
 
 const LANGUAGES = [['auto', 'Detect automatically'], ['en', 'English'], ['he', 'Hebrew · עברית'], ['ar', 'Arabic'],
   ['es', 'Spanish'], ['fr', 'French'], ['de', 'German'], ['ru', 'Russian'], ['it', 'Italian'], ['pt', 'Portuguese'],
@@ -47,6 +47,7 @@ export function SimpleSettingsScreen() {
     reload();
   }).catch((e) => toast(e.message, { kind: 'err' }));
   const presets = a.quality_presets || {};
+  const switching = useRunningTasks('engine')[0];
   return html`<div class="page narrow">
     <div><h1 class="page-title">Settings</h1><p class="page-sub">Changes save by themselves.</p></div>
 
@@ -84,7 +85,8 @@ export function SimpleSettingsScreen() {
       <${Q} title="Speed or accuracy?" help="Changes in the background. You can keep talking while it switches.">
         <${Options} name="Speed or accuracy" value=${a.quality} onPick=${(v) => set('quality', v)}
           options=${[['fast', 'Fastest', `Good for short messages. (${presets.fast})`], ['balanced', 'Balanced', `Recommended for this computer. (${presets.balanced})`],
-            ['accurate', 'Most accurate', `Slower, bigger download. (${presets.accurate})`]]} /></${Q}>
+            ['accurate', 'Most accurate', `Slower, bigger download. (${presets.accurate})`]]} />
+        ${switching && html`<div style="margin-top:12px"><${TaskProgress} task=${switching} /></div>`}</${Q}>
     </section>
 
     <section class="card" aria-label="Your text">

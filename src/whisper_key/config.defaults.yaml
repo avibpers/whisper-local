@@ -27,6 +27,10 @@ whisper: # Whisper AI Model Settings
     # For GPU setup, see https://github.com/drajb/whisper-local/blob/master/docs/gpu-setup.md
     device: cpu
 
+    # Which graphics card to use when there is more than one (0 = the first,
+    # numbered as nvidia-smi lists them). Ignored on the CPU.
+    device_index: 0
+
     # Compute Precision
     # Options: int8, float16, float32
     compute_type: int8

@@ -48,10 +48,13 @@ class WhisperEngine:
                  task: str = "transcribe",
                  vad_manager = None,
                  model_registry = None,
-                 log_transcriptions: bool = False):
+                 log_transcriptions: bool = False,
+                 device_index: int = 0):
 
         self.model_key = model_key
         self.device = device
+        # Which graphics card, when there is more than one (0 = the first).
+        self.device_index = int(device_index or 0)
         self.compute_type = compute_type
         self.language = None if language == 'auto' else language
         self.beam_size = beam_size
@@ -103,6 +106,7 @@ class WhisperEngine:
             self.model = WhisperModel(
                 model_source,
                 device=self.device,
+                device_index=self.device_index if self.device == 'cuda' else 0,
                 compute_type=self.compute_type
             )
 
@@ -160,6 +164,7 @@ class WhisperEngine:
                 new_model = WhisperModel(
                     model_source,
                     device=self.device,
+                    device_index=self.device_index if self.device == 'cuda' else 0,
                     compute_type=self.compute_type
                 )
                 self.model = new_model
