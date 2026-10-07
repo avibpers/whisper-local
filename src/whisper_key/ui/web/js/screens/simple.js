@@ -62,6 +62,10 @@ export function SimpleSettingsScreen() {
       ${a.noise && html`<div style="padding:0 22px 14px"><${ExtraInstall} name="noise" /></div>`}
       <${Line} title="I speak quietly" help="Turns up soft voices, for whispering in an open office."><${Toggle} checked=${a.quiet} label="I speak quietly" onChange=${(v) => set('quiet', v)} /></${Line}>
       <${Line} title="Pause my music while I talk" help="Pauses Spotify, YouTube and others. Press play again yourself."><${Toggle} checked=${a.music} label="Pause music" onChange=${(v) => set('music', v)} /></${Line}>
+      <${Line} title="Turn the computer down while I talk" help="Lowers the volume while you record, then puts it back. Only if it is louder than this.">
+        <${Select} label="Turn the computer down while I talk" value=${a.volume || 'off'} style="max-width:180px"
+          options=${[['off', 'Off'], ['5', 'To 5%'], ['10', 'To 10%'], ['20', 'To 20%'], ['30', 'To 30%'], ['50', 'To 50%']]}
+          onChange=${(v) => set('volume', v)} /></${Line}>
       <${Line} title="Stop listening when I go quiet" help="Ends the recording by itself if you forget.">
         <${Select} label="Stop after silence" value=${a.stop} onChange=${(v) => set('stop', v)}
           options=${[['never', 'Never'], ['10', 'After 10 seconds'], ['30', 'After 30 seconds'], ['60', 'After 1 minute'], ...(a.stop === 'custom' ? [['custom', 'Custom (Advanced)']] : [])]} /></${Line}>

@@ -112,6 +112,8 @@ class StateManager:
         self._rephrase_selection = ''
         self._rephrase_original_clipboard = ''
         self._continuous_aborted = False
+        from .media_control import MediaControl
+        self.media_control = MediaControl()
         self._hotkey_listener_ref = None
         self._pending_model_change = None
         self._pending_device_change = None
@@ -431,16 +433,14 @@ class StateManager:
                 self._begin_recording()
         threading.Thread(target=restart, daemon=True, name='continuous-restart').start()
 
+    # Pause the music and/or lower the volume, as the audio settings say
+    # (media_control.py); the volume comes back when the recording ends.
     def _maybe_pause_media(self):
         audio_cfg = self.config_manager.config.get('audio', {})
-        if not audio_cfg.get('pause_media_on_record', False):
-            return
         try:
-            from .platform import keyboard as kb
-            kb.send_key('media_play_pause')
-            self.logger.debug("Sent media play/pause on recording start")
+            self.media_control.on_recording_start(audio_cfg)
         except Exception as e:
-            self.logger.debug(f"Media pause skipped: {e}")
+            self.logger.warning(f"Media control skipped: {e}")
 
     def _apply_recording_context(self):
         whisper_cfg = self.config_manager.get_whisper_config()
@@ -820,6 +820,8 @@ class StateManager:
     # OptionalComponent-wrapped: a disabled tray or a non-TTY terminal is a
     # silent no-op rather than a branch at each call site.
     def _update_ui_state(self, state: str):
+        if state != 'recording':
+            self.media_control.on_recording_end()
         self.system_tray.update_state(state)
         self.terminal_title.update_state(state)
         self._publish_state(state)

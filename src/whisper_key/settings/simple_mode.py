@@ -89,6 +89,11 @@ def to_patch(question: str, answer, ctx: Optional[dict] = None) -> dict:
         return {'postprocess.inline_formatting': bool(answer)}
     if question == 'bar':
         return {'overlay.enabled': bool(answer)}
+    if question == 'volume':
+        # 'off', or the percent to turn the computer down to while talking.
+        if answer in (None, '', 'off', False):
+            return {'audio.lower_volume.enabled': False}
+        return {'audio.lower_volume.enabled': True, 'audio.lower_volume.level': int(answer)}
     raise ValueError(f"Unknown Simple-mode question: {question}")
 
 
@@ -107,6 +112,7 @@ def from_settings(get, ctx: Optional[dict] = None) -> dict:
         'sounds': bool(get('audio_feedback.enabled')),
         'punctuation': bool(get('postprocess.inline_formatting')),
         'bar': bool(get('overlay.enabled')),
+        'volume': str(get('audio.lower_volume.level') or 20) if get('audio.lower_volume.enabled') else 'off',
     }
 
     if not get('vad.vad_realtime_enabled'):

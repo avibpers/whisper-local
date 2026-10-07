@@ -3665,7 +3665,8 @@ class SimpleModeRoundTripTests(unittest.TestCase):
         defaults, _ = _defaults_getter()
         cases = [('look', 'clean'), ('look', 'relaxed'), ('look', 'exact'), ('look', 'standard'),
                  ('where', 'copy'), ('where', 'type'), ('start', 'press'), ('start', 'hold'),
-                 ('sounds', False), ('punctuation', False), ('bar', False), ('stop', 'never'), ('stop', '60')]
+                 ('sounds', False), ('punctuation', False), ('bar', False), ('stop', 'never'), ('stop', '60'),
+                 ('volume', 'off'), ('volume', '10'), ('volume', '30')]
         for question, answer in cases:
             with self.subTest(question=question, answer=answer):
                 cfg = copy.deepcopy(defaults)
@@ -4240,3 +4241,68 @@ class GraphicsCardChoiceTests(unittest.TestCase):
         from whisper_key.settings.appliers import _HANDLERS, Appliers
         self.assertEqual(schema.get('whisper.device_index').apply, schema.BACKGROUND)
         self.assertIs(_HANDLERS['whisper.device_index'], Appliers.engine_rebuild)
+
+
+class _FakeMediaBackend:
+    def __init__(self, volume=0.6):
+        self.volume = volume
+        self.paused = 0
+
+    def get_master_volume(self):
+        return self.volume
+
+    def set_master_volume(self, value):
+        self.volume = value
+
+    def pause_playing(self):
+        self.paused += 1
+        return ['Spotify.exe']
+
+
+class MediaControlTests(unittest.TestCase):
+    def _control(self, volume=0.6):
+        from whisper_key.media_control import MediaControl
+        backend = _FakeMediaBackend(volume)
+        return MediaControl(backend, run_async=lambda fn: fn()), backend
+
+    CFG = {'pause_media_on_record': False, 'lower_volume': {'enabled': True, 'level': 20}}
+
+    # Lowered to the level when talking starts, and put back afterwards.
+    def test_a_loud_computer_is_lowered_and_restored(self):
+        control, backend = self._control(0.6)
+        control.on_recording_start(self.CFG)
+        self.assertAlmostEqual(backend.volume, 0.20)
+        control.on_recording_end()
+        self.assertAlmostEqual(backend.volume, 0.6)
+
+    # Only lowered when it is above the level; a quiet computer stays as it is.
+    def test_a_quiet_computer_is_left_alone(self):
+        control, backend = self._control(0.15)
+        control.on_recording_start(self.CFG)
+        self.assertAlmostEqual(backend.volume, 0.15)
+        control.on_recording_end()
+        self.assertAlmostEqual(backend.volume, 0.15)
+
+    # If the user changed the volume while talking, their choice wins.
+    def test_a_volume_changed_during_recording_is_kept(self):
+        control, backend = self._control(0.6)
+        control.on_recording_start(self.CFG)
+        backend.volume = 0.45
+        control.on_recording_end()
+        self.assertAlmostEqual(backend.volume, 0.45)
+
+    def test_off_means_untouched(self):
+        control, backend = self._control(0.6)
+        control.on_recording_start({'pause_media_on_record': False, 'lower_volume': {'enabled': False, 'level': 20}})
+        self.assertAlmostEqual(backend.volume, 0.6)
+        self.assertEqual(backend.paused, 0)
+
+    def test_pause_music_asks_the_media_players_to_pause(self):
+        control, backend = self._control()
+        control.on_recording_start({'pause_media_on_record': True, 'lower_volume': {'enabled': False}})
+        self.assertEqual(backend.paused, 1)
+
+    def test_lower_volume_is_in_the_settings(self):
+        from whisper_key.settings import schema
+        self.assertIsNotNone(schema.get('audio.lower_volume.enabled'))
+        self.assertIsNotNone(schema.get('audio.lower_volume.level'))

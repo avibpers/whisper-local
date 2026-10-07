@@ -242,8 +242,16 @@ audio: # Audio Recording Settings
     channels: 1
 
     # Pause currently-playing media on recording start (Spotify, YouTube,
-    # etc.) by sending the system play/pause key. Does NOT auto-resume.
+    # browsers...) through the Windows media sessions, or the play/pause key
+    # where those aren't available. Does NOT auto-resume.
     pause_media_on_record: false
+
+    # Lower the computer's volume while you talk, so speakers don't drown out
+    # your voice. Only lowers it when it is louder than `level` (percent), and
+    # puts it back when the recording ends unless you changed it meanwhile.
+    lower_volume:
+        enabled: false
+        level: 20
 
     # Continuous dictation mode: after each successful delivery, the app
     # auto-restarts recording after a short delay. Press Esc (cancel

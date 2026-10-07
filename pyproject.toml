@@ -62,6 +62,12 @@ dependencies = [
     # Windows-only
     "global-hotkeys>=0.1.7; sys_platform=='win32'",
     "pywin32>=306; sys_platform=='win32'",
+    # Pause music and lower the volume while recording (media_control.py)
+    "pycaw>=20240210; sys_platform=='win32'",
+    "winrt-runtime>=2.3; sys_platform=='win32'",
+    "winrt-Windows.Media.Control>=2.3; sys_platform=='win32'",
+    "winrt-Windows.Foundation>=2.3; sys_platform=='win32'",
+    "winrt-Windows.Foundation.Collections>=2.3; sys_platform=='win32'",
 
     # macOS-only
     "pyobjc-framework-Quartz; sys_platform=='darwin'",

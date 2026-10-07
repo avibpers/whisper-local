@@ -25,6 +25,7 @@ _LISTENER_KEYS = {
 # Settings that are simply read from the config whenever they are used.
 _READ_ON_USE = {
     'whisper.prompt_from_selection', 'streaming.deliver_to_cursor', 'audio.pause_media_on_record',
+    'audio.lower_volume.enabled', 'audio.lower_volume.level',
     'audio.continuous_mode', 'audit.enabled', 'ui.mode', 'ui.theme', 'ui.open_on_start',
     'console.start_hidden', 'overlay.click_through', 'onboarding.gpu', 'onboarding.gpu_class',
     'ui.welcome_done', 'ui.window.width', 'ui.window.height', 'ui.window.x', 'ui.window.y',
