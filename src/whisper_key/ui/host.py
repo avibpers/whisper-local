@@ -28,8 +28,8 @@ from .tasks import get_task_manager
 logger = logging.getLogger(__name__)
 
 WEB_DIR = Path(__file__).resolve().parent / 'web'
-MAIN_TITLE = 'Whisper Local'
-BAR_TITLE = 'Whisper Local · bar'
+MAIN_TITLE = 'Koli'
+BAR_TITLE = 'Koli · bubble'
 
 # Topics each page cares about. Latest-wins topics are coalesced per batch.
 BAR_TOPICS = {'state', 'bar', 'pipeline', 'notify', 'task', 'level', 'streaming_text', 'settings',
@@ -83,7 +83,7 @@ class UiHost:
         self._shutdown_event = None
         self._open_page = open_page
         self._open_at_start = open_page is not None
-        self._bar_size = (220, 40)
+        self._bar_size = (14, 48)   # the resting tab, until the page reports its size
         self._last_pipeline = []
         self._state = {'state': 'idle', 'mode': 'dictate', 'paused': False}
         self._listener = None
@@ -159,7 +159,7 @@ class UiHost:
             MAIN_TITLE, url=str(WEB_DIR / 'index.html'), js_api=self.bridge,
             width=int(win.get('width') or 1280), height=int(win.get('height') or 860),
             x=win.get('x'), y=win.get('y'), min_size=(940, 640), hidden=True,
-            text_select=True, background_color='#0D0E11' if theme_dark else '#F4F4F1')
+            text_select=True, background_color='#171C20' if theme_dark else '#ECEFF1')
         self.main.window.events.loaded += lambda: self._on_loaded(self.main)
         self.main.window.events.closing += self._on_main_closing
         # A window left maximized opens maximized next time (on its first show).
@@ -175,7 +175,7 @@ class UiHost:
             BAR_TITLE, url=str(WEB_DIR / 'bar.html'), js_api=self.bridge,
             width=self._bar_size[0], height=self._bar_size[1], x=bx, y=by,
             frameless=True, easy_drag=False, resizable=False, on_top=True, focus=False,
-            min_size=(40, 20), shadow=False, background_color='#16171B',
+            min_size=(10, 20), shadow=False, background_color='#1E252B' if theme_dark else '#FFFFFF',
             hidden=not self.bar_enabled)
         self.bar.window.events.loaded += lambda: self._on_loaded(self.bar)
 
@@ -346,7 +346,11 @@ class UiHost:
         scale = win32.dpi_scale(self.bar_hwnd)
         pw, ph = int(w * scale), int(h * scale)
         margin = int(28 * scale)
-        pos = self.settings.get('overlay.position', 'bottom-center') or 'bottom-center'
+        pos = self.settings.get('overlay.position', 'right-edge') or 'right-edge'
+        # Koli's bubble: flush with a side of the screen, halfway down.
+        if pos in ('right-edge', 'left-edge'):
+            x = right - pw if pos == 'right-edge' else left
+            return x, top + (bottom - top - ph) // 2
         if pos.endswith('left'):
             x = left + margin
         elif pos.endswith('right'):
@@ -367,7 +371,7 @@ class UiHost:
         return max(20, int((bottom - top - 2 * int(28 * scale)) / scale))
 
     def resize_bar(self, width, height):
-        width = max(40, min(width, 640))
+        width = max(10, min(width, 640))
         height = max(20, min(height, self._max_bar_height()))
         self._bar_size = (width, height)
         self.place_bar()

@@ -3946,7 +3946,7 @@ class SlimTrayMenuTests(unittest.TestCase):
         tray.on_open = lambda page: None
         tray.on_pause = lambda paused: None
         self.assertEqual(self._labels(tray._create_menu()),
-                         ['Open Whisper Local', 'Pause hotkeys', 'Profile: Chat', 'Recent', 'Quit Whisper Local'])
+                         ['Open Koli', 'Pause hotkeys', 'Profile: Chat', 'Recent', 'Quit Koli'])
 
     def test_pause_item_asks_the_app_to_pause(self):
         tray, sm = self._tray()
@@ -3965,12 +3965,12 @@ class SlimTrayMenuTests(unittest.TestCase):
 class ColourContrastTests(unittest.TestCase):
     # Text colours must reach 4.5:1 (WCAG AA) on every surface they are used
     # on, in both themes, and on the floating bar.
-    TEXT_ON_SURFACES = [(t, s) for t in ('ink', 'ink2', 'mute', 'acc', 'rec', 'ok', 'warn')
+    TEXT_ON_SURFACES = [(t, s) for t in ('ink', 'ink2', 'mute', 'acc', 'rec', 'ok', 'warn', 'purple')
                         for s in ('bg', 'panel', 'sunk')]
     TONE_ON_SOFT = [('acc', 'acc-soft'), ('rec', 'rec-soft'), ('ok', 'ok-soft'), ('warn', 'warn-soft'),
-                    ('acc-ink', 'acc')]
-    BAR = [(t, s) for t in ('bar-ink', 'bar-mute', 'bar-rec', 'bar-ok', 'bar-acc', 'bar-warn')
-           for s in ('bar', 'bar2')]
+                    ('purple', 'purple-soft'), ('acc-ink', 'acc'), ('on-brand', 'brand')]
+    # The edge bubble uses the app's own surfaces and text, so it is covered above.
+    BAR = []
 
     @staticmethod
     def _themes():
@@ -4058,6 +4058,17 @@ class BrokenSettingsFileTests(unittest.TestCase):
                 self.assertEqual(f.read(), original)
 
 
+class OwnWindowLookupTests(unittest.TestCase):
+    # Two copies of the app (the normal one and --test) have windows with the
+    # same title; each must find its own, never the other's.
+    def test_only_this_process_windows_match(self):
+        from whisper_key.ui import win32
+        windows = [(101, 'Koli', 5000), (102, 'Koli', 6000), (103, 'Koli · bubble', 6000)]
+        self.assertEqual(win32.pick_window(windows, 'Koli', 6000), 102)
+        self.assertEqual(win32.pick_window(windows, 'Koli · bubble', 6000), 103)
+        self.assertEqual(win32.pick_window(windows, 'Koli', 7000), 0)
+
+
 class BarPlacementTests(unittest.TestCase):
     def _host(self, work_area, scale, position):
         import unittest.mock as mock
@@ -4090,6 +4101,21 @@ class BarPlacementTests(unittest.TestCase):
         x, y = h._bar_origin(340, 700)
         self.assertGreaterEqual(y, 0)
         self.assertGreaterEqual(x, 0)
+
+    # Koli's default: a bubble flush with the right edge, halfway down.
+    def test_the_bubble_sits_on_the_right_edge(self):
+        h = self._host((0, 0, 2560, 1400), 1.0, 'right-edge')
+        self.assertEqual(h._bar_origin(200, 56), (2560 - 200, (1400 - 56) // 2))
+
+    def test_the_bubble_can_sit_on_the_left_edge(self):
+        h = self._host((48, 0, 1920, 1080), 1.25, 'left-edge')
+        self.assertEqual(h._bar_origin(200, 56), (48, (1080 - 70) // 2))
+
+    def test_edge_positions_are_settings_choices(self):
+        from whisper_key.settings import schema
+        choices = [c[0] for c in schema.get('overlay.position').choices]
+        self.assertIn('right-edge', choices)
+        self.assertIn('left-edge', choices)
 
     def test_the_bar_height_is_limited_to_what_fits(self):
         h = self._host((0, 0, 1366, 728), 1.25, 'bottom-right')

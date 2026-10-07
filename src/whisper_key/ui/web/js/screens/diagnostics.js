@@ -60,9 +60,9 @@ function SelfTest() {
   </section>`;
 }
 
-// Keys that work inside the app window and on the floating bar.
+// Keys that work inside the app window and on the bubble.
 const APP_KEYS = [['Search settings and screens', 'ctrl+k'], ['Close a dialog or the bar menu', 'esc'],
-  ['Quick actions on the floating bar', '']];
+  ['Quick actions on the bubble', '']];
 
 function Shortcuts() {
   const [rows, setRows] = useState([]);

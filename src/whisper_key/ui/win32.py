@@ -39,10 +39,33 @@ if IS_WINDOWS:
                                     ctypes.c_int, ctypes.c_uint]
 
 
+# The first of `windows` ((hwnd, title, pid) tuples) with this exact title
+# that belongs to process `pid`; 0 when there is none.
+def pick_window(windows, title: str, pid: int) -> int:
+    for hwnd, window_title, window_pid_ in windows:
+        if window_title == title and window_pid_ == pid:
+            return hwnd
+    return 0
+
+
+# This process's top-level window with this title. Another copy of the app
+# (say the --test one) has windows with the same titles, so FindWindow alone
+# could return one of those.
 def find_window(title: str) -> int:
     if not IS_WINDOWS:
         return 0
-    return user32.FindWindowW(None, title) or 0
+    found = []
+    proc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
+
+    def visit(hwnd, _):
+        length = user32.GetWindowTextLengthW(hwnd)
+        if length:
+            buf = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(hwnd, buf, length + 1)
+            found.append((hwnd, buf.value, window_pid(hwnd)))
+        return True
+    user32.EnumWindows(proc(visit), 0)
+    return pick_window(found, title, os.getpid())
 
 
 def foreground() -> int:

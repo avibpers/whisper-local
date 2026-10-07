@@ -157,7 +157,7 @@ function Autostart() {
   const [state, setState] = useState(null);
   useEffect(() => { call('system_autostart').then(setState).catch(() => {}); }, []);
   if (!state || !state.supported) return null;
-  return html`<div class="srow"><div class="slabel"><b>Start on login</b><small>Launches windowless, straight into the floating bar.</small></div>
+  return html`<div class="srow"><div class="slabel"><b>Start on login</b><small>Starts quietly, with just the bubble on the screen edge.</small></div>
     <div class="sctl"><${Toggle} checked=${state.enabled} label="Start on login"
       onChange=${(v) => call('system_set_autostart', v).then((on) => { setState({ ...state, enabled: on }); toast(on ? 'Will start on login' : "Won't start on login"); }).catch((e) => toast(e.message, { kind: 'err' }))} /></div></div>`;
 }
@@ -198,7 +198,7 @@ function SystemExtras() {
   const uninstall = async () => {
     const plan = await call('system_uninstall_plan');
     let removeModels = false;
-    openModal(() => html`<div class="modal"><div class="modal-head"><h2>Uninstall Whisper Local?</h2></div>
+    openModal(() => html`<div class="modal"><div class="modal-head"><h2>Uninstall Koli?</h2></div>
       <div class="modal-body"><p style="margin:0">This removes ${plan.data_dir} (${plan.data_size || 'settings and data'})${plan.autostart ? ' and the start-on-login entry' : ''}, then closes the app.</p>
         ${plan.models.length > 0 && html`<label class="row-flex" style="justify-content:space-between">Also delete ${plan.models.length} downloaded models (${plan.models_size})
           <input type="checkbox" class="sw" aria-label="Also delete models" onChange=${(e) => { removeModels = e.currentTarget.checked; }} /></label>`}

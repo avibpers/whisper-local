@@ -54,7 +54,7 @@ SECTIONS = [
     {'id': 'writing', 'title': 'Writing & formatting', 'desc': 'Applies to the next dictation. App rules can set their own style.'},
     {'id': 'smart', 'title': 'Smart editing', 'desc': 'Offline rules, no AI. Each one is off until you turn it on.'},
     {'id': 'ai', 'title': 'Local AI (Ollama)', 'desc': 'Optional polish and rewrites with a model on your own machine. Nothing leaves it.'},
-    {'id': 'overlay', 'title': 'Floating bar & sounds', 'desc': 'What you see and hear when the window is closed.'},
+    {'id': 'overlay', 'title': 'Bubble & sounds', 'desc': 'What you see and hear when the window is closed.'},
     {'id': 'privacy', 'title': 'Privacy & logs', 'desc': 'Everything stays on this computer. Here is what gets written to disk.'},
     {'id': 'system', 'title': 'System', 'desc': 'Startup, tray, API server and backups.'},
 ]
@@ -75,7 +75,8 @@ LANGUAGES = [
 
 ON_OFF_STYLE = [[None, 'From style'], [True, 'On'], [False, 'Off']]
 LOG_LEVELS = [[x, x.title()] for x in ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL')]
-POSITIONS = [['top-left', 'Top left'], ['top-center', 'Top'], ['top-right', 'Top right'],
+POSITIONS = [['right-edge', 'Right edge'], ['left-edge', 'Left edge'],
+             ['top-left', 'Top left'], ['top-center', 'Top'], ['top-right', 'Top right'],
              ['bottom-left', 'Bottom left'], ['bottom-center', 'Bottom'], ['bottom-right', 'Bottom right']]
 
 _S = Setting
@@ -160,7 +161,7 @@ SCHEMA = [
        help='Grabs your current selection when you start recording.'),
     _S('streaming.streaming_enabled', 'Show words while you speak', 'model', 'toggle', apply=BACKGROUND,
        group='Live preview (experimental)',
-       help='A small streaming model shows text in the floating bar. English only for now.'),
+       help='A small streaming model shows text in the bubble. English only for now.'),
     _S('streaming.deliver_to_cursor', 'Type as you speak', 'model', 'toggle', apply=NEXT_RECORDING,
        group='Live preview (experimental)',
        help='Types finished phrases straight away and skips the final Whisper pass. Faster, less accurate.'),
@@ -262,8 +263,8 @@ SCHEMA = [
     _S('postprocess.ollama.prompt', 'Polish instruction', 'ai', 'textarea',
        help='{text} is replaced with your dictation.'),
 
-    # ── Floating bar & sounds ────────────────────────────────────────────────
-    _S('overlay.enabled', 'Show the floating bar', 'overlay', 'toggle', mode=SIMPLE),
+    # ── Bubble & sounds ────────────────────────────────────────────────────
+    _S('overlay.enabled', 'Show the Koli bubble', 'overlay', 'toggle', mode=SIMPLE),
     _S('overlay.position', 'Position', 'overlay', 'segmented', choices=POSITIONS),
     _S('overlay.click_through', 'Clicks pass through', 'overlay', 'toggle', apply=NEXT_LAUNCH,
        help='Only used by the classic overlay (--legacy-ui). The new bar is sized to its content.'),

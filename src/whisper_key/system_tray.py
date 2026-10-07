@@ -388,7 +388,7 @@ class SystemTray:
 
             menu_items.extend([
                 pystray.Menu.SEPARATOR,
-                pystray.MenuItem("Restart Whisper Local", self._restart_application_from_tray),
+                pystray.MenuItem("Restart Koli", self._restart_application_from_tray),
                 pystray.MenuItem("Exit", self._quit_application_from_tray)
             ])
 
@@ -404,7 +404,7 @@ class SystemTray:
     def _create_app_window_menu(self):
         paused = bool(getattr(self.state_manager, 'is_paused', False))
         items = [
-            pystray.MenuItem("Open Whisper Local", lambda icon, item: self.on_open(None), default=True),
+            pystray.MenuItem("Open Koli", lambda icon, item: self.on_open(None), default=True),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Resume hotkeys" if paused else "Pause hotkeys",
                              lambda icon, item: self._toggle_pause(not paused)),
@@ -418,7 +418,7 @@ class SystemTray:
             items.append(pystray.MenuItem("Recent", pystray.Menu(*recent_items)))
         items += [
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Quit Whisper Local", self._quit_application_from_tray),
+            pystray.MenuItem("Quit Koli", self._quit_application_from_tray),
         ]
         return pystray.Menu(*items)
 
@@ -682,7 +682,7 @@ class SystemTray:
         menu = self._create_menu()
         self._on_ui_thread(lambda: setattr(self.icon, 'menu', menu), 'menu update')
 
-    def notify(self, message: str, title: str = "Whisper Local"):
+    def notify(self, message: str, title: str = "Koli"):
         if not TRAY_AVAILABLE or not self.is_running or not self.icon:
             return
         self._on_ui_thread(lambda: self.icon.notify(message, title), 'notify')
@@ -702,7 +702,7 @@ class SystemTray:
             self._start_level_monitor()
         else:
             self._stop_level_monitor()
-            tooltip = self.tray_config.get('tooltip', 'Whisper Local')
+            tooltip = self.tray_config.get('tooltip', 'Koli')
             self._on_ui_thread(lambda: setattr(self.icon, 'title', tooltip), 'tooltip')
 
     def _start_level_monitor(self):
@@ -723,7 +723,7 @@ class SystemTray:
                     level = 0.0
                 bars = self._level_bars(level)
                 if self.icon:
-                    title = f"Whisper Local · 🎤 {bars}"
+                    title = f"Koli · 🎤 {bars}"
                     self._on_ui_thread(
                         lambda t=title: setattr(self.icon, 'title', t), 'level title')
                 self._level_stop.wait(0.15)
@@ -759,7 +759,7 @@ class SystemTray:
             self.icon = pystray.Icon(
                 name="whisper-local",
                 icon=idle_icon,
-                title="Whisper Local",
+                title="Koli",
                 menu=menu
             )
 
