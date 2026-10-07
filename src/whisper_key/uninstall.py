@@ -52,9 +52,8 @@ def _human(num_bytes: int) -> str:
 
 
 def _hf_hub_root() -> Path:
-    userprofile = os.environ.get("USERPROFILE")
-    base = Path(userprofile) if userprofile else Path.home()
-    return base / ".cache" / "huggingface" / "hub"
+    from .utils import hf_hub_cache
+    return Path(hf_hub_cache())
 
 
 # Only ever returns directories whose names match our own model naming. Anything

@@ -201,3 +201,19 @@ def get_version():
     with open(pyproject_path, 'rb') as f:
         data = tomllib.load(f)
         return f"{data['project']['version']}-dev"
+
+
+# Where huggingface_hub keeps downloaded models, honouring the same settings it
+# does (HF_HUB_CACHE, then HUGGINGFACE_HUB_CACHE, then HF_HOME/hub, then
+# XDG_CACHE_HOME/huggingface/hub, else ~/.cache/huggingface/hub). Every model
+# lookup goes through this, so a moved cache (HF_HOME=E:\AI\hf_cache) is found.
+def hf_hub_cache() -> str:
+    for name in ('HF_HUB_CACHE', 'HUGGINGFACE_HUB_CACHE'):
+        if os.environ.get(name):
+            return os.path.expanduser(os.environ[name])
+    if os.environ.get('HF_HOME'):
+        return os.path.join(os.path.expanduser(os.environ['HF_HOME']), 'hub')
+    if os.environ.get('XDG_CACHE_HOME'):
+        return os.path.join(os.path.expanduser(os.environ['XDG_CACHE_HOME']), 'huggingface', 'hub')
+    home = os.environ.get('USERPROFILE') or os.path.expanduser('~')
+    return os.path.join(home, '.cache', 'huggingface', 'hub')

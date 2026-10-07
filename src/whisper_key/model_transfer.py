@@ -29,10 +29,8 @@ USER_SETTINGS = "user_settings.yaml"
 
 
 def _hf_cache_root() -> Path:
-    import os
-    userprofile = os.environ.get("USERPROFILE")
-    base = Path(userprofile) if userprofile else Path.home()
-    return base / ".cache" / "huggingface" / "hub"
+    from .utils import hf_hub_cache
+    return Path(hf_hub_cache())
 
 
 # Locate the snapshot directory for a cached model key (e.g. "base"). Returns

@@ -4306,3 +4306,32 @@ class MediaControlTests(unittest.TestCase):
         from whisper_key.settings import schema
         self.assertIsNotNone(schema.get('audio.lower_volume.enabled'))
         self.assertIsNotNone(schema.get('audio.lower_volume.level'))
+
+
+class HuggingFaceCacheLocationTests(unittest.TestCase):
+    # Models download wherever huggingface_hub puts them. A machine that moves
+    # that cache (HF_HOME=E:\AI\hf_cache) used to have every model look "not
+    # downloaded", and live preview failed right after its download finished.
+    def _cache(self, env):
+        import unittest.mock as mock
+        from whisper_key import utils
+        keep = {k: v for k, v in os.environ.items()
+                if k not in ('HF_HUB_CACHE', 'HUGGINGFACE_HUB_CACHE', 'HF_HOME', 'XDG_CACHE_HOME')}
+        with mock.patch.dict(os.environ, dict(keep, **env), clear=True):
+            return utils.hf_hub_cache()
+
+    def test_hf_home_moves_the_cache(self):
+        self.assertEqual(self._cache({'HF_HOME': r'E:\AI\hf_cache'}), os.path.join(r'E:\AI\hf_cache', 'hub'))
+
+    def test_hf_hub_cache_wins(self):
+        self.assertEqual(self._cache({'HF_HOME': r'E:\a', 'HF_HUB_CACHE': r'F:\hub'}), r'F:\hub')
+
+    def test_default_is_the_home_cache(self):
+        self.assertTrue(self._cache({}).endswith(os.path.join('.cache', 'huggingface', 'hub')))
+
+    def test_every_model_lookup_uses_it(self):
+        import unittest.mock as mock
+        from whisper_key import utils
+        from whisper_key.model_registry import ModelRegistry
+        with mock.patch.object(utils, 'hf_hub_cache', return_value=r'E:\AI\hf_cache\hub'):
+            self.assertEqual(ModelRegistry({}, {}).get_hf_cache_path(), r'E:\AI\hf_cache\hub')

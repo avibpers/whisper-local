@@ -57,10 +57,8 @@ class ModelRegistry:
         return ["official", "custom"]
 
     def get_hf_cache_path(self) -> str:
-        userprofile = os.environ.get('USERPROFILE')
-        if userprofile:
-            return os.path.join(userprofile, '.cache', 'huggingface', 'hub')
-        return os.path.join(os.path.expanduser('~'), '.cache', 'huggingface', 'hub')
+        from . import utils
+        return utils.hf_hub_cache()
 
     def is_model_cached(self, key: str) -> bool:
         model = self.get_model(key)
