@@ -9,6 +9,7 @@ import { call } from '../api.js';
 import { app, navigate, prettyKeys, saveSetting, setting, toast, useSetting } from '../store.js';
 import { Icon, Select } from '../ui.js';
 import { MicSelect, MicTest } from './shared.js';
+import { KoliMark } from '../brand.js';
 
 const LANGUAGES = [['auto', 'Detect automatically'], ['en', 'English'], ['he', 'Hebrew · עברית'], ['ar', 'Arabic'],
   ['es', 'Spanish'], ['fr', 'French'], ['de', 'German'], ['ru', 'Russian'], ['it', 'Italian'], ['pt', 'Portuguese'], ['pl', 'Polish']];
@@ -35,7 +36,7 @@ export function WelcomeScreen() {
   return html`<div style="min-height:100vh;display:grid;place-items:center;padding:24px">
     <div class="card" style="width:min(640px,100%);padding:32px;display:flex;flex-direction:column;gap:20px">
       <div class="row-flex" style="justify-content:space-between">
-        <div class="brand"><span class="brand-mark"><${Icon} name="wave" size="sm" /></span>Welcome to Whisper Local</div>
+        <div class="brand"><${KoliMark} size=${36} />Welcome to Koli</div>
         <span class="small muted">Step ${step + 1} of ${steps.length}</span></div>
 
       ${current === 'language' && html`<div class="stack">

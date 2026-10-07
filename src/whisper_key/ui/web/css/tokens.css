@@ -1,84 +1,107 @@
 /* tokens.css
-   Design tokens for Whisper Local's app window and floating bar: colours for
-   light and dark, type, spacing and radii. Every other stylesheet uses these
-   variables only, so a theme change is one attribute on <html>. */
+   Design tokens for Koli's app window and edge bubble: JumboMail's colours
+   (jumbomail.me) for light and dark, Rubik and JetBrains Mono, radii and
+   shadows. Every other stylesheet uses these variables only, so a theme
+   change is one attribute on <html>. */
 
+/* Rubik (Latin, Latin Extended, Hebrew) and JetBrains Mono, bundled with
+   their OFL licences so the app works offline. */
 @font-face {
-  font-family: 'Geist';
-  src: url('../fonts/Geist-Variable.woff2') format('woff2');
-  font-weight: 100 900;
-  font-display: swap;
+  font-family: 'Rubik'; font-weight: 300 900; font-display: swap;
+  src: url('../fonts/Rubik-Latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
-  font-family: 'Geist Mono';
-  src: url('../fonts/GeistMono-Variable.woff2') format('woff2');
-  font-weight: 100 900;
-  font-display: swap;
+  font-family: 'Rubik'; font-weight: 300 900; font-display: swap;
+  src: url('../fonts/Rubik-LatinExt.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Rubik'; font-weight: 300 900; font-display: swap;
+  src: url('../fonts/Rubik-Hebrew.woff2') format('woff2');
+  unicode-range: U+0307-0308, U+0590-05FF, U+200C-2010, U+20AA, U+25CC, U+FB1D-FB4F;
+}
+@font-face {
+  font-family: 'JetBrains Mono'; font-weight: 100 800; font-display: swap;
+  src: url('../fonts/JetBrainsMono-Latin.woff2') format('woff2');
 }
 
 :root {
-  --bg: #F4F4F1;
+  /* Surfaces and text: JumboMail's mist, white and slate */
+  --bg: #ECEFF1;
   --panel: #FFFFFF;
-  --sunk: #EEEEEA;
-  --line: #E2E2DC;
-  --line2: #D3D3CC;
-  --ink: #16171B;
-  --ink2: #464A52;
-  --mute: #676B73;
-  --acc: #2D43CC;
+  --sunk: #F4F7F8;
+  --line: #D7DEE1;
+  --line2: #C7CFD3;
+  --ink: #1E252B;
+  --ink2: #3F4648;
+  --mute: #5C6466;
+
+  /* Brand turquoise: fills (buttons, logo, wave) carry slate text on top;
+     links and accent text use the deeper shade, which reads on white. */
+  --brand: #15B4D4;
+  --on-brand: #0E2A33;
+  --acc: #0A6E82;
   --acc-ink: #FFFFFF;
-  --acc-soft: #E9ECFC;
-  --rec: #B83C18;
-  --rec-soft: #FBE9E3;
-  --ok: #1B7446;
-  --ok-soft: #E2F2E8;
-  --warn: #8E5400;
-  --warn-soft: #FAEFD9;
-  --shadow: 0 1px 2px rgba(0, 0, 0, .06), 0 8px 24px rgba(0, 0, 0, .06);
-  --shadow-pop: 0 18px 40px rgba(0, 0, 0, .16);
+  --acc-soft: #E3F6FA;
 
-  /* the floating bar stays dark in both themes */
-  --bar: #16171B;
-  --bar2: #26272D;
-  --bar-ink: #F4F4F1;
-  --bar-mute: #A9ACB3;
-  --bar-rec: #FF7B55;
-  --bar-ok: #5BD08F;
-  --bar-acc: #9AA6FF;
-  --bar-warn: #F2B957;
+  /* Status and supporting colours (badges, dots, notices) */
+  --rec: #C62F2F;
+  --rec-soft: #FCE8E8;
+  --ok: #0F7A33;
+  --ok-soft: #E4F6EA;
+  --warn: #8A5A00;
+  --warn-soft: #FFF4DB;
+  --purple: #4E43B8;
+  --purple-soft: #ECEAFA;
 
-  --font: 'Geist', 'Segoe UI', system-ui, sans-serif;
-  --mono: 'Geist Mono', 'Cascadia Mono', Consolas, monospace;
+  --shadow: 0 2px 6px rgba(30, 37, 43, .05), 0 12px 32px rgba(30, 37, 43, .07);
+  --shadow-pop: 0 18px 44px rgba(30, 37, 43, .18);
+
+  /* The edge bubble follows the app's theme */
+  --bar: var(--panel);
+  --bar2: var(--sunk);
+  --bar-ink: var(--ink);
+  --bar-mute: var(--mute);
+  --bar-rec: var(--brand);
+  --bar-ok: var(--ok);
+  --bar-acc: var(--acc);
+  --bar-warn: var(--warn);
+
+  --font: 'Rubik', 'Segoe UI', system-ui, sans-serif;
+  --mono: 'JetBrains Mono', 'Cascadia Mono', Consolas, monospace;
   --r-sm: 6px;
-  --r: 9px;
-  --r-lg: 14px;
+  --r: 10px;
+  --r-lg: 20px;
+  --r-pill: 30px;
   --focus: 0 0 0 2px var(--panel), 0 0 0 4px var(--acc);
   color-scheme: light;
 }
 
 :root[data-theme="dark"] {
-  --bg: #0D0E11;
-  --panel: #15161A;
-  --sunk: #1C1D22;
-  --line: #26282E;
-  --line2: #363940;
-  --ink: #ECECE8;
-  --ink2: #C4C6CB;
-  --mute: #9497A0;
-  --acc: #8E9BFF;
-  --acc-ink: #0D0E11;
-  --acc-soft: #1F2348;
-  --rec: #FF7B55;
-  --rec-soft: #36190F;
-  --ok: #57CF8C;
-  --ok-soft: #12291E;
-  --warn: #EFB451;
-  --warn-soft: #2F2310;
-  --shadow: 0 1px 2px rgba(0, 0, 0, .4);
-  --shadow-pop: 0 18px 40px rgba(0, 0, 0, .55);
-  --bar: #2A2B31;
-  --bar2: #34363C;
-  --bar-mute: #B4B7BE;
+  --bg: #171C20;
+  --panel: #1E252B;
+  --sunk: #252D34;
+  --line: #2F383F;
+  --line2: #3B454D;
+  --ink: #EEF2F4;
+  --ink2: #C7CFD3;
+  --mute: #9CA9AF;
+  --brand: #2CC7E6;
+  --on-brand: #0E1418;
+  --acc: #2CC7E6;
+  --acc-ink: #0E1418;
+  --acc-soft: #12333B;
+  --rec: #FF8A8A;
+  --rec-soft: #3A1C1C;
+  --ok: #5FDB86;
+  --ok-soft: #163222;
+  --warn: #FEBB29;
+  --warn-soft: #3A2E12;
+  --purple: #A9A2F0;
+  --purple-soft: #27234A;
+  --shadow: 0 2px 8px rgba(0, 0, 0, .35);
+  --shadow-pop: 0 18px 44px rgba(0, 0, 0, .55);
   color-scheme: dark;
 }
 

@@ -156,7 +156,7 @@ function Profiles() {
   useEffect(() => { reload(); }, []);
   const use = (id) => call('profile_activate', id).then(() => { app.set({ profile: id }); toast(`Profile: ${id}`); }).catch((e) => toast(e.message, { kind: 'err' }));
   return html`<section class="card" aria-labelledby="h-prof">
-    <div class="card-head"><div><h2 id="h-prof">Profiles</h2><p>One click swaps model, language, prompt and delivery. Also in the floating bar's quick actions.</p></div>
+    <div class="card-head"><div><h2 id="h-prof">Profiles</h2><p>One click swaps model, language, prompt and delivery. Also in the bubble's quick actions.</p></div>
       <button type="button" class="btn" onClick=${() => openProfileEditor(null, reload)}><${Icon} name="plus" />New profile</button></div>
     <div style="padding:0 18px 18px;display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px">
       ${items.filter((p) => !p.disabled).map((p) => html`<article style=${`border:${p.id === active ? '2px solid var(--acc)' : '1px solid var(--line)'};border-radius:12px;padding:${p.id === active ? 13 : 14}px;display:flex;flex-direction:column;gap:8px`}>

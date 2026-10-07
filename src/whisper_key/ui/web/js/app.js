@@ -1,12 +1,13 @@
 // app.js
-// The app window: loads everything from the Python side once, keeps the stores
-// in step with pushed events, and renders the shell (toolbar, sidebar for
-// Simple or Advanced mode, the current screen, toasts and modals).
+// Koli's app window: loads everything from the Python side once, keeps the
+// stores in step with pushed events, and renders the shell (top bar with the
+// Simple or Advanced tabs, the current screen, toasts and modals).
 
 import { Component, html, render, useEffect, useMemo, useState } from '../vendor/preact-htm.module.js';
 import { call, isMock, on } from './api.js';
 import { app, applySettingLocally, getPath, live, navigate, routeFromHash, saveSetting, setting, toast } from './store.js';
 import { Icon, ModalHost, Toasts } from './ui.js';
+import { KoliMark } from './brand.js';
 import { LiveScreen } from './screens/live.js';
 import { HomeScreen } from './screens/home.js';
 import { HistoryScreen } from './screens/history.js';
@@ -19,8 +20,8 @@ import { DiagnosticsScreen } from './screens/diagnostics.js';
 import { WelcomeScreen } from './screens/welcome.js';
 
 const ADVANCED_NAV = [
-  ['live', 'Live', 'wave'], ['history', 'History & insights', 'clock'], ['vocabulary', 'Vocabulary', 'book'],
-  ['commands', 'Commands & AI', 'command'], ['apps', 'Apps & profiles', 'grid'],
+  ['live', 'Live', 'wave'], ['history', 'History', 'clock'], ['vocabulary', 'Vocabulary', 'book'],
+  ['commands', 'Commands', 'command'], ['apps', 'Apps', 'grid'],
   ['settings', 'Settings', 'sliders'], ['diagnostics', 'Diagnostics', 'pulse'],
 ];
 const SIMPLE_NAV = [
@@ -168,7 +169,7 @@ async function boot() {
   window.addEventListener('hashchange', () => app.set({ route: routeFromHash() || app.get().route }));
 }
 
-// ── Shell ─────────────────────────────────────────────────────────────────
+// ── Shell: top bar with tabs ──────────────────────────────────────────────
 
 function TaskChip() {
   const tasks = app.use((s) => s.tasks);
@@ -180,16 +181,34 @@ function TaskChip() {
     <${Icon} name="refresh" size="sm" />${t.label}${pct}${running.length > 1 ? ` (+${running.length - 1})` : ''}</span>`;
 }
 
+// What Koli is doing; clicking it pauses or resumes the hotkeys.
 function StatusChip() {
   const st = app.use((s) => s.state);
-  if (st.paused) return html`<span class="chip warn"><span class="dot"></span>Hotkeys paused</span>`;
-  if (st.state === 'recording') return html`<span class="chip rec"><span class="dot"></span>Recording</span>`;
-  if (st.state === 'processing') return html`<span class="chip acc"><span class="dot"></span>Transcribing</span>`;
-  if (st.state === 'model_loading') return html`<span class="chip warn"><span class="dot"></span>Loading model</span>`;
-  return html`<span class="chip ok"><span class="dot"></span>Ready</span>`;
+  const toggle = () => call('dictation_pause', !st.paused).catch((e) => toast(e.message, { kind: 'err' }));
+  const [cls, text] = st.paused ? ['warn', 'Paused'] : st.state === 'recording' ? ['rec', 'Listening']
+    : st.state === 'processing' ? ['acc', 'Writing'] : st.state === 'model_loading' ? ['warn', 'Loading model'] : ['ok', 'Ready'];
+  return html`<button type="button" class=${`chip ${cls}`} onClick=${toggle}
+    title=${st.paused ? 'Hotkeys are paused. Click to resume.' : 'Click to pause the hotkeys'}
+    aria-label=${`${text}. ${st.paused ? 'Resume hotkeys' : 'Pause hotkeys'}`}><span class="dot"></span>${text}</button>`;
 }
 
-function Search() {
+function ProfileSelect() {
+  const profile = app.use((s) => s.profile);
+  const [profiles, setProfiles] = useState([]);
+  useEffect(() => { call('profiles_list').then((r) => setProfiles(r.profiles.filter((p) => !p.disabled))).catch(() => {}); }, [profile]);
+  if (!profiles.length) return null;
+  return html`<select class="sel" aria-label="Active profile" style="height:38px;border-radius:30px;padding:0 12px" onChange=${(e) => {
+    const name = e.currentTarget.value;
+    call('profile_activate', name).then(() => { app.set({ profile: name }); toast(`Profile: ${name}`); })
+      .catch((err) => toast(err.message, { kind: 'err' }));
+  }}>
+    ${!profile && html`<option>—</option>`}
+    ${profiles.map((p) => html`<option value=${p.id} selected=${p.id === profile}>${p.id.charAt(0).toUpperCase() + p.id.slice(1)}</option>`)}
+  </select>`;
+}
+
+// Ctrl+K: find any setting or screen.
+function SearchPopover() {
   const schema = app.use((s) => s.schema);
   const mode = app.use((s) => getPath(s.settings, 'ui.mode'));
   const [q, setQ] = useState('');
@@ -203,21 +222,23 @@ function Search() {
       ['Self-test', 'diagnostics'], ['Report a bug', 'diagnostics']]
       .filter(([label]) => label.toLowerCase().includes(term)).map(([label, route]) => ({ label, route, where: 'Screen' }));
     const settings = schema.settings
-      .filter((s) => sections[s.section] && `${s.label} ${s.help || ''} ${s.path}`.toLowerCase().includes(term))
+      .filter((s) => sections[s.section] && s.mode !== 'hidden' && `${s.label} ${s.help || ''} ${s.path}`.toLowerCase().includes(term))
       .slice(0, 12).map((s) => ({ label: s.label, where: sections[s.section], route: `settings/${s.section}/${s.path}` }));
     return [...screens, ...settings];
   }, [q, schema]);
+  const close = () => app.set({ searchOpen: false });
   const go = (r) => {
     if (mode !== 'advanced' && !SIMPLE_ROUTES.has(r.route.split('/')[0])) saveSetting('ui.mode', 'advanced', { quiet: true });
     navigate(r.route);
-    setQ('');
+    close();
   };
-  return html`<div class="search">
+  return html`<div class="search-pop" role="dialog" aria-label="Search">
     <label><${Icon} name="search" />
-      <input aria-label="Search settings and screens" placeholder="Search settings, screens…" value=${q}
+      <input autofocus aria-label="Search settings and screens" placeholder="Search settings, screens…" value=${q}
+        ref=${(el) => el && setTimeout(() => el.focus(), 0)}
         onInput=${(e) => setQ(e.currentTarget.value)}
-        onKeyDown=${(e) => { if (e.key === 'Enter' && results[0]) go(results[0]); if (e.key === 'Escape') setQ(''); }} />
-      <span class="kbd">Ctrl K</span></label>
+        onKeyDown=${(e) => { if (e.key === 'Enter' && results[0]) go(results[0]); if (e.key === 'Escape') close(); }} />
+      <button type="button" class="btn ghost icon" aria-label="Close search" onClick=${close}><${Icon} name="x" size="sm" /></button></label>
     ${results.length > 0 && html`<div class="popover search-results" role="listbox">
       ${results.map((r) => html`<button type="button" class="menu-item" onClick=${() => go(r)}>
         <span class="grow">${r.label}</span><span class="muted small">${r.where}</span></button>`)}
@@ -225,64 +246,43 @@ function Search() {
   </div>`;
 }
 
-function Toolbar() {
-  const theme = app.use((s) => getPath(s.settings, 'ui.theme'));
-  const dark = document.documentElement.dataset.theme === 'dark';
-  return html`<header class="toolbar">
-    <div class="brand"><span class="brand-mark"><${Icon} name="wave" size="sm" /></span>Whisper Local</div>
-    <${Search} />
-    <div class="row-flex">
-      <${TaskChip} /><${StatusChip} />
-      <button type="button" class="btn ghost icon" aria-label=${dark ? 'Switch to light mode' : 'Switch to dark mode'}
-        title=${theme === 'system' ? 'Following Windows' : ''}
-        onClick=${() => saveSetting('ui.theme', dark ? 'light' : 'dark', { quiet: true })}>
-        <${Icon} name=${dark ? 'sun' : 'moon'} /></button>
-    </div>
-  </header>`;
-}
-
-function Sidebar({ route }) {
+function TopBar({ route }) {
   const mode = app.use((s) => getPath(s.settings, 'ui.mode')) || 'simple';
-  const schema = app.use((s) => s.schema);
-  const profile = app.use((s) => s.profile);
-  const paused = app.use((s) => s.state.paused);
-  const recordKey = app.use((s) => getPath(s.settings, 'hotkey.recording_hotkey'));
-  const [profiles, setProfiles] = useState([]);
-  useEffect(() => { call('profiles_list').then((r) => setProfiles(r.profiles.filter((p) => !p.disabled))).catch(() => {}); }, [profile]);
+  const theme = app.use((s) => getPath(s.settings, 'ui.theme'));
+  const searchOpen = app.use((s) => s.searchOpen);
+  const dark = document.documentElement.dataset.theme === 'dark';
   const nav = mode === 'advanced' ? ADVANCED_NAV : SIMPLE_NAV;
   const base = route.split('/')[0];
   const switchMode = (m) => {
     saveSetting('ui.mode', m, { quiet: true });
     navigate(m === 'advanced' ? (base === 'simple-settings' ? 'settings' : base === 'home' ? 'live' : base) : (SIMPLE_ROUTES.has(base) ? base : base === 'settings' ? 'simple-settings' : 'home'));
   };
-  return html`<nav class="sidebar" aria-label="Main">
-    ${nav.map(([id, label, icon]) => html`
-      <a class=${'nav-link' + (base === id ? ' on' : '')} href=${`#/${id}`} aria-current=${base === id ? 'page' : undefined}>
-        <${Icon} name=${icon} />${label}</a>
-      ${id === 'settings' && base === 'settings' && schema && html`<div class="nav-sub">
-        ${schema.sections.map((s) => html`<a class=${'nav-link' + (route.split('/')[1] === s.id ? ' on' : '')} href=${`#/settings/${s.id}`}>${s.title}</a>`)}
-      </div>`}`)}
-    <div class="sidebar-foot">
-      ${mode === 'advanced' && html`<div class="card" style="padding:12px;display:flex;flex-direction:column;gap:10px">
-        <label class="stack" style="gap:6px"><span class="eyebrow">Profile</span>
-          <select class="sel" aria-label="Active profile" onChange=${(e) => {
-            const name = e.currentTarget.value;
-            call('profile_activate', name).then(() => { app.set({ profile: name }); toast(`Profile: ${name}`); })
-              .catch((err) => toast(err.message, { kind: 'err' }));
-          }}>
-            ${!profile && html`<option>—</option>`}
-            ${profiles.map((p) => html`<option value=${p.id} selected=${p.id === profile}>${p.id.charAt(0).toUpperCase() + p.id.slice(1)}</option>`)}
-          </select></label>
-        <label class="row-flex" style="justify-content:space-between"><span style="font-size:13px;font-weight:500">Hotkeys active</span>
-          <input type="checkbox" class="sw" checked=${!paused} aria-label="Hotkeys active"
-            onChange=${(e) => call('dictation_pause', !e.currentTarget.checked)} /></label>
-      </div>`}
-      <div class="small muted" style="padding:0 4px">Hold ${recordKey ? recordKey.split('+').map((k) => html`<span class="kbd" style="margin-inline:2px">${k.charAt(0).toUpperCase() + k.slice(1)}</span>`) : ''} anywhere to dictate.</div>
-      <div class="seg" role="radiogroup" aria-label="Interface mode" style="width:100%">
-        ${[['simple', 'Simple'], ['advanced', 'Advanced']].map(([v, t]) => html`<button type="button" role="radio"
-          aria-checked=${mode === v} class=${mode === v ? 'on' : ''} style="flex:1" onClick=${() => switchMode(v)}>${t}</button>`)}
-      </div>
+  return html`<header class="topbar">
+    <div class="brand"><${KoliMark} size=${36} />koli</div>
+    <nav class="tabs" aria-label="Main">
+      ${nav.map(([id, label]) => html`<a class=${'tab' + (base === id ? ' on' : '')} href=${`#/${id}`} aria-current=${base === id ? 'page' : undefined}>${label}</a>`)}
+    </nav>
+    <div class="top-actions">
+      <${TaskChip} /><${StatusChip} />
+      ${mode === 'advanced' && html`<${ProfileSelect} />`}
+      <button type="button" class="btn ghost icon" aria-label="Search (Ctrl K)" title="Search · Ctrl K" onClick=${() => app.set({ searchOpen: !searchOpen })}><${Icon} name="search" /></button>
+      <label class="mode-switch">Advanced <input type="checkbox" class="sw" checked=${mode === 'advanced'} onChange=${(e) => switchMode(e.currentTarget.checked ? 'advanced' : 'simple')} /></label>
+      <button type="button" class="btn ghost icon" aria-label=${dark ? 'Switch to light mode' : 'Switch to dark mode'}
+        title=${theme === 'system' ? 'Following Windows' : ''}
+        onClick=${() => saveSetting('ui.theme', dark ? 'light' : 'dark', { quiet: true })}>
+        <${Icon} name=${dark ? 'sun' : 'moon'} /></button>
     </div>
+    ${searchOpen && html`<${SearchPopover} />`}
+  </header>`;
+}
+
+// Settings sections as a row of tabs under the top bar.
+function SettingsNav({ route }) {
+  const schema = app.use((s) => s.schema);
+  if (!schema) return null;
+  const current = route.split('/')[1];
+  return html`<nav class="subnav" aria-label="Settings sections">
+    ${schema.sections.map((s) => html`<a class=${current === s.id ? 'on' : ''} href=${`#/settings/${s.id}`} aria-current=${current === s.id ? 'page' : undefined}>${s.title}</a>`)}
   </nav>`;
 }
 
@@ -293,23 +293,22 @@ function App() {
     const onKey = (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
-        const input = document.querySelector('.search input');
-        if (input) input.focus();
+        app.set({ searchOpen: true });
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
-  if (!ready) return html`<div class="empty" style="padding-top:30vh">Starting Whisper Local…</div>`;
+  if (!ready) return html`<div class="empty" style="padding-top:30vh">Starting Koli…</div>`;
   const base = route.split('/')[0];
   const Screen = SCREENS[base] || LiveScreen;
   if (base === 'welcome') {
     return html`<div class="app"><div class="content"><${ScreenBoundary} route=${route}><${Screen} /></${ScreenBoundary}></div><${Toasts} /><${ModalHost} /></div>`;
   }
   return html`<div class="app">
-    <${Toolbar} />
+    <${TopBar} route=${route} />
     <div class="body">
-      <${Sidebar} route=${route} />
+      ${base === 'settings' && html`<${SettingsNav} route=${route} />`}
       <main class="content" id="content"><${ScreenBoundary} route=${route}><${Screen} route=${route} /></${ScreenBoundary}></main>
     </div>
     <${Toasts} /><${ModalHost} />
@@ -319,7 +318,7 @@ function App() {
 render(html`<${App} />`, document.getElementById('root'));
 boot().catch((e) => {
   document.getElementById('root').innerHTML = '';
-  render(html`<div class="empty" style="padding-top:20vh">Couldn't connect to Whisper Local: ${e.message}</div>`,
+  render(html`<div class="empty" style="padding-top:20vh">Couldn't connect to Koli: ${e.message}</div>`,
     document.getElementById('root'));
 });
-if (isMock) document.title = 'Whisper Local (mock)';
+if (isMock) document.title = 'Koli (mock)';

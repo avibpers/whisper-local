@@ -105,7 +105,7 @@ export function SimpleSettingsScreen() {
 
     <section class="card" aria-label="App">
       <${Line} title="Start when the computer starts"><${Toggle} checked=${a.startup} label="Start with the computer" onChange=${(v) => set('startup', v)} /></${Line}>
-      <${Line} title="Show the small bar on screen" help="It shows when you're being heard."><${Toggle} checked=${a.bar} label="Show the bar" onChange=${(v) => set('bar', v)} /></${Line}>
+      <${Line} title="Show the Koli bubble" help="A small tab on the edge of the screen that shows when you are being heard."><${Toggle} checked=${a.bar} label="Show the Koli bubble" onChange=${(v) => set('bar', v)} /></${Line}>
       <${Line} title="Dark mode"><${Toggle} checked=${settings.ui.theme === 'dark'} label="Dark mode" onChange=${(v) => saveSetting('ui.theme', v ? 'dark' : 'light', { quiet: true })} /></${Line}>
     </section>
 
