@@ -142,7 +142,7 @@ async function refresh() {
     const data = await call('app_bootstrap', 'main');
     app.set({ settings: data.settings, state: data.state, logs: data.logs, pipeline: data.pipeline,
       tasks: Object.fromEntries(data.tasks.map((t) => [t.id, t])), recent: data.recent,
-      foreground: data.foreground || {}, profile: data.profile, undo: data.undo });
+      foreground: data.foreground || {}, profile: data.profile, undo: data.undo, frame: data.frame || app.get().frame });
     applyTheme();
   } catch (e) { /* the next event will catch up */ }
 }
@@ -155,7 +155,9 @@ async function boot() {
     logs: data.logs || [], pipeline: data.pipeline || [], recent: data.recent || [],
     tasks: Object.fromEntries((data.tasks || []).map((t) => [t.id, t])), foreground: data.foreground || {},
     profile: data.profile, undo: data.undo, dev: data.dev, webview2: data.webview2,
-    frame: data.frame || { custom: false, maximized: false },
+    // The title bar is removed once the page has loaded, which can be after
+    // this reply was built: a frame event that already arrived is newer.
+    frame: app.get().frame || data.frame || { custom: false, maximized: false },
   });
   applyTheme();
   const mode = data.settings.ui && data.settings.ui.mode;
