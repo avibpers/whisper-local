@@ -84,7 +84,7 @@ window with Simple and Advanced modes. Settings apply the moment they change.
 | **Event Bus** | `ui/events.py` | Publish/subscribe for state, levels, pipeline stages, tasks, settings, logs | threading |
 | **Log Stream** | `ui/log_stream.py` | Ring buffer of log records for the Live console | logging |
 | **Background Tasks** | `ui/tasks.py` | Model downloads, engine and microphone swaps, GPU install, with progress | threading |
-| **Floating Bar** | `ui/floating_bar.py` | The level-overlay interface, drawn by `web/bar.html` | - |
+| **Floating Bar** | `ui/floating_bar.py` | The level-overlay interface, drawn by `web/bar.html`; where the bubble goes (positions, dragged spot, followed text field) | - |
 | **Instance Channel** | `ui/instance_ipc.py` | A second launch opens the running window; `--quit` asks it to quit | multiprocessing.connection |
 | **Window Helpers** | `ui/win32.py` | No-focus bar, rounded corners, dark title bar, DPI, work area (Windows) | ctypes |
 | **Settings Schema** | `settings/schema.py` | Label, help, control, section and apply mode for every setting | - |

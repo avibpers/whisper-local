@@ -16,6 +16,8 @@ const bar = createStore({
   settings: null, state: { state: 'idle', mode: 'dictate', paused: false }, flash: null, streaming: '',
   task: null, levels: new Array(16).fill(0), menu: false, hover: false, profile: null,
   sending: null,   // { remaining, total } while an auto-send waits before Enter
+  upright: true,   // the resting tab stands on a side or beside a field; flat at the top or bottom
+  dragging: false,
 });
 
 let flashTimer = null;
@@ -39,6 +41,7 @@ function wire() {
   on('streaming_text', (p) => bar.set({ streaming: p.text }));
   on('bar', (b) => {
     if (b.cmd === 'failure') flash('fail', b.message || "Didn't work");
+    if (b.cmd === 'shape') bar.set({ upright: b.upright });
   });
   on('pipeline', (p) => {
     if (p.stage !== 'delivered') return;
@@ -89,6 +92,7 @@ function wire() {
     node[keys[keys.length - 1]] = p.new;
     bar.set({ settings: { ...s } });
     if (p.path === 'ui.theme') applyTheme(bar.get().settings);
+    if (p.path === 'overlay.rest_color') applyRestColor(bar.get().settings);
   });
   on('profile', (p) => bar.set({ profile: p.active }));
 }
@@ -103,6 +107,14 @@ function applyTheme(settings) {
   document.documentElement.dataset.theme = dark ? 'dark' : 'light';
 }
 media.addEventListener('change', () => applyTheme(bar.get().settings));
+
+// The resting tab's own colour; anything that isn't a colour keeps turquoise.
+function applyRestColor(settings) {
+  const color = ((settings && settings.overlay && settings.overlay.rest_color) || '').trim();
+  const root = document.documentElement.style;
+  if (color && CSS.supports('color', color)) root.setProperty('--rest', color);
+  else root.removeProperty('--rest');
+}
 
 // ── Pieces ────────────────────────────────────────────────────────────────
 
@@ -120,6 +132,55 @@ function Timer() {
 }
 
 const Badge = ({ tone, icon }) => html`<span class=${`badge ${tone}`}><${Icon} name=${icon} /></span>`;
+
+// Where the bubble can sit, laid out as on the screen: [setting, name, row, column].
+const POSITIONS = [
+  ['top-left', 'Top left', 'top', 'left'], ['top-center', 'Top', 'top', 'center'], ['top-right', 'Top right', 'top', 'right'],
+  ['left-edge', 'Left edge', 'mid', 'left'], ['right-edge', 'Right edge', 'mid', 'right'],
+  ['bottom-left', 'Bottom left', 'bottom', 'left'], ['bottom-center', 'Bottom', 'bottom', 'center'], ['bottom-right', 'Bottom right', 'bottom', 'right'],
+];
+
+// A small screen with each spot where the bubble really goes: slim tabs flush
+// with the sides, pills in the top and bottom corners and middles. Hovering a
+// spot names it.
+function PositionPicker({ value, onPick }) {
+  const [hint, setHint] = useState(null);
+  const current = POSITIONS.find(([p]) => p === value);
+  return html`<div class="mi pos-row" style="cursor:default">
+    <span class="pos-label">Where Koli sits<span class="muted">${hint || (current ? current[1] : value)}</span></span>
+    <span class="posgrid" role="radiogroup" aria-label="Where Koli sits" onMouseLeave=${() => setHint(null)}>
+      ${POSITIONS.map(([p, label, row, col]) => html`<button type="button" role="radio" aria-checked=${value === p} aria-label=${label} title=${label}
+        class=${`${row} ${col}${value === p ? ' on' : ''}`} onMouseEnter=${() => setHint(label)} onClick=${() => onPick(p)}></button>`)}</span></div>`;
+}
+
+// Colours for the resting tab: [setting, name, what the swatch shows]. Empty
+// is Koli turquoise, which follows light and dark mode.
+const REST_COLORS = [['', 'Koli turquoise', 'var(--brand)'], ['#7C5CFF', 'Violet'], ['#22C55E', 'Green'],
+  ['#F97316', 'Orange'], ['#EC4899', 'Pink'], ['#1E252B', 'Night'], ['#FFFFFF', 'White']];
+
+// How the tab looks while Koli waits: colour, how solid it is, and whether it
+// follows the text field.
+function RestLook({ overlay, set }) {
+  const color = (overlay.rest_color || '').toLowerCase();
+  const own = color && !REST_COLORS.some(([c]) => c.toLowerCase() === color);
+  const [opacity, setOpacity] = useState(overlay.rest_opacity ?? 100);
+  useEffect(() => setOpacity(overlay.rest_opacity ?? 100), [overlay.rest_opacity]);
+  return html`<div class="mi" style="cursor:default"><span>Colour</span>
+      <span class="swatches" role="radiogroup" aria-label="Resting colour">
+        ${REST_COLORS.map(([c, label, paint]) => html`<button type="button" role="radio" aria-checked=${color === c.toLowerCase()}
+          aria-label=${label} title=${label} class=${'swatch' + (color === c.toLowerCase() ? ' on' : '')}
+          style=${`background:${paint || c}`} onClick=${() => set('overlay.rest_color', c)}></button>`)}
+        <label class=${'swatch any' + (own ? ' on' : '')} title="Any colour" style=${own ? `background:${color}` : ''}>
+          <input type="color" aria-label="Any colour" value=${own ? color : '#15b4d4'}
+            onChange=${(e) => set('overlay.rest_color', e.currentTarget.value)} /></label></span></div>
+    <div class="mi" style="cursor:default"><span>When asleep</span>
+      <input type="range" class="range" min="20" max="100" step="5" value=${opacity} aria-label="Opacity when asleep"
+        onInput=${(e) => setOpacity(Number(e.currentTarget.value))}
+        onChange=${(e) => set('overlay.rest_opacity', Number(e.currentTarget.value))} />
+      <span class="r">${opacity}%</span></div>
+    <label class="mi"><${Badge} tone="acc" icon="pen" />Follow the text field<input type="checkbox" class="sw"
+      checked=${!!overlay.follow_focus} onChange=${(e) => set('overlay.follow_focus', e.currentTarget.checked)} /></label>`;
+}
 
 function Menu() {
   const settings = bar.use((s) => s.settings);
@@ -139,8 +200,6 @@ function Menu() {
   const set = (path, value) => call('settings_set', path, value).catch(() => {});
   const close = () => bar.set({ menu: false });
   const pos = settings.overlay.position;
-  const POS = [['left-edge', 'Left edge'], ['right-edge', 'Right edge'], ['top-left', 'Top left'], ['top-center', 'Top'],
-    ['top-right', 'Top right'], ['bottom-left', 'Bottom left'], ['bottom-center', 'Bottom'], ['bottom-right', 'Bottom right']];
   const lower = settings.audio.lower_volume || {};
   return html`<div class="menu" role="menu" aria-label="Quick actions">
     <div class="mhead"><span class="name"><${KoliMark} size=${30} wave=${false} />koli</span>
@@ -168,9 +227,9 @@ function Menu() {
       ${recent.slice(0, 3).map((r) => html`<button type="button" class="mi" onClick=${() => { call('copy_text', r); flash('ok', 'Copied', {}, 1500); close(); }}>
         <span class="recent" dir="auto">${r}</span></button>`)}`}
     <div class="sep"></div>
-    <div class="mi" style="cursor:default"><span>Where Koli sits</span>
-      <span class="posgrid" role="radiogroup" aria-label="Where Koli sits">
-        ${POS.map(([p, label]) => html`<button type="button" role="radio" aria-checked=${pos === p} aria-label=${label} title=${label} class=${pos === p ? 'on' : ''} onClick=${() => set('overlay.position', p)}></button>`)}</span></div>
+    <${PositionPicker} value=${pos} onPick=${(p) => set('overlay.position', p)} />
+    <${RestLook} overlay=${settings.overlay} set=${set} />
+    <div class="sep"></div>
     <button type="button" class="mi" onClick=${() => call('app_quit')}><${Badge} tone="quiet" icon="x" />Quit Koli</button>
   </div>`;
 }
@@ -183,6 +242,7 @@ function Status() {
   const hover = bar.use((s) => s.hover);
   const settings = bar.use((s) => s.settings);
   const sending = bar.use((s) => s.sending);
+  const upright = bar.use((s) => s.upright);
   const openMenu = () => bar.set({ menu: true });
   if (!settings) return html`<div class="bub rest" aria-label="Koli is starting"></div>`;
   const keys = prettyKeys(settings.hotkey.recording_hotkey).join(' ');
@@ -244,13 +304,67 @@ function Status() {
       <${KoliMark} size=${40} />${settings.hotkey.recording_mode === 'toggle' ? 'Press' : 'Hold'} <span class="keys">${keys}</span>
       <button type="button" class="btn round" aria-label="Quick actions" style="width:34px;height:34px"><${Icon} name="dots" /></button></div>`;
   }
-  return html`<div class="bub rest" role="button" tabindex="0" aria-label="Koli is ready. Open quick actions" onClick=${openMenu}></div>`;
+  // Upright on a side of the screen or beside a field, flat at the top or bottom.
+  return html`<div class=${upright ? 'bub rest' : 'bub rest flat'} role="button" tabindex="0" aria-label="Koli is ready. Open quick actions" onClick=${openMenu}></div>`;
 }
 
-// True while the bubble is the slim resting tab (painted turquoise).
+// True while the bubble is the slim resting tab (painted in its resting colour).
 function isResting(s) {
   return !!s.settings && !s.menu && !s.hover && !s.flash && !s.task && !s.sending && s.state.state !== 'recording'
     && s.state.state !== 'processing' && !s.state.paused;
+}
+
+// ── Dragging ──────────────────────────────────────────────────────────────
+
+let dragSeq = 0;   // numbers every drag message, so the host can drop late ones
+
+// Press on the bubble and drag to move it; a press that doesn't move stays a
+// click. Moves go out once per frame, measured from where the press began.
+function useDrag(enabled) {
+  const drag = useRef(null);
+  const swallowClick = useRef(false);
+  const send = (d, done) => call('bar_drag', ++dragSeq, d.dx, d.dy, done).catch(() => {});
+  const end = () => {
+    const d = drag.current;
+    drag.current = null;
+    if (!d || !d.moving) return;
+    cancelAnimationFrame(d.frame);
+    send(d, true);
+    // A click comes right after the release, if at all (not when the pointer
+    // ended up outside); either way the next tick is a fresh start.
+    swallowClick.current = true;
+    setTimeout(() => { swallowClick.current = false; }, 0);
+    bar.set({ dragging: false });
+  };
+  return {
+    onPointerDown: (e) => {
+      if (!enabled || e.button !== 0 || e.target.closest('button, input, label, select')) return;
+      drag.current = { x: e.screenX, y: e.screenY, dx: 0, dy: 0, moving: false, frame: 0, id: e.pointerId };
+    },
+    onPointerMove: (e) => {
+      const d = drag.current;
+      if (!d) return;
+      d.dx = e.screenX - d.x;
+      d.dy = e.screenY - d.y;
+      if (!d.moving) {
+        if (Math.hypot(d.dx, d.dy) < 4) return;
+        // Captured only now: a plain click keeps its own target.
+        d.moving = true;
+        e.currentTarget.setPointerCapture(d.id);
+        bar.set({ dragging: true });
+      }
+      if (!d.frame) d.frame = requestAnimationFrame(() => { d.frame = 0; if (drag.current === d) send(d, false); });
+    },
+    onPointerUp: end,
+    onPointerCancel: end,
+    // The click that ends a drag must not open the menu.
+    onClickCapture: (e) => {
+      if (!swallowClick.current) return;
+      swallowClick.current = false;
+      e.stopPropagation();
+      e.preventDefault();
+    },
+  };
 }
 
 function Bar() {
@@ -258,16 +372,17 @@ function Bar() {
   const resting = bar.use(isResting);
   const ref = useRef(null);
   const last = useRef('');
+  const drag = useDrag(!menu);
   useEffect(() => { document.documentElement.classList.toggle('rest', resting); }, [resting]);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
     const report = () => {
       const r = el.getBoundingClientRect();
-      const key = `${Math.ceil(r.width)}x${Math.ceil(r.height)}`;
+      const key = `${Math.ceil(r.width)}x${Math.ceil(r.height)}:${resting}`;
       if (key !== last.current) {
         last.current = key;
-        call('bar_resize', Math.ceil(r.width), Math.ceil(r.height)).then((res) => {
+        call('bar_resize', Math.ceil(r.width), Math.ceil(r.height), resting).then((res) => {
           if (res && res.max_height) document.documentElement.style.setProperty('--menu-max', `${res.max_height}px`);
         }).catch(() => {});
       }
@@ -277,8 +392,8 @@ function Bar() {
     ro.observe(el);
     return () => ro.disconnect();
   });
-  return html`<div ref=${ref} style="display:inline-flex"
-      onMouseEnter=${() => bar.set({ hover: true })} onMouseLeave=${() => bar.set({ hover: false })}
+  return html`<div ref=${ref} style="display:inline-flex" ...${drag}
+      onMouseEnter=${() => bar.set({ hover: true })} onMouseLeave=${() => { if (!bar.get().dragging) bar.set({ hover: false }); }}
       onContextMenu=${(e) => { e.preventDefault(); bar.set({ menu: true }); }}
       onKeyDown=${(e) => e.key === 'Escape' && bar.set({ menu: false })}>
     ${menu ? html`<${Menu} />` : html`<${Status} />`}
@@ -289,8 +404,9 @@ async function boot() {
   wire();
   render(html`<${Bar} />`, document.getElementById('root'));
   const data = await call('app_bootstrap', 'bar');
-  bar.set({ settings: data.settings, state: data.state, profile: data.profile });
+  bar.set({ settings: data.settings, state: data.state, profile: data.profile, upright: data.upright !== false });
   applyTheme(data.settings);
+  applyRestColor(data.settings);
   const running = (data.tasks || []).filter((t) => t.status === 'running');
   if (running.length) bar.set({ task: running[running.length - 1] });
 }

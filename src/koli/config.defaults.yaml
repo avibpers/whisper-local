@@ -466,8 +466,19 @@ overlay: # Floating speech-level overlay (Wispr-style bottom-center bar)
     enabled: true
     # Screen position: right-edge | left-edge (flush with the screen side,
     # halfway down), or bottom-center | bottom-right | bottom-left |
-    # top-center | top-right | top-left
+    # top-center | top-right | top-left, or custom (where you dragged it:
+    # press on the bubble and drag)
     position: right-edge
+    # Where you last dropped it (managed by the app; physical pixels)
+    custom_x: null
+    custom_y: null
+    # Move the resting tab to the right end of each text field you click
+    # into. It stays at the last field until you click into another.
+    follow_focus: false
+    # Colour of the resting tab: empty is Koli turquoise, or e.g. "#7C5CFF"
+    rest_color: ''
+    # How solid the resting tab is while Koli waits, 20 to 100 (percent)
+    rest_opacity: 100
     # When true, the overlay is transparent to mouse clicks (you can click
     # through it to apps below). Set to false if you want to interact with
     # the overlay itself.

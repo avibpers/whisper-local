@@ -4002,6 +4002,15 @@ class WebPagesTests(unittest.TestCase):
                     hits.append(f'{path.name}:{n}')
         self.assertEqual(hits, [])
 
+    # The resting tab is 6 px tall. On the text baseline it would sit below the
+    # 6 px window: painted by the page background but never hovered.
+    def test_the_bubble_page_is_top_aligned(self):
+        import re
+        css = (self.WEB / 'css' / 'bar.css').read_text(encoding='utf-8')
+        rule = re.search(r'#root\s*\{([^}]*)\}', css)
+        self.assertIsNotNone(rule)
+        self.assertIn('vertical-align: top', rule.group(1))
+
     def test_pages_only_load_local_files(self):
         import re
         for name in ('index.html', 'bar.html'):
@@ -4243,57 +4252,119 @@ class CustomTitleBarTests(unittest.TestCase):
         self.assertIn('app-region: no-drag', css)
 
 
+class HostMethodCallsTests(unittest.TestCase):
+    # UiHost.run only runs with a real window, so a call to a method that was
+    # renamed away (self._bar_origin once) shows up as the app window failing
+    # to start. Every self.method(...) in these classes must exist, as a method
+    # or as a callback stored on self (self._unsubscribe = ...).
+    def test_every_self_call_names_a_real_method(self):
+        import ast
+        import inspect
+        from koli.ui import bridge, host
+
+        def on_self(node):
+            return isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == 'self'
+        missing = []
+        for module, cls in ((host, host.UiHost), (bridge, bridge.Bridge)):
+            tree = ast.parse(inspect.getsource(module))
+            stored = {t.attr for n in ast.walk(tree) if isinstance(n, ast.Assign) for t in n.targets if on_self(t)}
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call) and on_self(node.func):
+                    if not hasattr(cls, node.func.attr) and node.func.attr not in stored:
+                        missing.append(f'{cls.__name__}.{node.func.attr} (line {node.lineno})')
+        self.assertEqual(missing, [])
+
+
 class BarPlacementTests(unittest.TestCase):
-    def _host(self, work_area, scale, position):
-        import unittest.mock as mock
-        from koli.ui import host as host_mod
-        from koli.ui import win32
-        h = object.__new__(host_mod.UiHost)
-        h.bar_hwnd = 1
-        h.settings = mock.MagicMock()
-        h.settings.get.side_effect = lambda path, default=None: position
-        for name, value in (('work_area', lambda: work_area), ('dpi_scale', lambda hwnd: scale)):
-            patcher = mock.patch.object(win32, name, value)
-            patcher.start()
-            self.addCleanup(patcher.stop)
-        return h
+    # Sizes are physical pixels; the margin from the screen edge is 6 page
+    # pixels, scaled.
+    def _origin(self, area, size, scale, position, custom=None, field=None):
+        from koli.ui.floating_bar import bar_origin
+        return bar_origin(area, size, scale, position, custom=custom, field=field)
 
     # Taskbar on the left: the work area starts after it, and so does the bar.
     def test_left_taskbar_and_150_percent_scaling(self):
-        h = self._host((72, 0, 1920, 1080), 1.5, 'bottom-left')
-        x, y = h._bar_origin(200, 40)
-        self.assertEqual((x, y), (72 + 42, 1080 - 60 - 42))
+        self.assertEqual(self._origin((72, 0, 1920, 1080), (300, 60), 1.5, 'bottom-left'), (72 + 9, 1080 - 60 - 9))
 
     def test_top_taskbar_with_the_bar_at_the_top(self):
-        h = self._host((0, 48, 2560, 1440), 1.0, 'top-center')
-        self.assertEqual(h._bar_origin(200, 40), ((2560 - 200) // 2, 48 + 28))
+        self.assertEqual(self._origin((0, 48, 2560, 1440), (200, 40), 1.0, 'top-center'), ((2560 - 200) // 2, 48 + 6))
 
     # A bar taller than the screen (the quick-actions menu on a small or
     # zoomed display) stays on screen instead of starting above it.
     def test_a_bar_taller_than_the_work_area_stays_on_screen(self):
-        h = self._host((0, 0, 1366, 728), 1.25, 'bottom-right')
-        x, y = h._bar_origin(340, 700)
+        x, y = self._origin((0, 0, 1366, 728), (425, 875), 1.25, 'bottom-right')
         self.assertGreaterEqual(y, 0)
         self.assertGreaterEqual(x, 0)
 
     # Koli's default: a bubble flush with the right edge, halfway down.
     def test_the_bubble_sits_on_the_right_edge(self):
-        h = self._host((0, 0, 2560, 1400), 1.0, 'right-edge')
-        self.assertEqual(h._bar_origin(200, 56), (2560 - 200, (1400 - 56) // 2))
+        self.assertEqual(self._origin((0, 0, 2560, 1400), (200, 56), 1.0, 'right-edge'), (2560 - 200, (1400 - 56) // 2))
 
     def test_the_bubble_can_sit_on_the_left_edge(self):
-        h = self._host((48, 0, 1920, 1080), 1.25, 'left-edge')
-        self.assertEqual(h._bar_origin(200, 56), (48, (1080 - 70) // 2))
+        self.assertEqual(self._origin((48, 0, 1920, 1080), (250, 70), 1.25, 'left-edge'), (48, (1080 - 70) // 2))
 
-    def test_edge_positions_are_settings_choices(self):
+    def test_edge_positions_and_a_dragged_spot_are_settings_choices(self):
         from koli.settings import schema
         choices = [c[0] for c in schema.get('overlay.position').choices]
-        self.assertIn('right-edge', choices)
-        self.assertIn('left-edge', choices)
+        for name in ('right-edge', 'left-edge', 'custom'):
+            self.assertIn(name, choices)
 
     def test_the_bar_height_is_limited_to_what_fits(self):
-        h = self._host((0, 0, 1366, 728), 1.25, 'bottom-right')
-        self.assertEqual(h._max_bar_height(), int((728 - 2 * int(28 * 1.25)) / 1.25))
+        import unittest.mock as mock
+        from koli.ui import host as host_mod
+        from koli.ui import win32
+        h = object.__new__(host_mod.UiHost)
+        h.bar_hwnd = 1
+        with mock.patch.object(win32, 'work_area', lambda point=None: (0, 0, 1366, 728)), \
+                mock.patch.object(win32, 'dpi_scale', lambda hwnd: 1.25):
+            self.assertEqual(h._max_bar_height(), int((728 - 2 * int(6 * 1.25)) / 1.25))
+
+    # ── A spot the user dragged it to ──
+
+    def test_a_dragged_spot_centres_the_bubble_on_it(self):
+        self.assertEqual(self._origin((0, 0, 1920, 1040), (44, 6), 1.0, 'custom', custom=(800, 500)), (778, 497))
+
+    def test_a_spot_on_a_side_keeps_the_bubble_flush_with_it(self):
+        area = (0, 0, 1920, 1040)
+        self.assertEqual(self._origin(area, (6, 44), 1.0, 'custom', custom=(0, 300)), (0, 278))
+        self.assertEqual(self._origin(area, (200, 56), 1.0, 'custom', custom=(1920, 300)), (1720, 272))
+
+    def test_a_growing_bubble_at_a_dragged_spot_stays_on_screen(self):
+        x, y = self._origin((0, 0, 1920, 1040), (600, 56), 1.0, 'custom', custom=(1900, 1035))
+        self.assertEqual((x, y), (1320, 984))
+
+    def test_custom_without_a_spot_falls_back_to_the_bottom_middle(self):
+        self.assertEqual(self._origin((0, 0, 1920, 1040), (44, 6), 1.0, 'custom'), ((1920 - 44) // 2, 1040 - 6 - 6))
+
+    # Dropping near a side sticks to it; anywhere else keeps the centre.
+    def test_where_a_drop_lands(self):
+        from koli.ui.floating_bar import dropped_spot
+        area = (0, 0, 1920, 1040)
+        self.assertEqual(dropped_spot(area, (500, 400, 544, 406), 1.0), (522, 403))
+        self.assertEqual(dropped_spot(area, (10, 400, 54, 406), 1.0), (0, 403))
+        # The right side is its last pixel, so a monitor to the right isn't picked.
+        self.assertEqual(dropped_spot(area, (1880, 400, 1924, 406), 1.0), (1919, 403))
+
+    # ── Following the text field ──
+
+    def test_following_puts_the_tab_at_the_fields_right_end(self):
+        field = (400, 600, 1000, 640)
+        self.assertEqual(self._origin((0, 0, 1920, 1040), (6, 44), 1.0, 'right-edge', field=field), (1006, 598))
+
+    def test_a_field_at_the_screen_edge_keeps_the_tab_inside_its_end(self):
+        field = (1200, 600, 1918, 640)
+        self.assertEqual(self._origin((0, 0, 1920, 1040), (6, 44), 1.0, 'right-edge', field=field), (1906, 598))
+
+    # ── Upright or lying flat ──
+
+    def test_the_tab_stands_upright_on_a_side_and_lies_flat_elsewhere(self):
+        from koli.ui.floating_bar import is_upright
+        area = (0, 0, 1920, 1040)
+        self.assertTrue(is_upright('right-edge', None, area, following=False))
+        self.assertFalse(is_upright('bottom-center', None, area, following=False))
+        self.assertTrue(is_upright('bottom-center', None, area, following=True))
+        self.assertTrue(is_upright('custom', (1920, 300), area, following=False))
+        self.assertFalse(is_upright('custom', (800, 300), area, following=False))
 
 
 class BackgroundChangeFailureTests(unittest.TestCase):

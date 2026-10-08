@@ -77,7 +77,8 @@ ON_OFF_STYLE = [[None, 'From style'], [True, 'On'], [False, 'Off']]
 LOG_LEVELS = [[x, x.title()] for x in ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL')]
 POSITIONS = [['right-edge', 'Right edge'], ['left-edge', 'Left edge'],
              ['top-left', 'Top left'], ['top-center', 'Top'], ['top-right', 'Top right'],
-             ['bottom-left', 'Bottom left'], ['bottom-center', 'Bottom'], ['bottom-right', 'Bottom right']]
+             ['bottom-left', 'Bottom left'], ['bottom-center', 'Bottom'], ['bottom-right', 'Bottom right'],
+             ['custom', 'Where I dragged it']]
 
 _S = Setting
 
@@ -279,7 +280,14 @@ SCHEMA = [
 
     # ── Bubble & sounds ────────────────────────────────────────────────────
     _S('overlay.enabled', 'Show the Koli bubble', 'overlay', 'toggle', mode=SIMPLE),
-    _S('overlay.position', 'Position', 'overlay', 'segmented', choices=POSITIONS),
+    _S('overlay.position', 'Position', 'overlay', 'segmented', choices=POSITIONS,
+       help='Or press on the bubble and drag it anywhere.'),
+    _S('overlay.follow_focus', 'Follow the text field', 'overlay', 'toggle',
+       help='The resting tab moves to the right end of each text field you click into.'),
+    _S('overlay.rest_color', 'Resting colour', 'overlay', 'text',
+       help='Empty is Koli turquoise, or a colour such as #7C5CFF.'),
+    _S('overlay.rest_opacity', 'Resting opacity', 'overlay', 'range', min=20, max=100, step=5, unit='%',
+       help='How solid the tab is while Koli waits. Full as soon as it does something.'),
     _S('overlay.click_through', 'Clicks pass through', 'overlay', 'toggle', apply=NEXT_LAUNCH,
        help='Only used by the classic overlay (--legacy-ui). The new bar is sized to its content.'),
     _S('audio_feedback.enabled', 'Start, stop and cancel sounds', 'overlay', 'toggle', mode=SIMPLE,
@@ -346,6 +354,8 @@ SCHEMA = [
     _S('ui.window.x', 'Window x', 'internal', 'readonly', apply=INTERNAL, mode=HIDDEN, nullable=True),
     _S('ui.window.y', 'Window y', 'internal', 'readonly', apply=INTERNAL, mode=HIDDEN, nullable=True),
     _S('ui.window.maximized', 'Window maximized', 'internal', 'readonly', apply=INTERNAL, mode=HIDDEN),
+    _S('overlay.custom_x', 'Dragged bubble x', 'internal', 'readonly', apply=INTERNAL, mode=HIDDEN, nullable=True),
+    _S('overlay.custom_y', 'Dragged bubble y', 'internal', 'readonly', apply=INTERNAL, mode=HIDDEN, nullable=True),
 ]
 
 BY_PATH = {s.path: s for s in SCHEMA}

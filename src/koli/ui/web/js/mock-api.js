@@ -258,6 +258,8 @@ export function createMock(emit) {
     tasks_list: () => ok(Object.values(tasks)),
     task_result: (id) => ok(tasks[id] || null),
     bar_resize: () => ok({ max_height: Math.max(20, window.innerHeight - 56) }),
+    // Kept on the page so a drag can be checked in the browser.
+    bar_drag: (...args) => { (window.mockDrags = window.mockDrags || []).push(args); return ok(); },
   };
 
   return new Proxy(api, {

@@ -23,7 +23,7 @@ from ..settings.service import SettingsService
 from . import win32
 from .bridge import Bridge
 from .events import get_bus, publish
-from .floating_bar import FallbackToWindow, FloatingBar
+from .floating_bar import EDGE_MARGIN, FallbackToWindow, FloatingBar, bar_origin, dropped_spot, is_upright
 from .tasks import get_task_manager
 
 logger = logging.getLogger(__name__)
@@ -122,7 +122,15 @@ class UiHost:
         self._shutdown_event = None
         self._open_page = open_page
         self._open_at_start = open_page is not None
-        self._bar_size = (14, 48)   # the resting tab, until the page reports its size
+        self._bar_size = (6, 44)    # the resting tab, until the page reports its size
+        self._bar_resting = True    # the page says when it is the resting tab
+        self._bar_upright = None    # last shape told to the page
+        self._bar_thin = None       # last corner style applied
+        self._field_rect = None     # the text field the tab follows (physical px)
+        self._focus_token = 0       # input_watch listener while following
+        self._drag = None           # window rect where a drag began
+        self._drag_seq = 0          # newest drag message handled
+        self._drag_lock = threading.Lock()
         self._last_pipeline = []
         self._state = {'state': 'idle', 'mode': 'dictate', 'paused': False}
         self._listener = None
@@ -213,12 +221,12 @@ class UiHost:
         self.main.window.events.resized += lambda w, h: self._remember_geometry()
         self.main.window.events.moved += lambda x, y: self._remember_geometry()
 
-        bx, by = self._bar_origin(*self._bar_size)
+        bx, by = self._bar_geometry(*self._bar_size)[:2]
         self.bar.window = webview.create_window(
             BAR_TITLE, url=str(WEB_DIR / 'bar.html'), js_api=self.bridge,
             width=self._bar_size[0], height=self._bar_size[1], x=bx, y=by,
             frameless=True, easy_drag=False, resizable=False, on_top=True, focus=False,
-            min_size=(10, 20), shadow=False, background_color='#1E252B' if theme_dark else '#FFFFFF',
+            min_size=(4, 4), shadow=False, background_color='#1E252B' if theme_dark else '#FFFFFF',
             hidden=not self.bar_enabled)
         self.bar.window.events.loaded += lambda: self._on_loaded(self.bar)
 
@@ -260,8 +268,9 @@ class UiHost:
         if channel is self.bar:
             self.bar_hwnd = win32.find_window(BAR_TITLE)
             win32.make_tool_window(self.bar_hwnd)
-            win32.round_corners(self.bar_hwnd)
             self.place_bar()
+            self._apply_bar_opacity()
+            self._apply_follow_focus()
             if not self.bar_enabled:
                 win32.hide(self.bar_hwnd)
             # WebView2 takes focus when a page loads; give it back to whatever
@@ -306,6 +315,10 @@ class UiHost:
             pass
         if self._listener:
             self._listener.stop()
+        if self._focus_token:
+            from ..platform import input_watch
+            input_watch.stop(self._focus_token)
+            self._focus_token = 0
         if self._unsubscribe:
             self._unsubscribe()
         if self.ctx.server is not None:
@@ -400,48 +413,121 @@ class UiHost:
 
     # ── Floating bar ─────────────────────────────────────────────────────────
 
-    def _bar_origin(self, w, h):
-        left, top, right, bottom = win32.work_area()
-        scale = win32.dpi_scale(self.bar_hwnd)
-        pw, ph = int(w * scale), int(h * scale)
-        margin = int(28 * scale)
-        pos = self.settings.get('overlay.position', 'right-edge') or 'right-edge'
-        # Koli's bubble: flush with a side of the screen, halfway down.
-        if pos in ('right-edge', 'left-edge'):
-            x = right - pw if pos == 'right-edge' else left
-            return x, top + (bottom - top - ph) // 2
-        if pos.endswith('left'):
-            x = left + margin
-        elif pos.endswith('right'):
-            x = right - pw - margin
+    def _custom_spot(self):
+        x, y = self.settings.get('overlay.custom_x'), self.settings.get('overlay.custom_y')
+        return (int(x), int(y)) if x is not None and y is not None else None
+
+    # Where the bubble goes for a page size of w x h, its physical size, and
+    # whether the resting tab stands upright there (floating_bar has the rules).
+    def _bar_geometry(self, w, h):
+        scale = win32.dpi_scale(self.bar_hwnd) or 1.0
+        size = (int(w * scale), int(h * scale))
+        position = self.settings.get('overlay.position', 'right-edge') or 'right-edge'
+        custom = self._custom_spot()
+        field = self._field_rect
+        if field:
+            area = win32.work_area(((field[0] + field[2]) // 2, (field[1] + field[3]) // 2))
+        elif position == 'custom' and custom:
+            area = win32.work_area(custom)
         else:
-            x = left + (right - left - pw) // 2
-        y = top + margin if pos.startswith('top') else bottom - ph - margin
-        # Never off screen, even when the bar is bigger than the space left.
-        x = max(left, min(x, right - pw))
-        y = max(top, min(y, bottom - ph))
-        return x, y
+            area = win32.work_area()
+        x, y = bar_origin(area, size, scale, position, custom=custom, field=field)
+        return x, y, size, is_upright(position, custom, area, following=bool(field))
 
     # The tallest the bar may be (in page pixels) and still fit on screen with
     # its margins; the quick-actions menu scrolls past that.
     def _max_bar_height(self):
         left, top, right, bottom = win32.work_area()
         scale = win32.dpi_scale(self.bar_hwnd) or 1.0
-        return max(20, int((bottom - top - 2 * int(28 * scale)) / scale))
+        return max(20, int((bottom - top - 2 * int(EDGE_MARGIN * scale)) / scale))
 
-    def resize_bar(self, width, height):
-        width = max(10, min(width, 640))
-        height = max(20, min(height, self._max_bar_height()))
+    # The page reports its size after every change, and whether it is the
+    # resting tab (which may be see-through).
+    def resize_bar(self, width, height, resting=None):
+        width = max(4, min(width, 640))
+        height = max(4, min(height, self._max_bar_height()))
         self._bar_size = (width, height)
+        if resting is not None and bool(resting) != self._bar_resting:
+            self._bar_resting = bool(resting)
+            self._apply_bar_opacity()
         self.place_bar()
 
     def place_bar(self):
+        if not self.bar_hwnd or self._drag is not None:
+            return
+        w, h = self._bar_size
+        x, y, size, upright = self._bar_geometry(w, h)
+        win32.place(self.bar_hwnd, x, y, *size)
+        # Small corners on the thin tab, the normal ones on the bubble.
+        thin = min(w, h) < 16
+        if thin != self._bar_thin:
+            self._bar_thin = thin
+            win32.round_corners(self.bar_hwnd, thin=thin)
+        if upright != self._bar_upright:
+            self._bar_upright = upright
+            publish('bar', {'cmd': 'shape', 'upright': upright})
+
+    # The resting tab takes the chosen opacity; anything else is solid.
+    def _apply_bar_opacity(self):
+        percent = self.settings.get('overlay.rest_opacity', 100) or 100
+        win32.set_opacity(self.bar_hwnd, percent / 100.0 if self._bar_resting else 1.0)
+
+    # ── Following the text field ──
+
+    def _apply_follow_focus(self):
+        from ..platform import input_watch
+        want = bool(self.settings.get('overlay.follow_focus', False))
+        if want and not self._focus_token:
+            self._focus_token = input_watch.start(self._on_field_focus, None)
+        elif not want and self._focus_token:
+            input_watch.stop(self._focus_token)
+            self._focus_token = 0
+            self._field_rect = None
+            self.place_bar()
+
+    # A text field in another app got focus: the tab moves to its right end.
+    # Anything else (a button, the desktop) leaves it at the last field.
+    def _on_field_focus(self, info):
+        rect = info.get('rect')
+        if not info.get('editable') or info.get('password') or not rect or rect[2] <= rect[0]:
+            return
+        if info.get('root_pid') == os.getpid():
+            return
+        self._field_rect = tuple(rect)
+        self.place_bar()
+
+    # ── Dragging ──
+
+    # The page numbers its drag messages; pywebview delivers each on its own
+    # thread, so an older one arriving late is dropped. dx, dy are page pixels
+    # from where the press began. The drop is remembered as the bubble's spot,
+    # and a followed field gives way until the next one gets focus.
+    def drag_bar(self, seq, dx, dy, done):
         if not self.bar_hwnd:
             return
-        scale = win32.dpi_scale(self.bar_hwnd)
-        w, h = self._bar_size
-        x, y = self._bar_origin(w, h)
-        win32.place(self.bar_hwnd, x, y, int(w * scale), int(h * scale))
+        with self._drag_lock:
+            if seq <= self._drag_seq:
+                return
+            self._drag_seq = seq
+            if self._drag is None:
+                self._drag = win32.window_rect(self.bar_hwnd)
+            scale = win32.dpi_scale(self.bar_hwnd) or 1.0
+            left, top, right, bottom = self._drag
+            x, y = left + int(dx * scale), top + int(dy * scale)
+            w, h = right - left, bottom - top
+            win32.place(self.bar_hwnd, x, y, w, h)
+            if not done:
+                return
+            self._drag = None
+        area = win32.work_area((x + w // 2, y + h // 2))
+        cx, cy = dropped_spot(area, (x, y, x + w, y + h), scale)
+        self._field_rect = None
+        cm = self.ctx.config_manager
+        cm.set_path('overlay.custom_x', cx, save=False)
+        cm.set_path('overlay.custom_y', cy)
+        logger.info(f"Bubble moved to {cx}, {cy}")
+        if self.settings.set('overlay.position', 'custom', source='app').get('applied') == 'unchanged':
+            self.place_bar()
 
     def set_bar_enabled(self, enabled):
         self.bar_enabled = bool(enabled)
@@ -542,6 +628,9 @@ class UiHost:
             data['webview2'] = win32.webview2_version()
             data['undo'] = self.settings.can_undo()
             data['frame'] = self.frame_state()
+        else:
+            # The resting tab's shape where the bubble sits now.
+            data['upright'] = self._bar_geometry(*self._bar_size)[3]
         return data
 
     # ── Event pump ───────────────────────────────────────────────────────────
@@ -564,8 +653,12 @@ class UiHost:
         path = payload.get('path', '')
         if path == 'ui.theme' and self.main_hwnd:
             win32.set_dark_title_bar(self.main_hwnd, self._is_dark())
-        if path in ('overlay.position',):
+        if path == 'overlay.position':
             self.place_bar()
+        elif path == 'overlay.follow_focus':
+            self._apply_follow_focus()
+        elif path == 'overlay.rest_opacity':
+            self._apply_bar_opacity()
         tray = self.ctx.system_tray
         if tray is not None and path.split('.')[0] in ('whisper', 'clipboard', 'audio', 'overlay'):
             try:

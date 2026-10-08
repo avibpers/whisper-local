@@ -103,10 +103,16 @@ class Bridge:
         self._host.toggle_maximize()
 
     @_api
-    def bar_resize(self, width, height):
-        self._host.resize_bar(int(width), int(height))
+    def bar_resize(self, width, height, resting=None):
+        self._host.resize_bar(int(width), int(height), resting)
         # The page caps its menu at this height and scrolls the rest.
         return {'max_height': self._host._max_bar_height()}
+
+    # Press-and-drag on the bubble: numbered moves in page pixels from where
+    # the press began; the last one (done) remembers the spot.
+    @_api
+    def bar_drag(self, seq, dx, dy, done=False):
+        self._host.drag_bar(int(seq), float(dx), float(dy), bool(done))
 
     @_api
     def pick_folder(self, title='Choose a folder'):

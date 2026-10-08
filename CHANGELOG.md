@@ -5,6 +5,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 ## [Unreleased]
 
 ### Added
+- **A slimmer bubble you can place anywhere.** While Koli waits it is a thin
+  line close to the screen edge, upright on a side and flat at the top or
+  bottom. Press on the bubble and drag it anywhere; it stays where you drop
+  it, and sticks to a side when dropped near one. The bubble's menu now has
+  a colour for the resting line, how solid it is while asleep, and "Follow the
+  text field", which moves it to the right end of each text field you click
+  into. "Where Koli sits" is drawn as a small screen with every spot in its
+  real place.
 - **App rules for some windows of a program.** A rule can now require words in
   the window title as well as the program, e.g. Chrome only when the title
   contains "WhatsApp" (`window_title: ["WhatsApp"]` in `app_rules.yaml`). The
@@ -53,6 +61,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
   "take over" behaviour of a second launch.
 
 ### Fixed
+- **Minimize, maximize and close were sometimes missing** from the app
+  window's top bar: the page's startup data could arrive after, and overwrite,
+  the message that the window draws its own title bar.
+- **The microphone list on the welcome screen** was stretched 240 px tall.
 - **The app could crash after a recording that ended on its own** (silence
   stop or the maximum length) on a machine with two graphics cards. The
   Whisper engine keeps per-thread GPU state and tears it down when a thread

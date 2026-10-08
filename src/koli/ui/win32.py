@@ -148,13 +148,33 @@ def dpi_scale(hwnd: int = 0) -> float:
         return 1.0
 
 
-# Work area (screen minus taskbar) of the primary monitor, physical pixels.
-def work_area() -> tuple:
+# Work area (screen minus taskbar) in physical pixels: of the primary monitor,
+# or with `point` given, of the monitor nearest to that (x, y).
+def work_area(point=None) -> tuple:
     if not IS_WINDOWS:
         return (0, 0, 1920, 1080)
     rect = ctypes.wintypes.RECT()
+    if point is not None:
+        class MONITORINFO(ctypes.Structure):
+            _fields_ = [('cbSize', ctypes.c_ulong), ('rcMonitor', wt.RECT), ('rcWork', wt.RECT),
+                        ('dwFlags', ctypes.c_ulong)]
+        MONITOR_DEFAULTTONEAREST = 2
+        monitor = user32.MonitorFromPoint(wt.POINT(int(point[0]), int(point[1])), MONITOR_DEFAULTTONEAREST)
+        info = MONITORINFO(cbSize=ctypes.sizeof(MONITORINFO))
+        if monitor and user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+            r = info.rcWork
+            return r.left, r.top, r.right, r.bottom
     SPI_GETWORKAREA = 0x0030
     user32.SystemParametersInfoW(SPI_GETWORKAREA, 0, ctypes.byref(rect), 0)
+    return rect.left, rect.top, rect.right, rect.bottom
+
+
+# A window's rectangle on screen (left, top, right, bottom), physical pixels.
+def window_rect(hwnd: int) -> tuple:
+    if not IS_WINDOWS or not hwnd:
+        return (0, 0, 0, 0)
+    rect = ctypes.wintypes.RECT()
+    user32.GetWindowRect(hwnd, ctypes.byref(rect))
     return rect.left, rect.top, rect.right, rect.bottom
 
 
@@ -172,15 +192,36 @@ def set_dark_title_bar(hwnd: int, dark: bool):
         logger.debug(f"Title bar theme not applied: {e}")
 
 
-# Rounded corners for the bar on Windows 11 (no-op elsewhere).
-def round_corners(hwnd: int):
+# Rounded corners for the bar on Windows 11 (no-op elsewhere). The thin
+# resting tab gets the small rounding and no border: the normal rounding is
+# never drawn smaller than about 16 px, so on a 6 px window it leaves a ghost
+# outline around the tab.
+def round_corners(hwnd: int, thin: bool = False):
     if not IS_WINDOWS or not hwnd:
         return
     try:
-        pref = ctypes.c_int(2)   # DWMWCP_ROUND
-        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 33, ctypes.byref(pref), ctypes.sizeof(pref))
+        dwm = ctypes.windll.dwmapi
+        pref = ctypes.c_int(3 if thin else 2)   # DWMWCP_ROUNDSMALL / DWMWCP_ROUND
+        dwm.DwmSetWindowAttribute(hwnd, 33, ctypes.byref(pref), ctypes.sizeof(pref))
+        border = ctypes.c_uint(0xFFFFFFFE if thin else 0xFFFFFFFF)   # DWMWA_COLOR_NONE / _DEFAULT
+        dwm.DwmSetWindowAttribute(hwnd, 34, ctypes.byref(border), ctypes.sizeof(border))
     except Exception:
         pass
+
+
+# See-through window: 1.0 is solid. The window becomes a layered one the first
+# time it is made see-through, and stays layered (WebView2 keeps painting).
+def set_opacity(hwnd: int, opacity: float):
+    if not IS_WINDOWS or not hwnd:
+        return
+    WS_EX_LAYERED, LWA_ALPHA = 0x00080000, 0x2
+    style = user32.GetWindowLongPtrW(hwnd, GWL_EXSTYLE)
+    if not style & WS_EX_LAYERED:
+        if opacity >= 1.0:
+            return
+        user32.SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style | WS_EX_LAYERED)
+    alpha = max(0, min(255, int(round(opacity * 255))))
+    user32.SetLayeredWindowAttributes(hwnd, 0, alpha, LWA_ALPHA)
 
 
 # ── Custom title bar ─────────────────────────────────────────────────────────

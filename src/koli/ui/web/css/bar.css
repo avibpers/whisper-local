@@ -5,16 +5,20 @@
    tab while resting. Corners come from Windows 11. */
 
 html, body { margin: 0; background: var(--bar); color: var(--bar-ink); overflow: hidden; }
-html.rest, html.rest body { background: var(--brand); }
+html.rest, html.rest body { background: var(--rest, var(--brand)); }
 body { font: 500 13.5px/1.35 var(--font); -webkit-font-smoothing: antialiased; -webkit-user-select: none; user-select: none; cursor: default; }
 * { box-sizing: border-box; }
 button { font: inherit; color: inherit; }
 .ic { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
-#root { display: inline-flex; }
+/* Top-aligned: on the text baseline a 6 px tab would sit below the 6 px window,
+   painted by the page background but out of reach of the mouse. */
+#root { display: inline-flex; vertical-align: top; }
 
 /* The bubble row: badge or mark, what is happening, then its buttons. */
 .bub { display: inline-flex; align-items: center; gap: 10px; height: 56px; padding: 0 12px 0 8px; white-space: nowrap; max-width: 620px; }
-.bub.rest { width: 14px; height: 48px; padding: 0; cursor: pointer; }
+/* The resting tab: a thin line, upright on a side, flat at the top or bottom. */
+.bub.rest { width: 6px; height: 44px; padding: 0; cursor: pointer; }
+.bub.rest.flat { width: 44px; height: 6px; }
 .brand-mark { width: 40px; height: 40px; border-radius: 50%; background: var(--brand); color: var(--on-brand); display: grid; place-items: center; flex: none; }
 .badge { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; flex: none; }
 .badge.acc { background: var(--acc-soft); color: var(--acc); }
@@ -55,7 +59,34 @@ button { font: inherit; color: inherit; }
 .sw::after { content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(30, 37, 43, .3); transition: transform .15s; }
 .sw:checked { background: var(--brand); }
 .sw:checked::after { transform: translateX(16px); }
-.posgrid { display: grid; grid-template-columns: repeat(4, 18px); gap: 4px; margin-inline-start: auto; }
-.posgrid button { height: 12px; border-radius: 3px; border: 0; background: var(--line); cursor: pointer; padding: 0; }
-.posgrid button.on { background: var(--brand); }
+/* "Where Koli sits": a small screen on a stand, each spot drawn where the
+   bubble really goes. Positions are physical, so the grid stays LTR. */
+.pos-row { padding-block: 8px 14px; }
+.pos-label { display: flex; flex-direction: column; gap: 2px; }
+.pos-label .muted { font-size: 12px; }
+.posgrid { position: relative; margin-inline-start: auto; width: 100px; height: 62px; display: grid; grid-template: repeat(3, 1fr) / repeat(3, 1fr);
+  direction: ltr; border: 2px solid var(--line2); border-radius: 7px; background: var(--sunk); }
+.posgrid::after { content: ""; position: absolute; left: 50%; bottom: -8px; width: 26px; height: 5px; transform: translateX(-50%); border-radius: 0 0 4px 4px; background: var(--line2); }
+.posgrid button { display: flex; padding: 3px; border: 0; border-radius: 4px; background: transparent; cursor: pointer; }
+.posgrid button::before { content: ""; width: 18px; height: 7px; border-radius: 4px; background: var(--line2); transition: background .12s; }
+.posgrid button:hover::before { background: var(--mute); }
+.posgrid button.on::before { background: var(--brand); }
+.posgrid button:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
+.posgrid .top { grid-row: 1; align-items: flex-start; }
+.posgrid .mid { grid-row: 2; align-items: center; padding-inline: 0; }
+.posgrid .bottom { grid-row: 3; align-items: flex-end; }
+.posgrid .left { grid-column: 1; justify-content: flex-start; }
+.posgrid .center { grid-column: 2; justify-content: center; }
+.posgrid .right { grid-column: 3; justify-content: flex-end; }
+/* The edge spots are the resting tab: slim, upright, flush with the side. */
+.posgrid .mid::before { width: 5px; height: 18px; }
+.posgrid .mid.left::before { border-radius: 0 3px 3px 0; }
+.posgrid .mid.right::before { border-radius: 3px 0 0 3px; }
+/* The resting tab's colour and how solid it is while asleep. */
+.swatches { display: flex; gap: 5px; margin-inline-start: auto; }
+.swatch { position: relative; width: 20px; height: 20px; padding: 0; border-radius: 50%; border: 1px solid var(--line2); cursor: pointer; }
+.swatch.on { box-shadow: 0 0 0 2px var(--bar), 0 0 0 4px var(--ink2); }
+.swatch.any { background: conic-gradient(#f43f5e, #f59e0b, #22c55e, #06b6d4, #7c5cff, #f43f5e); overflow: hidden; }
+.swatch.any input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; border: 0; padding: 0; }
+.range { flex: 1; min-width: 0; margin-inline-start: auto; accent-color: var(--brand); }
 .recent { color: var(--ink2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
