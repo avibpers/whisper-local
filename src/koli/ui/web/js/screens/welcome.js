@@ -47,7 +47,7 @@ export function WelcomeScreen() {
       ${current === 'microphone' && html`<div class="stack">
         <h1 style="margin:0;font-size:24px">Check your microphone</h1>
         <p class="muted" style="margin:0">Press Test and say something. The bars should move.</p>
-        <${MicSelect} /><${MicTest} big=${true} /></div>`}
+        <div class="row-flex"><${MicSelect} /></div><${MicTest} big=${true} /></div>`}
 
       ${current === 'gpu' && html`<div class="stack">
         <h1 style="margin:0;font-size:24px">Use your graphics card?</h1>
