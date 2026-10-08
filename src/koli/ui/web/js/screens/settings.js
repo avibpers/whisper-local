@@ -3,10 +3,13 @@
 // sections, each saved the moment it changes. Custom editors cover what a
 // single control can't: the models table, GPU setup, voice-cue table, your
 // own writing styles, start on login, backups, the local API, reset and
-// uninstall. A search result scrolls to its row and highlights it.
+// uninstall. The search box at the top filters every section as you type
+// (Ctrl+F jumps to it, Esc clears it); a Ctrl+K result scrolls to its row and
+// highlights it.
 
-import { html, useEffect, useState } from '../../vendor/preact-htm.module.js';
+import { html, useEffect, useRef, useState } from '../../vendor/preact-htm.module.js';
 import { call } from '../api.js';
+import { matchesTerms, searchTerms, settingHaystack } from '../search.js';
 import { app, confirmModal, fmtBytes, navigate, openModal, closeModal, promptModal, saveSetting, toast, undo, useSetting } from '../store.js';
 import { Icon, Select, Toggle } from '../ui.js';
 import { BgBadge, MicTest, SettingRow, settingsBySection, TaskProgress, useRunningTasks } from './shared.js';
@@ -225,8 +228,30 @@ function SystemExtras() {
 
 // ── Sections ──────────────────────────────────────────────────────────────
 
-function SectionCard({ section, schema, highlight }) {
-  const rows = settingsBySection(schema, section.id);
+// ── Search ───────────────────────────────────────────────────────────────
+// The custom blocks aren't schema settings, so each gets the words it can be
+// found by. Keyed by section, in the order the section shows them.
+const SECTION_EXTRAS = {
+  general: { autostart: 'Start on login autostart startup Windows' },
+  audio: { mic: 'Check your microphone level test mic' },
+  hotkeys: { transforms: 'Transform shortcuts polish prompt engineer keys' },
+  privacy: { privacy: 'Transcript history delete clear export privacy' },
+  system: { system: 'Local API address server settings backup export import model offline computer reset all uninstall' },
+};
+
+// What a section shows for these search terms: its matching schema rows and
+// which of its custom blocks match. No terms: everything.
+function sectionMatches(schema, section, terms) {
+  const rows = settingsBySection(schema, section.id).filter((s) => matchesTerms(settingHaystack(s, section.title), terms));
+  const extras = new Set(Object.entries(SECTION_EXTRAS[section.id] || {})
+    .filter(([, words]) => matchesTerms(`${words} ${section.title}`, terms)).map(([id]) => id));
+  return { rows, extras, count: rows.length + extras.size };
+}
+
+function SectionCard({ section, schema, highlight, terms }) {
+  const filtering = terms.length > 0;
+  const { rows, extras, count } = sectionMatches(schema, section, terms);
+  if (filtering && count === 0) return null;
   const groups = [];
   for (const s of rows) {
     const g = s.group || '';
@@ -250,14 +275,14 @@ function SectionCard({ section, schema, highlight }) {
   };
   return html`<section class="card" id=${'sec-' + section.id} aria-labelledby=${'h-' + section.id} style="scroll-margin-top:16px">
     <div class="card-head"><div><h2 id=${'h-' + section.id}>${section.title}</h2><p>${section.desc}</p></div>
-      <button type="button" class="btn ghost sm" onClick=${resetSection}>Reset section</button></div>
-    ${section.id === 'general' && html`<${Autostart} />`}
-    ${section.id === 'audio' && html`<div class="srow"><div class="slabel"><b>Check your microphone</b><small>Shows the level while you talk.</small></div><div class="sctl"><${MicTest} /></div></div>`}
+      ${!filtering && html`<button type="button" class="btn ghost sm" onClick=${resetSection}>Reset section</button>`}</div>
+    ${extras.has('autostart') && html`<${Autostart} />`}
+    ${extras.has('mic') && html`<div class="srow"><div class="slabel"><b>Check your microphone</b><small>Shows the level while you talk.</small></div><div class="sctl"><${MicTest} /></div></div>`}
     ${groups.map((g) => html`${g.name && html`<div class="subhead"><div class="eyebrow">${g.name}</div></div>`}${g.items.map(renderRow)}`)}
-    ${section.id === 'hotkeys' && html`<div class="srow"><div class="slabel"><b>Transform shortcuts</b><small>Polish, Prompt engineer and the rest have their own keys.</small></div>
+    ${extras.has('transforms') && html`<div class="srow"><div class="slabel"><b>Transform shortcuts</b><small>Polish, Prompt engineer and the rest have their own keys.</small></div>
       <div class="sctl"><a class="btn" href="#/commands">Edit in Commands & AI</a></div></div>`}
-    ${section.id === 'privacy' && html`<${PrivacyExtras} />`}
-    ${section.id === 'system' && html`<${SystemExtras} />`}
+    ${extras.has('privacy') && html`<${PrivacyExtras} />`}
+    ${extras.has('system') && html`<${SystemExtras} />`}
   </section>`;
 }
 
@@ -265,18 +290,54 @@ export function SettingsScreen({ route }) {
   const schema = app.use((s) => s.schema);
   const canUndo = app.use((s) => s.undo);
   const [, sectionId, highlight] = (route || '').split('/');
+  const [query, setQuery] = useState('');
+  const searchRef = useRef(null);
+  const terms = searchTerms(query);
+  const filtering = terms.length > 0;
+
+  // Picking a section tab or a Ctrl+K result clears the search first, so the
+  // target is on the page; the scroll waits for that render.
   useEffect(() => {
-    const target = highlight ? document.getElementById('s-' + highlight) : sectionId ? document.getElementById('sec-' + sectionId) : null;
-    if (target) target.scrollIntoView({ block: highlight ? 'center' : 'start' });
+    setQuery('');
+    const timer = setTimeout(() => {
+      const target = highlight ? document.getElementById('s-' + highlight) : sectionId ? document.getElementById('sec-' + sectionId) : null;
+      if (target) target.scrollIntoView({ block: highlight ? 'center' : 'start' });
+    }, 0);
+    return () => clearTimeout(timer);
   }, [sectionId, highlight]);
+
+  // Ctrl+F: the search box.
+  useEffect(() => {
+    const onKey = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f' && searchRef.current) {
+        e.preventDefault();
+        searchRef.current.focus();
+        searchRef.current.select();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
   if (!schema) return null;
+  const count = filtering ? schema.sections.reduce((n, sec) => n + sectionMatches(schema, sec, terms).count, 0) : 0;
+  const clear = () => { setQuery(''); if (searchRef.current) searchRef.current.focus(); };
   return html`<div class="page">
     <div class="page-head">
       <div><h1 class="page-title">Settings</h1><p class="page-sub">Every change saves the moment you make it. There is no Save button.</p></div>
       ${canUndo && html`<button type="button" class="btn" onClick=${undo}>Undo last change</button>`}
     </div>
-    <div class="notice warn"><${Icon} name="refresh" /><span>Settings marked <b>Applies in background</b> need part of the app to reload. That happens behind the scenes: dictation keeps working on the old setting and switches over when ready.</span></div>
-    ${schema.sections.map((sec) => html`<${SectionCard} key=${sec.id} section=${sec} schema=${schema} highlight=${highlight} />`)}
+    <label class="search-field settings-search">
+      <${Icon} name="search" />
+      <input ref=${searchRef} aria-label="Search settings" placeholder="Search settings (Ctrl F)" value=${query}
+        onInput=${(e) => setQuery(e.currentTarget.value)}
+        onKeyDown=${(e) => { if (e.key === 'Escape') { if (query) { e.preventDefault(); setQuery(''); } else e.currentTarget.blur(); } }} />
+      ${filtering && html`<span class="small muted" aria-live="polite">${count === 1 ? '1 setting' : `${count} settings`}</span>
+        <button type="button" class="btn ghost icon" aria-label="Clear search" onClick=${clear}><${Icon} name="x" size="sm" /></button>`}
+    </label>
+    ${!filtering && html`<div class="notice warn"><${Icon} name="refresh" /><span>Settings marked <b>Applies in background</b> need part of the app to reload. That happens behind the scenes: dictation keeps working on the old setting and switches over when ready.</span></div>`}
+    ${filtering && count === 0 && html`<div class="empty">No settings match “${query.trim()}”. Ctrl K also finds screens.</div>`}
+    ${schema.sections.map((sec) => html`<${SectionCard} key=${sec.id} section=${sec} schema=${schema} highlight=${highlight} terms=${terms} />`)}
   </div>`;
 }
 

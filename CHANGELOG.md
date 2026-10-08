@@ -5,6 +5,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 ## [Unreleased]
 
 ### Added
+- **Search on the Settings page** (Advanced mode). Type to see only the settings that
+  match, across every section, and change them right there. Ctrl+F jumps to the
+  box, Esc clears it.
 - **Start listening when a text field gets focus** (Windows). Turn it on in
   Settings and click into any text field to dictate, no hotkey. It stays
   quiet if you say nothing for 5 seconds, stops and pastes after a pause once

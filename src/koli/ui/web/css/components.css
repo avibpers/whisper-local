@@ -137,6 +137,15 @@ button.chip { border: 0; cursor: pointer; }
 .inp.num { width: 96px; text-align: end; }
 .inp.err { border-color: var(--rec); }
 textarea.inp { height: auto; padding: 8px 10px; resize: vertical; line-height: 1.5; width: 100%; }
+/* An in-page search box: magnifier, input, then optional count and clear. */
+.search-field {
+  display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 6px 0 10px; flex-wrap: nowrap;
+  border: 1px solid var(--line2); border-radius: var(--r); background: var(--panel); color: var(--mute);
+}
+.search-field:focus-within { box-shadow: var(--focus); }
+.search-field input { flex: 1; min-width: 0; border: 0; background: transparent; outline: none; color: var(--ink); font-size: 13px; }
+.search-field input:focus-visible { box-shadow: none; }   /* the whole field shows the focus */
+.settings-search { position: sticky; top: 0; z-index: 4; height: 44px; margin: 4px 0 16px; box-shadow: var(--shadow); }
 .seg { display: inline-flex; background: var(--sunk); border-radius: var(--r-pill); padding: 4px; gap: 2px; flex-wrap: wrap; }
 .seg button { border: 0; background: transparent; padding: 7px 14px; border-radius: var(--r-pill); font-size: 13px; color: var(--ink2); cursor: pointer; white-space: nowrap; }
 .seg button.on { background: var(--panel); color: var(--ink); font-weight: 500; box-shadow: 0 1px 4px rgba(30,37,43,.12); }
