@@ -146,6 +146,17 @@ class Bridge:
     def dictation_cancel(self):
         self._sm.cancel_active_recording()
 
+    # The bubble's buttons while an auto-send counts down before Enter.
+    @_api
+    def auto_send_cancel(self):
+        ds = self._sm.clipboard_manager.delayed_send
+        return bool(ds and ds.cancel('you pressed Cancel'))
+
+    @_api
+    def auto_send_now(self):
+        ds = self._sm.clipboard_manager.delayed_send
+        return bool(ds and ds.send_now())
+
     @_api
     def dictation_pause(self, paused):
         listener = getattr(self._sm, '_hotkey_listener_ref', None)

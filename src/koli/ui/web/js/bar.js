@@ -2,8 +2,9 @@
 // Koli's edge bubble: a slim turquoise tab while idle, and a short status
 // while something happens — talking (with your wave and live text), writing,
 // done, copy-only, nothing heard, command, rephrase, paused, background task,
-// no text field. Click (or right-click) opens quick actions. After every
-// change the page reports its size so the window fits it exactly.
+// no text field, and the countdown before an auto-send presses Enter. Click
+// (or right-click) opens quick actions. After every change the page reports
+// its size so the window fits it exactly.
 
 import { html, render, useEffect, useLayoutEffect, useRef, useState } from '../vendor/preact-htm.module.js';
 import { call, on } from './api.js';
@@ -14,6 +15,7 @@ import { KoliMark } from './brand.js';
 const bar = createStore({
   settings: null, state: { state: 'idle', mode: 'dictate', paused: false }, flash: null, streaming: '',
   task: null, levels: new Array(16).fill(0), menu: false, hover: false, profile: null,
+  sending: null,   // { remaining, total } while an auto-send waits before Enter
 });
 
 let flashTimer = null;
@@ -50,8 +52,20 @@ function wire() {
       failed: ['fail', "Couldn't paste"],
       empty: ['warn', 'Nothing to type'],
     };
+    if (p.send_pending) return;   // the countdown takes over; its end says what happened
     const [kind, message] = map[p.outcome] || ['ok', 'Done'];
     flash(kind, message, { outcome: p.outcome, text: p.text }, p.outcome === 'pasted' ? 2400 : 4500);
+  });
+  on('auto_send', (a) => {
+    if (a.state === 'counting') {
+      bar.set({ sending: { remaining: a.remaining, total: a.total }, flash: null });
+      return;
+    }
+    bar.set({ sending: null });
+    if (a.state === 'sent') flash('ok', 'Sent', {}, 1800);
+    else if (a.state === 'not_sent') flash('warn', `Not sent · ${a.reason}`, {}, 4000);
+    else if (a.state === 'failed') flash('fail', "Couldn't press Enter", {}, 4000);
+    else flash('info', `Not sent · ${a.reason}`, {}, 3000);
   });
   on('notify', (n) => {
     if (!n || n.kind === 'fallback') return;
@@ -168,6 +182,7 @@ function Status() {
   const streaming = bar.use((s) => s.streaming);
   const hover = bar.use((s) => s.hover);
   const settings = bar.use((s) => s.settings);
+  const sending = bar.use((s) => s.sending);
   const openMenu = () => bar.set({ menu: true });
   if (!settings) return html`<div class="bub rest" aria-label="Koli is starting"></div>`;
   const keys = prettyKeys(settings.hotkey.recording_hotkey).join(' ');
@@ -191,6 +206,18 @@ function Status() {
   }
   if (st.state === 'processing') {
     return html`<div class="bub" style="padding-inline-end:16px"><${Badge} tone="acc" icon="pen" />Writing it down · <${Timer} /></div>`;
+  }
+  // The text is pasted; Enter waits so it can be read. The bubble never takes
+  // focus, so these buttons leave the keyboard in the chat.
+  if (sending) {
+    const pct = Math.round((sending.remaining / sending.total) * 100);
+    return html`<div class="bub">
+      <span class="badge acc" aria-hidden="true"><b>${sending.remaining}</b></span>
+      <span class="text" role="status">Sending in ${sending.remaining}s</span>
+      <span class="prog"><span style=${`width:${pct}%`}></span></span>
+      <button type="button" class="btn" title="Esc or typing also stops it" onClick=${() => call('auto_send_cancel')}>Cancel</button>
+      <button type="button" class="btn pri" onClick=${() => call('auto_send_now')}>Send now</button>
+    </div>`;
   }
   if (fl) {
     const look = { ok: ['ok', 'check'], fail: ['warn', 'alert'], warn: ['warn', 'alert'], acc: ['acc', 'copy'], info: ['acc', 'check'] }[fl.kind] || ['ok', 'check'];
@@ -222,7 +249,7 @@ function Status() {
 
 // True while the bubble is the slim resting tab (painted turquoise).
 function isResting(s) {
-  return !!s.settings && !s.menu && !s.hover && !s.flash && !s.task && s.state.state !== 'recording'
+  return !!s.settings && !s.menu && !s.hover && !s.flash && !s.task && !s.sending && s.state.state !== 'recording'
     && s.state.state !== 'processing' && !s.state.paused;
 }
 

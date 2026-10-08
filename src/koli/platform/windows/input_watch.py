@@ -1,9 +1,10 @@
 # platform/windows/input_watch.py
-# Reports two things to auto_dictation.py: "a text field got focus" and "the
-# user is typing". A hook thread pumps Windows messages for a focus WinEvent
-# hook and a low-level keyboard hook; a worker thread asks UI Automation what
-# the focused element is (never from inside the hook callback, which Windows
-# forbids) and calls back. Nothing here knows about Koli state.
+# Reports two things to its listeners (auto_dictation.py, delayed_send.py): "a
+# text field got focus" and "the user is typing". A hook thread pumps Windows
+# messages for a focus WinEvent hook and a low-level keyboard hook; a worker
+# thread asks UI Automation what the focused element is (never from inside the
+# hook callback, which Windows forbids) and calls back. One set of hooks serves
+# every listener. Nothing here knows about Koli state.
 # macOS mirror: platform/macos/input_watch.py (no-op for now).
 import ctypes
 import ctypes.wintypes as wt
@@ -196,9 +197,13 @@ def _foreground_exe() -> str:
 
 # ── The watcher ──────────────────────────────────────────────────────────────
 class _Watcher:
-    def __init__(self, on_focus: Callable[[dict], None], on_typing: Callable[[], None]):
+    # `wants_focus` says whether any listener cares about focus; when none does
+    # (only the delayed send is listening), the UI Automation probe is skipped.
+    def __init__(self, on_focus: Callable[[dict], None], on_typing: Callable[..., None],
+                 wants_focus: Callable[[], bool]):
         self.on_focus = on_focus
         self.on_typing = on_typing
+        self.wants_focus = wants_focus
         self._events: "queue.Queue" = queue.Queue()
         self._hook_thread: Optional[threading.Thread] = None
         self._worker: Optional[threading.Thread] = None
@@ -310,6 +315,8 @@ class _Watcher:
                     hwnd = later[1]
             if quit_seen:
                 break
+            if not self.wants_focus():
+                continue
             info = probe.focused(hwnd)
             if not info['editable']:
                 logger.debug(f"Auto-dictation: focus in {info['exe'] or '?'} is not a text field ({info['why']})")
@@ -322,28 +329,54 @@ class _Watcher:
             logger.debug(f"Auto-dictation callback failed: {e}")
 
 
+# ── Listeners ────────────────────────────────────────────────────────────────
 _watcher: Optional[_Watcher] = None
+_listeners: dict = {}          # token -> (on_focus or None, on_typing or None)
+_next_token = 1
 _lock = threading.Lock()
 
 
-# Platform contract: start(on_focus, on_typing) -> bool, stop(), is_running().
-# `on_typing` gets a short description of the key ("key 0x41"), so the console
-# can say which key ended a recording when it was not what the user expected.
-def start(on_focus: Callable[[dict], None], on_typing: Callable[..., None]) -> bool:
-    global _watcher
+def _dispatch_focus(info: dict) -> None:
+    for on_focus, _ in list(_listeners.values()):
+        if on_focus is not None:
+            on_focus(info)
+
+
+def _dispatch_typing(key: str = '') -> None:
+    for _, on_typing in list(_listeners.values()):
+        if on_typing is not None:
+            on_typing(key)
+
+
+def _wants_focus() -> bool:
+    return any(on_focus is not None for on_focus, _ in list(_listeners.values()))
+
+
+# Platform contract: start(on_focus, on_typing) -> token (0 on failure),
+# stop(token), is_running(). Either callback may be None. `on_typing` gets a
+# short description of the key ("key 0x41"), so the console can say which key
+# ended a recording when it was not what the user expected. The hooks run
+# while at least one listener is registered.
+def start(on_focus: Optional[Callable[[dict], None]], on_typing: Optional[Callable[..., None]]) -> int:
+    global _watcher, _next_token
     with _lock:
-        if _watcher is not None:
-            return True
-        watcher = _Watcher(on_focus, on_typing)
-        ok = watcher.start()
-        if ok:
+        if _watcher is None:
+            watcher = _Watcher(_dispatch_focus, _dispatch_typing, _wants_focus)
+            if not watcher.start():
+                return 0
             _watcher = watcher
-        return ok
+        token = _next_token
+        _next_token += 1
+        _listeners[token] = (on_focus, on_typing)
+        return token
 
 
-def stop() -> None:
+def stop(token: int = 0) -> None:
     global _watcher
     with _lock:
+        _listeners.pop(token, None)
+        if _listeners:
+            return
         watcher, _watcher = _watcher, None
     if watcher is not None:
         watcher.stop()

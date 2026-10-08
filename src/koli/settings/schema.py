@@ -200,6 +200,11 @@ SCHEMA = [
     _S('clipboard.delivery_method', 'Method', 'delivery', 'segmented',
        choices=[['paste', 'Paste'], ['type', 'Type']],
        help='Paste is fastest. Type injects characters one by one and never touches the clipboard (Windows).'),
+    _S('clipboard.auto_send_delay', 'Wait before sending', 'delivery', 'number', min=0, max=30, step=1,
+       unit='seconds', help='In apps set to auto-send (Slack, WhatsApp and other chats), wait this long after '
+                            'the text is pasted before Koli presses Enter, so you can read it. Esc, Cancel on '
+                            'the bubble, typing, a new dictation or switching windows stop it. The send key and '
+                            'your own Enter always send at once. 0 = no wait. Profiles can set their own.'),
     _S('clipboard.paste_hotkey', 'Paste shortcut', 'delivery', 'hotkey', group='Paste',
        help='Use Ctrl Shift V for plain-text paste, Shift Insert for terminals.'),
     _S('clipboard.paste_pre_paste_delay', 'Wait before pasting', 'delivery', 'number', group='Paste',

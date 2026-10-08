@@ -264,17 +264,48 @@ class StateManager:
         if self.level_overlay:
             self.level_overlay.hide()
     
+    # Esc: cancels the recording, or, with none running, a send that is
+    # waiting to press Enter.
     def cancel_recording_hotkey_pressed(self) -> bool:
         current_state = self.get_current_state()
-        
+
         if current_state == "recording":
-            print("🎤 Recording cancelled!")            
+            print("🎤 Recording cancelled!")
             self.cancel_active_recording()
             return True
-        else:
+        return self._cancel_pending_send('Esc')
+
+    # Whether this dictation ends with Enter, and whether that Enter may wait
+    # (clipboard.auto_send_delay). Only the automatic kind waits: an app
+    # rule's auto-send. The send key is a deliberate "send it", so it sends at
+    # once, and a rule saying auto_send: false wins over everything.
+    @staticmethod
+    def _auto_send_plan(use_auto_enter: bool, rule) -> tuple:
+        auto_enter, may_wait = bool(use_auto_enter), False
+        if rule:
+            if rule.get('auto_send') is True:
+                may_wait = not use_auto_enter
+                auto_enter = True
+            elif rule.get('auto_send') is False:
+                auto_enter = False
+        return auto_enter, may_wait
+
+    # A send waiting to press Enter is stopped by anything that starts a new
+    # message, so two messages never get mixed. Hands-free restarts don't call
+    # this (they go straight to _begin_recording).
+    def _cancel_pending_send(self, reason: str) -> bool:
+        cb = getattr(self, 'clipboard_manager', None)
+        ds = getattr(cb, 'delayed_send', None) if cb is not None else None
+        if ds is None:
             return False
-    
+        try:
+            return bool(ds.cancel(reason))
+        except Exception as e:
+            self.logger.debug(f"Pending send not cancelled: {e}")
+            return False
+
     def start_recording(self):
+        self._cancel_pending_send('you started a new dictation')
         if not self.can_start_recording():
             current_state = self.get_current_state()
             if self.is_processing:
@@ -296,6 +327,7 @@ class StateManager:
         self._publish_state(self.get_current_state())
 
     def start_rephrase_recording(self):
+        self._cancel_pending_send('you started a new dictation')
         if not self.can_start_recording():
             return
         import time
@@ -336,6 +368,7 @@ class StateManager:
                 self.level_overlay.show_recording()
 
     def start_command_recording(self):
+        self._cancel_pending_send('you started a new dictation')
         if not self.can_start_recording():
             return
 
@@ -397,6 +430,8 @@ class StateManager:
     def begin_auto_recording(self) -> bool:
         if not self.can_start_recording() or self.is_paused:
             return False
+        # Focus moved to a field: a waiting Enter would land there instead.
+        self._cancel_pending_send('a text field got focus')
         self._begin_recording(auto_started=True)
         return self._auto_started
 
@@ -497,7 +532,7 @@ class StateManager:
             self.logger.warning("Streaming delivery had a failed segment; some words may be missing")
             self.system_tray.notify("Some dictated words may not have typed — please review.")
 
-        if use_auto_enter:
+        if use_auto_enter:   # the send key: always at once
             self.clipboard_manager.send_enter_key()
 
         self.last_transcription = text
@@ -790,13 +825,9 @@ class StateManager:
                     self.level_overlay.flash_success()
                 return
 
-            effective_auto_enter = use_auto_enter
+            effective_auto_enter, send_may_wait = self._auto_send_plan(use_auto_enter, rule)
             effective_auto_paste = None
             if rule:
-                if rule.get('auto_send') is True:
-                    effective_auto_enter = True
-                elif rule.get('auto_send') is False:
-                    effective_auto_enter = False
                 if 'auto_paste' in rule:
                     effective_auto_paste = bool(rule['auto_paste'])
 
@@ -814,7 +845,8 @@ class StateManager:
             try:
                 # A phrase gets a trailing space so the next one does not glue to it.
                 success = self.clipboard_manager.deliver_transcription(
-                    transcribed_text + ' ' if phrase else transcribed_text, effective_auto_enter
+                    transcribed_text + ' ' if phrase else transcribed_text, effective_auto_enter,
+                    allow_delay=send_may_wait,
                 )
             finally:
                 if previous_auto_paste is not None:
@@ -825,7 +857,11 @@ class StateManager:
                 'delivered', mode=mode,
                 outcome=('pasted' if delivered_paste else 'copied') if success else 'failed',
                 raw=heard_text, text=transcribed_text, rule=rule_id, app=fg_now.get('exe', ''),
-                method=self.clipboard_manager.delivery_method, auto_enter=bool(effective_auto_enter and success),
+                method=self.clipboard_manager.delivery_method,
+                # A send still counting down hasn't pressed Enter yet; the
+                # bubble follows it through the 'auto_send' events.
+                auto_enter=bool(effective_auto_enter and success and not self.clipboard_manager.send_is_pending()),
+                send_pending=bool(effective_auto_enter and success and self.clipboard_manager.send_is_pending()),
                 duration=round(duration, 2))
             self.logger.info(f"Delivered{' phrase' if phrase else ''}: {'pasted' if delivered_paste else 'copied'}" if success else "Delivery failed")
             if success:

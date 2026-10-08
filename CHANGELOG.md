@@ -5,6 +5,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 ## [Unreleased]
 
 ### Added
+- **Wait before sending.** In apps set to auto-send (Slack, WhatsApp and
+  other chats), Koli can wait before it presses Enter (Settings → Delivery →
+  Wait before sending, or per profile, e.g.
+  `{"clipboard": {"auto_send_delay": 5}}`). The text is pasted at once; the
+  bubble counts down with Cancel and Send now. Esc, typing, a new dictation
+  or switching windows stop the send. The send key and your own Enter still
+  send at once.
 - **Start listening when a text field gets focus** (Windows). Turn it on in
   Settings and click into any text field to dictate, no hotkey. It stays
   quiet if you say nothing for 5 seconds, stops and pastes after a pause once

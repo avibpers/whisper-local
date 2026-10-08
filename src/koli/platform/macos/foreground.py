@@ -16,6 +16,7 @@ def get_foreground_app() -> dict:
             'exe': (app.bundleIdentifier() or '').lower(),
             'path': str(app.bundleURL().path()) if app.bundleURL() else '',
             'title': app.localizedName() or '',
+            'pid': int(app.processIdentifier()),
         }
     except Exception as e:
         logger.debug(f"Foreground app probe failed: {e}")
