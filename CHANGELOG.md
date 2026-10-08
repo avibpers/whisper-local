@@ -5,6 +5,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 ## [Unreleased]
 
 ### Added
+- **App rules for some windows of a program.** A rule can now require words in
+  the window title as well as the program, e.g. Chrome only when the title
+  contains "WhatsApp" (`window_title: ["WhatsApp"]` in `app_rules.yaml`). The
+  rule editor shows the last window's title in parts; click one to add it.
 - **Wait before sending.** In apps set to auto-send (Slack, WhatsApp and
   other chats), Koli can wait before it presses Enter (Settings → Delivery →
   Wait before sending, or per profile, e.g.

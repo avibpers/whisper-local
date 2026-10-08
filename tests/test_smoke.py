@@ -3520,10 +3520,9 @@ class LayeredDefaultsTests(unittest.TestCase):
         self.assertEqual([r for r in rules if not r.get('id')], [],
                          'it should have become an override, not a rule of its own')
         import koli.app_rules as ar
-        matcher = ar.AppRules._matches
-        self.assertFalse(any(matcher(None, r, 'discord.exe', '') for r in rules),
+        self.assertFalse(any(ar.rule_matches(r, 'discord.exe', '') for r in rules),
                          'discord was removed from the list but still matches')
-        self.assertTrue(any(matcher(None, r, 'slack.exe', '') for r in rules))
+        self.assertTrue(any(ar.rule_matches(r, 'slack.exe', '') for r in rules))
 
     def test_broken_user_yaml_is_never_overwritten(self):
         # A typo in their file must not read as "no entries" and trigger the
@@ -3921,6 +3920,52 @@ class LayeredWriteApiTests(unittest.TestCase):
         dm.set_entry_disabled(self.defaults, self.user, 'rules', '', 'terminals', False)
         terminals = [v for v in self._view() if v['id'] == 'terminals'][0]
         self.assertFalse(terminals['disabled'])
+
+
+class AppRuleWindowTitleTests(unittest.TestCase):
+    # A rule can name a program and also require words in its window title,
+    # so "Chrome, but only on WhatsApp Web" is one rule. Without a title
+    # condition a rule matches as before.
+    CHROME_WHATSAPP = {'match': ['chrome.exe'], 'window_title': ['WhatsApp']}
+
+    def test_the_title_narrows_a_program_rule(self):
+        from koli.app_rules import rule_matches
+        self.assertTrue(rule_matches(self.CHROME_WHATSAPP, 'chrome.exe', '(2) WhatsApp - Google Chrome'))
+        self.assertFalse(rule_matches(self.CHROME_WHATSAPP, 'chrome.exe', 'Inbox - Gmail - Google Chrome'),
+                         'any Chrome window matched, the title was ignored')
+        self.assertFalse(rule_matches(self.CHROME_WHATSAPP, 'msedge.exe', 'WhatsApp - Microsoft Edge'),
+                         'the right title in another program matched')
+
+    def test_any_of_several_titles_will_do(self):
+        from koli.app_rules import rule_matches
+        rule = {'match': ['chrome.exe'], 'window_title': ['WhatsApp', 'Telegram']}
+        self.assertTrue(rule_matches(rule, 'chrome.exe', 'Telegram Web - Google Chrome'))
+
+    def test_without_a_title_any_window_of_the_program_matches(self):
+        from koli.app_rules import rule_matches
+        self.assertTrue(rule_matches({'match': ['chrome.exe']}, 'chrome.exe', 'Anything at all'))
+        self.assertTrue(rule_matches({'match': 'chrome.exe', 'window_title': []}, 'chrome.exe', ''))
+
+    def test_saving_keeps_a_clean_title_list(self):
+        import tempfile
+        import unittest.mock as mock
+        from koli.services import rules as svc
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        with mock.patch.object(svc, '_rules_path', return_value=Path(tmp.name) / 'app_rules.yaml'):
+            rule_id = svc.save_rule({'match': ['chrome.exe'], 'window_title': [' WhatsApp ', '', 'Telegram']})
+            saved = [r for r in svc.list_rules() if r['id'] == rule_id][0]['entry']
+            self.assertEqual(list(saved['window_title']), ['WhatsApp', 'Telegram'])
+            svc.save_rule({'match': ['chrome.exe'], 'window_title': []}, rule_id)
+            saved = [r for r in svc.list_rules() if r['id'] == rule_id][0]['entry']
+            self.assertNotIn('window_title', saved, 'an empty title list should leave the rule unrestricted')
+
+    # The "matching now" badge on the Apps screen must agree with delivery.
+    def test_matching_now_respects_the_title(self):
+        from koli.services.rules import matching_rule
+        items = [{'id': 'my-chrome', 'disabled': False, 'entry': self.CHROME_WHATSAPP}]
+        self.assertIsNone(matching_rule(items, 'chrome.exe', 'Gmail - Google Chrome'))
+        self.assertEqual(matching_rule(items, 'chrome.exe', 'WhatsApp - Google Chrome'), 'my-chrome')
 
 
 class BridgeEnvelopeTests(unittest.TestCase):

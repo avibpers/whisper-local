@@ -30,7 +30,10 @@
 # postprocess config; everything else is inherited.
 #
 # Browser apps (Gmail, Slack in Chrome, ...) can only be matched by window
-# title, e.g. match: ["Gmail"].
+# title, e.g. match: ["Gmail"]. To narrow a program to some of its windows,
+# add window_title: the title must also contain one of its strings, e.g.
+#   match: ["chrome.exe"]
+#   window_title: ["WhatsApp", "Telegram"]
 #
 # Rules are matched top-down; first match wins. Your own rules are matched
 # before all of these, so they always win.

@@ -29,6 +29,11 @@ USER_FILE_HEADER = """\
 #     - match: ["obsidian.exe"]
 #       style: casual
 #
+#     # one program, but only when its window title contains a word
+#     - match: ["chrome.exe"]
+#       window_title: ["WhatsApp"]
+#       auto_send: true
+#
 #     # change a shipped rule, naming its id and only the keys you want different
 #     - id: chat-apps
 #       auto_send: false
@@ -72,6 +77,31 @@ def effective_postprocess_config(postprocess_cfg: dict, rule=None) -> dict:
     cfg.update(resolve_style(cfg.pop('style', None), cfg))
     cfg.update(formatting_overrides(rule, cfg))
     return cfg
+
+
+def _as_list(value) -> list:
+    if isinstance(value, str):
+        return [value]
+    return list(value or [])
+
+
+def _contains_any(patterns, text: str) -> bool:
+    return any(p and p in text for p in (str(p).lower() for p in patterns))
+
+
+# Whether a rule applies to a window. Each `match` string may appear in the
+# program name or the window title, as before. An optional `window_title` list
+# narrows that further: the title must also contain one of its strings, so
+# "chrome.exe" + ["WhatsApp"] means Chrome, but only on WhatsApp Web. Delivery,
+# auto-dictation and the Apps screen's "matching now" badge all ask this one
+# function, so they can't disagree.
+def rule_matches(rule: dict, exe: str, title: str) -> bool:
+    exe, title = (exe or '').lower(), (title or '').lower()
+    patterns = _as_list(rule.get('match'))
+    if not (_contains_any(patterns, exe) or _contains_any(patterns, title)):
+        return False
+    required_titles = _as_list(rule.get('window_title'))
+    return not required_titles or _contains_any(required_titles, title)
 
 
 # What identified a rule before ids existed: the set of strings it matches on.
@@ -142,23 +172,10 @@ class AppRules:
         info = foreground.get_foreground_app()
         if not info:
             return None
-        exe = info.get('exe', '').lower()
-        title = info.get('title', '').lower()
+        return self.match_for(info.get('exe', ''), info.get('title', ''))
+
+    # The first rule that applies to this window, or None.
+    def match_for(self, exe: str, title: str) -> Optional[dict]:
         if not exe and not title:
             return None
-        for rule in self.rules:
-            if self._matches(rule, exe, title):
-                return rule
-        return None
-
-    def _matches(self, rule: dict, exe: str, title: str) -> bool:
-        patterns = rule.get('match')
-        if isinstance(patterns, str):
-            patterns = [patterns]
-        if not patterns:
-            return False
-        for pattern in patterns:
-            p = str(pattern).lower()
-            if p and (p in exe or p in title):
-                return True
-        return False
+        return next((rule for rule in self.rules if rule_matches(rule, exe, title)), None)
