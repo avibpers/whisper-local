@@ -21,6 +21,8 @@ function setPath(obj, path, value) {
 
 const RECENT = ['Thanks, I will send the report by Thursday.', 'שלום, אני אגיע מחר בבוקר.', 'Let us move the meeting to 3 pm.'];
 const APPS = ['slack.exe', 'chrome.exe', 'code.exe', 'outlook.exe', 'WINWORD.EXE'];
+const APP_TITLES = ['general (Channel) - Acme - Slack', '(2) WhatsApp - Google Chrome', 'app_rules.py - Koli - Visual Studio Code',
+  'Inbox - dana@example.com - Outlook', 'Notes.docx - Word'];
 
 function history(n) {
   const out = [];
@@ -105,7 +107,10 @@ export function createMock(emit) {
     setState({ state: 'idle' });
   }
 
-  setInterval(() => emit('foreground', { exe: APPS[Math.floor(Date.now() / 5000) % APPS.length], title: 'Some window', rule: null }), 2500);
+  setInterval(() => {
+    const i = Math.floor(Date.now() / 5000) % APPS.length;
+    emit('foreground', { exe: APPS[i], title: APP_TITLES[i], rule: null });
+  }, 2500);
   setInterval(fakeDictation, 12000);
   setInterval(() => { if (state.state === 'idle') emit('level', { level: Math.random() * 0.004, peak: 0 }); }, 200);
 
@@ -232,7 +237,7 @@ export function createMock(emit) {
     },
     transforms_list: () => ok(data.transforms),
     transform_apply: () => ok(false),
-    rules_list: () => ok({ rules: data.rules, foreground: { exe: 'windowsterminal.exe', title: 'Terminal' }, matching: 'terminals' }),
+    rules_list: () => ok({ rules: data.rules, foreground: { exe: 'chrome.exe', title: 'Inbox (3) - Gmail - Google Chrome' }, matching: null }),
     profiles_list: () => ok({ active: profile, profiles: data.profiles }),
     profile_activate: (id) => { profile = id; emit('profile', { active: id }); emit('notify', { message: `Profile: ${id}` }); return ok(id); },
 

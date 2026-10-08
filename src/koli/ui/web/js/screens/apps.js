@@ -17,6 +17,7 @@ const LANGS = [[null, 'Default'], ['auto', 'Auto-detect'], ['en', 'English'], ['
 
 function summary(e) {
   const bits = [];
+  if (e.window_title && e.window_title.length) bits.push(`title: ${e.window_title.join(' or ')}`);
   if (e.suppress) bits.push('Never deliver');
   if (e.auto_paste === false) bits.push('Copy only');
   if (e.auto_send === true) bits.push('Auto-send');
@@ -28,20 +29,39 @@ function summary(e) {
   return bits.join(' · ') || 'No changes';
 }
 
-function RuleEditor({ item, onSaved, onDeleted }) {
+// A window title cut at its usual separators, so "Inbox (3) - Gmail - Google
+// Chrome" offers "Inbox (3)", "Gmail" and "Google Chrome" as one-click picks.
+function titleParts(title) {
+  const parts = (title || '').split(/\s+[-–—|·]\s+/).map((p) => p.trim()).filter(Boolean);
+  return [...new Set(parts)];
+}
+
+function RuleEditor({ item, foreground, onSaved, onDeleted }) {
   const [e, setE] = useState({ ...item.entry });
   useEffect(() => setE({ ...item.entry }), [item]);
   const set = (k, v) => setE((cur) => { const n = { ...cur }; if (v === null || v === undefined || v === '') delete n[k]; else n[k] = v; return n; });
   const save = () => call('rule_save', e, item.isNew ? null : item.id).then((id) => { toast('Rule saved'); onSaved(id); }).catch((err) => toast(err.message, { kind: 'err' }));
   const pasteMode = e.auto_paste === false ? false : e.auto_paste === true ? true : null;
+  const titles = e.window_title || [];
+  const setTitles = (v) => set('window_title', v.length ? v : null);
+  const lastTitleParts = titleParts(foreground && foreground.title);
   const Row = ({ label, children }) => html`<div class="row-flex" style="justify-content:space-between;padding:10px 0;border-top:1px solid var(--line)"><span>${label}</span>${children}</div>`;
   return html`<div style="padding:14px 18px 18px" aria-label="Rule editor">
     <div class="row-flex" style="justify-content:space-between;margin-bottom:8px">
       <input class="inp" style="font-weight:600;width:240px" aria-label="Rule name" value=${e.name || item.id} placeholder="Rule name" onInput=${(ev) => set('name', ev.currentTarget.value)} />
       ${item.origin && html`<span class="chip">${item.origin === 'yours' ? 'Yours' : 'Shipped · your edits are kept on update'}</span>`}</div>
     <div style="padding:10px 0;border-top:1px solid var(--line)"><div style="font-weight:500">Applies to</div>
-      <div class="small muted" style="margin-bottom:6px">Program name or window title. Browser apps match by title.</div>
+      <div class="small muted" style="margin-bottom:6px">Program name or window title. To limit a program to some of its windows, add a title below.</div>
       <${TagInput} values=${e.match || []} label="Programs and titles" onChange=${(v) => set('match', v)} /></div>
+    <div style="padding:10px 0;border-top:1px solid var(--line)"><div style="font-weight:500">Only when the window title contains</div>
+      <div class="small muted" style="margin-bottom:6px">Optional. Any one of these is enough. Leave it empty for every window.</div>
+      <${TagInput} values=${titles} label="Window title words" placeholder="e.g. WhatsApp" onChange=${setTitles} />
+      ${lastTitleParts.length > 0 && html`<div class="row-flex small" style="margin-top:8px" aria-label="Parts of the last window's title">
+        <span class="muted">Last window${foreground.exe ? ` (${foreground.exe})` : ''}:</span>
+        ${lastTitleParts.map((part) => html`<button type="button" class="btn sm" dir="auto" title=${`Add "${part}"`}
+          style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+          disabled=${titles.some((t) => t.toLowerCase() === part.toLowerCase())}
+          onClick=${() => setTitles([...titles, part])}><${Icon} name="plus" size="sm" />${part}</button>`)}</div>`}</div>
     <div class="eyebrow" style="margin-top:10px">Delivery</div>
     <${Row} label="Press Enter after pasting"><${Segmented} label="Auto-send" value=${e.auto_send ?? null} options=${TRI} onChange=${(v) => set('auto_send', v)} /></${Row}>
     <${Row} label="Paste at cursor"><${Segmented} label="Paste" value=${pasteMode} options=${[[null, 'Default'], [true, 'Paste'], [false, 'Copy only']]} onChange=${(v) => set('auto_paste', v)} /></${Row}>
@@ -90,7 +110,7 @@ function Rules() {
   };
   return html`<section class="card" aria-labelledby="h-rules">
     <div class="card-head"><div><h2 id="h-rules">App rules</h2><p>Checked top to bottom when you finish speaking. The first match wins. Your own rules come before the shipped ones.</p></div>
-      <div class="row-flex">${(fg.exe || (data.foreground || {}).exe) && html`<span class="chip">Last app: ${fg.exe || data.foreground.exe}</span>`}
+      <div class="row-flex">${(fg.exe || (data.foreground || {}).exe) && html`<span class="chip" title=${fg.exe ? fg.title : data.foreground.title}>Last app: ${fg.exe || data.foreground.exe}</span>`}
         <button type="button" class="btn" onClick=${forThisApp}>Rule for that app</button>
         <button type="button" class="btn" onClick=${() => setSel({ id: 'new', isNew: true, origin: null, entry: { match: [] } })}><${Icon} name="plus" />New rule</button></div></div>
     <div style="display:flex;flex-wrap:wrap;border-top:1px solid var(--line)">
@@ -108,7 +128,7 @@ function Rules() {
         </div>`)}
       </div>
       <div style="flex:2 1 420px;min-width:0">
-        ${sel ? html`<${RuleEditor} item=${sel} onSaved=${(id) => reload(id)} onDeleted=${() => { setSel(null); reload(); }} />` : html`<div class="empty">Pick a rule.</div>`}
+        ${sel ? html`<${RuleEditor} item=${sel} foreground=${fg && fg.exe ? fg : data.foreground || {}} onSaved=${(id) => reload(id)} onDeleted=${() => { setSel(null); reload(); }} />` : html`<div class="empty">Pick a rule.</div>`}
       </div>
     </div>
   </section>`;

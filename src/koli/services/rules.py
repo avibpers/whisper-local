@@ -12,7 +12,7 @@ from .. import defaults_merge as dm
 from .. import profiles as pf
 from ..utils import get_user_app_data_path
 
-RULE_KEYS = ('match', 'auto_send', 'auto_paste', 'suppress', 'initial_prompt', 'language', 'task',
+RULE_KEYS = ('match', 'window_title', 'auto_send', 'auto_paste', 'suppress', 'initial_prompt', 'language', 'task',
              'style', 'auto_dictation') + ar.FORMATTING_KEYS
 
 
@@ -32,11 +32,16 @@ def _slug(text: str) -> str:
     return re.sub(r'[^a-z0-9]+', '-', str(text).lower()).strip('-')[:40] or 'rule'
 
 
+# A list of match strings from the page: a comma-separated string or a list,
+# trimmed, with blanks dropped.
+def _clean_list(value) -> list:
+    if isinstance(value, str):
+        value = value.split(',')
+    return [str(v).strip() for v in (value or []) if str(v).strip()]
+
+
 def save_rule(entry: dict, original_id: str = None) -> str:
-    match = entry.get('match')
-    if isinstance(match, str):
-        match = [m.strip() for m in match.split(',')]
-    match = [str(m).strip() for m in (match or []) if str(m).strip()]
+    match = _clean_list(entry.get('match'))
     if not match:
         raise ValueError("Add at least one program name or window title")
     clean = {}
@@ -47,10 +52,13 @@ def save_rule(entry: dict, original_id: str = None) -> str:
     elif not original_id.startswith(dm.OWN_PREFIX):
         clean['id'] = original_id
     clean['match'] = match
+    window_title = _clean_list(entry.get('window_title'))
+    if window_title:
+        clean['window_title'] = window_title
     if entry.get('name'):
         clean['name'] = str(entry['name'])
     for key in RULE_KEYS:
-        if key == 'match':
+        if key in ('match', 'window_title'):
             continue
         value = entry.get(key)
         if value in (None, ''):
@@ -75,17 +83,9 @@ def reorder_rules(ordered_ids: list):
 
 # Which rule (if any) would apply to an app.
 def matching_rule(rules: list, exe: str, title: str):
-    exe, title = (exe or '').lower(), (title or '').lower()
     for item in rules:
-        if item.get('disabled'):
-            continue
-        patterns = item['entry'].get('match') or []
-        if isinstance(patterns, str):
-            patterns = [patterns]
-        for p in patterns:
-            p = str(p).lower()
-            if p and (p in exe or p in title):
-                return item['id']
+        if not item.get('disabled') and ar.rule_matches(item['entry'], exe, title):
+            return item['id']
     return None
 
 

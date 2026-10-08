@@ -648,11 +648,9 @@ class UiHost:
             last_key = key
             rule = None
             try:
-                exe, title = (info.get('exe') or '').lower(), (info.get('title') or '').lower()
-                for r in sm.app_rules.rules:
-                    if sm.app_rules._matches(r, exe, title):
-                        rule = r.get('id') or ', '.join(map(str, r.get('match') or []))
-                        break
+                matched = sm.app_rules.match_for(info.get('exe') or '', info.get('title') or '')
+                if matched:
+                    rule = matched.get('id') or ', '.join(map(str, matched.get('match') or []))
             except Exception:
                 pass
             self.last_external = {'exe': info.get('exe', ''), 'title': info.get('title', ''), 'rule': rule}
