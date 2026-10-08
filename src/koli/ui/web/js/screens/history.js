@@ -89,9 +89,8 @@ export function HistoryScreen() {
     ${data && mode === 'advanced' && html`<${Charts} data=${data} />`}
     <section class="card" style="min-width:0;overflow:hidden" aria-label="Transcripts">
       <div class="row-flex" style="padding:12px 18px">
-        <label class="row-flex grow" style="flex:1 1 240px;height:36px;padding:0 10px;border:1px solid var(--line2);border-radius:9px;color:var(--mute);flex-wrap:nowrap">
-          <${Icon} name="search" /><input aria-label="Search what you said" placeholder="Search what you said" dir="auto"
-            style="flex:1;min-width:0;border:0;background:transparent;outline:none;color:var(--ink)" value=${q}
+        <label class="search-field" style="flex:1 1 240px">
+          <${Icon} name="search" /><input aria-label="Search what you said" placeholder="Search what you said" dir="auto" value=${q}
             onInput=${(e) => { setQ(e.currentTarget.value); setPage(0); }} /></label>
         <${Select} label="App" value=${appFilter} options=${[['', 'All apps'], ...apps.map((a) => [a, a])]} onChange=${(v) => { setApp(v); setPage(0); }} />
         <${Select} label="Period" value=${period} options=${[['all', 'Any time'], ['today', 'Today'], ['week', 'Last 7 days'], ['month', 'Last 30 days']]} onChange=${(v) => { setPeriod(v); setPage(0); }} />

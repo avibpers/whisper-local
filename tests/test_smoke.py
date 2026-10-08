@@ -5338,3 +5338,58 @@ class DelayedSendStateManagerTests(unittest.TestCase):
         sm._begin_recording = mock.Mock()
         sm.start_recording()
         sm.clipboard_manager.delayed_send.cancel.assert_called_once_with('you started a new dictation')
+
+
+# ── Settings search ─────────────────────────────────────────────────────────
+# The Advanced Settings page filters its rows as you type. The matching lives
+# in js/search.js (no imports), so Node can run it here.
+
+class SettingsSearchMatchTests(unittest.TestCase):
+    SEARCH_JS = ROOT / 'src' / 'koli' / 'ui' / 'web' / 'js' / 'search.js'
+
+    def _run(self, script):
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('Node is not installed')
+        module = self.SEARCH_JS.resolve().as_uri()
+        code = f"import * as s from '{module}';\n{script}"
+        out = subprocess.run([node, '--input-type=module', '-e', code], capture_output=True, text=True, timeout=30)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return out.stdout.strip()
+
+    def test_every_word_must_match_in_any_order_and_case(self):
+        result = self._run(
+            "const s1 = {label: 'Wait before sending', help: 'Pause before Enter', path: 'clipboard.auto_send_delay', group: ''};"
+            "const hay = s.settingHaystack(s1, 'Delivery & clipboard');"
+            "console.log(JSON.stringify(["
+            "  s.matchesTerms(hay, s.searchTerms('send delay')),"
+            "  s.matchesTerms(hay, s.searchTerms('DELAY Send')),"
+            "  s.matchesTerms(hay, s.searchTerms('delivery')),"
+            "  s.matchesTerms(hay, s.searchTerms('pause enter')),"
+            "  s.matchesTerms(hay, s.searchTerms('send microphone')),"
+            "  s.searchTerms('  two   words '),"
+            "]));")
+        self.assertEqual(result, '[true,true,true,true,false,["two","words"]]')
+
+    def test_an_empty_query_matches_everything(self):
+        self.assertEqual(self._run("console.log(s.matchesTerms('anything', s.searchTerms('   ')));"), 'true')
+
+
+class SettingsSearchPageTests(unittest.TestCase):
+    WEB = ROOT / 'src' / 'koli' / 'ui' / 'web'
+
+    def test_settings_page_has_the_search_box(self):
+        page = (self.WEB / 'js' / 'screens' / 'settings.js').read_text(encoding='utf-8')
+        self.assertIn("from '../search.js'", page)
+        self.assertIn('aria-label="Search settings"', page)
+        self.assertIn('search-field', page)
+
+    # One look for every in-page search box, defined once.
+    def test_search_field_style_is_shared_not_inline(self):
+        css = (self.WEB / 'css' / 'components.css').read_text(encoding='utf-8')
+        self.assertIn('.search-field', css)
+        history = (self.WEB / 'js' / 'screens' / 'history.js').read_text(encoding='utf-8')
+        self.assertIn('search-field', history)
+        self.assertNotIn('border:1px solid var(--line2);border-radius:9px;color:var(--mute)', history)
