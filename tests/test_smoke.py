@@ -4516,7 +4516,7 @@ class _AutoWatcher:
         self.started += 1
         return True
 
-    def stop(self):
+    def stop(self, token=None):
         self.stopped += 1
 
     def is_running(self):
@@ -4897,7 +4897,7 @@ class AutoDictationStateManagerTests(unittest.TestCase):
              mock.patch('koli.state_manager.foreground') as fg:
             fg.get_foreground_app.return_value = {'exe': 'discord.exe'}
             sm._transcription_pipeline(np.zeros(16000, dtype=np.float32), phrase=True)
-        sm.clipboard_manager.deliver_transcription.assert_called_once_with('hello there ', False)
+        sm.clipboard_manager.deliver_transcription.assert_called_once_with('hello there ', False, allow_delay=False)
         sm.audio_feedback.play_stop_sound.assert_not_called()
         sm.audio_feedback.play_transcription_complete_sound.assert_not_called()
         sm._update_ui_state.assert_not_called()       # still "recording" on the bar
@@ -5087,3 +5087,254 @@ class AutoDictationShapeTests(unittest.TestCase):
         rec.continuous_vad.silence_timeout_sec = 5.0
         rec.start_recording()
         rec.continuous_vad.set_silence_timeout.assert_called_with(30.0)
+
+
+# ── Delayed auto-send ───────────────────────────────────────────────────────
+# Auto-send can wait a few seconds after the paste so the user can read the
+# text and stop the Enter. These drive DelayedSend with a fake clock, a fake
+# foreground window and a fake keyboard watcher; nothing real is pressed.
+
+class _SendClock:
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+
+class _SendWatch:
+    def __init__(self):
+        self.on_typing = None
+        self.stopped = []
+
+    def start(self, on_focus, on_typing):
+        self.on_typing = on_typing
+        return 7
+
+    def stop(self, token=None):
+        self.stopped.append(token)
+
+
+class DelayedSendTests(unittest.TestCase):
+    def _sender(self, windows=None):
+        from koli.delayed_send import DelayedSend
+        self.clock = _SendClock()
+        self.sent = []
+        self.events = []
+        self.watch = _SendWatch()
+        self.windows = windows if windows is not None else [{'hwnd': 1, 'exe': 'slack.exe'}]
+        return DelayedSend(send_enter=lambda: self.sent.append(self.clock.now) or True,
+                           foreground=lambda: self.windows[0],
+                           publish=lambda topic, payload: self.events.append((topic, dict(payload))),
+                           typing_watch=self.watch, clock=self.clock, run_thread=False)
+
+    def _states(self):
+        return [p['state'] for topic, p in self.events if topic == 'auto_send']
+
+    def test_presses_enter_when_the_wait_is_over(self):
+        ds = self._sender()
+        ds.schedule(5)
+        self.clock.now = 4.9
+        self.assertIsNone(ds.poll())
+        self.assertEqual(self.sent, [])
+        self.clock.now = 5.0
+        self.assertEqual(ds.poll(), 'sent')
+        self.assertEqual(self.sent, [5.0])
+        self.assertFalse(ds.is_pending())
+        self.assertEqual(self._states()[-1], 'sent')
+
+    def test_counts_down_in_whole_seconds(self):
+        ds = self._sender()
+        ds.schedule(5)
+        self.clock.now = 1.2
+        ds.poll()
+        counts = [p['remaining'] for topic, p in self.events if p['state'] == 'counting']
+        self.assertEqual(counts[:2], [5, 4])
+        self.assertEqual(self.events[0][1]['total'], 5)
+
+    def test_cancel_stops_the_enter_and_says_why(self):
+        ds = self._sender()
+        ds.schedule(5)
+        self.assertTrue(ds.cancel('Esc'))
+        self.clock.now = 9
+        self.assertIsNone(ds.poll())
+        self.assertEqual(self.sent, [])
+        last = self.events[-1][1]
+        self.assertEqual((last['state'], last['reason']), ('cancelled', 'Esc'))
+        self.assertFalse(ds.cancel('Esc'))   # nothing left to cancel
+
+    # Enter must never land in a different window than the one with the text.
+    def test_switching_windows_drops_the_send(self):
+        ds = self._sender(windows=[{'hwnd': 1, 'exe': 'slack.exe'}])
+        ds.schedule(5)
+        self.windows[0] = {'hwnd': 2, 'exe': 'slack.exe'}
+        self.clock.now = 1.0
+        self.assertEqual(ds.poll(), 'not_sent')
+        self.clock.now = 6.0
+        ds.poll()
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self._states()[-1], 'not_sent')
+
+    def test_send_now_presses_enter_at_once(self):
+        ds = self._sender()
+        ds.schedule(5)
+        self.clock.now = 1.0
+        self.assertTrue(ds.send_now())
+        self.assertEqual(self.sent, [1.0])
+        self.clock.now = 6.0
+        ds.poll()
+        self.assertEqual(self.sent, [1.0])
+
+    # Typing (fixing a word, or pressing Enter yourself) means "I'll send it".
+    def test_typing_cancels_and_the_watch_is_released(self):
+        ds = self._sender()
+        ds.schedule(5)
+        self.watch.on_typing('key 0x41')
+        self.assertFalse(ds.is_pending())
+        self.assertEqual(self.events[-1][1]['reason'], 'you started typing')
+        self.assertEqual(self.watch.stopped, [7])
+        self.clock.now = 6.0
+        ds.poll()
+        self.assertEqual(self.sent, [])
+
+    def test_a_new_send_replaces_the_pending_one(self):
+        ds = self._sender()
+        ds.schedule(5)
+        ds.schedule(3)
+        self.clock.now = 3.0
+        ds.poll()
+        self.clock.now = 6.0
+        ds.poll()
+        self.assertEqual(self.sent, [3.0])
+
+
+class InputWatchListenersTests(unittest.TestCase):
+    # Auto-dictation and the delayed send both listen for typing; they share
+    # one keyboard hook, and each stop removes only its own listener.
+    def setUp(self):
+        try:
+            from koli.platform.windows import input_watch
+        except Exception:
+            self.skipTest('Windows input watcher not importable here')
+        self.iw = input_watch
+
+    def test_two_listeners_share_one_hook(self):
+        import unittest.mock as mock
+        created = []
+
+        class FakeWatcher:
+            def __init__(self, on_focus, on_typing, wants_focus):
+                self.on_focus, self.on_typing, self.wants_focus = on_focus, on_typing, wants_focus
+                self.stopped = False
+                created.append(self)
+
+            def start(self):
+                return True
+
+            def stop(self):
+                self.stopped = True
+
+        typed_a, typed_b, focused = [], [], []
+        with mock.patch.object(self.iw, '_Watcher', FakeWatcher), \
+                mock.patch.object(self.iw, '_watcher', None), \
+                mock.patch.object(self.iw, '_listeners', {}):
+            first = self.iw.start(None, lambda key='': typed_a.append(key))
+            self.assertFalse(created[0].wants_focus())
+            second = self.iw.start(focused.append, lambda key='': typed_b.append(key))
+            self.assertTrue(first and second and first != second)
+            self.assertEqual(len(created), 1)
+            self.assertTrue(created[0].wants_focus())
+            created[0].on_typing('key 0x41')
+            created[0].on_focus({'editable': True})
+            self.assertEqual((typed_a, typed_b, focused), (['key 0x41'], ['key 0x41'], [{'editable': True}]))
+            self.iw.stop(first)
+            self.assertFalse(created[0].stopped)
+            self.assertTrue(self.iw.is_running())
+            self.iw.stop(second)
+            self.assertTrue(created[0].stopped)
+            self.assertFalse(self.iw.is_running())
+
+
+class DelayedSendDeliveryTests(unittest.TestCase):
+    def _clipboard(self, delay):
+        import unittest.mock as mock
+        from koli.clipboard_manager import ClipboardManager
+        cb = ClipboardManager.__new__(ClipboardManager)
+        cb.logger = __import__('logging').getLogger('test')
+        cb.auto_paste = True
+        cb.delivery_method = 'paste'
+        cb.auto_send_delay = delay
+        cb.delayed_send = mock.Mock()
+        cb.execute_delivery = mock.Mock(return_value=True)
+        cb.send_enter_key = mock.Mock(return_value=True)
+        return cb
+
+    def test_no_wait_presses_enter_right_after_the_paste(self):
+        cb = self._clipboard(0)
+        self.assertTrue(cb.deliver_transcription('hello', use_auto_enter=True, allow_delay=True))
+        cb.send_enter_key.assert_called_once()
+        cb.delayed_send.schedule.assert_not_called()
+
+    def test_automatic_auto_send_waits_before_enter(self):
+        cb = self._clipboard(5)
+        self.assertTrue(cb.deliver_transcription('hello', use_auto_enter=True, allow_delay=True))
+        cb.send_enter_key.assert_not_called()
+        cb.delayed_send.schedule.assert_called_once_with(5)
+
+    # The send key is a deliberate "send it": no wait, whatever the setting.
+    def test_the_send_key_sends_right_away_even_with_a_wait_set(self):
+        cb = self._clipboard(5)
+        self.assertTrue(cb.deliver_transcription('hello', use_auto_enter=True))
+        cb.send_enter_key.assert_called_once()
+        cb.delayed_send.schedule.assert_not_called()
+
+    def test_without_auto_send_nothing_is_scheduled(self):
+        cb = self._clipboard(5)
+        cb.deliver_transcription('hello', use_auto_enter=False)
+        cb.send_enter_key.assert_not_called()
+        cb.delayed_send.schedule.assert_not_called()
+
+
+class AutoSendPlanTests(unittest.TestCase):
+    # (auto_enter, may_wait): only an app rule's automatic auto-send may wait.
+    def test_only_the_rules_automatic_send_may_wait(self):
+        from koli.state_manager import StateManager
+        plan = StateManager._auto_send_plan
+        self.assertEqual(plan(False, None), (False, False))
+        self.assertEqual(plan(True, None), (True, False))                       # send key
+        self.assertEqual(plan(False, {'auto_send': True}), (True, True))        # automatic
+        self.assertEqual(plan(True, {'auto_send': True}), (True, False))        # send key wins
+        self.assertEqual(plan(True, {'auto_send': False}), (False, False))      # rule says never
+        self.assertEqual(plan(False, {'auto_paste': True}), (False, False))
+
+
+class DelayedSendStateManagerTests(unittest.TestCase):
+    def _sm(self, recording):
+        import unittest.mock as mock
+        from koli.state_manager import StateManager
+        sm = StateManager.__new__(StateManager)
+        sm.clipboard_manager = mock.Mock()
+        sm.clipboard_manager.delayed_send.cancel.return_value = True
+        sm.get_current_state = mock.Mock(return_value='recording' if recording else 'idle')
+        sm.cancel_active_recording = mock.Mock()
+        return sm
+
+    def test_esc_stops_a_pending_send(self):
+        sm = self._sm(recording=False)
+        self.assertTrue(sm.cancel_recording_hotkey_pressed())
+        sm.clipboard_manager.delayed_send.cancel.assert_called_once_with('Esc')
+
+    def test_esc_while_recording_still_cancels_the_recording(self):
+        import unittest.mock as mock
+        sm = self._sm(recording=True)
+        with mock.patch('builtins.print'):
+            self.assertTrue(sm.cancel_recording_hotkey_pressed())
+        sm.cancel_active_recording.assert_called_once()
+
+    def test_a_new_dictation_stops_a_pending_send(self):
+        import unittest.mock as mock
+        sm = self._sm(recording=False)
+        sm.can_start_recording = mock.Mock(return_value=True)
+        sm._begin_recording = mock.Mock()
+        sm.start_recording()
+        sm.clipboard_manager.delayed_send.cancel.assert_called_once_with('you started a new dictation')

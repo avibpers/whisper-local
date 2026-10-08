@@ -319,6 +319,14 @@ clipboard: # Clipboard Behavior
     #     Avoids clipboard manipulation and sends keys individually
     delivery_method: "paste"
 
+    # Wait before an automatic auto-send presses Enter (seconds, 0 = at once)
+    # Applies where an app rule sets auto_send: true (chat apps): the text is
+    # pasted, then Enter waits so you can read it. Esc, the bubble's Cancel,
+    # typing, a new dictation or switching windows stop it. The send key
+    # (hotkey.auto_send_key) and your own Enter always send at once. Profiles
+    # can set their own, e.g. a Chat profile with 5.
+    auto_send_delay: 0
+
     # Key combination to simulate paste (only used when delivery_method is "paste")
     # Format: modifier+key (use lowercase)
     # Examples:

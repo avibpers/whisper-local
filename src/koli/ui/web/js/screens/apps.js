@@ -141,7 +141,7 @@ function openProfileEditor(item, reload) {
       </div>
       <label class="stack" style="gap:6px"><span class="eyebrow">Settings it changes</span>
         <textarea class="inp mono" rows="12" value=${text} onInput=${(e) => { text = e.currentTarget.value; }}></textarea></label>
-      <p class="small muted" style="margin:0">Sections and keys as in Settings, for example {"whisper": {"language": "he", "model": "small"}, "clipboard": {"auto_paste": true}, "auto_dictation": {"enabled": true}}.</p>
+      <p class="small muted" style="margin:0">Sections and keys as in Settings, for example {"whisper": {"language": "he", "model": "small"}, "clipboard": {"auto_paste": true, "auto_send_delay": 5}, "auto_dictation": {"enabled": true}}.</p>
     </div>
     <div class="modal-foot"><button type="button" class="btn" onClick=${closeModal}>Cancel</button>
       <button type="button" class="btn pri" onClick=${() => {

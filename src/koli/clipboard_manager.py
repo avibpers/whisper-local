@@ -1,7 +1,8 @@
 # clipboard_manager.py
 # Delivers transcribed text to the active app: either pastes (clipboard + Ctrl/Cmd+V,
 # restoring the user's prior clipboard) or types it directly via SendInput, with an
-# optional auto-Enter for chat apps. Cross-platform through the platform.keyboard layer.
+# optional auto-Enter for chat apps, sent at once or after a short wait you can
+# cancel (delayed_send.py). Cross-platform through the platform.keyboard layer.
 
 import logging
 import time
@@ -18,8 +19,12 @@ class ClipboardManager:
                  paste_clipboard_restore_delay,
                  type_also_copy_to_clipboard, type_auto_enter_delay,
                  type_auto_enter_delay_per_100_chars,
-                 macos_key_simulation_delay):
+                 macos_key_simulation_delay, auto_send_delay=0):
         self.logger = logging.getLogger(__name__)
+        # Seconds to wait before an auto-send presses Enter (0 = at once), and
+        # the countdown that does the waiting (a DelayedSend, set by main.py).
+        self.auto_send_delay = auto_send_delay
+        self.delayed_send = None
         self.auto_paste = auto_paste
         self.delivery_method = keyboard.validate_delivery_method(delivery_method)
         self.paste_hotkey = paste_hotkey
@@ -169,9 +174,25 @@ class ClipboardManager:
             self.logger.error(f"Failed to send ENTER key: {e}")
             return False
 
+    # The Enter of an auto-send: pressed now, or handed to the countdown when a
+    # wait is set and this send may wait (an app rule's automatic auto-send;
+    # the send key always sends at once). True when Enter was pressed or is on
+    # its way.
+    def auto_send(self, allow_delay: bool = False) -> bool:
+        delay = float(getattr(self, 'auto_send_delay', 0) or 0)
+        if allow_delay and delay > 0 and getattr(self, 'delayed_send', None) is not None:
+            self.delayed_send.schedule(delay)
+            return True
+        return self.send_enter_key()
+
+    def send_is_pending(self) -> bool:
+        ds = getattr(self, 'delayed_send', None)
+        return bool(ds is not None and ds.is_pending())
+
     def deliver_transcription(self,
                               transcribed_text: str,
-                              use_auto_enter: bool = False) -> bool:
+                              use_auto_enter: bool = False,
+                              allow_delay: bool = False) -> bool:
 
         try:
             if self.auto_paste:
@@ -181,7 +202,7 @@ class ClipboardManager:
                         delay = self.type_auto_enter_delay + len(transcribed_text) / 100 * self.type_auto_enter_delay_per_100_chars
                         if delay > 0:
                             time.sleep(delay)
-                    success = self.send_enter_key()
+                    success = self.auto_send(allow_delay)
             else:
                 print("📋 Copying to clipboard...")
                 success = self.copy_with_notification(transcribed_text)

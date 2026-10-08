@@ -49,6 +49,8 @@ def get_foreground_app() -> dict:
             'exe': os.path.basename(exe_path).lower() if exe_path else '',
             'path': exe_path,
             'title': title_buf.value,
+            'hwnd': int(hwnd),
+            'pid': int(pid.value),
         }
     except Exception as e:
         logger.debug(f"Foreground app probe failed: {e}")

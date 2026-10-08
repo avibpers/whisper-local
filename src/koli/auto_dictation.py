@@ -21,6 +21,7 @@ class AutoDictation:
         self.cm = config_manager
         self.app_rules = app_rules
         self._watcher = watcher
+        self._watch_token = 0   # our listener on the shared watcher
         self._own_pid = os.getpid() if own_pid is None else own_pid
         self._running = False
         self._last_focus: Optional[dict] = None
@@ -49,7 +50,8 @@ class AutoDictation:
             self.logger.info("Auto-dictation: not available on this platform")
             return False
         try:
-            ok = bool(watcher.start(self.on_focus, self.on_typing))
+            self._watch_token = watcher.start(self.on_focus, self.on_typing)
+            ok = bool(self._watch_token)
         except Exception as e:
             self.logger.warning(f"Auto-dictation: could not hook focus and typing ({e})")
             return False
@@ -67,7 +69,8 @@ class AutoDictation:
         watcher = self._get_watcher()
         if watcher is not None:
             try:
-                watcher.stop()
+                watcher.stop(self._watch_token)
+                self._watch_token = 0
             except Exception as e:
                 self.logger.debug(f"Auto-dictation: watcher stop failed: {e}")
         self.logger.info("Auto-dictation off")

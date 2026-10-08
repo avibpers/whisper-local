@@ -38,6 +38,7 @@ from .hotkey_listener import HotkeyListener
 from .whisper_engine import WhisperEngine
 from .voice_activity_detection import VadManager
 from .clipboard_manager import ClipboardManager
+from .delayed_send import DelayedSend
 from .state_manager import StateManager
 from .system_tray import SystemTray
 from .audio_feedback import AudioFeedback
@@ -276,7 +277,7 @@ def setup_whisper_engine(whisper_config, vad_manager, model_registry, log_transc
                                    ask)
 
 def setup_clipboard_manager(clipboard_config):
-    return ClipboardManager(
+    manager = ClipboardManager(
         auto_paste=clipboard_config['auto_paste'],
         delivery_method=clipboard_config['delivery_method'],
         paste_hotkey=clipboard_config['paste_hotkey'],
@@ -286,8 +287,12 @@ def setup_clipboard_manager(clipboard_config):
         type_also_copy_to_clipboard=clipboard_config['type_also_copy_to_clipboard'],
         type_auto_enter_delay=clipboard_config['type_auto_enter_delay'],
         type_auto_enter_delay_per_100_chars=clipboard_config['type_auto_enter_delay_per_100_chars'],
-        macos_key_simulation_delay=clipboard_config['macos_key_simulation_delay']
+        macos_key_simulation_delay=clipboard_config['macos_key_simulation_delay'],
+        auto_send_delay=clipboard_config.get('auto_send_delay', 0),
     )
+    # The countdown presses Enter through the manager, so it is wired after.
+    manager.delayed_send = DelayedSend(send_enter=manager.send_enter_key)
+    return manager
 
 def setup_audio_feedback(audio_feedback_config):
     return AudioFeedback(
