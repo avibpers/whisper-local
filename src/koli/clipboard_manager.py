@@ -139,6 +139,7 @@ class ClipboardManager:
             keyboard.send_hotkey(*self.paste_keys)
 
             print("   ✓ Auto-pasted via key simulation")
+            self.logger.info("Pasted at the cursor")
 
             if original_content is not None:
                 time.sleep(self.paste_clipboard_restore_delay)

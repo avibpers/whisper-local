@@ -98,6 +98,43 @@ def setup_exception_handler():
 
     sys.excepthook = exception_handler
 
+    # An exception on a worker thread (audio, VAD, hotkeys, UI, hooks) never
+    # reaches sys.excepthook; without this it only prints to a console nobody
+    # is watching. It does not stop the app, so it is logged and reported.
+    def thread_exception_handler(args):
+        if args.exc_type is SystemExit:
+            return
+        thread_name = getattr(args.thread, 'name', '?')
+        logging.getLogger().error(
+            f"Uncaught exception on thread {thread_name}",
+            exc_info=(args.exc_type, args.exc_value, args.exc_traceback)
+        )
+        _write_crash_report(args.exc_type, args.exc_value, args.exc_traceback, thread_name=thread_name)
+
+    threading.excepthook = thread_exception_handler
+    _enable_fault_handler()
+
+
+# A native crash (access violation, abort from a C++ exception in a library)
+# kills the process without a Python traceback. faulthandler writes every
+# thread's Python stack at the moment of the fault to crashes/faults.log, so
+# the log names which Python call was running inside the library.
+def _enable_fault_handler():
+    import faulthandler
+    try:
+        crash_dir = os.path.join(get_user_app_data_path(), "crashes")
+        os.makedirs(crash_dir, exist_ok=True)
+        global _FAULT_LOG
+        _FAULT_LOG = open(os.path.join(crash_dir, "faults.log"), "a", encoding="utf-8")
+        _FAULT_LOG.write(f"\n=== Koli {get_version()} started {__import__('datetime').datetime.now().isoformat()} (pid {os.getpid()}) ===\n")
+        _FAULT_LOG.flush()
+        faulthandler.enable(file=_FAULT_LOG, all_threads=True)
+    except Exception as e:
+        logging.getLogger().debug(f"Fault handler not enabled: {e}")
+
+
+_FAULT_LOG = None
+
 
 def _send_quit_to_running_instance() -> int:
     import signal
@@ -124,7 +161,7 @@ def _send_quit_to_running_instance() -> int:
         return 0
 
 
-def _write_crash_report(exc_type, exc_value, exc_traceback):
+def _write_crash_report(exc_type, exc_value, exc_traceback, thread_name: str = None):
     import datetime
     import traceback
     try:
@@ -134,7 +171,8 @@ def _write_crash_report(exc_type, exc_value, exc_traceback):
         crash_path = os.path.join(crash_dir, f"crash-{stamp}.txt")
         with open(crash_path, 'w', encoding='utf-8') as f:
             f.write(f"Koli crash report\nTime: {datetime.datetime.now().isoformat()}\n")
-            f.write(f"Version: {get_version()}\nPython: {sys.version}\n\n")
+            f.write(f"Version: {get_version()}\nPython: {sys.version}\n")
+            f.write(f"Thread: {thread_name or 'main'}\n\n")
             f.write("Traceback:\n")
             traceback.print_exception(exc_type, exc_value, exc_traceback, file=f)
             f.write("\nLast 50 log lines:\n")

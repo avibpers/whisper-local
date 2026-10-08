@@ -140,7 +140,7 @@ koli
 
 ```bash
 git clone https://github.com/drajb/whisper-local.git
-cd koli
+cd whisper-local
 pip install -e .
 ```
 
@@ -378,6 +378,7 @@ Highlights:
 | `hotkey.double_tap_to_lock` | `false` | Double-tap the record hotkey for hands-free recording |
 | `auto_dictation.enabled` | `false` | Start listening when a text field gets focus (Windows); typing cancels, silence ends it |
 | `auto_dictation.silence_timeout_seconds` | `5` | How long an auto-started recording waits for speech, and how long a pause ends it |
+| `auto_dictation.phrase_pause_seconds` | `1` | While auto-listening, a pause this long pastes the words so far and keeps listening (0 = paste at the end only) |
 | `hotkey.paste_last_hotkey` | `alt+shift+z` | Type your last dictation again (`ctrl+option+v` on macOS) |
 | `postprocess.style` | `""` | `formal` / `casual` / `very_casual` / `verbatim`, or per app in `app_rules.yaml` |
 | `postprocess.snippets` | `[]` | Spoken shortcuts expanded inline |
@@ -485,6 +486,7 @@ Contributions of all kinds are welcome — bug fixes, new features, docs improve
 
 ```bash
 git clone https://github.com/drajb/whisper-local.git
+cd whisper-local
 pip install -e .
 python -m unittest tests.test_smoke   # smoke suite — should report OK
 ```

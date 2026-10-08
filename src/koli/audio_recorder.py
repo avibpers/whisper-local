@@ -78,15 +78,7 @@ class AudioRecorder:
 
         self.continuous_streaming = self._setup_continuous_streaming()
 
-        self._recording_rate = self._get_recording_sample_rate()
-        self._needs_resampling_cached = self._needs_resampling()
-        if self._needs_resampling_cached:
-            self._vad_blocksize = int(VAD_CHUNK_SIZE * self._recording_rate / self.WHISPER_SAMPLE_RATE)
-        else:
-            self._vad_blocksize = VAD_CHUNK_SIZE
-
-        chunk_seconds = self._vad_blocksize / self._recording_rate
-        self._preroll_max_chunks = max(1, int(self.PREROLL_SECONDS / chunk_seconds))
+        self._configure_for_device_rate()
         self._buffer = collections.deque()
         # Guards the ring buffer. The PortAudio callback appends/trims on its own
         # thread while stop/cancel/max-duration snapshot+clear from other threads;
@@ -141,6 +133,32 @@ class AudioRecorder:
             self.logger.warning(f"Invalid device parameter: {device}, using default")
             self.device = None
             self._resolve_hostapi(None)
+
+    # Everything that depends on the device's rate, in one place: the stream
+    # rate, whether chunks are resampled, the VAD block size (one 16 ms VAD
+    # frame's worth of device samples) and the pre-roll length in chunks.
+    # Called at start-up and again when the stream falls back to the default
+    # device, which may run at another rate: a stale block size there fed the
+    # silence detector chunks of the wrong length, so it timed out three times
+    # too late on one device and heard no speech at all on another.
+    def _configure_for_device_rate(self):
+        self._recording_rate = self._get_recording_sample_rate()
+        self._needs_resampling_cached = self._needs_resampling()
+        if self._needs_resampling_cached:
+            self._vad_blocksize = int(VAD_CHUNK_SIZE * self._recording_rate / self.WHISPER_SAMPLE_RATE)
+        else:
+            self._vad_blocksize = VAD_CHUNK_SIZE
+        chunk_seconds = self._vad_blocksize / self._recording_rate
+        self._preroll_max_chunks = max(1, int(self.PREROLL_SECONDS / chunk_seconds))
+
+    # The configured microphone could not be opened (unplugged, or its device
+    # index moved): record from the default input instead, at that device's rate.
+    def _fall_back_to_default_device(self):
+        self.device = None
+        self._resolve_hostapi(None)
+        self._configure_for_device_rate()
+        self.logger.info(f"Recording from the default input at {self._recording_rate} Hz "
+                         f"(VAD block {self._vad_blocksize} samples)")
 
     def _resolve_hostapi(self, device_info):
         try:
@@ -222,11 +240,8 @@ class AudioRecorder:
                         with self._buffer_lock:
                             self.is_recording = False
                             self._buffer.clear()
-                    self.device = None
                     try:
-                        self._resolve_hostapi(None)
-                        self._recording_rate = self._get_recording_sample_rate()
-                        self._needs_resampling_cached = self._needs_resampling()
+                        self._fall_back_to_default_device()
                     except Exception as resolve_err:
                         self.logger.error(f"Could not resolve default device: {resolve_err}")
                     time.sleep(0.5)
@@ -271,7 +286,7 @@ class AudioRecorder:
     # `silence_timeout` overrides the configured silence stop for this one
     # recording (auto-dictation listens for a few seconds only); None restores
     # the configured value, so a hotkey recording never inherits the short one.
-    def start_recording(self, silence_timeout: Optional[float] = None):
+    def start_recording(self, silence_timeout: Optional[float] = None, phrase_pause: Optional[float] = None):
         if self.is_recording:
             return False
 
@@ -283,6 +298,7 @@ class AudioRecorder:
             wanted = silence_timeout if silence_timeout else configured
             if wanted and wanted != self.continuous_vad.silence_timeout_sec:
                 self.continuous_vad.set_silence_timeout(wanted)
+            self.continuous_vad.set_phrase_pause(phrase_pause or 0)
             self.continuous_vad.reset()
         if self.continuous_streaming:
             self.continuous_streaming.reset()
@@ -291,6 +307,18 @@ class AudioRecorder:
         self.is_recording = True
         self.logger.debug(f"Recording started with {preroll_chunks} preroll chunks (~{preroll_chunks * self._vad_blocksize / self._recording_rate:.2f}s)")
         return True
+
+    # Hands over everything recorded so far and keeps recording: phrase
+    # delivery pastes each pause-separated phrase while you go on talking. The
+    # length limit restarts with each phrase, so a long dictation is not cut.
+    def take_recorded_audio(self) -> Optional[np.ndarray]:
+        if not self.is_recording:
+            return None
+        with self._buffer_lock:
+            snapshot = list(self._buffer)
+            self._buffer.clear()
+        self.recording_start_time = time.time()
+        return self._build_audio_array(snapshot)
 
     def stop_recording(self) -> Optional[np.ndarray]:
         if not self.is_recording:

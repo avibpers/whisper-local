@@ -12,6 +12,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
   field. Password fields and
   Koli's own window never trigger it. A per-app rule (`auto_dictation:
   false`) turns it off for an app, and a profile can switch it on or off.
+  While it listens, each pause of about a second pastes what you said so far
+  and keeps listening, so text lands as you talk (`phrase_pause_seconds`).
 - **A new app window and floating bar.** The bar sits at the edge of the
   screen: a thin handle at rest, the level and a timer while you talk, then
   what happened (pasted, copied, nothing heard, no text field). Right-click it
@@ -35,6 +37,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
   (only when one is found), and a first try.
 - `--open` starts with the window open. `--replace` restores the old
   "take over" behaviour of a second launch.
+
+### Fixed
+- **The app could crash after a recording that ended on its own** (silence
+  stop or the maximum length) on a machine with two graphics cards. The
+  Whisper engine keeps per-thread GPU state and tears it down when a thread
+  ends; that teardown threw, and the process aborted. Every engine call now
+  runs on one long-lived thread.
+- **Stop on silence kept the wrong timing after a microphone fallback.** When
+  the configured microphone could not be opened and recording moved to the
+  default input, the silence detector kept the block size of the old device,
+  so it timed out three times too late on one setup and heard no speech on
+  another. Hotkey recordings hid it; auto-dictation depends on it.
 
 ### Changed
 - **The app window draws its own title bar** (Windows). Minimize, maximize and

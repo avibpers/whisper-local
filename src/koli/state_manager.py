@@ -124,6 +124,9 @@ class StateManager:
         self._pending_device_change = None
         self._command_mode = False
         self._state_lock = threading.Lock()
+        # One transcription at a time: a phrase still being pasted and the final
+        # stop of the same recording must not run the pipeline together.
+        self._pipeline_lock = threading.Lock()
         self._streaming_display_active = False
         # Commit-on-endpoint streaming delivery (opt-in). Active only for the
         # current recording when conditions are met; default off → zero impact.
@@ -177,6 +180,14 @@ class StateManager:
         self._transcription_pipeline(audio_data, use_auto_enter=False)
 
     def handle_vad_event(self, event: VadEvent):
+        if event == VadEvent.PHRASE_PAUSE:
+            # A short pause while auto-dictation listens: paste the words so
+            # far and keep the microphone open for the next phrase.
+            if self._auto_started and self.audio_recorder.get_recording_status():
+                audio_data = self.audio_recorder.take_recorded_audio()
+                self.logger.info("Auto-dictation: phrase pause - delivering what was said so far")
+                self._transcription_pipeline(audio_data, use_auto_enter=False, phrase=True)
+            return
         if event == VadEvent.SILENCE_TIMEOUT:
             # An auto-started recording in which nobody spoke is not a dictation:
             # drop it without a sound, so a field you merely clicked stays quiet.
@@ -347,7 +358,8 @@ class StateManager:
         self._apply_recording_context()
         self._maybe_pause_media()
         silence_timeout = self._auto_silence_timeout() if auto_started else None
-        success = self.audio_recorder.start_recording(silence_timeout=silence_timeout)
+        phrase_pause = self._auto_phrase_pause() if auto_started else None
+        success = self.audio_recorder.start_recording(silence_timeout=silence_timeout, phrase_pause=phrase_pause)
 
         if success:
             self._auto_started = auto_started
@@ -356,9 +368,14 @@ class StateManager:
             self._setup_streaming_delivery()
             if auto_started:
                 # Same console story as a hotkey start, only the chime is skipped.
-                self.logger.info(f"Auto-dictation: listening (stops after {silence_timeout:g}s of silence)")
+                self.logger.info(f"Auto-dictation: listening (stops after {silence_timeout:g}s of silence"
+                                 + (f", pastes after each {phrase_pause:g}s pause)" if phrase_pause else ")"))
                 print("\n🎤 Listening — a text field got focus. Speak now...")
-                print(f"   Quiet for {silence_timeout:g}s: cancelled. Pause after speaking: transcribed. Typing or leaving the field: cancelled.")
+                if phrase_pause:
+                    print(f"   Each {phrase_pause:g}s pause pastes what you said and keeps listening. "
+                          f"Quiet for {silence_timeout:g}s, typing or leaving the field: done.")
+                else:
+                    print(f"   Quiet for {silence_timeout:g}s: cancelled. Pause after speaking: transcribed. Typing or leaving the field: cancelled.")
                 if not getattr(self.audio_recorder, 'continuous_vad', None) and not self._warned_no_vad_for_auto:
                     self._warned_no_vad_for_auto = True
                     self.logger.warning("Auto-dictation: 'Stop on silence' is off, so only typing or a hotkey ends the recording")
@@ -402,14 +419,29 @@ class StateManager:
         except (TypeError, ValueError):
             return 5.0
 
+    # Seconds of silence after speech that paste a phrase mid-recording; 0 = off.
+    def _auto_phrase_pause(self) -> float:
+        cfg = self.config_manager.config.get('auto_dictation') or {}
+        try:
+            return max(0.0, float(cfg.get('phrase_pause_seconds', 0) or 0))
+        except (TypeError, ValueError):
+            return 0.0
+
     def _active_silence_timeout(self) -> float:
         detector = getattr(self.audio_recorder, 'continuous_vad', None)
         if detector is not None:
             return float(getattr(detector, 'silence_timeout_sec', self.vad_manager.vad_silence_timeout_seconds))
         return float(self.vad_manager.vad_silence_timeout_seconds)
 
+    # Is there speech that has not been delivered yet? With phrase delivery the
+    # pasted phrases no longer count, so a session that ends after its last
+    # phrase ends quietly instead of transcribing silence.
     def _detector_heard_speech(self) -> bool:
         detector = getattr(self.audio_recorder, 'continuous_vad', None)
+        if detector is None:
+            return True
+        if getattr(detector, 'phrase_pause_sec', 0):
+            return bool(getattr(detector, 'speech_since_phrase', True))
         return bool(getattr(detector, 'had_speech', True))
 
     # Decide whether this (plain dictation) recording should stream finalized
@@ -594,12 +626,20 @@ class StateManager:
     # record stats/history once delivery actually succeeded. Every early return
     # is a legitimate "nothing to deliver" case and must still clear state via
     # the finally block.
-    def _transcription_pipeline(self, audio_data, use_auto_enter: bool = False):
+    # `phrase` is a mid-recording run (auto-dictation phrase delivery): the
+    # chunk is transcribed and pasted with a trailing space, silently, and the
+    # recording state, sounds and idle hand-off are left alone.
+    def _transcription_pipeline(self, audio_data, use_auto_enter: bool = False, phrase: bool = False):
+        with self._pipeline_lock:
+            self._transcription_pipeline_locked(audio_data, use_auto_enter, phrase)
+
+    def _transcription_pipeline_locked(self, audio_data, use_auto_enter: bool = False, phrase: bool = False):
         mode = 'dictate'
         try:
             with self._state_lock:
                 self.is_processing = True
-                self._auto_started = False
+                if not phrase:
+                    self._auto_started = False
                 command_mode = self._command_mode
                 self._command_mode = False
                 rephrase_mode = self._rephrase_mode
@@ -608,9 +648,12 @@ class StateManager:
                 self._rephrase_selection = ''
             mode = 'command' if command_mode else ('rephrase' if rephrase_mode and rephrase_selection else 'dictate')
 
-            self.audio_feedback.play_stop_sound()
+            if not phrase:
+                self.audio_feedback.play_stop_sound()
 
             if audio_data is None:
+                if phrase:
+                    return  # nothing in this pause worth a word
                 self._emit_pipeline('no_audio', mode=mode)
                 self.system_tray.notify("No audio captured — was the mic muted?")
                 # Flash the overlay too — tray balloons are often suppressed by Windows.
@@ -634,9 +677,10 @@ class StateManager:
 
             print(f"   ✓ Recorded {duration:.1f} seconds, transcribing...")
 
-            self._update_ui_state("processing")
-            if self.level_overlay:
-                self.level_overlay.show_processing()
+            if not phrase:
+                self._update_ui_state("processing")
+                if self.level_overlay:
+                    self.level_overlay.show_processing()
 
             self._emit_pipeline('transcribing', mode=mode)
             transcribed_text = self.whisper_engine.transcribe_audio(audio_data)
@@ -644,6 +688,8 @@ class StateManager:
 
             if not transcribed_text:
                 self._emit_pipeline('empty', mode=mode, info=info)
+                if phrase:
+                    return  # a pause with nothing in it; keep listening
                 self.system_tray.notify("Transcription was empty (silence or noise only).")
                 if self.level_overlay:
                     self.level_overlay.flash_failure("No speech detected")
@@ -766,8 +812,9 @@ class StateManager:
                     self._announce_copy_only(rule)
 
             try:
+                # A phrase gets a trailing space so the next one does not glue to it.
                 success = self.clipboard_manager.deliver_transcription(
-                    transcribed_text, effective_auto_enter
+                    transcribed_text + ' ' if phrase else transcribed_text, effective_auto_enter
                 )
             finally:
                 if previous_auto_paste is not None:
@@ -780,13 +827,15 @@ class StateManager:
                 raw=heard_text, text=transcribed_text, rule=rule_id, app=fg_now.get('exe', ''),
                 method=self.clipboard_manager.delivery_method, auto_enter=bool(effective_auto_enter and success),
                 duration=round(duration, 2))
+            self.logger.info(f"Delivered{' phrase' if phrase else ''}: {'pasted' if delivered_paste else 'copied'}" if success else "Delivery failed")
             if success:
                 self.last_transcription = transcribed_text
                 self.recent_transcriptions.appendleft(transcribed_text)
                 self.system_tray.refresh_menu()
-                self.audio_feedback.play_transcription_complete_sound()
-                if self.level_overlay:
-                    self.level_overlay.flash_success()
+                if not phrase:  # phrases are pasted silently; the bar shows the text landing
+                    self.audio_feedback.play_transcription_complete_sound()
+                    if self.level_overlay:
+                        self.level_overlay.flash_success()
                 fg = foreground.get_foreground_app() or {}
                 record_transcription(
                     char_count=len(transcribed_text),
@@ -823,6 +872,8 @@ class StateManager:
 
             with self._state_lock:
                 self.is_processing = False
+                if phrase:
+                    return  # still recording: no idle hand-off, no engine swaps yet
                 pending_model = self._pending_model_change
                 pending_device = self._pending_device_change
 
@@ -841,6 +892,7 @@ class StateManager:
             if not (pending_device or pending_model):
                 self._update_ui_state("idle")
             self._run_idle_actions()
+            self.logger.info("Ready for the next dictation")
 
     def _handle_command_transcription(self, text: str, use_auto_enter: bool = False) -> bool:
         log_config = self.config_manager.get_logging_config()

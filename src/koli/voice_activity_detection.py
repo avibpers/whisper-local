@@ -47,6 +47,7 @@ class VadState(Enum):
 class VadEvent(Enum):
     NO_EVENT = "no_event"
     SILENCE_TIMEOUT = "silence_timeout"
+    PHRASE_PAUSE = "phrase_pause"      # a short pause after speech: deliver what was said, keep listening
 
 class VadManager:
     def __init__(self,
@@ -185,6 +186,13 @@ class ContinuousVoiceDetector:
         # True once any speech was heard this recording. Auto-dictation uses it
         # to tell "you never spoke" (cancel quietly) from "you stopped" (deliver).
         self.had_speech = False
+        # Phrase delivery: after `phrase_pause_sec` of silence following speech,
+        # one PHRASE_PAUSE fires so the words so far can be pasted while the
+        # recording goes on. `speech_since_phrase` is what is still undelivered.
+        self.phrase_pause_sec = 0.0
+        self.frames_for_phrase = 0
+        self.speech_since_phrase = False
+        self._phrase_fired = False
         self._lock = threading.Lock()
         self.event_callback = event_callback
         # Latest speech probability, for the Live screen's voice-detection bar.
@@ -201,6 +209,12 @@ class ContinuousVoiceDetector:
             self.silence_timeout_sec = float(seconds)
             self.frames_for_timeout = max(1, int(self.silence_timeout_sec / self.frame_duration_sec))
             self.probability_buffer = deque(self.probability_buffer, maxlen=self.frames_for_timeout)
+
+    # Seconds of silence after speech that deliver a phrase; 0 turns it off.
+    def set_phrase_pause(self, seconds: float):
+        with self._lock:
+            self.phrase_pause_sec = max(0.0, float(seconds or 0))
+            self.frames_for_phrase = int(self.phrase_pause_sec / self.frame_duration_sec) if self.phrase_pause_sec else 0
 
     def _dispatch_event(self, event: VadEvent):
         if self.event_callback:
@@ -239,6 +253,8 @@ class ContinuousVoiceDetector:
 
             if speech_detected:
                 self.had_speech = True
+                self.speech_since_phrase = True
+                self._phrase_fired = False
 
             if current_state == VadState.SPEECH_DETECTED:
                 if speech_detected:
@@ -256,6 +272,11 @@ class ContinuousVoiceDetector:
                     if self.silence_frame_count >= self.frames_for_timeout:
                         self.state = VadState.TIMEOUT_TRIGGERED
                         event = VadEvent.SILENCE_TIMEOUT
+                    elif (self.frames_for_phrase and self.speech_since_phrase and not self._phrase_fired
+                          and self.silence_frame_count >= self.frames_for_phrase):
+                        self._phrase_fired = True
+                        self.speech_since_phrase = False
+                        event = VadEvent.PHRASE_PAUSE
 
             elif current_state == VadState.TIMEOUT_TRIGGERED:
                 pass
@@ -270,6 +291,8 @@ class ContinuousVoiceDetector:
             self.state = VadState.SILENCE_COUNTING
             self.silence_frame_count = 0
             self.had_speech = False
+            self.speech_since_phrase = False
+            self._phrase_fired = False
             self.probability_buffer.clear()
             self.hysteresis.speech_detected = False
 
@@ -292,4 +315,5 @@ class ContinuousVoiceDetector:
                 'offset': self.offset_threshold,
                 'timeout_s': self.silence_timeout_sec,
                 'had_speech': self.had_speech,
+                'phrase_pause_s': self.phrase_pause_sec,
             }

@@ -23,7 +23,7 @@ class AutoDictation:
         self._watcher = watcher
         self._own_pid = os.getpid() if own_pid is None else own_pid
         self._running = False
-        self._last_focus_id = None
+        self._last_focus: Optional[dict] = None
         self._pending: Optional[threading.Timer] = None
         self._lock = threading.Lock()
         self.logger = logging.getLogger(__name__)
@@ -63,7 +63,7 @@ class AutoDictation:
         if not self._running:
             return
         self._running = False
-        self._last_focus_id = None
+        self._last_focus = None
         watcher = self._get_watcher()
         if watcher is not None:
             try:
@@ -98,10 +98,9 @@ class AutoDictation:
         if not self._running:
             return
         info = info or {}
-        focus_id = info.get('id')
-        if focus_id is not None and focus_id == self._last_focus_id:
+        if self._same_field(info, self._last_focus):
             return  # the same field again: it only re-arms after focus moved elsewhere
-        self._last_focus_id = focus_id
+        previous, self._last_focus = self._last_focus, info
         self._cancel_pending()  # a newer focus wins over a pending start
 
         # Focus left the field we were listening to: the words have nowhere
@@ -109,6 +108,7 @@ class AutoDictation:
         # the same as typing. A new field may then start its own recording.
         try:
             if self.sm.is_auto_recording():
+                self.logger.info(f"Auto-dictation: focus moved from {self._describe(previous)} to {self._describe(info)}")
                 self.sm.cancel_auto_recording('the text field lost focus')
         except Exception as e:
             self.logger.debug(f"Auto-dictation: blur cancel failed: {e}")
@@ -125,15 +125,43 @@ class AutoDictation:
 
     # Typing during an auto recording means "I'll write it myself": cancel and
     # drop the audio. Typing during a hotkey recording is none of our business.
-    def on_typing(self) -> None:
+    def on_typing(self, key: str = '') -> None:
         if not self._running:
             return
         self._cancel_pending()
         try:
             if self.sm.is_auto_recording():
-                self.sm.cancel_auto_recording('you started typing')
+                self.sm.cancel_auto_recording('you started typing' + (f' ({key})' if key else ''))
         except Exception as e:
             self.logger.debug(f"Auto-dictation: typing cancel failed: {e}")
+
+    # ── Field identity ───────────────────────────────────────────────────────
+
+    # The same field can come back with a new runtime id (Chromium apps
+    # re-create a box's DOM node when they re-render) or as an inner or outer
+    # node of the same box. Same window and one rectangle inside the other
+    # means it is still the field we are listening to.
+    @staticmethod
+    def _same_field(a: Optional[dict], b: Optional[dict]) -> bool:
+        if not a or not b:
+            return False
+        if a.get('id') is not None and a.get('id') == b.get('id'):
+            return True
+        if a.get('hwnd') != b.get('hwnd') or not a.get('rect') or not b.get('rect'):
+            return False
+        return AutoDictation._contains(a['rect'], b['rect']) or AutoDictation._contains(b['rect'], a['rect'])
+
+    @staticmethod
+    def _contains(outer, inner, slack: int = 2) -> bool:
+        return (outer[0] - slack <= inner[0] and outer[1] - slack <= inner[1]
+                and outer[2] + slack >= inner[2] and outer[3] + slack >= inner[3])
+
+    @staticmethod
+    def _describe(info: Optional[dict]) -> str:
+        if not info:
+            return 'nothing'
+        kind = 'text field' if info.get('editable') else 'non-text element'
+        return f"{kind} in {info.get('exe') or '?'} at {info.get('rect')} (id {info.get('id')})"
 
     # ── Policy ───────────────────────────────────────────────────────────────
 

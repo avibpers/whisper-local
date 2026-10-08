@@ -132,7 +132,7 @@ class _Probe:
 
     def focused(self, hwnd: int) -> dict:
         info = {'id': (hwnd,), 'editable': False, 'password': False, 'hwnd': hwnd,
-                'root_pid': _root_pid(hwnd), 'exe': _foreground_exe(), 'why': ''}
+                'root_pid': _root_pid(hwnd), 'exe': _foreground_exe(), 'rect': None, 'why': ''}
         if self.uia is None:
             info['why'] = f'UI Automation unavailable: {self.error}'
             return info
@@ -153,6 +153,14 @@ class _Probe:
                 info['root_pid'] = _root_pid(native)
             control_type = int(el.CurrentControlType)
             info['password'] = bool(el.CurrentIsPassword)
+            # Where the field is on screen. Some apps re-create a box's DOM node
+            # on every re-render, which changes its runtime id; the rectangle
+            # is what tells the coordinator it is still the same field.
+            try:
+                r = el.CurrentBoundingRectangle
+                info['rect'] = (int(r.left), int(r.top), int(r.right), int(r.bottom))
+            except Exception:
+                pass
             if not el.CurrentIsEnabled:
                 info['why'] = 'disabled'
                 return info
@@ -267,7 +275,7 @@ class _Watcher:
                     now = time.monotonic()
                     if now - self._last_typing >= TYPING_REPEAT_SECONDS:
                         self._last_typing = now
-                        self._events.put(('typing',))
+                        self._events.put(('typing', f'key 0x{kb.vkCode:02X} flags 0x{kb.flags:02X}'))
         except Exception:
             pass
         return _user32.CallNextHookEx(None, code, wparam, lparam)
@@ -280,7 +288,7 @@ class _Watcher:
             if item[0] == 'quit':
                 break
             if item[0] == 'typing':
-                self._call(self.on_typing)
+                self._call(self.on_typing, item[1])
                 continue
             hwnd = item[1]
             deadline = time.monotonic() + FOCUS_SETTLE_SECONDS
@@ -297,7 +305,7 @@ class _Watcher:
                     quit_seen = True
                     break
                 if later[0] == 'typing':
-                    self._call(self.on_typing)
+                    self._call(self.on_typing, later[1])
                 elif later[0] == 'focus':
                     hwnd = later[1]
             if quit_seen:
@@ -319,7 +327,9 @@ _lock = threading.Lock()
 
 
 # Platform contract: start(on_focus, on_typing) -> bool, stop(), is_running().
-def start(on_focus: Callable[[dict], None], on_typing: Callable[[], None]) -> bool:
+# `on_typing` gets a short description of the key ("key 0x41"), so the console
+# can say which key ended a recording when it was not what the user expected.
+def start(on_focus: Callable[[dict], None], on_typing: Callable[..., None]) -> bool:
     global _watcher
     with _lock:
         if _watcher is not None:

@@ -220,6 +220,9 @@ auto_dictation: # Start listening when a text field gets focus (Windows)
     # Needs "Stop on silence" (vad_realtime_enabled) for the silence rules.
     enabled: false
     silence_timeout_seconds: 5
+    # Paste each phrase as you go: after this many seconds of silence the words
+    # so far are pasted and listening continues. 0 pastes only at the end.
+    phrase_pause_seconds: 1
 
 vad: # Voice Activity Detection (VAD)
     # Voice Activity Detection (VAD) Pre-check

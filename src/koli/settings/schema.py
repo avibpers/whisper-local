@@ -101,6 +101,9 @@ SCHEMA = [
     _S('auto_dictation.silence_timeout_seconds', 'Auto-listen silence limit', 'general', 'number',
        apply=NEXT_RECORDING, min=1, max=60, step=1, unit='seconds',
        help='How long it listens for you to start, and how long a pause ends it, when it started from a focused field.'),
+    _S('auto_dictation.phrase_pause_seconds', 'Paste after each pause of', 'general', 'number',
+       apply=NEXT_RECORDING, min=0, max=10, step=0.5, unit='seconds',
+       help='While auto-listening, a pause this long pastes what you said and keeps listening. 0 pastes only at the end.'),
 
     # ── Microphone & audio ───────────────────────────────────────────────────
     _S('audio.input_device', 'Microphone', 'audio', 'microphone', apply=BACKGROUND, mode=SIMPLE,

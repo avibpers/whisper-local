@@ -7,6 +7,7 @@
 # backend — keep the two signatures in sync.
 
 import logging
+import queue
 import time
 import threading
 from typing import Optional, Callable
@@ -34,6 +35,61 @@ def _model_size_hint(model_key: str) -> str:
         if key.startswith(prefix):
             return size
     return ''
+
+
+# ── The engine thread ────────────────────────────────────────────────────────
+# ctranslate2 keeps per-thread CUDA state and tears it down in a thread-exit
+# callback that calls cudaSetDevice. On a machine with two graphics cards that
+# call threw a std::runtime_error with nowhere to go, and Windows aborted the
+# whole process (crash dumps of 2026-10-08: RtlExitUserThread → TLS callback →
+# ctranslate2::set_device_index → throw). Any Python thread that transcribed
+# and then ended did it: the silence-stop path ran the transcription on a
+# thread spawned per event, while hotkey stops ran on the listener thread,
+# which never ends. So every ctranslate2 call goes through this one daemon
+# thread, which is never joined: it ends only with the process, and no
+# thread-exit callbacks run then.
+class _EngineThread:
+    def __init__(self, name: str = 'whisper-engine'):
+        self._name = name
+        self._queue = queue.SimpleQueue()
+        self._thread: Optional[threading.Thread] = None
+        self._lock = threading.Lock()
+
+    # Runs fn on the engine thread and waits for it; re-raises what it raised.
+    # Already on the engine thread (a nested call): run it inline.
+    def run(self, fn, *args, **kwargs):
+        if threading.current_thread() is self._thread:
+            return fn(*args, **kwargs)
+        self._ensure_started()
+        done = threading.Event()
+        box = {}
+        self._queue.put((fn, args, kwargs, done, box))
+        done.wait()
+        if 'error' in box:
+            raise box['error']
+        return box['result']
+
+    def is_engine_thread(self) -> bool:
+        return threading.current_thread() is self._thread
+
+    def _ensure_started(self):
+        with self._lock:
+            if self._thread is None or not self._thread.is_alive():
+                self._thread = threading.Thread(target=self._loop, name=self._name, daemon=True)
+                self._thread.start()
+
+    def _loop(self):
+        while True:
+            fn, args, kwargs, done, box = self._queue.get()
+            try:
+                box['result'] = fn(*args, **kwargs)
+            except BaseException as e:  # noqa: BLE001 - handed back to the caller
+                box['error'] = e
+            finally:
+                done.set()
+
+
+ENGINE_THREAD = _EngineThread()
 
 
 class WhisperEngine:
@@ -103,7 +159,8 @@ class WhisperEngine:
                 self._verify_gpu_runtime()
 
             model_source = self._get_model_source(self.model_key)
-            self.model = WhisperModel(
+            self.model = ENGINE_THREAD.run(
+                WhisperModel,
                 model_source,
                 device=self.device,
                 device_index=self.device_index if self.device == 'cuda' else 0,
@@ -116,7 +173,7 @@ class WhisperEngine:
             print(f"   ✓ Whisper model [{self.model_key}] ready!")
             device_label = "GPU" if self.device == "cuda" else "CPU"
             print(f"   ✓ Running on {device_label} with {self.compute_type} precision")
-            self._warmup()
+            ENGINE_THREAD.run(self._warmup)
 
         except Exception as e:
             self.logger.error(f"Failed to load Whisper model: {e}")
@@ -161,7 +218,8 @@ class WhisperEngine:
                 self.logger.info(f"Loading Whisper model: {new_model_key} (async)")
 
                 model_source = self._get_model_source(new_model_key)
-                new_model = WhisperModel(
+                new_model = ENGINE_THREAD.run(
+                    WhisperModel,
                     model_source,
                     device=self.device,
                     device_index=self.device_index if self.device == 'cuda' else 0,
@@ -251,12 +309,13 @@ class WhisperEngine:
             if self.hotwords:
                 transcribe_kwargs["hotwords"] = self.hotwords
 
-            segments, info = self.model.transcribe(audio_data, **transcribe_kwargs)
-            
-            transcribed_text = ""
-            for segment in segments:
-                transcribed_text += segment.text
-            
+            # The segments come back as a lazy generator; consuming it is where
+            # the decoding runs, so that stays on the engine thread too.
+            def decode():
+                segments, info = self.model.transcribe(audio_data, **transcribe_kwargs)
+                return ''.join(segment.text for segment in segments), info
+
+            transcribed_text, info = ENGINE_THREAD.run(decode)
             transcribed_text = transcribed_text.strip()
             
             end_time = time.time()

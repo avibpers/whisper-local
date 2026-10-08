@@ -4564,7 +4564,8 @@ class _AutoCfg:
 
 
 def _auto_field(**over):
-    info = {'id': (1, 2, 3), 'editable': True, 'password': False, 'hwnd': 42, 'root_pid': 999, 'exe': 'chrome.exe'}
+    info = {'id': (1, 2, 3), 'editable': True, 'password': False, 'hwnd': 42, 'root_pid': 999, 'exe': 'chrome.exe',
+            'rect': (100, 100, 400, 140)}
     info.update(over)
     return info
 
@@ -4606,7 +4607,7 @@ class AutoDictationCoordinatorTests(unittest.TestCase):
         ad.on_focus(_auto_field(id=(7,)))              # same field reported again
         ad.flush_timer()
         self.assertEqual(self.sm.starts, 1, 'the same field must not re-arm by itself')
-        ad.on_focus(_auto_field(id=(8,), editable=False))   # a button
+        ad.on_focus(_auto_field(id=(8,), editable=False, rect=(500, 500, 540, 520)))   # a button
         ad.on_focus(_auto_field(id=(7,)))              # back to the field
         ad.flush_timer()
         self.assertEqual(self.sm.starts, 2)
@@ -4649,18 +4650,41 @@ class AutoDictationCoordinatorTests(unittest.TestCase):
         ad = self._make()
         ad.on_focus(_auto_field())
         ad.flush_timer()
-        ad.on_typing()
-        self.assertEqual(self.sm.cancels, ['you started typing'])
+        ad.on_typing('key 0x41 flags 0x00')
+        self.assertEqual(self.sm.cancels, ['you started typing (key 0x41 flags 0x00)'])
         self.sm.auto = False                       # a hotkey recording is not ours
         ad.on_typing()
         self.assertEqual(len(self.sm.cancels), 1)
+
+    # Cursor and other Chromium apps re-create the box's DOM node on re-render,
+    # so the same field comes back with a new runtime id. Seen in the user's
+    # log as cancel-then-restart every few seconds while nothing moved.
+    def test_same_field_with_a_new_runtime_id_is_still_the_same_field(self):
+        ad = self._make()
+        ad.on_focus(_auto_field(id=(1,)))
+        ad.flush_timer()
+        ad.on_focus(_auto_field(id=(2,)))                       # same hwnd and rect
+        ad.on_focus(_auto_field(id=(3,), rect=(102, 101, 398, 139)))   # inner node of the box
+        ad.on_focus(_auto_field(id=(4,), rect=(90, 90, 410, 150)))     # outer wrapper of the box
+        ad.flush_timer()
+        self.assertEqual(self.sm.cancels, [])
+        self.assertEqual(self.sm.starts, 1)
+
+    def test_a_field_elsewhere_in_the_same_window_is_another_field(self):
+        ad = self._make()
+        ad.on_focus(_auto_field(id=(1,)))
+        ad.flush_timer()
+        ad.on_focus(_auto_field(id=(2,), rect=(100, 200, 400, 240)))   # the next form field
+        self.assertEqual(self.sm.cancels, ['the text field lost focus'])
+        ad.flush_timer()
+        self.assertEqual(self.sm.starts, 2)
 
     def test_leaving_the_field_cancels_the_recording(self):
         ad = self._make()
         ad.on_focus(_auto_field(id=(1,)))
         ad.flush_timer()
         self.assertTrue(self.sm.auto)
-        ad.on_focus(_auto_field(id=(2,), editable=False))   # clicked a button or another window
+        ad.on_focus(_auto_field(id=(2,), editable=False, rect=(500, 500, 540, 520)))   # a button or another window
         self.assertEqual(self.sm.cancels, ['the text field lost focus'])
         ad.flush_timer()
         self.assertEqual(self.sm.starts, 1, 'a button does not start a new one')
@@ -4669,7 +4693,7 @@ class AutoDictationCoordinatorTests(unittest.TestCase):
         ad = self._make()
         ad.on_focus(_auto_field(id=(1,)))
         ad.flush_timer()
-        ad.on_focus(_auto_field(id=(2,)))
+        ad.on_focus(_auto_field(id=(2,), hwnd=77))              # a field in another window
         self.assertEqual(self.sm.cancels, ['the text field lost focus'])
         ad.flush_timer()
         self.assertEqual(self.sm.starts, 2)
@@ -4725,6 +4749,24 @@ class AutoDictationVadTests(unittest.TestCase):
         self.assertIn(VadEvent.SILENCE_TIMEOUT, events)
         self.assertFalse(det.had_speech)
 
+    def test_phrase_pause_fires_once_per_pause_after_speech_only(self):
+        from koli.voice_activity_detection import VadEvent
+        det = self._detector(timeout=0.16)        # ten frames
+        det.set_phrase_pause(0.032)               # two frames
+        silence = [det.process_chunk(self._chunk()) for _ in range(4)]
+        self.assertNotIn(VadEvent.PHRASE_PAUSE, silence, 'no speech yet, nothing to deliver')
+        self.vad.probability = 0.9
+        det.process_chunk(self._chunk())
+        self.vad.probability = 0.0
+        events = [det.process_chunk(self._chunk()) for _ in range(5)]
+        self.assertEqual(events.count(VadEvent.PHRASE_PAUSE), 1, 'once per pause')
+        self.assertFalse(det.speech_since_phrase, 'that phrase is delivered')
+        self.assertTrue(det.had_speech)
+        more = [det.process_chunk(self._chunk()) for _ in range(6)]
+        self.assertIn(VadEvent.SILENCE_TIMEOUT, more, 'the long silence still ends the recording')
+        self.assertNotIn(VadEvent.PHRASE_PAUSE, more)
+        self.assertEqual(det.snapshot()['phrase_pause_s'], 0.032)
+
     def test_set_silence_timeout_changes_the_frame_budget(self):
         det = self._detector(timeout=0.32)        # twenty frames
         det.set_silence_timeout(0.048)
@@ -4739,6 +4781,7 @@ class AutoDictationStateManagerTests(unittest.TestCase):
         sm = StateManager.__new__(StateManager)
         sm.logger = __import__('logging').getLogger('test')
         sm._state_lock = __import__('threading').Lock()
+        sm._pipeline_lock = __import__('threading').Lock()
         sm._auto_started = True
         sm._command_mode = False
         sm._rephrase_mode = False
@@ -4758,7 +4801,8 @@ class AutoDictationStateManagerTests(unittest.TestCase):
         sm.vad_manager = mock.Mock(vad_silence_timeout_seconds=30.0)
         sm.audio_recorder = mock.Mock()
         sm.audio_recorder.get_recording_status.return_value = True
-        sm.audio_recorder.continuous_vad = mock.Mock(had_speech=had_speech, silence_timeout_sec=5.0)
+        sm.audio_recorder.continuous_vad = mock.Mock(had_speech=had_speech, silence_timeout_sec=5.0,
+                                                     phrase_pause_sec=0.0, speech_since_phrase=had_speech)
         sm._transcription_pipeline = mock.Mock()
         return sm
 
@@ -4789,7 +4833,7 @@ class AutoDictationStateManagerTests(unittest.TestCase):
         import unittest.mock as mock
         sm = self._sm(had_speech=False)
         sm._auto_started = False
-        sm.config_manager = mock.Mock(config={'auto_dictation': {'silence_timeout_seconds': 5}})
+        sm.config_manager = mock.Mock(config={'auto_dictation': {'silence_timeout_seconds': 5, 'phrase_pause_seconds': 1}})
         sm._apply_recording_context = mock.Mock()
         sm._maybe_pause_media = mock.Mock()
         sm._setup_streaming_delivery = mock.Mock()
@@ -4799,9 +4843,9 @@ class AutoDictationStateManagerTests(unittest.TestCase):
             self.assertTrue(sm.begin_auto_recording())
         said = ' '.join(str(c.args[0]) for c in out.call_args_list)
         self.assertIn('Listening', said)
-        self.assertIn('Typing', said)
+        self.assertIn('typing', said.lower())
         sm.audio_feedback.play_start_sound.assert_not_called()
-        sm.audio_recorder.start_recording.assert_called_once_with(silence_timeout=5.0)
+        sm.audio_recorder.start_recording.assert_called_once_with(silence_timeout=5.0, phrase_pause=1.0)
 
     def test_typing_cancel_only_touches_auto_recordings(self):
         import unittest.mock as mock
@@ -4812,6 +4856,64 @@ class AutoDictationStateManagerTests(unittest.TestCase):
         sm._auto_started = False                      # a hotkey recording
         self.assertFalse(sm.cancel_auto_recording('typing'))
         sm.audio_recorder.cancel_recording.assert_called_once()
+
+    # Phrase delivery: a short pause pastes the words so far and keeps listening.
+    def test_phrase_pause_delivers_without_ending_the_recording(self):
+        import unittest.mock as mock
+        import numpy as np
+        from koli.voice_activity_detection import VadEvent
+        sm = self._sm(had_speech=True)
+        sm.audio_recorder.take_recorded_audio.return_value = np.zeros(16000, dtype=np.float32)
+        sm.handle_vad_event(VadEvent.PHRASE_PAUSE)
+        sm.audio_recorder.take_recorded_audio.assert_called_once()
+        sm.audio_recorder.stop_recording.assert_not_called()
+        sm._transcription_pipeline.assert_called_once()
+        self.assertTrue(sm._transcription_pipeline.call_args.kwargs.get('phrase'))
+        sm._auto_started = False                      # a hotkey recording never phrases
+        sm.handle_vad_event(VadEvent.PHRASE_PAUSE)
+        sm.audio_recorder.take_recorded_audio.assert_called_once()
+
+    def test_phrase_run_pastes_with_a_space_silently_and_stays_recording(self):
+        import unittest.mock as mock
+        import numpy as np
+        sm = self._sm(had_speech=True)
+        del sm._transcription_pipeline                # use the real one
+        sm.audio_recorder.get_audio_duration.return_value = 1.5
+        sm.whisper_engine = mock.Mock(last_info={})
+        sm.whisper_engine.transcribe_audio.return_value = 'hello there'
+        sm.app_rules = mock.Mock()
+        sm.app_rules.match_for_foreground.return_value = None
+        sm.config_manager = mock.Mock(config={})
+        sm.config_manager.get_postprocess_config.return_value = {}
+        sm.clipboard_manager = mock.Mock(auto_paste=True, delivery_method='paste')
+        sm.clipboard_manager.deliver_transcription.return_value = True
+        sm._foreground_is_textable = lambda: True
+        sm._pending_model_change = sm._pending_device_change = None
+        sm._idle_actions = []
+        sm._update_ui_state = mock.Mock()
+        with mock.patch('builtins.print'), mock.patch('koli.state_manager.publish'), \
+             mock.patch('koli.state_manager.postprocess', side_effect=lambda t, cfg, trace=None: t), \
+             mock.patch('koli.state_manager.record_transcription'), mock.patch('koli.state_manager.record_transcript'), \
+             mock.patch('koli.state_manager.foreground') as fg:
+            fg.get_foreground_app.return_value = {'exe': 'discord.exe'}
+            sm._transcription_pipeline(np.zeros(16000, dtype=np.float32), phrase=True)
+        sm.clipboard_manager.deliver_transcription.assert_called_once_with('hello there ', False)
+        sm.audio_feedback.play_stop_sound.assert_not_called()
+        sm.audio_feedback.play_transcription_complete_sound.assert_not_called()
+        sm._update_ui_state.assert_not_called()       # still "recording" on the bar
+        self.assertTrue(sm._auto_started, 'the session goes on')
+        self.assertFalse(sm.is_processing)
+
+    def test_session_ends_quietly_when_every_phrase_was_already_pasted(self):
+        import unittest.mock as mock
+        from koli.voice_activity_detection import VadEvent
+        sm = self._sm(had_speech=True)
+        sm.audio_recorder.continuous_vad.phrase_pause_sec = 1.0
+        sm.audio_recorder.continuous_vad.speech_since_phrase = False   # nothing new since the last paste
+        with mock.patch('builtins.print'):
+            sm.handle_vad_event(VadEvent.SILENCE_TIMEOUT)
+        sm.audio_recorder.cancel_recording.assert_called_once()
+        sm._transcription_pipeline.assert_not_called()
 
     def test_state_event_says_auto_while_listening(self):
         import unittest.mock as mock
@@ -4847,6 +4949,66 @@ class AutoDictationTypingFilterTests(unittest.TestCase):
             self.assertFalse(self.classify(vk, 0), hex(vk))
 
 
+# ctranslate2 tears down per-thread CUDA state in a thread-exit callback that
+# threw on the user's two-GPU machine and aborted the process (crash dumps of
+# 2026-10-08). Every ctranslate2 call therefore runs on one persistent thread.
+class EngineThreadTests(unittest.TestCase):
+    def setUp(self):
+        try:
+            from koli.whisper_engine import _EngineThread
+        except Exception:
+            self.skipTest('whisper_engine not importable (faster_whisper absent)')
+        self.engine_thread = _EngineThread(name='engine-under-test')
+
+    def test_every_call_runs_on_the_same_long_lived_daemon_thread(self):
+        import threading
+        names = [self.engine_thread.run(lambda: threading.current_thread().name) for _ in range(3)]
+        self.assertEqual(names, ['engine-under-test'] * 3)
+        self.assertTrue(self.engine_thread._thread.daemon)
+        self.assertTrue(self.engine_thread._thread.is_alive(), 'it must outlive the calls')
+
+    def test_results_and_errors_come_back_to_the_caller(self):
+        self.assertEqual(self.engine_thread.run(lambda a, b=1: a + b, 2, b=3), 5)
+        with self.assertRaises(ValueError):
+            self.engine_thread.run(lambda: (_ for _ in ()).throw(ValueError('boom')))
+        self.assertEqual(self.engine_thread.run(lambda: 'still fine'), 'still fine')
+
+    def test_nested_calls_from_the_engine_thread_run_inline(self):
+        inner = self.engine_thread.run(lambda: self.engine_thread.run(lambda: self.engine_thread.is_engine_thread()))
+        self.assertTrue(inner)
+
+    def test_transcription_decodes_on_the_engine_thread(self):
+        import threading
+        import unittest.mock as mock
+        import numpy as np
+        from koli import whisper_engine
+        seen = []
+
+        class Segment:
+            text = 'hello'
+
+        class Model:
+            def transcribe(self, audio, **kwargs):
+                seen.append(threading.current_thread().name)
+                def segments():
+                    seen.append(threading.current_thread().name)
+                    yield Segment()
+                return segments(), mock.Mock(language='en', language_probability=0.9)
+
+        engine = whisper_engine.WhisperEngine.__new__(whisper_engine.WhisperEngine)
+        engine.model = Model()
+        engine.vad_manager = None
+        engine.logger = __import__('logging').getLogger('test')
+        engine.beam_size, engine.language, engine.task = 1, 'en', 'transcribe'
+        engine.initial_prompt = engine.hotwords = None
+        engine.model_key, engine.device, engine.compute_type = 'tiny', 'cpu', 'int8'
+        engine.log_transcriptions = False
+        with mock.patch('builtins.print'):
+            text = engine.transcribe_audio(np.zeros(16000, dtype=np.float32))
+        self.assertEqual(text, 'hello')
+        self.assertEqual(seen, ['whisper-engine', 'whisper-engine'], 'both the call and the decode')
+
+
 class AutoDictationShapeTests(unittest.TestCase):
     def test_rule_key_is_accepted(self):
         from koli.services.rules import RULE_KEYS
@@ -4862,6 +5024,50 @@ class AutoDictationShapeTests(unittest.TestCase):
             for fn in ('start', 'stop', 'is_running', 'classify_key'):
                 self.assertTrue(callable(getattr(mod, fn, None)), f'{name}.{fn}')
 
+    # The user's log: the configured mic failed to open, the recorder fell back
+    # to a 48 kHz default device but kept the 16 kHz block size, and the
+    # silence detector never saw a proper frame again. Hotkey recordings hid
+    # it; auto-dictation depends on that detector to end a recording.
+    def test_falling_back_to_the_default_device_recomputes_the_vad_block_size(self):
+        import unittest.mock as mock
+        from koli.audio_recorder import AudioRecorder
+        rec = AudioRecorder.__new__(AudioRecorder)
+        rec.logger = __import__('logging').getLogger('test')
+        rec.device = 24
+        rec.device_hostapi = 'Windows WDM-KS'
+        rec.device_native_rate = 48000
+        rec._configure_for_device_rate()
+        self.assertEqual((rec._recording_rate, rec._vad_blocksize), (16000, 256))
+
+        def default_is_wasapi(info):
+            rec.device_hostapi = 'Windows WASAPI'
+            rec.device_native_rate = 48000
+        with mock.patch.object(rec, '_resolve_hostapi', side_effect=default_is_wasapi):
+            rec._fall_back_to_default_device()
+        self.assertIsNone(rec.device)
+        self.assertEqual((rec._recording_rate, rec._vad_blocksize), (48000, 768))
+        self.assertTrue(rec._needs_resampling_cached)
+        self.assertEqual(rec._preroll_max_chunks, int(AudioRecorder.PREROLL_SECONDS / (768 / 48000)))
+
+    def test_taking_recorded_audio_keeps_the_recording_going(self):
+        import unittest.mock as mock
+        import numpy as np
+        from koli.audio_recorder import AudioRecorder
+        rec = AudioRecorder.__new__(AudioRecorder)
+        rec.logger = __import__('logging').getLogger('test')
+        rec.is_recording = True
+        rec.recording_start_time = 1.0
+        rec._buffer_lock = __import__('threading').Lock()
+        rec._buffer = __import__('collections').deque([np.ones((256, 1), dtype=np.float32)] * 4)
+        rec._build_audio_array = lambda chunks: np.concatenate(chunks) if chunks else None
+        audio = rec.take_recorded_audio()
+        self.assertEqual(len(audio), 1024)
+        self.assertTrue(rec.is_recording, 'the microphone stays open')
+        self.assertEqual(len(rec._buffer), 0, 'the next phrase starts clean')
+        self.assertGreater(rec.recording_start_time, 1.0, 'the length limit restarts per phrase')
+        rec.is_recording = False
+        self.assertIsNone(rec.take_recorded_audio())
+
     def test_recorder_restores_the_configured_timeout_for_hotkey_recordings(self):
         import unittest.mock as mock
         from koli.audio_recorder import AudioRecorder
@@ -4874,8 +5080,9 @@ class AutoDictationShapeTests(unittest.TestCase):
         rec._buffer = []
         rec._vad_blocksize = 256
         rec._recording_rate = 16000
-        rec.start_recording(silence_timeout=5.0)
+        rec.start_recording(silence_timeout=5.0, phrase_pause=1.0)
         rec.continuous_vad.set_silence_timeout.assert_called_once_with(5.0)
+        rec.continuous_vad.set_phrase_pause.assert_called_with(1.0)
         rec.is_recording = False
         rec.continuous_vad.silence_timeout_sec = 5.0
         rec.start_recording()

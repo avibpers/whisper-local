@@ -15,8 +15,9 @@ gets out of the way the moment you type.
 |-----------|----------------|
 | A text field gets keyboard focus, feature on | Starts a recording silently. The floating bar shows "Listening". No start sound. |
 | No speech for `silence_timeout_seconds` (default 5) since the start | Cancels quietly: no transcription, no sound. |
-| Speech, then `silence_timeout_seconds` of silence | Stops and delivers like any recording (paste, complete sound, history). |
-| You type while it is listening | Cancels and discards the audio, quietly. |
+| Speech, then `silence_timeout_seconds` of silence | Stops and delivers like any recording (paste, complete sound, history). With phrase delivery on, anything not yet pasted is pasted; if everything was already pasted, the session just ends quietly. |
+| You pause for `phrase_pause_seconds` (default 1) after speaking | Pastes what you said so far, with a trailing space, silently, and keeps listening. The 5 s limit then counts from that pause. |
+| You type while it is listening | Cancels and discards the audio, quietly. Phrases already pasted stay. |
 | Focus leaves the field (another field, a button, another window) | Cancels and discards, quietly: once focus has moved, a paste would land wherever you clicked. Another text field then starts its own recording. |
 | Focus stays in the same field after a stop or cancel | Nothing. It arms again only when focus moves to a field (the same one counts after focus has been elsewhere). |
 | Password field | Never starts. |
@@ -105,7 +106,12 @@ class AutoDictation:
 
 Policy in `on_focus`, in order, each one logged at debug level when it says no:
 
-1. Same element id as the last focus report: ignore (re-arm rule).
+1. Same field as the last focus report: ignore (re-arm rule). Same means
+   the same runtime id, or the same native window with one bounding
+   rectangle inside the other. Chromium apps (Cursor, VS Code, chat boxes)
+   re-create a box's DOM node on re-render and hand out a new runtime id for
+   the same field, and focus can land on an inner or outer node of one box;
+   the rectangle is what stays put. (`rect` is part of the focus report.)
 2. Remember the new id as "last focused" (even if it is not editable, so
    returning to a field after a button click counts as a fresh focus).
 3. `editable` false, or `password` true: no.
@@ -180,6 +186,22 @@ Floating bar: while `state.mode === 'auto'`, the recording bubble shows a
 the state manager (`set_auto_dictation`), starts it if enabled, and stops it
 in `shutdown_app`. The app-window pause (`set_paused`) does not unhook; the
 coordinator simply refuses to start while paused.
+
+## Found while testing (2026-10-08)
+
+Two faults outside this feature only showed up because a focus-started
+recording ends on its own, on the VAD's thread, where a hotkey recording
+ends on the listener thread:
+
+- **Microphone fallback kept the old VAD block size.** When the configured
+  mic fails to open and recording moves to the default input, the block
+  size now follows the new rate (`AudioRecorder._configure_for_device_rate`).
+- **ctranslate2 aborts the process when a thread that used CUDA exits.** Its
+  thread-exit callback calls `set_device_index`, which threw on a two-GPU
+  machine (`device_index: 1`); a C++ exception there has nowhere to go. All
+  engine calls now run on one persistent thread (`whisper_engine.ENGINE_THREAD`).
+  Crash analysis: WinDbg's `cdb` on `%LOCALAPPDATA%\CrashDumps`, and
+  `crashes/faults.log` written by `faulthandler` from now on.
 
 ## Out of scope
 
