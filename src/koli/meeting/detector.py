@@ -52,10 +52,12 @@ def find_sources(sessions: list, tabs: list, rules: list, detect_default: str) -
     detect_default = detect_default if detect_default in MODES else 'auto'
     meeting_rules = _meeting_rules(rules)
     active = []
+    device_of = {}       # exe -> the output device its active session plays on
     for s in sessions:
         exe = (s.get('exe') or '').lower()
         if exe and int(s.get('state', 0)) == SESSION_ACTIVE and exe not in active:
             active.append(exe)
+            device_of[exe] = str(s.get('device') or '')
     sources = []
     for exe in active:
         if exe in BROWSERS:
@@ -76,7 +78,7 @@ def find_sources(sessions: list, tabs: list, rules: list, detect_default: str) -
                     continue
                 found = MEET_CODE.search(title.lower())
                 sources.append({'key': f'{exe}|{title}', 'app': exe, 'kind': 'browser', 'title': title,
-                                'code': found.group(1) if found else '', 'mode': mode})
+                                'code': found.group(1) if found else '', 'mode': mode, 'device': device_of[exe]})
             continue
         rule = next((r for r in meeting_rules if rule_matches(r, exe, '')), None)
         if rule is None:
@@ -84,7 +86,8 @@ def find_sources(sessions: list, tabs: list, rules: list, detect_default: str) -
         mode = _mode_of(rule, detect_default)
         if mode == 'off':
             continue
-        sources.append({'key': exe, 'app': exe, 'kind': 'native', 'title': '', 'code': '', 'mode': mode})
+        sources.append({'key': exe, 'app': exe, 'kind': 'native', 'title': '', 'code': '', 'mode': mode,
+                        'device': device_of[exe]})
     return sources
 
 

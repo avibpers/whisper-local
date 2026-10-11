@@ -22,7 +22,8 @@ NOTICE_SECONDS = 6.0
 # Friendly names for the apps the shipped rules know.
 APP_NAMES = {'discord.exe': 'Discord', 'zoom.exe': 'Zoom', 'ms-teams.exe': 'Teams', 'teams.exe': 'Teams',
              'slack.exe': 'Slack', 'chrome.exe': 'Chrome', 'msedge.exe': 'Edge', 'brave.exe': 'Brave'}
-MANUAL_SOURCE = {'key': 'manual', 'app': '', 'kind': 'manual', 'title': '', 'code': ''}
+MANUAL_SOURCE = {'key': 'manual', 'app': '', 'kind': 'manual', 'title': '', 'code': '', 'device': ''}
+SOURCE_KEYS = ('key', 'app', 'kind', 'title', 'code', 'device')
 
 
 def _default_schedule(seconds: float, fn: Callable) -> Callable[[], None]:
@@ -432,7 +433,7 @@ class SessionManager:
 
     def _begin(self, source: dict, notice: Optional[str]):
         now = self._now()
-        source = {k: source.get(k, '') for k in ('key', 'app', 'kind', 'title', 'code')}
+        source = {k: source.get(k, '') for k in SOURCE_KEYS}
         language = str(self._settings('meeting.language', 'auto') or 'auto')
         meeting = new_meeting(self._unique_id(now), title_for(source), source, now, language)
         self.meeting = meeting

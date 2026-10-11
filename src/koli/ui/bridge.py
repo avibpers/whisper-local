@@ -340,7 +340,14 @@ class Bridge:
         from ..services import system
         if name not in system.EXTRAS:
             raise ValueError(f"Unknown optional package: {name}")
-        return self._task(f"Installing the {name} package", lambda r: system.extra_install(name, r), kind='install')
+
+        # The loopback package turns meeting detection on as soon as it lands.
+        def done(task):
+            meetings = getattr(self._host.ctx, 'meetings', None)
+            if name == 'loopback' and task.status == 'done' and meetings is not None:
+                meetings.package_installed()
+        return self._tasks.run(f"Installing the {name} package", lambda r: system.extra_install(name, r),
+                               kind='install', on_done=done).id
 
     @_api
     def gpu_list(self):

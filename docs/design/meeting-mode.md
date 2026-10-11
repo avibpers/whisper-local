@@ -299,6 +299,16 @@ re-clusters speakers and cleans text; search across meetings.
   ended still lands in that meeting's file; ending a meeting drops nothing.
 - Capture callbacks run outside the session lock (queued as effects), and
   the chunker's callbacks outside its own lock.
+- Found in the first real test (a Discord call in Hebrew): the call played
+  on a device that was not the Windows default output, so the default-only
+  session probe never saw it and the default-device loopback heard silence.
+  Sessions are now read from every active output device and carry the
+  device name; a detected source's loopback opens on that device, a meeting
+  started by hand listens on every device with sound (the default when none
+  has), and installing the loopback package mid-session starts detection.
+- Short fragments can be misdetected (en/es/it for Hebrew "no, no, no");
+  "Languages I speak" in Settings → General constrains detection for
+  meetings too.
 
 ## Testing
 

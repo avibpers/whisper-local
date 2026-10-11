@@ -335,7 +335,7 @@ class DetectorTests(unittest.TestCase):
         from koli.meeting.detector import find_sources
         sources = find_sources([{'pid': 1, 'exe': 'discord.exe', 'state': 1}], [], RULES, 'auto')
         self.assertEqual(sources, [{'key': 'discord.exe', 'app': 'discord.exe', 'kind': 'native', 'title': '', 'code': '',
-                                    'mode': 'auto'}])
+                                    'mode': 'auto', 'device': ''}])
 
     def test_inactive_session_and_unlisted_app_are_ignored(self):
         from koli.meeting.detector import find_sources
@@ -357,7 +357,7 @@ class DetectorTests(unittest.TestCase):
                 {'exe': 'chrome.exe', 'title': 'Meet - abc-defg-hij', 'media': 'Camera and microphone in use', 'hwnd': 9}]
         sources = find_sources(sessions, tabs, RULES, 'auto')
         self.assertEqual(sources, [{'key': 'chrome.exe|Meet - abc-defg-hij', 'app': 'chrome.exe', 'kind': 'browser',
-                                    'title': 'Meet - abc-defg-hij', 'code': 'abc-defg-hij', 'mode': 'auto'}])
+                                    'title': 'Meet - abc-defg-hij', 'code': 'abc-defg-hij', 'mode': 'auto', 'device': ''}])
 
     def test_browser_tab_without_audio_session_is_not_a_source(self):
         from koli.meeting.detector import find_sources
@@ -754,8 +754,9 @@ class ServiceTests(unittest.TestCase):
         fake_loopback = type('L', (), {'start': lambda s: None, 'stop': lambda s: None})
         svc = MeetingService(ctx, store=MeetingStore(Path(self.tmp.name)),
                              publish=lambda t, p: self.events.append((t, p)),
-                             loopback_factory=lambda on_block, on_error: fake_loopback(),
-                             embedder_factory=lambda: None, loopback_available=lambda: True)
+                             loopback_factory=lambda on_block, on_error, device=None: fake_loopback(),
+                             embedder_factory=lambda: None, loopback_available=lambda: True,
+                             sessions_fn=lambda: [])
         self.addCleanup(svc.shutdown)
         return svc
 
@@ -828,9 +829,10 @@ class FakeLoop:
     # A loopback stream the test drives by hand: blocks go in through on_block.
     made = []
 
-    def __init__(self, on_block, on_error):
+    def __init__(self, on_block, on_error, device=None):
         self.on_block = on_block
         self.on_error = on_error
+        self.device = device
         self.started = False
         self.stopped = False
         FakeLoop.made.append(self)
@@ -984,7 +986,8 @@ class ReviewFixTests(unittest.TestCase):
             self.probs.append(1)
             return lambda frame: 0.9
         args = dict(store=MeetingStore(Path(tmp.name)), publish=lambda t, p: None, loopback_factory=FakeLoop,
-                    embedder_factory=lambda: None, speech_prob_factory=prob_factory, loopback_available=lambda: True)
+                    embedder_factory=lambda: None, speech_prob_factory=prob_factory, loopback_available=lambda: True,
+                    sessions_fn=lambda: [])
         args.update(kw)
         svc = MeetingService(ctx, **args)
         self.addCleanup(svc.shutdown)
@@ -1034,6 +1037,120 @@ class ReviewFixTests(unittest.TestCase):
                                 'speech_s': 1.0, 'meeting_id': svc.state()['id']})
         svc.end()
         self.assertGreater(svc.transcriber.queued_seconds(), 0)
+
+
+class DeviceRoutingTests(unittest.TestCase):
+    # Sessions are read from every output device, each tagged with the device
+    # it plays on, so a call on the headset is seen even when the monitor is
+    # the Windows default.
+    def test_sessions_carry_their_output_device(self):
+        import importlib.util
+        path = ROOT / 'src' / 'koli' / 'platform' / 'windows' / 'audio_sessions.py'
+        spec = importlib.util.spec_from_file_location('win_audio_sessions', path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        class Proc:
+            def __init__(self, name, pid):
+                self._name, self.pid = name, pid
+
+            def name(self):
+                return self._name
+
+        class Session:
+            def __init__(self, name, pid, state):
+                self.Process = Proc(name, pid) if name else None
+                self.State = state
+        devices = [('Speakers (Logitech USB Headset)', 'dev-1', [Session('Discord.exe', 10, 1), Session(None, 0, 0)]),
+                   ('LG ULTRAWIDE', 'dev-2', [Session('Spotify.exe', 20, 0)])]
+        out = mod.active(devices_fn=lambda: devices)
+        self.assertEqual(out, [{'pid': 10, 'exe': 'discord.exe', 'state': 1, 'device': 'Speakers (Logitech USB Headset)',
+                                'device_id': 'dev-1'},
+                               {'pid': 20, 'exe': 'spotify.exe', 'state': 0, 'device': 'LG ULTRAWIDE', 'device_id': 'dev-2'}])
+
+    def test_source_names_the_device_its_sound_plays_on(self):
+        from koli.meeting.detector import find_sources
+        sessions = [{'pid': 1, 'exe': 'discord.exe', 'state': 0, 'device': 'LG ULTRAWIDE', 'device_id': 'd2'},
+                    {'pid': 1, 'exe': 'discord.exe', 'state': 1, 'device': 'Speakers (Logitech USB Headset)', 'device_id': 'd1'}]
+        sources = find_sources(sessions, [], RULES, 'auto')
+        self.assertEqual(sources[0]['device'], 'Speakers (Logitech USB Headset)')
+
+    def test_meeting_keeps_the_source_device(self):
+        from koli.meeting.session import SessionManager
+        from koli.meeting.store import MeetingStore
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        clock = FakeClock(at(30))
+        sm = SessionManager(MeetingStore(Path(tmp.name)), start_capture=lambda m: None, stop_capture=lambda: None,
+                            publish=lambda t, p: None, settings=lambda p, d=None: d, now=clock.now, schedule=clock.schedule)
+        sm.start({**discord(), 'device': 'Speakers (Logitech USB Headset)'})
+        self.assertEqual(sm.current()['source']['device'], 'Speakers (Logitech USB Headset)')
+
+    def _service(self, sessions=None, enabled=False):
+        from koli.services.meetings import MeetingService
+        from koli.meeting.store import MeetingStore
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        values = {'meeting.enabled': enabled, 'meeting.detect': 'auto', 'meeting.include_me': True,
+                  'meeting.gap_minutes': 10, 'meeting.start_speech_seconds': 3, 'meeting.language': 'auto',
+                  'meeting.model': '', 'meeting.speaker_model': 'eres2net'}
+        ctx = type('Ctx', (), {})()
+        ctx.state_manager = FakeStateManager()
+        ctx.config_manager = FakeConfig(values)
+        ctx.model_registry = None
+        FakeLoop.made = []
+        svc = MeetingService(ctx, store=MeetingStore(Path(tmp.name)), publish=lambda t, p: None, loopback_factory=FakeLoop,
+                             embedder_factory=lambda: None, speech_prob_factory=lambda: (lambda f: 0.9),
+                             loopback_available=lambda: True, sessions_fn=lambda: list(sessions or []))
+        self.addCleanup(svc.shutdown)
+        return svc
+
+    # The idle listener and the meeting's loopback open on the device the
+    # source plays on, not on the Windows default.
+    def test_listener_and_meeting_follow_the_source_device(self):
+        svc = self._service()
+        src = {**discord(), 'device': 'Speakers (Logitech USB Headset)'}
+        svc._on_sources([src])
+        self.assertEqual(FakeLoop.made[0].device, 'Speakers (Logitech USB Headset)')
+        for i in range(40):
+            FakeLoop.made[0].on_block(np.full(1600, 0.5, dtype=np.float32), 100.0 + i * 0.1)
+        self.assertEqual(svc.state()['state'], 'live')
+        self.assertEqual([l.device for l in FakeLoop.made[1:]], ['Speakers (Logitech USB Headset)'])
+
+    # A meeting started by hand listens on every device that has sound, and
+    # on the default output when none does.
+    def test_manual_start_listens_on_every_device_with_sound(self):
+        sessions = [{'pid': 1, 'exe': 'discord.exe', 'state': 1, 'device': 'Headset', 'device_id': 'd1'},
+                    {'pid': 2, 'exe': 'spotify.exe', 'state': 1, 'device': 'Monitor', 'device_id': 'd2'},
+                    {'pid': 3, 'exe': 'x.exe', 'state': 0, 'device': 'Broadcast', 'device_id': 'd3'}]
+        svc = self._service(sessions=sessions)
+        svc.start()
+        self.assertEqual(sorted(l.device for l in FakeLoop.made), ['Headset', 'Monitor'])
+        svc.end()
+        self.assertTrue(all(l.stopped for l in FakeLoop.made))
+        quiet = self._service(sessions=[])
+        quiet.start()
+        self.assertEqual([l.device for l in FakeLoop.made], [None])
+
+    # Installing the loopback package while the app runs turns detection on.
+    def test_package_install_starts_the_detector(self):
+        available = {'ok': False}
+        from koli.services.meetings import MeetingService
+        from koli.meeting.store import MeetingStore
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        ctx = type('Ctx', (), {})()
+        ctx.state_manager = FakeStateManager()
+        ctx.config_manager = FakeConfig({'meeting.enabled': True, 'meeting.detect': 'auto'})
+        ctx.model_registry = None
+        svc = MeetingService(ctx, store=MeetingStore(Path(tmp.name)), publish=lambda t, p: None, loopback_factory=FakeLoop,
+                             embedder_factory=lambda: None, loopback_available=lambda: available['ok'],
+                             report=lambda m: None)
+        self.addCleanup(svc.shutdown)
+        self.assertIsNone(svc.detector)
+        available['ok'] = True
+        svc.package_installed()
+        self.assertIsNotNone(svc.detector)
 
 
 if __name__ == '__main__':

@@ -134,26 +134,38 @@ class Chunker:
 
 # ── Loopback ─────────────────────────────────────────────────────────────────
 
-def _open_default_loopback(rate: int, frames: int):
+# The loopback of one output device by name (as the volume mixer and pycaw
+# call it), or of the Windows default output when no name is given or the
+# name is unknown to soundcard.
+def _open_loopback(device: Optional[str], rate: int, frames: int):
     import soundcard as sc
-    speaker = sc.default_speaker()
-    mic = sc.get_microphone(id=str(speaker.name), include_loopback=True)
+    mic = None
+    if device:
+        try:
+            mic = sc.get_microphone(id=str(device), include_loopback=True)
+        except Exception as e:
+            logger.warning(f"No loopback for output '{device}' ({e}); using the default output")
+    if mic is None:
+        mic = sc.get_microphone(id=str(sc.default_speaker().name), include_loopback=True)
+    logger.info(f"Listening to the output of: {mic.name}")
     return mic.recorder(samplerate=rate, channels=1, blocksize=frames)
 
 
-# Reads what the speakers play, 100 ms at a time, on its own thread. A device
-# that disappears is reopened a few times; after that on_error gets a message
-# and the thread ends (the meeting carries on with the microphone).
+# Reads what one output device plays, 100 ms at a time, on its own thread. A
+# device that disappears is reopened a few times; after that on_error gets a
+# message and the thread ends (the meeting carries on with the microphone).
 class LoopbackStream:
     def __init__(self, on_block: Callable[[np.ndarray, float], None], on_error: Callable[[str], None],
-                 block_s: float = 0.1, rate: int = RATE, retries: int = 3, open_fn=None, retry_wait: float = 1.0):
+                 block_s: float = 0.1, rate: int = RATE, retries: int = 3, open_fn=None, retry_wait: float = 1.0,
+                 device: Optional[str] = None):
         self.on_block = on_block
         self.on_error = on_error
         self.rate = rate
         self.frames = int(block_s * rate)
         self.retries = retries
         self.retry_wait = retry_wait
-        self._open = open_fn or (lambda: _open_default_loopback(self.rate, self.frames))
+        self.device = device
+        self._open = open_fn or (lambda: _open_loopback(self.device, self.rate, self.frames))
         self._stop = threading.Event()
         self._thread = None
 

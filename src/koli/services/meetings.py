@@ -30,26 +30,33 @@ def _soundcard_installed() -> bool:
     return importlib.util.find_spec('soundcard') is not None
 
 
+def _active_sessions() -> list:
+    from ..platform import audio_sessions
+    return audio_sessions.active()
+
+
 class MeetingService:
     def __init__(self, ctx, store: Optional[MeetingStore] = None, publish: Callable = None,
                  loopback_factory: Callable = None, embedder_factory: Callable = None,
                  speech_prob_factory: Callable = None, loopback_available: Callable[[], bool] = None,
-                 report: Callable[[str], None] = None):
+                 report: Callable[[str], None] = None, sessions_fn: Callable[[], list] = None):
         self.ctx = ctx
         self.store = store or MeetingStore()
         self._publish = publish or publish_event
-        self._loopback_factory = loopback_factory or (lambda on_block, on_error: LoopbackStream(on_block, on_error))
+        self._loopback_factory = loopback_factory or (
+            lambda on_block, on_error, device=None: LoopbackStream(on_block, on_error, device=device))
         self._embedder_factory = embedder_factory or self._load_embedder
         self._speech_prob_factory = speech_prob_factory or speech_prob_function
         self._loopback_available = loopback_available or _soundcard_installed
         self._report = report or report_problem
+        self._sessions_fn = sessions_fn or _active_sessions
         self._reported_missing = False
         self._lock = threading.Lock()
         self.detector: Optional[MeetingDetector] = None
         self._idle_stream = None          # hears the call while a source waits for speech
-        self._loopback = None
+        self._loopbacks = []              # one stream per output device the meeting listens to
+        self._loop_chunkers = []
         self._mic_tap = None
-        self._loop_chunker = None
         self._mic_chunker = None
         self.tracker = SpeakerTracker(embed=None)
         self._embedder_task = None
@@ -78,6 +85,13 @@ class MeetingService:
                 self.start_detector()
             else:
                 self.stop_detector()
+
+    # The loopback package was installed while the app runs: detection can
+    # start now, without a restart.
+    def package_installed(self):
+        self._reported_missing = False
+        if self._setting('meeting.enabled', True):
+            self.start_detector()
 
     # Without the loopback package nothing can hear the call: keep meeting
     # mode off until it is installed. Startup only logs it; an explicit start
@@ -122,13 +136,15 @@ class MeetingService:
         self._sync_idle_listener()
 
     def _sync_idle_listener(self):
-        want = self.session.pending_source() is not None
+        pending = self.session.pending_source()
+        want = pending is not None
         to_stop = None
         with self._lock:
             if want and self._idle_stream is None:
                 chunker = Chunker('loopback', self._speech_prob_factory(), lambda chunk: None,
                                   on_speech=self._on_idle_speech)
-                self._idle_stream = self._loopback_factory(chunker.feed, self._loopback_failed)
+                self._idle_stream = self._loopback_factory(chunker.feed, self._loopback_failed,
+                                                           device=pending.get('device') or None)
                 self._idle_stream.start()
             elif not want and self._idle_stream is not None:
                 to_stop, self._idle_stream = self._idle_stream, None
@@ -166,23 +182,46 @@ class MeetingService:
 
         def submit(chunk):
             self.transcriber.submit({**chunk, 'meeting_id': meeting_id})
-        loop_chunker = Chunker('loopback', self._speech_prob_factory(), submit)
+        loopbacks, loop_chunkers = [], []
+        for device in self._output_devices(meeting):
+            chunker = Chunker('loopback', self._speech_prob_factory(), submit)
+            loop_chunkers.append(chunker)
+            loopbacks.append(self._loopback_factory(chunker.feed, self._loopback_failed, device=device))
         mic_chunker = Chunker('mic', self._speech_prob_factory(), submit)
-        loopback = self._loopback_factory(loop_chunker.feed, self._loopback_failed)
         mic_tap = MicTap(lambda: self.ctx.state_manager.audio_recorder, mic_chunker.feed, self._mic_allowed)
         with self._lock:
-            self._loop_chunker, self._mic_chunker = loop_chunker, mic_chunker
-            self._loopback, self._mic_tap = loopback, mic_tap
-        loopback.start()
+            self._loop_chunkers, self._mic_chunker = loop_chunkers, mic_chunker
+            self._loopbacks, self._mic_tap = loopbacks, mic_tap
+        for loopback in loopbacks:
+            loopback.start()
         mic_tap.start()
+
+    # Which outputs to listen to: the one the detected call plays on; for a
+    # meeting started by hand, every device with sound right now; and the
+    # Windows default when nothing says otherwise (None).
+    def _output_devices(self, meeting: dict) -> list:
+        device = (meeting.get('source') or {}).get('device')
+        if device:
+            return [device]
+        try:
+            with_sound = []
+            for s in self._sessions_fn():
+                name = s.get('device')
+                if int(s.get('state', 0)) == 1 and name and name not in with_sound:
+                    with_sound.append(name)
+            if with_sound:
+                return with_sound
+        except Exception as e:
+            logger.debug(f"Output devices unknown ({e}); using the default output")
+        return [None]
 
     def _stop_capture(self):
         with self._lock:
-            loopback, self._loopback = self._loopback, None
+            loopbacks, self._loopbacks = self._loopbacks, []
             mic_tap, self._mic_tap = self._mic_tap, None
-            chunkers = [c for c in (self._loop_chunker, self._mic_chunker) if c is not None]
-            self._loop_chunker = self._mic_chunker = None
-        if loopback is not None:
+            chunkers = [c for c in (*self._loop_chunkers, self._mic_chunker) if c is not None]
+            self._loop_chunkers, self._mic_chunker = [], None
+        for loopback in loopbacks:
             loopback.stop()
         if mic_tap is not None:
             mic_tap.stop()
