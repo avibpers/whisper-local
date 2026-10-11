@@ -17,7 +17,7 @@ This project is maintained by **Rohit Burani** ([@drajb](https://github.com/draj
 
 ```bash
 git clone https://github.com/drajb/whisper-local.git
-cd koli
+cd whisper-local
 pip install -e .
 python -m unittest tests.test_smoke
 ```
