@@ -10,6 +10,7 @@ from typing import Optional
 
 import pyperclip
 
+from .delayed_send import count_words, wait_seconds
 from .platform import keyboard
 from .utils import parse_hotkey
 
@@ -177,11 +178,12 @@ class ClipboardManager:
     # The Enter of an auto-send: pressed now, or handed to the countdown when a
     # wait is set and this send may wait (an app rule's automatic auto-send;
     # the send key always sends at once). `delay` is an app rule's own wait,
-    # which replaces the main one. True when Enter was pressed or is on its way.
-    def auto_send(self, allow_delay: bool = False, delay=None) -> bool:
+    # which replaces the main one; an "Auto" wait follows `text`'s length.
+    # True when Enter was pressed or is on its way.
+    def auto_send(self, allow_delay: bool = False, delay=None, text: str = '') -> bool:
         if delay is None:
             delay = getattr(self, 'auto_send_delay', 0)
-        delay = float(delay or 0)
+        delay = wait_seconds(delay, count_words(text))
         if allow_delay and delay > 0 and getattr(self, 'delayed_send', None) is not None:
             self.delayed_send.schedule(delay)
             return True
@@ -205,7 +207,7 @@ class ClipboardManager:
                         delay = self.type_auto_enter_delay + len(transcribed_text) / 100 * self.type_auto_enter_delay_per_100_chars
                         if delay > 0:
                             time.sleep(delay)
-                    success = self.auto_send(allow_delay, send_delay)
+                    success = self.auto_send(allow_delay, send_delay, text=transcribed_text)
             else:
                 print("📋 Copying to clipboard...")
                 success = self.copy_with_notification(transcribed_text)

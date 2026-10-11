@@ -64,7 +64,7 @@ def save_rule(entry: dict, original_id: str = None) -> str:
         if value in (None, ''):
             continue
         if key == 'auto_send_delay':
-            # Same seconds and limits as the main "Wait before sending".
+            # Same choices as the main "Wait before sending" (seconds or Auto).
             from ..settings import schema
             value = schema.coerce(schema.get('clipboard.auto_send_delay'), value)
         clean[key] = value

@@ -5,6 +5,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 ## [Unreleased]
 
 ### Added
+- **"Wait before sending" can follow the message's length.** Next to the
+  fixed seconds there are Auto · fast, Auto · medium and Auto · slow: a word
+  or two sends after 1 second, longer messages wait one more second per 6, 4
+  or 3 words, up to 6, 10 or 15 seconds. Works in the main setting and in each
+  app rule; an auto-dictation session counts every word it pasted. The main
+  setting is now a list (Send at once, 1–30 seconds, or Auto) instead of a
+  number box.
 - **Memory monitor in the header.** A chip shows the graphics card Koli runs
   on: how much Koli itself uses and the card's total in use ("Koli 4.4 · GPU
   7.2/12 GB"), turning orange above 85%; on the processor, Koli's memory and

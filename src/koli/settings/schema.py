@@ -79,6 +79,11 @@ POSITIONS = [['right-edge', 'Right edge'], ['left-edge', 'Left edge'],
              ['top-left', 'Top left'], ['top-center', 'Top'], ['top-right', 'Top right'],
              ['bottom-left', 'Bottom left'], ['bottom-center', 'Bottom'], ['bottom-right', 'Bottom right'],
              ['custom', 'Where I dragged it']]
+# "Wait before sending": fixed seconds, or Auto by the message's length
+# (delayed_send.AUTO_WAITS holds the paces).
+SEND_WAITS = [[0, 'Send at once'], [1, '1 second'], [2, '2 seconds'], [3, '3 seconds'], [5, '5 seconds'],
+              [10, '10 seconds'], [15, '15 seconds'], [30, '30 seconds'],
+              ['auto_fast', 'Auto · fast'], ['auto_medium', 'Auto · medium'], ['auto_slow', 'Auto · slow']]
 
 _S = Setting
 
@@ -222,11 +227,13 @@ SCHEMA = [
     _S('clipboard.delivery_method', 'Method', 'delivery', 'segmented',
        choices=[['paste', 'Paste'], ['type', 'Type']],
        help='Paste is fastest. Type injects characters one by one and never touches the clipboard (Windows).'),
-    _S('clipboard.auto_send_delay', 'Wait before sending', 'delivery', 'number', min=0, max=30, step=1,
-       unit='seconds', help='In apps set to auto-send (Slack, WhatsApp and other chats), wait this long after '
-                            'the text is pasted before Koli presses Enter, so you can read it. Esc, Cancel on '
-                            'the bubble, typing, a new dictation or switching windows stop it. The send key and '
-                            'your own Enter always send at once. 0 = no wait. Profiles can set their own.'),
+    _S('clipboard.auto_send_delay', 'Wait before sending', 'delivery', 'select', choices=SEND_WAITS,
+       help='In apps set to auto-send (Slack, WhatsApp and other chats), wait this long after '
+            'the text is pasted before Koli presses Enter, so you can read it. Auto follows the '
+            "message's length: 1 second for a word or two, longer for more (fast up to 6 s, medium "
+            'up to 10 s, slow up to 15 s). Esc, Cancel on the bubble, typing, a new dictation or '
+            'switching windows stop it. The send key and your own Enter always send at once. '
+            'Profiles can set their own.'),
     _S('clipboard.paste_hotkey', 'Paste shortcut', 'delivery', 'hotkey', group='Paste',
        help='Use Ctrl Shift V for plain-text paste, Shift Insert for terminals.'),
     _S('clipboard.paste_pre_paste_delay', 'Wait before pasting', 'delivery', 'number', group='Paste',

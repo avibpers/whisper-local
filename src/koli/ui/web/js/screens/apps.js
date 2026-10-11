@@ -15,13 +15,20 @@ const FORMATTING = [['capitalize_first', 'Capitalize first letter'], ['ensure_pu
 const STYLE_OPTS = [[null, 'Default'], ['formal', 'Formal'], ['casual', 'Casual'], ['very_casual', 'Very casual'], ['verbatim', 'Verbatim']];
 const LANGS = [[null, 'Default'], ['auto', 'Auto-detect'], ['en', 'English'], ['he', 'Hebrew'], ['ar', 'Arabic'], ['es', 'Spanish'], ['fr', 'French'], ['de', 'German'], ['ru', 'Russian']];
 
+// A "Wait before sending" value in words: seconds, or an Auto level.
+const AUTO_WAIT_NAMES = { auto_fast: 'fast', auto_medium: 'medium', auto_slow: 'slow' };
+function waitText(v) {
+  if (AUTO_WAIT_NAMES[v]) return `auto (${AUTO_WAIT_NAMES[v]})`;
+  return v ? `${v} s` : 'no wait';
+}
+
 function summary(e) {
   const bits = [];
   if (e.window_title && e.window_title.length) bits.push(`title: ${e.window_title.join(' or ')}`);
   if (e.suppress) bits.push('Never deliver');
   if (e.auto_paste === false) bits.push('Copy only');
   if (e.auto_send === true) bits.push('Auto-send');
-  if (e.auto_send_delay != null) bits.push(e.auto_send_delay ? `wait ${e.auto_send_delay}s` : 'no wait');
+  if (e.auto_send_delay != null) bits.push(e.auto_send_delay ? `wait ${waitText(e.auto_send_delay)}` : 'no wait');
   if (e.auto_dictation === false) bits.push('No auto-listen');
   if (e.auto_dictation === true) bits.push('Auto-listen');
   if (e.style) bits.push(e.style.replace('_', ' '));
@@ -68,8 +75,9 @@ function RuleEditor({ item, foreground, onSaved, onDeleted }) {
     <div class="eyebrow" style="margin-top:10px">Delivery</div>
     <${Row} label="Press Enter after pasting"><${Segmented} label="Auto-send" value=${e.auto_send ?? null} options=${TRI} onChange=${(v) => set('auto_send', v)} /></${Row}>
     <${Row} label="Wait before sending"><${Select} label="Wait before sending" value=${e.auto_send_delay ?? null}
-      options=${[[null, `Main setting (${mainWait ? `${mainWait} s` : 'no wait'})`], [0, 'Send at once'], [2, '2 seconds'], [3, '3 seconds'],
-        [5, '5 seconds'], [10, '10 seconds']]} onChange=${(v) => set('auto_send_delay', v)} /></${Row}>
+      options=${[[null, `Main setting (${waitText(mainWait)})`], [0, 'Send at once'], [2, '2 seconds'], [3, '3 seconds'],
+        [5, '5 seconds'], [10, '10 seconds'], ['auto_fast', 'Auto · fast'], ['auto_medium', 'Auto · medium'],
+        ['auto_slow', 'Auto · slow']]} onChange=${(v) => set('auto_send_delay', v)} /></${Row}>
     <${Row} label="Paste at cursor"><${Segmented} label="Paste" value=${pasteMode} options=${[[null, 'Default'], [true, 'Paste'], [false, 'Copy only']]} onChange=${(v) => set('auto_paste', v)} /></${Row}>
     <${Row} label="Don't deliver at all"><${Toggle} checked=${!!e.suppress} label="Suppress" onChange=${(v) => set('suppress', v || null)} /></${Row}>
     <div class="eyebrow" style="margin-top:10px">Listening</div>

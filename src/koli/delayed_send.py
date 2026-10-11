@@ -3,7 +3,8 @@
 # seconds before pressing Enter, so you can read it and stop the send. Esc, the
 # bubble's Cancel button, a new dictation, typing, or switching to another
 # window stop it; "Send now" skips the wait. Each step is published on the
-# event bus as 'auto_send' for the floating bubble.
+# event bus as 'auto_send' for the floating bubble. The wait is fixed seconds
+# or "Auto" (fast, medium, slow), which follows the message's length.
 
 import logging
 import math
@@ -14,6 +15,33 @@ from typing import Callable, Optional
 logger = logging.getLogger(__name__)
 
 TICK_SECONDS = 0.1   # how often the countdown checks the clock and the window
+
+# ── How long to wait ─────────────────────────────────────────────────────────
+
+# "Auto" waits: (words per second of wait, longest wait). "ok" sends after a
+# second; a paragraph gets time to be read, up to the cap.
+AUTO_WAITS = {
+    'auto_fast': (6, 6),
+    'auto_medium': (4, 10),
+    'auto_slow': (3, 15),
+}
+
+
+def count_words(text: str) -> int:
+    return len((text or '').split())
+
+
+# The seconds to wait before Enter for a "Wait before sending" value (seconds,
+# or one of AUTO_WAITS) and a message of `words` words.
+def wait_seconds(setting, words: int = 0) -> float:
+    if isinstance(setting, str) and setting in AUTO_WAITS:
+        pace, cap = AUTO_WAITS[setting]
+        return float(min(cap, max(1, math.ceil(words / pace))))
+    try:
+        return max(0.0, float(setting or 0))
+    except (TypeError, ValueError):
+        logger.warning(f"Unknown 'Wait before sending' value {setting!r}; sending at once")
+        return 0.0
 
 
 # What identifies "the window the text went to": the window handle where the

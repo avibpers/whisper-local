@@ -31,6 +31,7 @@ import sounddevice as sd
 from .audio_recorder import AudioRecorder
 from .whisper_engine import WhisperEngine
 from .clipboard_manager import ClipboardManager
+from .delayed_send import count_words, wait_seconds
 from .system_tray import SystemTray
 from .config_manager import ConfigManager
 from .audio_feedback import AudioFeedback
@@ -119,8 +120,10 @@ class StateManager:
         # field got focus) rather than a hotkey; see auto_dictation.py.
         self._auto_started = False
         # Something was pasted in the running auto-dictation session, so its
-        # end may send it (see _finish_auto_session).
+        # end may send it (see _finish_auto_session). The words pasted so far
+        # size an "Auto" wait before that send.
         self._auto_pasted = False
+        self._auto_pasted_words = 0
         self._auto_dictation = None
         # How loud you speak per microphone, learned from hotkey dictations
         # ("Only my voice"; see voice_filter.py).
@@ -424,6 +427,7 @@ class StateManager:
         if success:
             self._auto_started = auto_started
             self._auto_pasted = False
+            self._auto_pasted_words = 0
             # Only spin up the streaming-delivery worker once recording is
             # confirmed — otherwise a failed start would leak the worker thread.
             self._setup_streaming_delivery()
@@ -473,6 +477,7 @@ class StateManager:
         self.logger.info(f"Auto-dictation: cancelled ({reason or 'cancelled'})")
         print(f"   ✗ Listening cancelled: {reason or 'cancelled'}")
         self._auto_pasted = False   # typing or leaving the field: nothing is sent
+        self._auto_pasted_words = 0
         self.cancel_active_recording(quiet=True)
         return True
 
@@ -551,9 +556,11 @@ class StateManager:
 
     # A finished auto-dictation session that pasted something is sent once,
     # by the app rule's auto-send, after its wait (or the main one) so a stray
-    # message can still be stopped. No wait set: it is left unsent.
+    # message can still be stopped. An "Auto" wait counts every word the
+    # session pasted. No wait set: it is left unsent.
     def _finish_auto_session(self) -> None:
         pasted, self._auto_pasted = self._auto_pasted, False
+        words, self._auto_pasted_words = getattr(self, '_auto_pasted_words', 0), 0
         if not pasted:
             return
         try:
@@ -565,7 +572,7 @@ class StateManager:
         wait = rule.get('auto_send_delay')
         if wait is None:
             wait = getattr(self.clipboard_manager, 'auto_send_delay', 0)
-        wait = float(wait or 0)
+        wait = wait_seconds(wait, words)
         delayed = getattr(self.clipboard_manager, 'delayed_send', None)
         if wait <= 0 or delayed is None:
             self.logger.info("Auto-dictation: not sending - auto-send needs a wait so it can be stopped")
@@ -1030,6 +1037,7 @@ class StateManager:
             delivered_paste = self.clipboard_manager.auto_paste
             if success and auto_session and delivered_paste:
                 self._auto_pasted = True   # the session's end may send it
+                self._auto_pasted_words = getattr(self, '_auto_pasted_words', 0) + count_words(transcribed_text)
             self._emit_pipeline(
                 'delivered', mode=mode,
                 outcome=('pasted' if delivered_paste else 'copied') if success else 'failed',

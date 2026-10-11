@@ -5323,6 +5323,21 @@ class AutoDictationStateManagerTests(unittest.TestCase):
             sm.handle_vad_event(VadEvent.SILENCE_TIMEOUT)
         sm.clipboard_manager.delayed_send.schedule.assert_called_once_with(2.0)
 
+    # An Auto wait counts every word the session pasted, not just the last
+    # phrase, and the count starts over for the next session.
+    def test_an_auto_wait_counts_the_whole_session(self):
+        import unittest.mock as mock
+        sm = self._sm(had_speech=True)
+        sm._auto_pasted = True
+        sm._auto_pasted_words = 15
+        sm.app_rules = mock.Mock()
+        sm.app_rules.match_for_foreground.return_value = {'auto_send': True, 'auto_send_delay': 'auto_medium'}
+        sm.clipboard_manager = mock.Mock(auto_send_delay=0)
+        with mock.patch('builtins.print'):
+            sm._finish_auto_session()
+        sm.clipboard_manager.delayed_send.schedule.assert_called_once_with(4.0)
+        self.assertEqual(sm._auto_pasted_words, 0)
+
     # Leaving the field or typing means "not this": nothing is sent.
     def test_a_cancelled_session_is_not_sent(self):
         import unittest.mock as mock
@@ -5764,6 +5779,52 @@ class DelayedSendDeliveryTests(unittest.TestCase):
         cb.deliver_transcription('hello', use_auto_enter=True, allow_delay=True, send_delay=3)
         cb.delayed_send.schedule.assert_called_once_with(3)
 
+    # Auto waits follow the length of what was pasted.
+    def test_an_auto_wait_follows_the_message_length(self):
+        cb = self._clipboard('auto_medium')
+        cb.deliver_transcription('ok', use_auto_enter=True, allow_delay=True)
+        cb.delayed_send.schedule.assert_called_once_with(1.0)
+        cb = self._clipboard(0)
+        cb.deliver_transcription(' '.join(['word'] * 15), use_auto_enter=True, allow_delay=True,
+                                 send_delay='auto_slow')
+        cb.delayed_send.schedule.assert_called_once_with(5.0)
+
+
+class AutoSendWaitTests(unittest.TestCase):
+    # The agreed table: 1 s for a word, then by each level's pace, up to its cap.
+    def test_each_level_scales_with_words_up_to_its_cap(self):
+        from koli.delayed_send import wait_seconds
+        table = {
+            'auto_fast': {1: 1, 6: 1, 15: 3, 40: 6},
+            'auto_medium': {1: 1, 6: 2, 15: 4, 40: 10},
+            'auto_slow': {1: 1, 6: 2, 15: 5, 40: 14, 100: 15},
+        }
+        for level, rows in table.items():
+            for words, seconds in rows.items():
+                self.assertEqual(wait_seconds(level, words), seconds, f'{level}, {words} words')
+        self.assertEqual(wait_seconds('auto_medium', 0), 1, 'never less than a second')
+
+    def test_fixed_seconds_pass_through(self):
+        from koli.delayed_send import wait_seconds
+        self.assertEqual(wait_seconds(5, 40), 5)
+        self.assertEqual(wait_seconds(0, 40), 0)
+        self.assertEqual(wait_seconds(None), 0)
+        self.assertEqual(wait_seconds('nonsense'), 0, 'an unknown value sends at once')
+
+    def test_words_are_counted_by_spaces_in_any_language(self):
+        from koli.delayed_send import count_words
+        self.assertEqual(count_words('  on my way,  see you soon '), 6)
+        self.assertEqual(count_words('אני בדרך הביתה'), 3)
+        self.assertEqual(count_words(''), 0)
+
+    def test_the_setting_offers_the_auto_levels(self):
+        from koli.settings import schema
+        setting = schema.get('clipboard.auto_send_delay')
+        self.assertEqual(schema.coerce(setting, 'auto_fast'), 'auto_fast')
+        self.assertEqual(schema.coerce(setting, '10'), 10)
+        with self.assertRaises(ValueError):
+            schema.coerce(setting, 'auto_turbo')
+
 
 class ProblemReportTests(unittest.TestCase):
     # Something that went wrong and that you must see is kept until you
@@ -6132,11 +6193,15 @@ class AutoSendPlanTests(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         with mock.patch.object(svc, '_rules_path', return_value=Path(tmp.name) / 'app_rules.yaml'):
-            rule_id = svc.save_rule({'match': ['whatsapp.exe'], 'auto_send': True, 'auto_send_delay': '4'})
+            rule_id = svc.save_rule({'match': ['whatsapp.exe'], 'auto_send': True, 'auto_send_delay': '5'})
             saved = [r for r in svc.list_rules() if r['id'] == rule_id][0]['entry']
-            self.assertEqual(saved['auto_send_delay'], 4)
-            with self.assertRaises(ValueError):
-                svc.save_rule({'match': ['whatsapp.exe'], 'auto_send_delay': 99}, rule_id)
+            self.assertEqual(saved['auto_send_delay'], 5)
+            svc.save_rule({'match': ['whatsapp.exe'], 'auto_send': True, 'auto_send_delay': 'auto_slow'}, rule_id)
+            saved = [r for r in svc.list_rules() if r['id'] == rule_id][0]['entry']
+            self.assertEqual(saved['auto_send_delay'], 'auto_slow')
+            for bad in (99, 'auto_turbo'):
+                with self.assertRaises(ValueError):
+                    svc.save_rule({'match': ['whatsapp.exe'], 'auto_send_delay': bad}, rule_id)
 
 
 class DelayedSendStateManagerTests(unittest.TestCase):

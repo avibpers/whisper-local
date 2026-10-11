@@ -362,7 +362,10 @@ clipboard: # Clipboard Behavior
     #     Avoids clipboard manipulation and sends keys individually
     delivery_method: "paste"
 
-    # Wait before an automatic auto-send presses Enter (seconds, 0 = at once)
+    # Wait before an automatic auto-send presses Enter: seconds (0 = at once)
+    # or auto_fast / auto_medium / auto_slow, which follow the message's
+    # length: 1 second for a word or two, then one more second per 6 / 4 / 3
+    # words, up to 6 / 10 / 15 seconds.
     # Applies where an app rule sets auto_send: true (chat apps): the text is
     # pasted, then Enter waits so you can read it. Esc, the bubble's Cancel,
     # typing, a new dictation or switching windows stop it. The send key

@@ -7,7 +7,9 @@
 # Supported overrides:
 #   auto_send:   true | false   - force ENTER after paste (auto-send)
 #   auto_send_delay: <seconds>  - wait this long before that ENTER in this app
-#                                 (0 sends at once); replaces the main
+#                                 (0 sends at once), or auto_fast /
+#                                 auto_medium / auto_slow to wait by the
+#                                 message's length; replaces the main
 #                                 clipboard.auto_send_delay here
 #   auto_paste:  true | false   - force or suppress paste-to-cursor
 #   suppress:    true           - skip delivery entirely (only log + recent)
