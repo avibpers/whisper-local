@@ -69,6 +69,22 @@ def is_upright(position: str, custom: Optional[tuple], area: tuple, following: b
     return False
 
 
+# Top-left corner for the meeting panel of `size`: a side of the screen puts
+# it in the lower half with the bubble's margin, a dragged spot is its centre,
+# the corners and middles are the bubble's. Never off screen.
+def panel_origin(area: tuple, size: tuple, scale: float, position: str, custom: Optional[tuple]) -> tuple:
+    left, top, right, bottom = area
+    pw, ph = size
+    margin = int(EDGE_MARGIN * scale)
+    if position == 'custom' and custom:
+        return _clamp(custom[0] - pw // 2, custom[1] - ph // 2, area, size)
+    if position in EDGE_POSITIONS:
+        x = right - pw - margin if position == 'right-edge' else left + margin
+        y = bottom - ph - margin
+        return _clamp(x, max(y, top + (bottom - top) // 2), area, size)
+    return bar_origin(area, size, scale, position if position != 'custom' else 'bottom-right')
+
+
 # The spot to remember after a drag ends with the window at `rect`: its centre,
 # with x pulled onto the side of the screen when it was dropped near one. The
 # right side is stored as its last pixel, which is still on this monitor.

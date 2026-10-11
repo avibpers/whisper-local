@@ -23,7 +23,7 @@ from ..settings.service import SettingsService
 from . import win32
 from .bridge import Bridge
 from .events import get_bus, open_problems, publish
-from .floating_bar import EDGE_MARGIN, FallbackToWindow, FloatingBar, bar_origin, dropped_spot, is_upright
+from .floating_bar import EDGE_MARGIN, FallbackToWindow, FloatingBar, bar_origin, dropped_spot, is_upright, panel_origin
 from .tasks import get_task_manager
 
 logger = logging.getLogger(__name__)
@@ -33,11 +33,14 @@ APP_ICON = Path(__file__).resolve().parent.parent / 'platform' / 'windows' / 'as
 APP_ID = 'Koli.App'
 MAIN_TITLE = 'Koli'
 BAR_TITLE = 'Koli · bubble'
+PANEL_TITLE = 'Koli · meeting'
+PANEL_HIDE_DELAY = 2.5
 
 # Topics each page cares about. Latest-wins topics are coalesced per batch.
 BAR_TOPICS = {'state', 'bar', 'pipeline', 'notify', 'task', 'level', 'streaming_text', 'settings',
               'profile', 'window', 'auto_send', 'problem'}
-COALESCE = {'level', 'vad', 'foreground', 'streaming_text'}
+PANEL_TOPICS = {'meeting', 'meeting_turn', 'settings', 'task', 'problem'}
+COALESCE = {'level', 'vad', 'foreground', 'streaming_text', 'meeting'}
 PUSH_INTERVAL = 0.05
 
 
@@ -117,6 +120,7 @@ class UiHost:
         self.bridge = Bridge(self)
         self.main = _PageChannel('main')
         self.bar = _PageChannel('bar', BAR_TOPICS)
+        self.panel = _PageChannel('meeting', PANEL_TOPICS)
         self.main_visible = False
         self.bar_enabled = True
         self.bar_hwnd = 0
@@ -145,6 +149,14 @@ class UiHost:
         self._drag_regions = False   # WebView2 treats `app-region: drag` as the title bar
         self.custom_frame = False    # the page draws the title bar and window buttons
         self._meeting_state = 'idle'  # last meeting state seen, for the tray and the panel
+        self.panel_hwnd = 0
+        self._panel_visible = False
+        self._panel_collapsed = False
+        self._panel_pill = (160, 36)     # the collapsed pill, until the page reports its size
+        self._panel_drag = None
+        self._panel_drag_seq = 0
+        self._panel_hide_timer = None
+        self._panel_shown_in_sharing = False
 
     @property
     def main_window(self):
@@ -240,6 +252,14 @@ class UiHost:
             hidden=not self.bar_enabled)
         self.bar.window.events.loaded += lambda: self._on_loaded(self.bar)
 
+        pw, ph = self._panel_size()
+        px, py = self._panel_geometry()[:2]
+        self.panel.window = webview.create_window(
+            PANEL_TITLE, url=str(WEB_DIR / 'meeting.html'), js_api=self.bridge,
+            width=pw, height=ph, x=px, y=py, frameless=True, easy_drag=False, resizable=False, on_top=True,
+            focus=False, min_size=(120, 30), shadow=False, background_color='#0B0E11', hidden=True)
+        self.panel.window.events.loaded += lambda: self._on_loaded(self.panel)
+
         # The Koli icon on the window and its taskbar button (pywebview's
         # Windows backend reads `icon` too, not just GTK/Qt as documented).
         icon = str(APP_ICON) if win32.IS_WINDOWS and APP_ICON.exists() else None
@@ -287,6 +307,15 @@ class UiHost:
             # the user was typing into (Phase 0, spike B).
             if not self.main_visible and self._previous_foreground:
                 win32.restore_foreground(self._previous_foreground)
+        elif channel is self.panel:
+            self.panel_hwnd = win32.find_window(PANEL_TITLE)
+            win32.make_tool_window(self.panel_hwnd)
+            win32.round_corners(self.panel_hwnd)
+            self.apply_panel_setting('meeting.panel.opacity')
+            self.apply_capture_flags()
+            self.place_panel()
+            if self._meeting_state in ('offered', 'live', 'paused'):
+                self._show_panel()
         else:
             self.main_hwnd = win32.find_window(MAIN_TITLE)
             win32.set_dark_title_bar(self.main_hwnd, self._is_dark())
@@ -310,7 +339,7 @@ class UiHost:
         logger.info("Closing the app window")
         if self._shutdown_event is not None:
             self._shutdown_event.set()
-        for channel in (self.bar, self.main):
+        for channel in (self.bar, self.panel, self.main):
             try:
                 if channel.window is not None:
                     channel.window.destroy()
@@ -549,6 +578,128 @@ class UiHost:
         else:
             win32.hide(self.bar_hwnd)
 
+    # ── Meeting panel ────────────────────────────────────────────────────────
+    # A third window, built like the bubble: frameless, on top, never focused,
+    # translucent, and (by default) invisible to screen sharing.
+
+    def _panel_size(self):
+        if self._panel_collapsed:
+            return self._panel_pill
+        cfg = self.settings
+        return (max(240, int(cfg.get('meeting.panel.width', 380) or 380)),
+                max(160, int(cfg.get('meeting.panel.height', 420) or 420)))
+
+    def _panel_geometry(self):
+        scale = win32.dpi_scale(self.panel_hwnd) or 1.0
+        w, h = self._panel_size()
+        size = (int(w * scale), int(h * scale))
+        position = self.settings.get('meeting.panel.position', 'right-edge') or 'right-edge'
+        cx, cy = self.settings.get('meeting.panel.custom_x'), self.settings.get('meeting.panel.custom_y')
+        custom = (int(cx), int(cy)) if cx is not None and cy is not None else None
+        area = win32.work_area(custom) if position == 'custom' and custom else win32.work_area()
+        x, y = panel_origin(area, size, scale, position, custom)
+        return x, y, size
+
+    def place_panel(self):
+        if not self.panel_hwnd or self._panel_drag is not None:
+            return
+        x, y, size = self._panel_geometry()
+        win32.place(self.panel_hwnd, x, y, *size)
+
+    def _show_panel(self):
+        if self._panel_hide_timer is not None:
+            self._panel_hide_timer.cancel()
+            self._panel_hide_timer = None
+        if not self.panel_hwnd:
+            return
+        self._panel_visible = True
+        self.place_panel()
+        win32.show_no_activate(self.panel_hwnd)
+        self.place_panel()
+
+    # Hidden a moment after the meeting ends, so "Saved" can be read.
+    def _hide_panel_later(self):
+        if self._panel_hide_timer is not None:
+            self._panel_hide_timer.cancel()
+        self._panel_hide_timer = threading.Timer(PANEL_HIDE_DELAY, self._hide_panel)
+        self._panel_hide_timer.daemon = True
+        self._panel_hide_timer.start()
+
+    def _hide_panel(self):
+        self._panel_hide_timer = None
+        self._panel_visible = False
+        self._panel_shown_in_sharing = False
+        self.apply_capture_flags()
+        if self.panel_hwnd:
+            win32.hide(self.panel_hwnd)
+
+    # The page's corner handle: a new size in page pixels, remembered.
+    def resize_panel(self, width, height):
+        cm = self.ctx.config_manager
+        cm.set_path('meeting.panel.width', max(240, int(width)), save=False)
+        cm.set_path('meeting.panel.height', max(160, int(height)))
+        self.place_panel()
+
+    # Collapsed to a pill: the page says how big the pill is.
+    def set_panel_collapsed(self, collapsed, width=None, height=None):
+        self._panel_collapsed = bool(collapsed)
+        if width and height:
+            self._panel_pill = (int(width), int(height))
+        try:
+            self.ctx.config_manager.set_path('meeting.panel.collapsed', self._panel_collapsed)
+        except Exception:
+            pass
+        self.place_panel()
+
+    # Like drag_bar: numbered moves from where the press began; the drop
+    # becomes the panel's spot.
+    def drag_panel(self, seq, dx, dy, done):
+        if not self.panel_hwnd:
+            return
+        with self._drag_lock:
+            if seq <= self._panel_drag_seq:
+                return
+            self._panel_drag_seq = seq
+            if self._panel_drag is None:
+                self._panel_drag = win32.window_rect(self.panel_hwnd)
+            scale = win32.dpi_scale(self.panel_hwnd) or 1.0
+            left, top, right, bottom = self._panel_drag
+            x, y = left + int(dx * scale), top + int(dy * scale)
+            w, h = right - left, bottom - top
+            win32.place(self.panel_hwnd, x, y, w, h)
+            if not done:
+                return
+            self._panel_drag = None
+        cm = self.ctx.config_manager
+        cm.set_path('meeting.panel.custom_x', x + w // 2, save=False)
+        cm.set_path('meeting.panel.custom_y', y + h // 2)
+        if self.settings.set('meeting.panel.position', 'custom', source='app').get('applied') == 'unchanged':
+            self.place_panel()
+
+    def apply_panel_setting(self, path):
+        if not self.panel_hwnd:
+            return
+        if path == 'meeting.panel.opacity':
+            percent = self.settings.get('meeting.panel.opacity', 85) or 85
+            win32.set_opacity(self.panel_hwnd, max(0.4, min(1.0, percent / 100.0)))
+        elif path == 'meeting.panel.hide_from_sharing':
+            self.apply_capture_flags()
+        else:
+            self.place_panel()
+
+    # Which of Koli's windows screen sharing may show.
+    def apply_capture_flags(self):
+        if self.panel_hwnd:
+            hide = bool(self.settings.get('meeting.panel.hide_from_sharing', True)) and not self._panel_shown_in_sharing
+            win32.exclude_from_capture(self.panel_hwnd, hide)
+        if self.bar_hwnd:
+            win32.exclude_from_capture(self.bar_hwnd, bool(self.settings.get('overlay.hide_from_sharing', False)))
+
+    # The panel's menu: show it to the others for this meeting only.
+    def show_panel_in_sharing(self, on):
+        self._panel_shown_in_sharing = bool(on)
+        self.apply_capture_flags()
+
     # ── Actions that need the user's app in front ────────────────────────────
 
     def restore_external_foreground(self):
@@ -640,10 +791,20 @@ class UiHost:
             data['frame'] = self.frame_state()
             # Problems from while the window was closed still need to be seen.
             data['problems'] = open_problems()
+            data['meeting'] = self._meeting_payload()
+        elif which == 'meeting':
+            state = self._meeting_payload()
+            svc = getattr(self.ctx, 'meetings', None)
+            data['meeting'] = state
+            data['turns'] = svc.turns(state['id']) if svc and state.get('id') else []
         else:
             # The resting tab's shape where the bubble sits now.
             data['upright'] = self._bar_geometry(*self._bar_size)[3]
         return data
+
+    def _meeting_payload(self):
+        svc = getattr(self.ctx, 'meetings', None)
+        return svc.state() if svc else {'state': 'idle'}
 
     # ── Event pump ───────────────────────────────────────────────────────────
 
@@ -662,8 +823,12 @@ class UiHost:
         self.main.queue.put(item)
         if topic in self.bar.topics:
             self.bar.queue.put(item)
+        if topic in self.panel.topics:
+            self.panel.queue.put(item)
 
-    # A meeting began, paused or ended: the tray's item changes with it.
+    # A meeting began, paused or ended: the tray's item changes with it, and
+    # the panel is shown for an offer and while live or paused, hidden a
+    # moment after the end.
     def _on_meeting_state(self, state):
         changed = state != self._meeting_state
         self._meeting_state = state
@@ -673,6 +838,12 @@ class UiHost:
                 tray.refresh_menu()
             except Exception:
                 pass
+        if state in ('offered', 'live', 'paused'):
+            self._show_panel()
+        elif state == 'ended':
+            self._hide_panel_later()
+        elif state == 'idle' and self._panel_hide_timer is None and self._panel_visible:
+            self._hide_panel()
 
     def _on_setting(self, payload):
         path = payload.get('path', '')
@@ -684,6 +855,10 @@ class UiHost:
             self._apply_follow_focus()
         elif path == 'overlay.rest_opacity':
             self._apply_bar_opacity()
+        elif path == 'overlay.hide_from_sharing':
+            self.apply_capture_flags()
+        elif path.startswith('meeting.panel.'):
+            self.apply_panel_setting(path)
         tray = self.ctx.system_tray
         if tray is not None and path.split('.')[0] in ('whisper', 'clipboard', 'audio', 'overlay'):
             try:
@@ -695,7 +870,7 @@ class UiHost:
         while not self._quitting:
             time.sleep(PUSH_INTERVAL)
             self._sample_levels()
-            for channel in (self.bar, self.main):
+            for channel in (self.bar, self.panel, self.main):
                 if not channel.ready:
                     continue
                 if channel is self.main and not self.main_visible:

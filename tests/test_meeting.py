@@ -810,5 +810,19 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(EXTRAS['loopback'][0], 'soundcard')
 
 
+class PanelPlacementTests(unittest.TestCase):
+    def test_panel_docks_right_lower_half_and_clamps(self):
+        from koli.ui.floating_bar import panel_origin
+        area = (0, 0, 1920, 1040)
+        x, y = panel_origin(area, (380, 420), 1.0, 'right-edge', None)
+        self.assertEqual(x, 1920 - 380 - 6)
+        self.assertGreater(y, 1040 // 2 - 1)
+        self.assertLessEqual(y + 420, 1040 - 6)
+        x, y = panel_origin(area, (380, 420), 1.0, 'custom', (1900, 1000))
+        self.assertEqual((x, y), (1920 - 380, 1040 - 420))
+        x, y = panel_origin(area, (380, 420), 1.0, 'top-left', None)
+        self.assertEqual((x, y), (6, 6))
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -224,6 +224,18 @@ def set_opacity(hwnd: int, opacity: float):
     user32.SetLayeredWindowAttributes(hwnd, 0, alpha, LWA_ALPHA)
 
 
+# Keep a window out of screen sharing and recordings (Windows 10 2004+). It
+# stays visible on the monitor. Older capture tools show a black box instead.
+def exclude_from_capture(hwnd: int, on: bool) -> bool:
+    if not IS_WINDOWS or not hwnd:
+        return False
+    WDA_NONE, WDA_EXCLUDEFROMCAPTURE = 0x0, 0x11
+    try:
+        return bool(user32.SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE if on else WDA_NONE))
+    except Exception:
+        return False
+
+
 # ── Custom title bar ─────────────────────────────────────────────────────────
 # The page draws the title bar (tabs plus minimize / maximize / close). Windows
 # keeps the real frame: the invisible borders on the left, right and bottom

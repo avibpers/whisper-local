@@ -584,6 +584,24 @@ class Bridge:
             f.write(text)
         return path
 
+    @_api
+    def meeting_resize(self, width, height):
+        self._host.resize_panel(int(width), int(height))
+
+    @_api
+    def meeting_collapse(self, collapsed, width=None, height=None):
+        self._host.set_panel_collapsed(bool(collapsed), width, height)
+        return {'collapsed': bool(collapsed)}
+
+    @_api
+    def meeting_drag(self, seq, dx, dy, done=False):
+        self._host.drag_panel(int(seq), float(dx), float(dy), bool(done))
+
+    @_api
+    def meeting_show_in_sharing(self, on):
+        self._host.show_panel_in_sharing(bool(on))
+        return {'shown': bool(on)}
+
     # ── App rules and profiles ───────────────────────────────────────────────
 
     @_api
