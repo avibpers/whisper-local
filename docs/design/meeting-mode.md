@@ -309,6 +309,15 @@ re-clusters speakers and cleans text; search across meetings.
 - Short fragments can be misdetected (en/es/it for Hebrew "no, no, no");
   "Languages I speak" in Settings → General constrains detection for
   meetings too.
+- Startup: pywebview gives the hidden main window 10 s to show before it
+  creates the other windows, and under load (a Meet call already running,
+  twelve Chrome windows to probe, a loopback opening, a model loading) it
+  took 16 s, so the bubble and the panel were never created. The bubble and
+  panel are now created once the GUI loop runs, and meeting detection
+  starts only when the main page has loaded.
+- Chrome's tab names say "Microphone recording" / "Camera and microphone
+  recording"; the probe takes about 0.1 s per Chrome window, so between
+  full scans (15 s) only windows that held a tab in a call are probed again.
 
 ## Testing
 

@@ -19,10 +19,13 @@ BROWSERS = ('chrome.exe', 'msedge.exe', 'brave.exe')
 MEET_CODE = re.compile(r'\b([a-z]{3}-[a-z]{4}-[a-z]{3})\b')
 MODES = ('auto', 'ask', 'off')
 SESSION_ACTIVE = 1
-# Chrome and Edge append these to a tab's accessible name (tab_utils.cc).
-MEDIA_STATES = ('Audio playing', 'Audio muted', 'Microphone in use', 'Camera in use',
+# Chrome and Edge append these to a tab's accessible name (tab_utils.cc). The
+# "recording" ones are what a Meet call shows; the rest are kept for other
+# versions and sites.
+MEDIA_STATES = ('Audio playing', 'Audio muted', 'Microphone recording', 'Camera recording',
+                'Camera and microphone recording', 'Media recording', 'Microphone in use', 'Camera in use',
                 'Camera and microphone in use', 'Sharing screen', 'Playing in picture-in-picture',
-                'Media recording', 'Connected to a device')
+                'Connected to a device')
 
 
 # ── Pure ─────────────────────────────────────────────────────────────────────
@@ -77,7 +80,10 @@ def find_sources(sessions: list, tabs: list, rules: list, detect_default: str) -
                 if mode == 'off':
                     continue
                 found = MEET_CODE.search(title.lower())
-                sources.append({'key': f'{exe}|{title}', 'app': exe, 'kind': 'browser', 'title': title,
+                key = f'{exe}|{title}'
+                if any(s['key'] == key for s in sources):
+                    continue     # the same tab seen through several windows or strips
+                sources.append({'key': key, 'app': exe, 'kind': 'browser', 'title': title,
                                 'code': found.group(1) if found else '', 'mode': mode, 'device': device_of[exe]})
             continue
         rule = next((r for r in meeting_rules if rule_matches(r, exe, '')), None)
@@ -120,7 +126,7 @@ class MeetingDetector:
         if self._tabs_fn is not None:
             return self._tabs_fn()
         from ..platform import browser_tabs
-        return browser_tabs.tabs()
+        return browser_tabs.tabs(strip=strip_media)
 
     # One poll. A probe that fails counts as "nothing on", logged once until
     # it works again. The session manager hears the result every time.
@@ -153,6 +159,9 @@ class MeetingDetector:
         self._thread = threading.Thread(target=self._run, daemon=True, name='meeting-detector')
         self._thread.start()
 
+    # Waits briefly for a tick in progress, so no sources arrive after this.
     def stop(self):
         self._stop.set()
-        self._thread = None
+        thread, self._thread = self._thread, None
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(3.0)

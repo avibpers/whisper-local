@@ -5,5 +5,5 @@
 BROWSERS = ('Google Chrome', 'Microsoft Edge', 'Brave Browser')
 
 
-def tabs(exes=BROWSERS) -> list:
+def tabs(exes=BROWSERS, strip=None) -> list:
     return []

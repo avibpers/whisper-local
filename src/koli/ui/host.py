@@ -243,6 +243,19 @@ class UiHost:
         self.main.window.events.resized += lambda w, h: self._remember_geometry()
         self.main.window.events.moved += lambda x, y: self._remember_geometry()
 
+        # The Koli icon on the window and its taskbar button (pywebview's
+        # Windows backend reads `icon` too, not just GTK/Qt as documented).
+        icon = str(APP_ICON) if win32.IS_WINDOWS and APP_ICON.exists() else None
+        webview.start(self._on_started, http_server=True, debug=self.dev, private_mode=True, icon=icon)
+        self._teardown()
+
+    # The bubble and the meeting panel are created once the GUI loop runs.
+    # Created before start, pywebview gives the main window 10 s to show
+    # before making them, and a slow first WebView2 start (a busy machine)
+    # left the app without either for the whole session.
+    def _create_child_windows(self):
+        import webview
+        theme_dark = self._is_dark()
         bx, by = self._bar_geometry(*self._bar_size)[:2]
         self.bar.window = webview.create_window(
             BAR_TITLE, url=str(WEB_DIR / 'bar.html'), js_api=self.bridge,
@@ -260,12 +273,6 @@ class UiHost:
             focus=False, min_size=(120, 30), shadow=False, background_color='#0B0E11', hidden=True)
         self.panel.window.events.loaded += lambda: self._on_loaded(self.panel)
 
-        # The Koli icon on the window and its taskbar button (pywebview's
-        # Windows backend reads `icon` too, not just GTK/Qt as documented).
-        icon = str(APP_ICON) if win32.IS_WINDOWS and APP_ICON.exists() else None
-        webview.start(self._on_started, http_server=True, debug=self.dev, private_mode=True, icon=icon)
-        self._teardown()
-
     # New installs start in Simple mode. Someone upgrading who already tuned
     # settings by hand starts in Advanced, where those settings are visible.
     def _choose_initial_mode(self):
@@ -279,6 +286,10 @@ class UiHost:
             logger.info("Existing settings found; starting the app window in Advanced mode")
 
     def _on_started(self):
+        try:
+            self._create_child_windows()
+        except Exception as e:
+            logger.error(f"The bubble and meeting panel could not be created: {e}", exc_info=True)
         threading.Thread(target=self._pump, daemon=True, name='ui-pump').start()
         threading.Thread(target=self._watch_shutdown, daemon=True, name='ui-shutdown').start()
         threading.Thread(target=self._watch_foreground, daemon=True, name='ui-foreground').start()
@@ -325,6 +336,9 @@ class UiHost:
                 self.custom_frame = win32.remove_title_bar(self.main_hwnd)
                 logger.info(f"Custom title bar: {'on' if self.custom_frame else 'off'}")
             publish('window', {'action': 'frame', **self.frame_state()})
+            meetings = getattr(self.ctx, 'meetings', None)
+            if meetings is not None:
+                meetings.ui_ready()
         logger.info(f"UI page ready: {channel.name}")
 
     def _watch_shutdown(self):

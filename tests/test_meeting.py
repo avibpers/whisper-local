@@ -1153,5 +1153,97 @@ class DeviceRoutingTests(unittest.TestCase):
         self.assertIsNotNone(svc.detector)
 
 
+class StartupLoadTests(unittest.TestCase):
+    # Meeting detection waits for the app window: probing Chrome and opening
+    # a loopback while WebView2 initialises delayed the main window past
+    # pywebview's 10 s limit, which then never created the bubble and panel.
+    def test_service_waits_for_the_ui_before_detecting(self):
+        from koli.services.meetings import MeetingService
+        from koli.meeting.store import MeetingStore
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        ctx = type('Ctx', (), {})()
+        ctx.state_manager = FakeStateManager()
+        ctx.config_manager = FakeConfig({'meeting.enabled': True, 'meeting.detect': 'auto'})
+        ctx.model_registry = None
+        svc = MeetingService(ctx, store=MeetingStore(Path(tmp.name)), publish=lambda t, p: None, loopback_factory=FakeLoop,
+                             embedder_factory=lambda: None, loopback_available=lambda: True, sessions_fn=lambda: [],
+                             autostart=False)
+        self.addCleanup(svc.shutdown)
+        self.assertIsNone(svc.detector)
+        svc.ui_ready()
+        self.assertIsNotNone(svc.detector)
+
+    # A detector tick that lands during shutdown must not open a listener
+    # that nothing will ever close (seen in the log: "Listening to the output
+    # of" after "Meeting detection off").
+    def test_nothing_opens_after_shutdown(self):
+        from koli.services.meetings import MeetingService
+        from koli.meeting.store import MeetingStore
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        ctx = type('Ctx', (), {})()
+        ctx.state_manager = FakeStateManager()
+        ctx.config_manager = FakeConfig({'meeting.enabled': False, 'meeting.detect': 'auto'})
+        ctx.model_registry = None
+        FakeLoop.made = []
+        svc = MeetingService(ctx, store=MeetingStore(Path(tmp.name)), publish=lambda t, p: None, loopback_factory=FakeLoop,
+                             embedder_factory=lambda: None, loopback_available=lambda: True, sessions_fn=lambda: [])
+        svc.shutdown()
+        svc._on_sources([discord()])
+        self.assertEqual(FakeLoop.made, [])
+        svc.start()
+        self.assertEqual(svc.state()['state'], 'idle')
+
+    # Chrome's tab names say "Microphone recording" and "Camera and
+    # microphone recording" (seen in a real Meet call), not "in use".
+    def test_chrome_recording_suffixes_are_media_states(self):
+        from koli.meeting.detector import strip_media
+        self.assertEqual(strip_media('Meet - tum-xdrg-hkg - Camera and microphone recording'),
+                         ('Meet - tum-xdrg-hkg', 'Camera and microphone recording'))
+        self.assertEqual(strip_media('Meet - tum-xdrg-hkg - Microphone recording')[1], 'Microphone recording')
+        self.assertEqual(strip_media('Meet - tum-xdrg-hkg - Camera recording')[1], 'Camera recording')
+
+    # The same tab reported by several windows or strips is one source.
+    def test_duplicate_tabs_make_one_source(self):
+        from koli.meeting.detector import find_sources
+        sessions = [{'pid': 2, 'exe': 'chrome.exe', 'state': 1, 'device': 'Headset', 'device_id': 'd1'}]
+        tab = {'exe': 'chrome.exe', 'title': 'Meet - abc-defg-hij', 'media': 'Microphone recording', 'hwnd': 9}
+        sources = find_sources(sessions, [tab, dict(tab), {**tab, 'hwnd': 10}], RULES, 'auto')
+        self.assertEqual(len(sources), 1)
+
+    # Between full scans (every 15 s) only the windows that held a tab in a
+    # call are probed again, so twelve Chrome windows don't cost a second
+    # every few seconds.
+    def test_tab_probe_rescans_only_hot_windows_between_full_scans(self):
+        import importlib.util
+        path = ROOT / 'src' / 'koli' / 'platform' / 'windows' / 'browser_tabs.py'
+        spec = importlib.util.spec_from_file_location('win_browser_tabs', path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        probed = []
+        names = {1: ['Inbox - Gmail'], 2: ['Meet - abc-defg-hij - Microphone recording'], 3: ['Docs']}
+        clock = {'t': 1000.0}
+        mod._browser_windows = lambda exes: [(1, 'chrome.exe'), (2, 'chrome.exe'), (3, 'chrome.exe')]
+        mod._uia = lambda: object()
+        mod._tab_names = lambda uia, hwnd: (probed.append(hwnd) or names[hwnd])
+        mod._monotonic = lambda: clock['t']
+        mod._reset_cache()
+        from koli.meeting.detector import strip_media
+        probe = lambda: mod.tabs(strip=strip_media)
+        first = probe()
+        self.assertEqual(sorted(probed), [1, 2, 3])
+        self.assertEqual([t['hwnd'] for t in first if t['media']], [2])
+        clock['t'] += 4.0
+        probed.clear()
+        second = probe()
+        self.assertEqual(probed, [2], 'only the window with the call is probed again')
+        self.assertEqual([t['title'] for t in second], ['Meet - abc-defg-hij'])
+        clock['t'] += 16.0
+        probed.clear()
+        probe()
+        self.assertEqual(sorted(probed), [1, 2, 3], 'a full scan after 15 s')
+
+
 if __name__ == '__main__':
     unittest.main()

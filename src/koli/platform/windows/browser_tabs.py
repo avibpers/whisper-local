@@ -2,9 +2,12 @@
 # The tabs of every Chrome, Edge or Brave window, with their media state, read
 # from the browser's tab strip through UI Automation. The strip exposes each
 # tab as a TabItem whose name is "<title> - <state>" ("Audio playing",
-# "Microphone in use", ...), which is how a Meet call is found behind other
-# tabs. Cached for a few seconds: the detector asks once a second.
-# macOS mirror: platform/macos/browser_tabs.py (stub).
+# "Microphone recording", ...), which is how a Meet call is found behind other
+# tabs. The caller passes the function that splits a name into title and
+# state (meeting/detector.strip_media), so this module needs nothing from the
+# feature. Cached for a few seconds, and between full scans only the windows
+# that held a tab in a call are probed again: a dozen Chrome windows cost
+# about a second to walk. macOS mirror: platform/macos/browser_tabs.py (stub).
 
 import ctypes
 import ctypes.wintypes as wt
@@ -19,16 +22,23 @@ _user32 = ctypes.windll.user32
 _kernel32 = ctypes.windll.kernel32
 
 BROWSERS = ('chrome.exe', 'msedge.exe', 'brave.exe')
-CACHE_SECONDS = 3.0
+CACHE_SECONDS = 3.0          # the detector asks once a second
+FULL_SCAN_SECONDS = 15.0     # every window again, to catch a call in a new one
 UIA_CONTROL_TYPE = 30003
 UIA_TAB = 50018
 UIA_TABITEM = 50019
 TREE_SCOPE_DESCENDANTS = 4
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
-_cache = (0.0, [])
+_monotonic = time.monotonic   # swapped in tests
 _cache_lock = threading.Lock()
+_cache = {'stamp': 0.0, 'full': 0.0, 'tabs': [], 'hot': set()}
 _client = threading.local()
+
+
+def _reset_cache():
+    with _cache_lock:
+        _cache.update(stamp=0.0, full=0.0, tabs=[], hot=set())
 
 
 def _exe_of(pid: int) -> str:
@@ -87,7 +97,7 @@ def _uia():
 
 
 # The accessible names of the tabs in one browser window: the TabItems under
-# its tab strip (a Tab control), or under the window when no strip is found.
+# its tab strips (Tab controls), or under the window when no strip is found.
 def _tab_names(uia, hwnd: int) -> list:
     root = uia.ElementFromHandle(hwnd)
     strip_cond = uia.CreatePropertyCondition(UIA_CONTROL_TYPE, UIA_TAB)
@@ -104,23 +114,36 @@ def _tab_names(uia, hwnd: int) -> list:
     return names
 
 
-def tabs(exes=BROWSERS) -> list:
-    global _cache
+# [{exe, title, media, hwnd}] for the browsers' tabs. `strip(name)` returns
+# (title, media state); without it every tab reads as silent.
+def tabs(exes=BROWSERS, strip=None) -> list:
+    strip = strip or (lambda name: (name, ''))
+    now = _monotonic()
     with _cache_lock:
-        stamp, cached = _cache
-        if time.monotonic() - stamp < CACHE_SECONDS:
-            return list(cached)
-    from ...meeting.detector import strip_media
+        if now - _cache['stamp'] < CACHE_SECONDS:
+            return list(_cache['tabs'])
+        full = (now - _cache['full'] >= FULL_SCAN_SECONDS) or not _cache['hot']
+        hot = set(_cache['hot'])
     uia = _uia()
     out = []
     if uia is not None:
-        for hwnd, exe in _browser_windows(exes):
+        windows = _browser_windows(exes)
+        targets = windows if full else [(h, e) for h, e in windows if h in hot]
+        for hwnd, exe in targets:
+            seen = set()
             try:
                 for name in _tab_names(uia, hwnd):
-                    title, media = strip_media(name)
+                    if name in seen:
+                        continue     # the same tab under several strips
+                    seen.add(name)
+                    title, media = strip(name)
                     out.append({'exe': exe, 'title': title, 'media': media, 'hwnd': hwnd})
             except Exception as e:
                 logger.debug(f"Tab strip of {exe} window {hwnd} unreadable: {e}")
     with _cache_lock:
-        _cache = (time.monotonic(), out)
+        _cache['tabs'] = out
+        _cache['stamp'] = now
+        if full:
+            _cache['full'] = now
+        _cache['hot'] = {t['hwnd'] for t in out if t['media']}
     return list(out)

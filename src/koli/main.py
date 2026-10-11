@@ -843,7 +843,7 @@ def main():
             # Meeting mode needs the app window for its panel, so it only runs here.
             try:
                 from .services.meetings import MeetingService
-                ctx.meetings = MeetingService(ctx)
+                ctx.meetings = MeetingService(ctx, autostart=False)   # detection starts once the window is up
                 state_manager.meetings = ctx.meetings
             except Exception as e:
                 logger.error(f"Meeting mode not started: {e}", exc_info=True)

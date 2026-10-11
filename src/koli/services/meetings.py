@@ -39,7 +39,8 @@ class MeetingService:
     def __init__(self, ctx, store: Optional[MeetingStore] = None, publish: Callable = None,
                  loopback_factory: Callable = None, embedder_factory: Callable = None,
                  speech_prob_factory: Callable = None, loopback_available: Callable[[], bool] = None,
-                 report: Callable[[str], None] = None, sessions_fn: Callable[[], list] = None):
+                 report: Callable[[str], None] = None, sessions_fn: Callable[[], list] = None,
+                 autostart: bool = True):
         self.ctx = ctx
         self.store = store or MeetingStore()
         self._publish = publish or publish_event
@@ -51,6 +52,7 @@ class MeetingService:
         self._report = report or report_problem
         self._sessions_fn = sessions_fn or _active_sessions
         self._reported_missing = False
+        self._closed = False              # shutdown began: nothing opens any more
         self._lock = threading.Lock()
         self.detector: Optional[MeetingDetector] = None
         self._idle_stream = None          # hears the call while a source waits for speech
@@ -69,6 +71,13 @@ class MeetingService:
             on_turn=self.session.add_turn, on_speaker=self.session.ensure_speaker,
             on_pending=self._on_pending, on_behind=self.session.set_behind)
         self.transcriber.start()
+        if autostart and self._setting('meeting.enabled', True):
+            self.start_detector()
+
+    # The app window is up: detection may start. Probing Chrome and opening
+    # a loopback while WebView2 initialises once delayed the main window past
+    # pywebview's limit, which then never created the bubble and the panel.
+    def ui_ready(self):
         if self._setting('meeting.enabled', True):
             self.start_detector()
 
@@ -137,7 +146,7 @@ class MeetingService:
 
     def _sync_idle_listener(self):
         pending = self.session.pending_source()
-        want = pending is not None
+        want = pending is not None and not self._closed
         to_stop = None
         with self._lock:
             if want and self._idle_stream is None:
@@ -288,7 +297,7 @@ class MeetingService:
         return self.store.load(meeting_id)['turns']
 
     def start(self):
-        if not self._loopback_ok():
+        if self._closed or not self._loopback_ok():
             return
         self.session.start()
         self._sync_idle_listener()
@@ -358,7 +367,10 @@ class MeetingService:
     def export(self, meeting_id: str, fmt: str) -> str:
         return self.store.export(meeting_id, fmt)
 
+    # A detector tick can land while this runs; `_closed` keeps it from
+    # opening a listener nothing would close.
     def shutdown(self):
+        self._closed = True
         self.stop_detector()
         if self.session.state in ('live', 'paused'):
             self.session.end()
