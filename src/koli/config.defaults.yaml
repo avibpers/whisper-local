@@ -40,6 +40,12 @@ whisper: # Whisper AI Model Settings
     # Set to specific language code to force language, or auto for auto-detection
     language: auto
 
+    # Languages you speak, for auto-detect: it picks the best-scoring one from
+    # this list and never another language. Empty = any language. One entry
+    # works like setting `language` to it. Ignored when `language` isn't auto.
+    # Example: [en, he]
+    languages: []
+
     # Transcription quality settings
     beam_size: 5 # Higher = more accurate but slower (1-10)
 

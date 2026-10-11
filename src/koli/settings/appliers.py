@@ -105,6 +105,8 @@ class Appliers:
         engine = self.sm.whisper_engine
         if path == 'whisper.language':
             engine.language = None if value in (None, '', 'auto') else value
+        elif path == 'whisper.languages':
+            engine.allowed_languages = [str(code) for code in (value or [])]
         elif path == 'whisper.task':
             engine.task = value if value in ('transcribe', 'translate') else 'transcribe'
         elif path == 'whisper.beam_size':
@@ -478,6 +480,7 @@ class Appliers:
 
 _HANDLERS = {
     'whisper.language': Appliers.engine_attr,
+    'whisper.languages': Appliers.engine_attr,
     'whisper.task': Appliers.engine_attr,
     'whisper.beam_size': Appliers.engine_attr,
     'whisper.initial_prompt': Appliers.engine_attr,

@@ -116,9 +116,13 @@ class WhisperEngine:
                  model_registry = None,
                  log_transcriptions: bool = False,
                  device_index: int = 0,
-                 language_model: Optional[tuple] = None):
+                 language_model: Optional[tuple] = None,
+                 allowed_languages: Optional[list] = None):
 
         self.model_key = model_key
+        # The languages auto-detect may pick from (["en", "he"]); empty = any.
+        # Stops a short clip from coming back as a language you never speak.
+        self.allowed_languages = [str(code) for code in (allowed_languages or [])]
         # An optional second model for one language, as (language, model key):
         # ("he", "hebrew-large-v3-turbo") sends Hebrew to ivrit-ai's model.
         self.language_model = None
@@ -218,30 +222,51 @@ class WhisperEngine:
                             f"transcribes everything. {e}")
 
     # Which model transcribes this clip, in which language, with which prompt.
-    # With a second model: a language set by a rule or profile picks directly;
-    # otherwise the main model detects the language (fast, one pass) and that
-    # language goes to the second model. The second model gets no prompt: an
-    # English prompt pushes a Hebrew model off course. Runs on the engine
-    # thread, inside the decode.
+    # A language set in settings, a rule or a profile is used as is; a list of
+    # one language works the same way. Otherwise, with a language list or a
+    # second model, the main model detects the language (fast, one pass) and
+    # passes it on, so Whisper doesn't detect again. Speech in the second
+    # model's language goes to that model, without the prompt: an English
+    # prompt pushes a Hebrew model off course. Runs on the engine thread,
+    # inside the decode.
     # Returns (model, key, language, prompt, detection probability or None).
     # `language` overrides the engine's setting for one call (meeting mode):
     # None keeps the setting, 'auto' detects, anything else forces that one.
     def _route(self, audio: np.ndarray, language: Optional[str] = None) -> tuple:
+        second = getattr(self, 'language_model', None)
+        allowed = getattr(self, 'allowed_languages', None) or []
         forced = self.language if language is None else (None if language == 'auto' else language)
-        if getattr(self, 'language_model', None) is None:
-            return self.model, self.model_key, forced, self.initial_prompt, None
-        target = self.language_model_lang
-        if forced:
-            if forced == target:
-                return self.language_model, self.language_model_key, target, None, None
-            return self.model, self.model_key, forced, self.initial_prompt, None
-        detected, probability, _ = self.model.detect_language(audio)
-        self.logger.info(f"Detected {detected} ({probability:.2f}) for the model choice")
-        if detected == target and probability >= 0.5:
-            return self.language_model, self.language_model_key, target, None, probability
-        # Detected once already: pass a sure guess on instead of detecting again.
-        return (self.model, self.model_key, detected if probability >= 0.5 else None,
-                self.initial_prompt, probability)
+        language, probability = forced, None
+        if not language and len(allowed) == 1:
+            language = allowed[0]
+        if not language and (allowed or second is not None):
+            language, probability = self._detect_language(audio, allowed)
+        if second is not None and language == self.language_model_lang:
+            return second, self.language_model_key, language, None, probability
+        return self.model, self.model_key, language, self.initial_prompt, probability
+
+    # The clip's language and how sure the main model is. Without a list, an
+    # unsure guess (under 50%) comes back as None so Whisper decides while
+    # transcribing. With a list, the best-scoring listed language always wins,
+    # and the certainty is its share among the listed ones: Icelandic 55%,
+    # Hebrew 30%, English 5% with [en, he] gives Hebrew at 86%.
+    def _detect_language(self, audio: np.ndarray, allowed: list) -> tuple:
+        # English-only models (base.en, ...) can't detect; they only do English.
+        if not getattr(getattr(self.model, 'model', None), 'is_multilingual', True):
+            return 'en', None
+        detected, probability, all_probs = self.model.detect_language(audio)
+        if not allowed:
+            self.logger.info(f"Detected {detected} ({probability:.2f})")
+            return (detected if probability >= 0.5 else None), probability
+        scores = {code: score for code, score in (all_probs or []) if code in allowed}
+        total = sum(scores.values())
+        if not total:
+            self.logger.info(f"Detected {detected} ({probability:.2f}); no score for {', '.join(allowed)}")
+            return (detected if detected in allowed else None), None
+        best = max(scores, key=scores.get)
+        share = scores[best] / total
+        self.logger.info(f"Detected {detected} ({probability:.2f}); among {', '.join(allowed)}: {best} ({share:.2f})")
+        return best, share
 
     # Fail fast when the CUDA runtime is incomplete. The model itself loads
     # without cuBLAS/cuDNN; their absence only shows on the first inference,

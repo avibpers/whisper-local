@@ -150,6 +150,23 @@ export function TagInput({ values, onChange, label, placeholder = 'Add, then Ent
   </div>`;
 }
 
+// Tags picked from a fixed list ("Languages I speak"): the chosen ones as
+// removable tags, and a dropdown with the rest to add one.
+export function ChoiceTags({ values, options, onChange, label, placeholder = 'Add…' }) {
+  const chosen = values || [];
+  const labelOf = (v) => (options.find(([value]) => value === v) || [v, v])[1];
+  const rest = options.filter(([v]) => !chosen.includes(v));
+  return html`<div class="tags">
+    ${chosen.map((v) => html`<span class="tag" dir="auto">${labelOf(v)}
+      <button type="button" aria-label=${`Remove ${labelOf(v)}`} onClick=${() => onChange(chosen.filter((x) => x !== v))}>×</button></span>`)}
+    ${rest.length > 0 && html`<select class="sel" style="height:28px;width:150px" aria-label=${label}
+        onChange=${(e) => { const i = e.currentTarget.selectedIndex - 1; e.currentTarget.selectedIndex = 0; if (i >= 0) onChange([...chosen, rest[i][0]]); }}>
+      <option selected>${placeholder}</option>
+      ${rest.map(([, text]) => html`<option>${text}</option>`)}
+    </select>`}
+  </div>`;
+}
+
 export function Keys({ hotkey, empty = 'Not set' }) {
   const keys = prettyKeys(hotkey);
   if (!keys.length) return html`<span class="muted small">${empty}</span>`;
