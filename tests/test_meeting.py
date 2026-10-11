@@ -674,5 +674,45 @@ class EngineLanguageTests(unittest.TestCase):
         self.assertIsNone(e._route(np.zeros(10), language='auto')[2])
 
 
+class MeetingSettingsTests(unittest.TestCase):
+    def defaults(self):
+        import yaml
+        from koli.config_manager import _resolve_platform_values
+        return _resolve_platform_values(yaml.safe_load(
+            (ROOT / 'src' / 'koli' / 'config.defaults.yaml').read_text(encoding='utf-8')))
+
+    def test_defaults_match_the_spec(self):
+        d = self.defaults()['meeting']
+        self.assertTrue(d['enabled'])
+        self.assertEqual(d['detect'], 'auto')
+        self.assertTrue(d['include_me'])
+        self.assertEqual(d['gap_minutes'], 10)
+        self.assertEqual(d['start_speech_seconds'], 3)
+        self.assertEqual(d['language'], 'auto')
+        self.assertEqual(d['model'], '')
+        self.assertEqual(d['speaker_model'], 'eres2net')
+        self.assertIn('eres2net', d['speaker_models'])
+        self.assertEqual(d['panel']['opacity'], 85)
+        self.assertEqual(d['panel']['position'], 'right-edge')
+        self.assertEqual((d['panel']['width'], d['panel']['height']), (380, 420))
+        self.assertTrue(d['panel']['hide_from_sharing'])
+        self.assertFalse(self.defaults()['overlay']['hide_from_sharing'])
+        self.assertEqual(self.defaults()['hotkey']['meeting_hotkey'], '')
+
+    def test_schema_section_and_simple_question(self):
+        from koli.settings import schema, simple_mode
+        self.assertIn('meetings', [s['id'] for s in schema.SECTIONS])
+        self.assertEqual(schema.get('meeting.detect').choices,
+                         [['auto', 'Automatically'], ['ask', 'Ask me first'], ['off', 'Never']])
+        self.assertEqual(schema.get('meeting.panel.custom_x').mode, schema.HIDDEN)
+        self.assertEqual(simple_mode.to_patch('calls', 'ask'), {'meeting.detect': 'ask'})
+        self.assertEqual(simple_mode.from_settings(lambda p: {'meeting.detect': 'off'}.get(p))['calls'], 'off')
+
+    def test_appliers_route_meeting_keys(self):
+        from koli.settings.appliers import _PREFIX_HANDLERS, _LISTENER_KEYS, Appliers
+        self.assertIn('hotkey.meeting_hotkey', _LISTENER_KEYS)
+        self.assertTrue(any(prefix == 'meeting.' and fn is Appliers.meeting for prefix, fn in _PREFIX_HANDLERS))
+
+
 if __name__ == '__main__':
     unittest.main()

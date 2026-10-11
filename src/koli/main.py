@@ -764,7 +764,8 @@ def main():
 
         model_registry = ModelRegistry(
             whisper_models_config=whisper_config.get('models', {}),
-            streaming_models_config=streaming_config.get('models', {})
+            streaming_models_config=streaming_config.get('models', {}),
+            speaker_models_config=(config_manager.config.get('meeting') or {}).get('speaker_models') or {},
         )
         vad_manager = setup_vad(vad_config)
         streaming_manager = setup_streaming(streaming_config, model_registry)

@@ -55,6 +55,7 @@ SECTIONS = [
     {'id': 'smart', 'title': 'Smart editing', 'desc': 'Offline rules, no AI. Each one is off until you turn it on.'},
     {'id': 'ai', 'title': 'Local AI (Ollama)', 'desc': 'Optional polish and rewrites with a model on your own machine. Nothing leaves it.'},
     {'id': 'overlay', 'title': 'Bubble & sounds', 'desc': 'What you see and hear when the window is closed.'},
+    {'id': 'meetings', 'title': 'Meetings', 'desc': 'Calls in Discord, Zoom, Teams and the browser: when Koli listens, who said what, and the panel.'},
     {'id': 'privacy', 'title': 'Privacy & logs', 'desc': 'Everything stays on this computer. Here is what gets written to disk.'},
     {'id': 'system', 'title': 'System', 'desc': 'Startup, tray, API server and backups.'},
 ]
@@ -218,6 +219,7 @@ SCHEMA = [
        help='Needs Local AI.'),
     _S('hotkey.pause_hotkey', 'Pause all hotkeys', 'hotkeys', 'hotkey', nullable=True),
     _S('hotkey.paste_last_hotkey', 'Paste last dictation', 'hotkeys', 'hotkey', nullable=True),
+    _S('hotkey.meeting_hotkey', 'Start or end a meeting', 'hotkeys', 'hotkey', nullable=True),
     _S('hotkey.double_tap_to_lock', 'Double-tap for hands-free', 'hotkeys', 'toggle',
        help='Double-tap Record to keep recording without holding. Tap again to stop.'),
     _S('hotkey.double_tap_window_ms', 'Double-tap window', 'hotkeys', 'number', min=100, max=2000,
@@ -329,6 +331,39 @@ SCHEMA = [
     _S('audio_feedback.transcription_complete_sound', 'Delivered sound', 'overlay', 'sound', group='Sound files'),
     _S('audio_feedback.ready_sound', 'Ready sound', 'overlay', 'sound', group='Sound files'),
 
+    _S('overlay.hide_from_sharing', 'Hide the bubble from screen sharing', 'overlay', 'toggle',
+       help='Shared screens and recordings leave it out; you still see it.'),
+
+    # ── Meetings ─────────────────────────────────────────────────────────────
+    _S('meeting.enabled', 'Notice calls', 'meetings', 'toggle', mode=SIMPLE,
+       help='Off hooks nothing. Meetings can still be started by hand from the Meetings screen.'),
+    _S('meeting.detect', 'When a call has sound', 'meetings', 'segmented', mode=SIMPLE,
+       choices=[['auto', 'Automatically'], ['ask', 'Ask me first'], ['off', 'Never']],
+       help='Each app can override this on the Apps screen.'),
+    _S('meeting.include_me', 'Include my side', 'meetings', 'toggle',
+       help="Your microphone becomes \"You\" in the transcript. The panel's Exclude me button pauses it."),
+    _S('meeting.gap_minutes', 'Resume within', 'meetings', 'number', min=1, max=60, unit='min',
+       help='Sound back from the same call within this time resumes the meeting; later starts a new one.'),
+    _S('meeting.start_speech_seconds', 'Speech before a meeting starts', 'meetings', 'number', min=1, max=10, unit='s',
+       help='So a notification ping never starts one.'),
+    _S('meeting.language', 'Meeting language', 'meetings', 'select', choices=LANGUAGES, apply=NEXT_RECORDING,
+       help='Auto-detect handles Hebrew and English in one call.'),
+    _S('meeting.model', 'Meeting model', 'meetings', 'text', apply=BACKGROUND,
+       help='A model key from the Model screen, or empty for the dictation model. Only worth it on a GPU.'),
+    _S('meeting.speaker_model', 'Voiceprint model', 'meetings', 'select', apply=BACKGROUND,
+       choices=[['eres2net', '3D-Speaker ERes2Net (40 MB)']], help='Tells speakers apart. Downloaded at the first meeting.'),
+    _S('meeting.speaker_models', 'Voiceprint models', 'meetings', 'readonly', help='Defined in user_settings.yaml.'),
+    _S('meeting.panel.opacity', 'Panel opacity', 'meetings', 'range', min=40, max=100, step=5, unit='%', group='Panel'),
+    _S('meeting.panel.position', 'Panel position', 'meetings', 'segmented', choices=POSITIONS, group='Panel',
+       help='Or drag the panel by its header.'),
+    _S('meeting.panel.width', 'Panel width', 'meetings', 'number', min=240, max=1200, unit='px', group='Panel'),
+    _S('meeting.panel.height', 'Panel height', 'meetings', 'number', min=160, max=1600, unit='px', group='Panel'),
+    _S('meeting.panel.hide_from_sharing', 'Hide the panel from screen sharing', 'meetings', 'toggle', group='Panel',
+       help="Shared screens and recordings leave it out; you still see it. The panel's menu can show it for one meeting."),
+    _S('meeting.panel.custom_x', 'Panel spot x', 'internal', 'readonly', apply=INTERNAL, mode=HIDDEN, nullable=True),
+    _S('meeting.panel.custom_y', 'Panel spot y', 'internal', 'readonly', apply=INTERNAL, mode=HIDDEN, nullable=True),
+    _S('meeting.panel.collapsed', 'Panel collapsed', 'internal', 'readonly', apply=INTERNAL, mode=HIDDEN),
+
     # ── Privacy & logs ───────────────────────────────────────────────────────
     _S('logging.log_transcriptions', 'Write dictated text into app.log', 'privacy', 'toggle',
        help='Off logs only lengths and timing.'),
@@ -389,7 +424,7 @@ SCHEMA = [
 BY_PATH = {s.path: s for s in SCHEMA}
 
 # Maps whose entries are the user's own: the schema covers the map as a whole.
-MAP_PATHS = {'whisper.models', 'streaming.models', 'postprocess.styles', 'postprocess.corrections'}
+MAP_PATHS = {'whisper.models', 'streaming.models', 'meeting.speaker_models', 'postprocess.styles', 'postprocess.corrections'}
 
 
 def get(path: str) -> Optional[Setting]:

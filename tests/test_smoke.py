@@ -3730,7 +3730,7 @@ class SimpleModeRoundTripTests(unittest.TestCase):
         cases = [('look', 'clean'), ('look', 'relaxed'), ('look', 'exact'), ('look', 'standard'),
                  ('where', 'copy'), ('where', 'type'), ('start', 'press'), ('start', 'hold'),
                  ('sounds', False), ('punctuation', False), ('bar', False), ('stop', 'never'), ('stop', '60'),
-                 ('volume', 'off'), ('volume', '10'), ('volume', '30')]
+                 ('volume', 'off'), ('volume', '10'), ('volume', '30'), ('calls', 'ask'), ('calls', 'off')]
         for question, answer in cases:
             with self.subTest(question=question, answer=answer):
                 cfg = copy.deepcopy(defaults)

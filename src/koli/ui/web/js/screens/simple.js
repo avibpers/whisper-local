@@ -106,6 +106,9 @@ export function SimpleSettingsScreen() {
     <section class="card" aria-label="App">
       <${Line} title="Start when the computer starts"><${Toggle} checked=${a.startup} label="Start with the computer" onChange=${(v) => set('startup', v)} /></${Line}>
       <${Line} title="Show the Koli bubble" help="A small tab on the edge of the screen that shows when you are being heard."><${Toggle} checked=${a.bar} label="Show the Koli bubble" onChange=${(v) => set('bar', v)} /></${Line}>
+      <${Q} title="Transcribe my calls?" help="Discord, Zoom, Teams and Google Meet. The panel shows who said what; nothing leaves this computer.">
+        <${Options} name="Calls" value=${a.calls} onPick=${(v) => set('calls', v)}
+          options=${[['auto', 'Yes, automatically', 'Starts when a call has sound.'], ['ask', 'Ask me first', 'A small prompt when a call starts.'], ['off', 'No', 'Never listens to calls.']]} /></${Q}>
       <${Line} title="Dark mode"><${Toggle} checked=${settings.ui.theme === 'dark'} label="Dark mode" onChange=${(v) => saveSetting('ui.theme', v ? 'dark' : 'light', { quiet: true })} /></${Line}>
     </section>
 

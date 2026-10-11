@@ -229,6 +229,9 @@ hotkey: # Hotkey Configuration
     # wrong window. Leave empty to disable.
     paste_last_hotkey: "alt+shift+z | macos: ctrl+option+v"
 
+    # Start a meeting now, or end the one running. Leave empty to disable.
+    meeting_hotkey: ""
+
     # Hands-free: in push-to-talk mode, double-tap the record hotkey to keep
     # recording without holding it, then tap it once more to stop. A single
     # hold works exactly as before. Off by default.
@@ -529,6 +532,58 @@ overlay: # Floating speech-level overlay (Wispr-style bottom-center bar)
     # through it to apps below). Set to false if you want to interact with
     # the overlay itself.
     click_through: true
+    # Keep the bubble out of screen sharing and recordings (you still see it)
+    hide_from_sharing: false
+
+meeting: # Meetings: calls in Discord, Zoom, Teams and the browser
+    # Notice calls and transcribe them. Off hooks nothing; meetings can
+    # still be started by hand from the Meetings screen.
+    enabled: true
+    # When a listed app has a call with sound: auto starts a meeting, ask
+    # offers one in the panel, off ignores it. Each app rule can override
+    # this with its own `meeting:` value (Apps screen).
+    detect: auto
+    # Your own side, from the microphone, as "You". The panel's Exclude me
+    # button turns it off for a while.
+    include_me: true
+    # Sound back from the same call within this many minutes resumes the
+    # meeting; later, or from another call, starts a new one
+    gap_minutes: 10
+    # Seconds of speech heard from the call before a meeting starts (so a
+    # notification ping never starts one)
+    start_speech_seconds: 3
+    # Language of the meetings: auto for mixed (Hebrew and English in one
+    # call), or a code to force one
+    language: auto
+    # A separate Whisper model for meetings (a key from whisper.models), or
+    # empty for the dictation model. Only worth it on a GPU.
+    model: ''
+    # Speaker voiceprint model (meeting.speaker_models)
+    speaker_model: eres2net
+    # Speaker-embedding models: one ONNX file each from a Hugging Face repo
+    speaker_models:
+        eres2net:
+            source: csukuangfj/speaker-embedding-models
+            label: "3D-Speaker ERes2Net (40MB)"
+            files:
+                model: 3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx
+    panel: # The dark panel that shows the conversation
+        # How solid it is, 40 to 100 (percent)
+        opacity: 85
+        # Same choices as the bubble: right-edge | left-edge | top-* |
+        # bottom-* | custom (where you dragged it)
+        position: right-edge
+        # Where you last dropped it (managed by the app; physical pixels)
+        custom_x: null
+        custom_y: null
+        # Size in page pixels; drag the corner handle to change it
+        width: 380
+        height: 420
+        # Shrunk to a small pill (managed by the app)
+        collapsed: false
+        # Keep the panel out of screen sharing and recordings. The panel's
+        # menu can show it for one meeting.
+        hide_from_sharing: true
 
 postprocess: # Transcription post-processing pipeline
     # Inline voice formatting: say "comma", "period", "new line", "new paragraph",

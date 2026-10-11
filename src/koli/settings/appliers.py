@@ -19,7 +19,7 @@ _LISTENER_KEYS = {
     'hotkey.auto_send_key': 'auto_send_key', 'hotkey.cancel_combination': 'cancel_combination',
     'hotkey.command_hotkey': 'command_hotkey', 'hotkey.rephrase_hotkey': 'rephrase_hotkey',
     'hotkey.pause_hotkey': 'pause_hotkey', 'hotkey.paste_last_hotkey': 'paste_last_hotkey',
-    'hotkey.recording_mode': 'recording_mode',
+    'hotkey.recording_mode': 'recording_mode', 'hotkey.meeting_hotkey': 'meeting_hotkey',
 }
 
 # Settings that are simply read from the config whenever they are used.
@@ -30,13 +30,14 @@ _READ_ON_USE = {
     'console.start_hidden', 'overlay.click_through', 'onboarding.gpu', 'onboarding.gpu_class',
     'ui.welcome_done', 'ui.window.width', 'ui.window.height', 'ui.window.x', 'ui.window.y',
     'ui.window.maximized', 'streaming.models',
+    'meeting.panel.custom_x', 'meeting.panel.custom_y', 'meeting.panel.collapsed', 'meeting.speaker_models',
 }
 
 
 # Everything the appliers may touch, filled in by the UI host after startup.
 class AppContext:
     def __init__(self, state_manager, config_manager, *, system_tray=None, model_registry=None,
-                 streaming_manager=None, server=None, bar=None,
+                 streaming_manager=None, server=None, bar=None, meetings=None,
                  reconfigure_logging: Optional[Callable[[], None]] = None):
         self.state_manager = state_manager
         self.config_manager = config_manager
@@ -45,6 +46,7 @@ class AppContext:
         self.streaming_manager = streaming_manager
         self.server = server
         self.bar = bar
+        self.meetings = meetings   # MeetingService, set once the app window runs
         self.reconfigure_logging = reconfigure_logging
         self.settings = None   # SettingsService, set once it exists
 
@@ -118,7 +120,8 @@ class Appliers:
         whisper_cfg = self.cm.get_whisper_config()
         streaming_cfg = self.cm.get_streaming_config()
         registry = ModelRegistry(whisper_models_config=whisper_cfg.get('models', {}),
-                                 streaming_models_config=streaming_cfg.get('models', {}))
+                                 streaming_models_config=streaming_cfg.get('models', {}),
+                                 speaker_models_config=self.cm.get_path('meeting.speaker_models') or {})
         self.ctx.model_registry = registry
         try:
             self.sm.whisper_engine.registry = registry
@@ -425,6 +428,23 @@ class Appliers:
             bar.set_enabled(bool(value))
         elif path == 'overlay.position':
             bar.set_position(value)
+        elif path == 'overlay.hide_from_sharing':
+            host = getattr(bar, 'host', None)
+            if host is not None and hasattr(host, 'apply_capture_flags'):
+                host.apply_capture_flags()
+
+    # Meeting settings reach the running service; the panel's look goes to
+    # the UI host, which owns that window.
+    def meeting(self, path, value, old):
+        service = getattr(self.ctx, 'meetings', None)
+        if service is not None:
+            service.apply_setting(path, value)
+        host = getattr(self.ctx.bar, 'host', None)
+        if host is not None and path.startswith('meeting.panel.'):
+            apply = getattr(host, 'apply_panel_setting', None)
+            if apply:
+                apply(path)
+        return self._live()   # the model keys are read at the next meeting start
 
     # The toggle hooks or unhooks focus and typing at once; the silence limit
     # is read at the next auto start.
@@ -492,6 +512,7 @@ _PREFIX_HANDLERS = [
     ('terminal_title.', Appliers.terminal_title),
     ('system_tray.', Appliers.tray),
     ('overlay.', Appliers.overlay),
+    ('meeting.', Appliers.meeting),
     ('auto_dictation.', Appliers.auto_dictation),
     ('server.', Appliers.server),
 ]
