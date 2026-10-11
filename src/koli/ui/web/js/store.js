@@ -31,6 +31,7 @@ export const app = createStore({
   ready: false, version: '', settings: {}, schema: null, state: { state: 'idle' }, tasks: {},
   logs: [], pipeline: [], foreground: {}, profile: null, recent: [], route: 'live',
   toasts: [], modal: null, undo: false, streaming: '', notice: null, dev: false,
+  meeting: { state: 'idle' },   // the meeting panel's state, for the Meetings screen
 });
 
 export const live = createStore({ level: 0, vad: null, levels: new Array(48).fill(0) });

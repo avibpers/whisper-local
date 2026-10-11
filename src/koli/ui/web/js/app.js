@@ -18,9 +18,11 @@ import { SettingsScreen } from './screens/settings.js';
 import { SimpleSettingsScreen } from './screens/simple.js';
 import { DiagnosticsScreen } from './screens/diagnostics.js';
 import { WelcomeScreen } from './screens/welcome.js';
+import { MeetingsScreen } from './screens/meetings.js';
 
 const ADVANCED_NAV = [
-  ['live', 'Live', 'wave'], ['history', 'History', 'clock'], ['vocabulary', 'Vocabulary', 'book'],
+  ['live', 'Live', 'wave'], ['history', 'History', 'clock'], ['meetings', 'Meetings', 'people'],
+  ['vocabulary', 'Vocabulary', 'book'],
   ['commands', 'Commands', 'command'], ['apps', 'Apps', 'grid'],
   ['settings', 'Settings', 'sliders'], ['diagnostics', 'Diagnostics', 'pulse'],
 ];
@@ -29,7 +31,7 @@ const SIMPLE_NAV = [
   ['simple-settings', 'Settings', 'sliders'],
 ];
 const SCREENS = {
-  live: LiveScreen, home: HomeScreen, history: HistoryScreen, vocabulary: VocabularyScreen,
+  live: LiveScreen, home: HomeScreen, history: HistoryScreen, meetings: MeetingsScreen, vocabulary: VocabularyScreen,
   commands: CommandsScreen, apps: AppsScreen, settings: SettingsScreen, 'simple-settings': SimpleSettingsScreen,
   diagnostics: DiagnosticsScreen, welcome: WelcomeScreen,
 };
@@ -118,6 +120,7 @@ function wireEvents() {
   });
   on('foreground', (f) => app.set({ foreground: f }));
   on('profile', (p) => app.set({ profile: p.active }));
+  on('meeting', (m) => app.set({ meeting: m }));
   on('notify', (n) => {
     if (n.kind === 'fallback') app.set({ notice: n });
     if (n.kind === 'settings_file') toast(n.message, { kind: 'warn', timeout: 0 });
@@ -166,6 +169,7 @@ async function boot() {
     logs: data.logs || [], pipeline: data.pipeline || [], recent: data.recent || [],
     tasks: Object.fromEntries((data.tasks || []).map((t) => [t.id, t])), foreground: data.foreground || {},
     profile: data.profile, undo: data.undo, dev: data.dev, webview2: data.webview2,
+    meeting: data.meeting || { state: 'idle' },
     // The title bar is removed once the page has loaded, which can be after
     // this reply was built: a frame event that already arrived is newer.
     frame: app.get().frame || data.frame || { custom: false, maximized: false },
@@ -232,7 +236,7 @@ function SearchPopover() {
     const term = q.trim().toLowerCase();
     if (term.length < 2 || !schema) return [];
     const sections = Object.fromEntries(schema.sections.map((s) => [s.id, s.title]));
-    const screens = [['Live', 'live'], ['History', 'history'], ['Vocabulary · favored words', 'vocabulary'],
+    const screens = [['Live', 'live'], ['History', 'history'], ['Meetings', 'meetings'], ['Vocabulary · favored words', 'vocabulary'],
       ['Snippets', 'vocabulary'], ['Corrections', 'vocabulary'], ['Voice commands', 'commands'],
       ['Transforms', 'commands'], ['App rules', 'apps'], ['Profiles', 'apps'], ['Diagnostics', 'diagnostics'],
       ['Self-test', 'diagnostics'], ['Report a bug', 'diagnostics']]

@@ -31,6 +31,7 @@ function summary(e) {
   if (e.auto_send_delay != null) bits.push(e.auto_send_delay ? `wait ${waitText(e.auto_send_delay)}` : 'no wait');
   if (e.auto_dictation === false) bits.push('No auto-listen');
   if (e.auto_dictation === true) bits.push('Auto-listen');
+  if (e.meeting) bits.push({ off: 'Calls ignored', ask: 'Calls: ask', auto: 'Calls: auto' }[e.meeting] || 'Calls');
   if (e.style) bits.push(e.style.replace('_', ' '));
   if (e.language) bits.push(`language ${e.language}`);
   if (e.initial_prompt) bits.push('prompt');
@@ -82,6 +83,8 @@ function RuleEditor({ item, foreground, onSaved, onDeleted }) {
     <${Row} label="Don't deliver at all"><${Toggle} checked=${!!e.suppress} label="Suppress" onChange=${(v) => set('suppress', v || null)} /></${Row}>
     <div class="eyebrow" style="margin-top:10px">Listening</div>
     <${Row} label="Start listening when a text field gets focus"><${Segmented} label="Auto-listen" value=${e.auto_dictation ?? null} options=${[[null, 'Default'], [true, 'On'], [false, 'Off']]} onChange=${(v) => set('auto_dictation', v)} /></${Row}>
+    <${Row} label="Calls in this app (Meetings)"><${Segmented} label="Meetings" value=${e.meeting ?? null}
+      options=${[[null, 'Not a meeting app'], ['default', 'Default'], ['auto', 'Auto'], ['ask', 'Ask'], ['off', 'Off']]} onChange=${(v) => set('meeting', v)} /></${Row}>
     <${Row} label="Language"><${Select} label="Language" value=${e.language ?? null} options=${LANGS} onChange=${(v) => set('language', v)} /></${Row}>
     <${Row} label="Output"><${Segmented} label="Output" value=${e.task ?? null} options=${[[null, 'Default'], ['transcribe', 'Transcribe'], ['translate', 'Translate']]} onChange=${(v) => set('task', v)} /></${Row}>
     <div style="padding:10px 0;border-top:1px solid var(--line)"><div style="margin-bottom:6px">Extra context prompt</div>

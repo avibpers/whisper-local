@@ -141,7 +141,7 @@ export function useRunningTasks(kind) {
 
 // An optional package a setting needs (noise suppression → noisereduce):
 // says so while it is missing and installs it in the background.
-const EXTRA_FOR = { 'audio.noise_suppression.enabled': 'noise' };
+const EXTRA_FOR = { 'audio.noise_suppression.enabled': 'noise', 'meeting.enabled': 'loopback' };
 
 export function ExtraInstall({ name }) {
   const [installed, setInstalled] = useState(true);

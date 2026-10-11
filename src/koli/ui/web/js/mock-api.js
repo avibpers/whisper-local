@@ -53,6 +53,46 @@ export function createMock(emit) {
   let seq = 0;
   let extraInstalled = false;
 
+  // A fake meeting: saved ones to list, and a live one (meeting_start, or
+  // ?mock=1&meeting) that gains a turn every few seconds.
+  const SPEAKERS = [{ id: 'you', name: 'You', colour: 0 }, { id: 's1', name: 'Speaker 1', colour: 1 }, { id: 's2', name: 'Ilona', colour: 2 }];
+  const LINES = [['s2', 'We fixed it, but if it breaks again, who knows.'], ['you', 'And the bridge is not working now?'],
+    ['s1', 'On Friday they hit one or two bridges.'], ['you', 'שלום, אני אגיע מחר בבוקר.']];
+  const emptyMeeting = () => ({ state: 'idle', id: null, title: '', source: {}, started_at: null, elapsed_s: 0, paused_by_user: false,
+    excluded: false, behind_s: 0, speakers: [], notice: null, turns: 0, can_continue: false, can_split: false, offer: null });
+  let meeting = emptyMeeting();
+  const saved = { '2026-10-10-150000': { id: '2026-10-10-150000', title: 'Discord', source: { app: 'discord.exe', kind: 'native', title: '', code: '' },
+    started_at: '2026-10-10T15:00:00+03:00', ended_at: '2026-10-10T15:42:00+03:00', language: 'auto', speakers: SPEAKERS,
+    turns: LINES.map(([sp, text], i) => ({ start: i * 9, end: i * 9 + 6, stream: sp === 'you' ? 'mic' : 'loopback', speaker: sp, text, lang: /[\u0590-\u05FF]/.test(text) ? 'he' : 'en' })), gaps: [] } };
+  let liveTurns = [];
+  let liveTimer = null;
+  const emitMeeting = () => emit('meeting', { ...meeting, turns: liveTurns.length, speakers: SPEAKERS });
+  const startMeeting = () => {
+    meeting = { ...emptyMeeting(), state: 'live', id: 'live-mock', title: 'Discord', source: { app: 'discord.exe', kind: 'native' },
+      started_at: new Date().toISOString(), notice: 'new', can_continue: true };
+    liveTurns = [];
+    emitMeeting();
+    let i = 0;
+    clearInterval(liveTimer);
+    liveTimer = setInterval(() => {
+      const [sp, text] = LINES[i % LINES.length];
+      emit('meeting_turn', { id: 'live-mock', pending: { stream: sp === 'you' ? 'mic' : 'loopback' } });
+      setTimeout(() => {
+        const turn = { start: i * 9, end: i * 9 + 6, stream: sp === 'you' ? 'mic' : 'loopback', speaker: sp, text, lang: 'en' };
+        liveTurns.push(turn);
+        emit('meeting_turn', { id: 'live-mock', turn });
+      }, 800);
+      i += 1;
+    }, 4000);
+  };
+  const endMeeting = () => {
+    clearInterval(liveTimer);
+    emit('meeting', { ...meeting, state: 'ended', duration_s: 125, speakers: SPEAKERS });
+    meeting = emptyMeeting();
+    emitMeeting();
+  };
+  loaded.then(() => { if (new URLSearchParams(location.search).has('meeting')) startMeeting(); });
+
   const log = (lv, msg, mod = 'koli.state_manager') => {
     seq += 1;
     emit('log', { seq, t: new Date().toTimeString().slice(0, 8), ts: secs(), lv, cls: { WARNING: 'warn', ERROR: 'err', DEBUG: 'debug' }[lv] || 'info', mod: mod.replace('koli.', ''), msg });
@@ -121,6 +161,7 @@ export function createMock(emit) {
       log('INFO', 'Mock backend ready', 'koli.ui.host');
       return ok({ version: '0.0.0-mock', platform: 'nt', settings: data.settings, state, tasks: Object.values(tasks),
         pipeline: [], recent: RECENT.slice(0, 5), foreground: { exe: 'slack.exe', title: 'Slack', rule: null }, profile, dev: true,
+        meeting: { ...meeting, speakers: SPEAKERS }, turns: liveTurns.slice(),
         ...(which === 'main' ? { schema: data.schema, logs: [], webview2: '154.0.0.0 (mock)', undo: false, frame: { ...frame } } : {}) });
     },
     // The window buttons have no window to act on here; maximize just swaps its icon.
@@ -264,6 +305,27 @@ export function createMock(emit) {
     resources: () => ok({ device: 'cuda', gpu_index: 1, models: ['large-v3-turbo', 'hebrew-large-v3-turbo'],
       gpu: { name: 'NVIDIA GeForce RTX 4070 SUPER', used_mb: 7350, total_mb: 12282 }, koli_gpu_mb: 4520,
       ram_mb: 1830, cpu_percent: 3.2 }),
+    meeting_state: () => ok({ ...meeting, speakers: SPEAKERS }),
+    meeting_start: () => { startMeeting(); return ok(); },
+    meeting_end: () => { endMeeting(); return ok(); },
+    meeting_new: () => { endMeeting(); startMeeting(); return ok(); },
+    meeting_pause: () => { meeting = { ...meeting, state: 'paused', paused_by_user: true }; emitMeeting(); return ok(); },
+    meeting_resume: () => { meeting = { ...meeting, state: 'live', paused_by_user: false, notice: 'resumed', can_split: true }; emitMeeting(); return ok(); },
+    meeting_exclude: (on) => { meeting = { ...meeting, excluded: !!on }; emitMeeting(); return ok(); },
+    meeting_offer: (accept) => { if (accept) startMeeting(); else { meeting = emptyMeeting(); emitMeeting(); } return ok(); },
+    meeting_rename: (sid, name) => { const sp = SPEAKERS.find((s) => s.id === sid); if (sp) sp.name = name; emitMeeting(); return ok(); },
+    meeting_continue_previous: () => { meeting = { ...meeting, notice: 'resumed', can_continue: false }; emitMeeting(); return ok(); },
+    meeting_split: () => { meeting = { ...meeting, notice: 'new', can_split: false }; emitMeeting(); return ok(); },
+    meetings_list: () => ok(Object.values(saved).map((m) => ({ id: m.id, title: m.title, source: m.source, started_at: m.started_at,
+      ended_at: m.ended_at, duration_s: 2520, speakers: m.speakers.map((s) => s.name), turns: m.turns.length }))),
+    meeting_get: (id) => ok(id === 'live-mock' ? { id, title: meeting.title, source: meeting.source, started_at: meeting.started_at,
+      speakers: SPEAKERS, turns: liveTurns.slice(), gaps: [] } : saved[id]),
+    meeting_delete: (id) => { delete saved[id]; return ok(true); },
+    meeting_export: () => ok('C:\\Users\\you\\Desktop\\meeting.txt'),
+    meeting_resize: () => ok(),
+    meeting_collapse: (c) => ok({ collapsed: !!c }),
+    meeting_drag: () => ok(),
+    meeting_show_in_sharing: (on) => ok({ shown: !!on }),
     problem_dismiss: () => ok(),
   };
 
