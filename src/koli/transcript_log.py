@@ -27,18 +27,33 @@ _write_lock = threading.Lock()
 
 # Called from state_manager._transcription_pipeline after every successful
 # delivery. Silent no-op for empty text (which means a failed/silent recording).
-def record_transcript(text: str, app: str = '', duration_s: float = 0.0, language: str = ''):
+# `window` is the foreground.get_foreground_app() dict at delivery time. Besides
+# the app, it keeps what tells one conversation from another: the window title
+# usually names the chat, channel, tab or file ("@Efrat - Discord"), and the
+# window id + pid separate two windows of the same app. Windows reuses window
+# ids after a window closes, so the pid is kept alongside to tell them apart.
+def record_transcript(text: str, window: dict | None = None, duration_s: float = 0.0,
+                      language: str = ''):
     if not text:
         return
+    window = window or {}
     entry = {
         'timestamp': datetime.datetime.now().isoformat(timespec='seconds'),
         'text': text,
-        'app': app,
+        'app': window.get('exe', ''),
         'duration_s': round(duration_s, 2),
         'chars': len(text),
     }
     if language:
         entry['language'] = language
+    # Window identity — only what this platform reports (macOS has no window id,
+    # and its "title" is the app name until a per-window probe exists).
+    if window.get('title'):
+        entry['title'] = window['title']
+    if window.get('hwnd'):
+        entry['window_id'] = window['hwnd']
+    if window.get('pid'):
+        entry['pid'] = window['pid']
     path = Path(get_user_app_data_path()) / _LOG_FILE
     try:
         with _write_lock:

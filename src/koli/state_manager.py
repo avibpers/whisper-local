@@ -679,7 +679,7 @@ class StateManager:
 
         fg = foreground.get_foreground_app() or {}
         record_transcription(char_count=len(text), duration_seconds=duration, app=fg.get('exe', ''))
-        record_transcript(text, app=fg.get('exe', ''), duration_s=duration)
+        record_transcript(text, window=fg, duration_s=duration)
         audit_enabled = (self.config_manager.config.get('audit') or {}).get('enabled', False)
         audit_record('delivered', text, fg.get('exe', ''), audit_enabled)
 
@@ -1063,7 +1063,7 @@ class StateManager:
                     duration_seconds=duration,
                     app=fg.get('exe', ''),
                 )
-                record_transcript(transcribed_text, app=fg.get('exe', ''), duration_s=duration,
+                record_transcript(transcribed_text, window=fg, duration_s=duration,
                                   language=(info or {}).get('language') or '')
                 audit_enabled = (self.config_manager.config.get('audit') or {}).get('enabled', False)
                 audit_record('delivered', transcribed_text, fg.get('exe', ''), audit_enabled)

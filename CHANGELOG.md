@@ -5,6 +5,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 ## [Unreleased]
 
 ### Added
+- **History remembers which window you dictated into.** Each new entry keeps
+  the window's title (which usually names the chat, channel, tab or file, like
+  "@Efrat - Discord"), the window's id and the process id, so dictations can be
+  grouped by conversation, not just by app. Groundwork for using earlier
+  dictations in the same conversation as context.
 - **"Wait before sending" can follow the message's length.** Next to the
   fixed seconds there are Auto · fast, Auto · medium and Auto · slow: a word
   or two sends after 1 second, longer messages wait one more second per 6, 4

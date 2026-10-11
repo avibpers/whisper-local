@@ -651,11 +651,29 @@ class TranscriptLogTests(unittest.TestCase):
         from koli import transcript_log
         with tempfile.TemporaryDirectory() as tmpdir:
             with mock.patch('koli.transcript_log.get_user_app_data_path', return_value=tmpdir):
-                transcript_log.record_transcript("Hello world", app="test.exe", duration_s=1.5)
+                transcript_log.record_transcript(
+                    "Hello world", duration_s=1.5,
+                    window={'exe': 'discord.exe', 'title': '@Efrat - Discord', 'hwnd': 4242, 'pid': 77})
                 entries = transcript_log.load_transcripts()
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0]["text"], "Hello world")
-        self.assertEqual(entries[0]["app"], "test.exe")
+        self.assertEqual(entries[0]["app"], "discord.exe")
+        self.assertEqual(entries[0]["title"], "@Efrat - Discord")
+        self.assertEqual(entries[0]["window_id"], 4242)
+        self.assertEqual(entries[0]["pid"], 77)
+
+    # No foreground window (or a failed probe) still logs the text, just without identity.
+    def test_record_without_window(self):
+        import tempfile
+        import unittest.mock as mock
+        from koli import transcript_log
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch('koli.transcript_log.get_user_app_data_path', return_value=tmpdir):
+                transcript_log.record_transcript("Hello", window={})
+                entries = transcript_log.load_transcripts()
+        self.assertEqual(entries[0]["app"], "")
+        self.assertNotIn("title", entries[0])
+        self.assertNotIn("window_id", entries[0])
 
     def test_empty_text_not_logged(self):
         import tempfile
@@ -663,7 +681,7 @@ class TranscriptLogTests(unittest.TestCase):
         from koli import transcript_log
         with tempfile.TemporaryDirectory() as tmpdir:
             with mock.patch('koli.transcript_log.get_user_app_data_path', return_value=tmpdir):
-                transcript_log.record_transcript("", app="test.exe")
+                transcript_log.record_transcript("", window={'exe': 'test.exe'})
                 entries = transcript_log.load_transcripts()
         self.assertEqual(len(entries), 0)
 
