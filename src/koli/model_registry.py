@@ -1,5 +1,5 @@
 # model_registry.py
-# Single source of truth for which Whisper/streaming models exist, where each one
+# Single source of truth for which Whisper, streaming and speaker models exist, where each one
 # resolves to (a HuggingFace repo id or a local directory), and whether it is
 # already cached on disk. The cache check is what lets the app tell the user
 # "downloading, first run only" instead of appearing to hang on first launch.
@@ -14,9 +14,11 @@ from faster_whisper.utils import _MODELS
 class ModelRegistry:
     DEFAULT_CACHE_PREFIX = "models--Systran--faster-whisper-"
 
-    def __init__(self, whisper_models_config: dict = None, streaming_models_config: dict = None):
+    def __init__(self, whisper_models_config: dict = None, streaming_models_config: dict = None,
+                 speaker_models_config: dict = None):
         self.whisper_models = {}
         self.streaming_models = {}
+        self.speaker_models = {}
         self.logger = logging.getLogger(__name__)
 
         if whisper_models_config:
@@ -28,6 +30,11 @@ class ModelRegistry:
             for key, config in streaming_models_config.items():
                 if isinstance(config, dict):
                     self.streaming_models[key] = ModelDefinition(key, config, model_type="streaming")
+
+        if speaker_models_config:
+            for key, config in speaker_models_config.items():
+                if isinstance(config, dict):
+                    self.speaker_models[key] = ModelDefinition(key, config, model_type="speaker")
 
     def get_model(self, key: str):
         return self.whisper_models.get(key)
@@ -130,6 +137,42 @@ class ModelRegistry:
         except Exception as e:
             self.logger.error(f"Failed to download streaming model {model.source}: {e}")
             return False
+
+    # ── Speaker-embedding models (meeting mode) ──────────────────────────────
+    # One ONNX file each, from a Hugging Face repo, through the hub's cache.
+
+    def _speaker_file(self, key: str) -> Optional[str]:
+        model = self.speaker_models.get(key)
+        if not model or not model.files.get('model'):
+            return None
+        snapshots_dir = os.path.join(self.get_hf_cache_path(), model.cache_folder, 'snapshots')
+        if not os.path.isdir(snapshots_dir):
+            return None
+        for snapshot in os.listdir(snapshots_dir):
+            path = os.path.join(snapshots_dir, snapshot, model.files['model'])
+            if os.path.exists(path):
+                return path
+        return None
+
+    def is_speaker_model_cached(self, key: str) -> bool:
+        return self._speaker_file(key) is not None
+
+    # The model file's path, downloading it first when needed (blocking: call
+    # from a background task).
+    def get_speaker_model_path(self, key: str) -> Optional[str]:
+        path = self._speaker_file(key)
+        if path:
+            return path
+        model = self.speaker_models.get(key)
+        if not model:
+            return None
+        try:
+            from huggingface_hub import hf_hub_download
+            self.logger.info(f"Downloading speaker model: {model.source}/{model.files['model']}")
+            return hf_hub_download(repo_id=model.source, filename=model.files['model'])
+        except Exception as e:
+            self.logger.error(f"Failed to download speaker model {model.source}: {e}")
+            return None
 
 
 class ModelDefinition:

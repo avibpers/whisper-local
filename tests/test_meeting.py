@@ -509,5 +509,73 @@ class CaptureTests(unittest.TestCase):
         self.assertEqual(got[0].dtype, np.float32)
 
 
+class SpeakerTests(unittest.TestCase):
+    @staticmethod
+    def unit(*xs):
+        v = np.array(xs, dtype=np.float32)
+        return v / np.linalg.norm(v)
+
+    def test_same_voice_joins_far_voice_is_new(self):
+        from koli.meeting.speakers import SpeakerTracker
+        vecs = {'a': self.unit(1, 0, 0), 'a2': self.unit(0.95, 0.1, 0), 'b': self.unit(0, 1, 0)}
+        t = SpeakerTracker(embed=lambda audio: vecs[audio])
+        sid, spk = t.label('a')
+        self.assertEqual(sid, 's1')
+        self.assertEqual(spk['name'], 'Speaker 1')
+        self.assertEqual(spk['colour'], 1)
+        sid2, spk2 = t.label('a2')
+        self.assertEqual(sid2, 's1')
+        self.assertEqual(spk2['count'], 2)
+        sid3, spk3 = t.label('b')
+        self.assertEqual(sid3, 's2')
+        self.assertEqual(spk3['colour'], 2)
+
+    def test_centroid_moves_toward_new_samples(self):
+        from koli.meeting.speakers import SpeakerTracker
+        vecs = {'a': self.unit(1, 0), 'a2': self.unit(0.8, 0.6)}
+        t = SpeakerTracker(embed=lambda audio: vecs[audio], similarity=0.5)
+        t.label('a')
+        _, spk = t.label('a2')
+        c = np.array(spk['centroid'])
+        self.assertGreater(c[1], 0.2)
+        self.assertAlmostEqual(float(np.linalg.norm(c)), 1.0, places=4)
+
+    def test_load_restores_speakers_and_numbering(self):
+        from koli.meeting.speakers import SpeakerTracker
+        t = SpeakerTracker(embed=lambda audio: self.unit(0, 0, 1))
+        t.load([{'id': 'you', 'name': 'You', 'colour': 0},
+                {'id': 's1', 'name': 'Ilona', 'colour': 1, 'centroid': [1.0, 0.0, 0.0], 'count': 4},
+                {'id': 's2', 'name': 'Speaker 2', 'colour': 2, 'centroid': [0.0, 1.0, 0.0], 'count': 2}])
+        sid, spk = t.label('x')
+        self.assertEqual(sid, 's3')
+        self.assertEqual(spk['colour'], 3)
+        self.assertEqual([s['id'] for s in t.export()], ['s1', 's2', 's3'])
+
+    def test_no_embedder_means_unknown(self):
+        from koli.meeting.speakers import SpeakerTracker
+        t = SpeakerTracker(embed=None)
+        self.assertEqual(t.label(np.zeros(16000)), (SpeakerTracker.UNKNOWN, None))
+        t2 = SpeakerTracker(embed=lambda audio: None)
+        self.assertEqual(t2.label(np.zeros(16000)), (SpeakerTracker.UNKNOWN, None))
+
+    def test_colours_wrap_after_seven(self):
+        from koli.meeting.speakers import SpeakerTracker
+        t = SpeakerTracker(embed=lambda audio: audio, similarity=0.99)
+        labels = []
+        for i in range(9):
+            v = np.zeros(9, dtype=np.float32)
+            v[i] = 1.0
+            labels.append(t.label(v))
+        self.assertEqual([spk['colour'] for _, spk in labels][:8], [1, 2, 3, 4, 5, 6, 7, 1])
+
+    def test_registry_knows_speaker_models(self):
+        from koli.model_registry import ModelRegistry
+        r = ModelRegistry(speaker_models_config={'eres2net': {
+            'source': 'csukuangfj/speaker-embedding-models', 'label': 'ERes2Net',
+            'files': {'model': '3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx'}}})
+        self.assertIn('eres2net', r.speaker_models)
+        self.assertFalse(r.is_speaker_model_cached('nope'))
+
+
 if __name__ == '__main__':
     unittest.main()
