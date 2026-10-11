@@ -67,28 +67,35 @@ class Chunker:
         self._t_end = 0.0            # wall clock at the end of the last frame
 
     # `samples` is mono float32 at `rate`; `t_end` is the wall clock of its
-    # last sample.
+    # last sample. The callbacks run after the lock is released, so one that
+    # takes another lock (or re-enters the chunker) can never deadlock the
+    # audio thread.
     def feed(self, samples: np.ndarray, t_end: float):
         samples = np.asarray(samples, dtype=np.float32).reshape(-1)
+        emitted, spoken = [], 0
         with self._lock:
             data = np.concatenate([self._rest, samples]) if len(self._rest) else samples
             whole = (len(data) // FRAME) * FRAME
             frames, self._rest = data[:whole], data[whole:]
             n = whole // FRAME
-            spoken = 0
             for i in range(n):
                 frame = frames[i * FRAME:(i + 1) * FRAME]
                 speech = self.speech_prob(frame) >= SPEECH_THRESHOLD
                 # This frame ended (n-1-i) frames plus the leftover samples before t_end.
                 self._t_end = t_end - (n - 1 - i) * FRAME_S - len(self._rest) / self.rate
-                self._push(frame, speech)
+                chunk = self._push(frame, speech)
+                if chunk is not None:
+                    emitted.append(chunk)
                 spoken += speech
-            if spoken and self.on_speech:
-                self.on_speech(spoken * FRAME_S)
+        for chunk in emitted:
+            self.on_chunk(chunk)
+        if spoken and self.on_speech:
+            self.on_speech(spoken * FRAME_S)
 
+    # Adds a frame to the open chunk; returns the chunk when it closed.
     def _push(self, frame: np.ndarray, speech: bool):
         if not self._frames and not speech:
-            return                   # silence before any speech is not kept
+            return None              # silence before any speech is not kept
         self._frames.append(frame)
         self._speech.append(speech)
         trailing = 0
@@ -97,28 +104,32 @@ class Chunker:
                 break
             trailing += 1
         if trailing >= self.pause_frames or len(self._frames) >= self.max_frames:
-            self._emit_locked()
+            return self._take_locked()
+        return None
 
     def flush(self):
         with self._lock:
-            self._emit_locked()
+            chunk = self._take_locked()
+        if chunk is not None:
+            self.on_chunk(chunk)
 
-    def _emit_locked(self):
+    # The open chunk as a dict, or None when it holds too little speech.
+    def _take_locked(self):
         if not self._frames:
-            return
+            return None
         frames, speech = self._frames, self._speech
         self._frames, self._speech = [], []
         voiced = sum(speech)
         if voiced < self.min_speech_frames:
-            return
+            return None
         # Keep a little silence after the last speech, not the whole pause.
         last = max(i for i, s in enumerate(speech) if s)
         keep = min(len(frames), last + 1 + int(round(TRAIL_S / FRAME_S)))
         dropped = len(frames) - keep
         t1 = self._t_end - dropped * FRAME_S
         t0 = t1 - keep * FRAME_S
-        self.on_chunk({'audio': np.concatenate(frames[:keep]), 'stream': self.stream,
-                       't0': t0, 't1': t1, 'speech_s': voiced * FRAME_S})
+        return {'audio': np.concatenate(frames[:keep]), 'stream': self.stream,
+                't0': t0, 't1': t1, 'speech_s': voiced * FRAME_S}
 
 
 # ── Loopback ─────────────────────────────────────────────────────────────────

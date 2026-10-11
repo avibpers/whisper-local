@@ -2,7 +2,11 @@
 # When a meeting starts, pauses, resumes and ends. Pure logic: audio, windows
 # and files are reached only through the callbacks handed in, so every rule in
 # docs/design/meeting-mode.md is tested without hardware. One meeting at a time.
+# Capture callbacks run after the session lock is released (a transition
+# queues them as effects), so the audio threads can never wait on this lock
+# while it waits on them.
 
+import contextlib
 import datetime
 import logging
 import threading
@@ -48,7 +52,8 @@ def title_for(source: dict) -> str:
 class SessionManager:
     def __init__(self, store: MeetingStore, *, start_capture: Callable[[dict], None], stop_capture: Callable[[], None],
                  publish: Callable[[str, dict], None], settings: Callable, now: Callable = None,
-                 schedule: Callable = None, save_interval: float = 5.0):
+                 schedule: Callable = None, save_interval: float = 5.0,
+                 on_speakers: Optional[Callable[[list], None]] = None):
         self.store = store
         self.saver = ThrottledSaver(store, save_interval)
         self._start_capture = start_capture
@@ -57,7 +62,9 @@ class SessionManager:
         self._settings = settings
         self._now = now or _now
         self._schedule = schedule or _default_schedule
+        self._on_speakers = on_speakers   # the speaker list to work with changed (resume, continue, split)
         self._lock = threading.RLock()
+        self._effects = []               # callbacks to run once the lock is released
         self.state = 'idle'
         self.meeting: Optional[dict] = None
         self.excluded = False
@@ -77,10 +84,33 @@ class SessionManager:
         self._previous_paused_s = 0.0
         self._resumed_turn_index = None  # turns from here came after the last resume
 
+    # ── Lock discipline ──────────────────────────────────────────────────────
+
+    # Every public method changes state under the lock and runs the capture
+    # callbacks it queued after letting go of it.
+    @contextlib.contextmanager
+    def _transition(self):
+        with self._lock:
+            yield
+            effects, self._effects = self._effects, []
+        for fn in effects:
+            try:
+                fn()
+            except Exception as e:
+                logger.error(f"Meeting capture callback failed: {e}")
+
+    def _after(self, fn: Callable):
+        self._effects.append(fn)
+
     # ── Queries ──────────────────────────────────────────────────────────────
 
     def current(self) -> Optional[dict]:
         return self.meeting
+
+    # The source waiting for speech while nothing runs, or None.
+    def pending_source(self) -> Optional[dict]:
+        with self._lock:
+            return dict(self._pending) if self.state == 'idle' and self._pending else None
 
     def _elapsed(self) -> float:
         if not self.meeting:
@@ -121,7 +151,7 @@ class SessionManager:
             self._cancel_notice = self._schedule(NOTICE_SECONDS, self._clear_notice)
 
     def _clear_notice(self):
-        with self._lock:
+        with self._transition():
             self.notice = None
             self._cancel_notice = None
             self._emit()
@@ -130,7 +160,7 @@ class SessionManager:
 
     # The detector's view, once a second. Only changes matter.
     def on_sources(self, sources: list):
-        with self._lock:
+        with self._transition():
             keys = {s['key'] for s in sources}
             self._declined &= keys
             self._sources = list(sources)
@@ -179,7 +209,7 @@ class SessionManager:
 
     # Speech heard on the loopback: a pending source starts once enough of it.
     def on_speech(self, seconds: float):
-        with self._lock:
+        with self._transition():
             if self.state != 'idle' or not self._pending:
                 return
             self._speech_s += float(seconds)
@@ -193,13 +223,13 @@ class SessionManager:
             self._begin(source, notice=None)
 
     def offer_accept(self):
-        with self._lock:
+        with self._transition():
             if self.state != 'offered' or not self._pending:
                 return
             self._begin(self._pending, notice=None)
 
     def offer_decline(self):
-        with self._lock:
+        with self._transition():
             if self.state != 'offered' or not self._pending:
                 return
             self._declined.add(self._pending['key'])
@@ -210,21 +240,24 @@ class SessionManager:
     # ── Commands ─────────────────────────────────────────────────────────────
 
     def start(self, source: Optional[dict] = None):
-        with self._lock:
+        with self._transition():
             if self.state in ('live', 'paused'):
                 return
             source = source or self._pending or (self._sources[0] if self._sources else None) or MANUAL_SOURCE
             self._begin(source, notice=None)
 
     def end(self):
-        with self._lock:
+        with self._transition():
             if self.state == 'offered':
-                self.offer_decline()
+                self._declined.add(self._pending['key'])
+                self._pending = None
+                self.state = 'idle'
+                self._emit()
             elif self.state in ('live', 'paused'):
                 self._end()
 
     def new(self):
-        with self._lock:
+        with self._transition():
             if self.state not in ('live', 'paused'):
                 return
             source = dict(self.meeting['source'])
@@ -232,17 +265,17 @@ class SessionManager:
             self._begin(source, notice=None)
 
     def pause(self):
-        with self._lock:
+        with self._transition():
             if self.state == 'live':
                 self._pause(by_user=True)
 
     def resume(self):
-        with self._lock:
+        with self._transition():
             if self.state == 'paused':
                 self._resume(notice=None)
 
     def set_excluded(self, on: bool):
-        with self._lock:
+        with self._transition():
             on = bool(on)
             if on == self.excluded:
                 return
@@ -254,30 +287,52 @@ class SessionManager:
                     self._close_gap()
             self._emit()
 
+    # A plain write: the transcriber reports this from inside the audio path.
     def set_behind(self, seconds: float):
-        with self._lock:
-            self.behind_s = float(seconds)
+        self.behind_s = float(seconds)
 
     # ── Turns and speakers ───────────────────────────────────────────────────
 
-    # A turn from the transcriber, with wall-clock t0/t1 (time.time()).
+    def _stored_turn(self, meeting: dict, turn: dict) -> dict:
+        base = started_ts(meeting)
+        return {'start': round(float(turn['t0']) - base, 2), 'end': round(float(turn['t1']) - base, 2),
+                'stream': turn['stream'], 'speaker': turn['speaker'], 'text': turn['text'],
+                'lang': turn.get('lang', '')}
+
+    # A turn from the transcriber, with wall-clock t0/t1 (time.time()) and the
+    # id of the meeting its audio came from. One that arrives after its
+    # meeting ended still lands in that meeting's file, never in the next one.
     def add_turn(self, turn: dict):
-        with self._lock:
+        meeting_id = turn.get('meeting_id')
+        with self._transition():
             m = self.meeting
-            if not m or self.state not in ('live', 'paused'):
+            if m and (meeting_id is None or meeting_id == m['id']):
+                if self.state not in ('live', 'paused'):
+                    return
+                stored = self._stored_turn(m, turn)
+                m['turns'].append(stored)
+                self.saver.mark(m)
+                self._publish('meeting_turn', {'id': m['id'], 'turn': stored})
+            elif meeting_id:
+                self._append_saved(meeting_id, turn)
+
+    def _append_saved(self, meeting_id: str, turn: dict):
+        target = self._previous if self._previous and self._previous['id'] == meeting_id else None
+        if target is None:
+            try:
+                target = self.store.load(meeting_id)
+            except Exception as e:
+                logger.warning(f"Turn for unknown meeting {meeting_id} dropped: {e}")
                 return
-            base = started_ts(m)
-            stored = {'start': round(float(turn['t0']) - base, 2), 'end': round(float(turn['t1']) - base, 2),
-                      'stream': turn['stream'], 'speaker': turn['speaker'], 'text': turn['text'],
-                      'lang': turn.get('lang', '')}
-            m['turns'].append(stored)
-            self.saver.mark(m)
-            self._publish('meeting_turn', {'id': m['id'], 'turn': stored})
+        stored = self._stored_turn(target, turn)
+        target['turns'].append(stored)
+        self.store.save(target)
+        self._publish('meeting_turn', {'id': meeting_id, 'turn': stored})
 
     # A speaker seen for the first time, or one whose voiceprint moved. The
     # name is the user's to change, so an update never touches it.
     def ensure_speaker(self, speaker: dict):
-        with self._lock:
+        with self._transition():
             m = self.meeting
             if not m:
                 return
@@ -291,7 +346,7 @@ class SessionManager:
             self._emit()
 
     def rename_speaker(self, speaker_id: str, name: str):
-        with self._lock:
+        with self._transition():
             m = self.meeting
             if not m:
                 return
@@ -301,12 +356,16 @@ class SessionManager:
             self.saver.mark(m)
             self._emit()
 
+    def _speakers_changed(self, speakers: list):
+        if self._on_speakers:
+            self._after(lambda: self._on_speakers([dict(s) for s in speakers]))
+
     # ── Resume or new, by hand ───────────────────────────────────────────────
 
     # "Continue previous instead": the turns of this new meeting move onto the
     # previous one, which comes back live; the new file goes away.
     def continue_previous(self):
-        with self._lock:
+        with self._transition():
             if self.state != 'live' or not self._previous:
                 return
             new, prev = self.meeting, self._previous
@@ -318,11 +377,13 @@ class SessionManager:
                     prev['speakers'].append(s)
             prev['ended_at'] = None
             prev['gaps'].append({'start': round(self._previous_paused_s, 2), 'end': round(offset, 2), 'reason': 'paused'})
+            self.saver.flush()
             self.store.delete(new['id'])
             self.meeting = prev
             self._previous = None
             self._resumed_turn_index = len(prev['turns']) - len(new['turns'])
             self.saver.mark(prev)
+            self._speakers_changed(prev['speakers'])
             self._set_notice('resumed')
             self._publish('meeting_turn', {'id': prev['id'], 'reload': True})
             self._emit()
@@ -330,7 +391,7 @@ class SessionManager:
     # "Start new instead" after a resume: what came after the resume becomes
     # a meeting of its own; the previous one ends where it paused.
     def split_resumed(self):
-        with self._lock:
+        with self._transition():
             if self.state != 'live' or self._resumed_turn_index is None:
                 return
             old = self.meeting
@@ -343,6 +404,7 @@ class SessionManager:
             start_dt = datetime.datetime.fromtimestamp(base + resumed_s, tz=datetime.timezone.utc).astimezone()
             old['ended_at'] = datetime.datetime.fromtimestamp(base + paused_s, tz=datetime.timezone.utc) \
                 .astimezone().isoformat(timespec='seconds')
+            self.saver.flush()
             self.store.save(old)
             fresh = new_meeting(self._unique_id(start_dt), old['title'], old['source'], start_dt, old.get('language', 'auto'))
             fresh['speakers'] = [dict(s) for s in old['speakers']]
@@ -352,6 +414,7 @@ class SessionManager:
             self._resumed_turn_index = None
             self._previous = None
             self.store.save(fresh)
+            self._speakers_changed(fresh['speakers'])
             self._set_notice('new')
             self._publish('meeting_turn', {'id': fresh['id'], 'reload': True})
             self._emit()
@@ -371,7 +434,8 @@ class SessionManager:
         now = self._now()
         source = {k: source.get(k, '') for k in ('key', 'app', 'kind', 'title', 'code')}
         language = str(self._settings('meeting.language', 'auto') or 'auto')
-        self.meeting = new_meeting(self._unique_id(now), title_for(source), source, now, language)
+        meeting = new_meeting(self._unique_id(now), title_for(source), source, now, language)
+        self.meeting = meeting
         self.state = 'live'
         self.excluded = False
         self.paused_by_user = False
@@ -380,14 +444,14 @@ class SessionManager:
         self._speech_s = 0.0
         self._resumed_turn_index = None
         self._gap_open = None
-        self.store.save(self.meeting)
+        self.store.save(meeting)
         if self._previous is not None and self._previous_until and now <= self._previous_until:
             notice = 'new'
         else:
             self._previous = None
         self._set_notice(notice)
-        logger.info(f"Meeting started: {self.meeting['title']} ({source['kind']})")
-        self._start_capture(self.meeting)
+        logger.info(f"Meeting started: {meeting['title']} ({source['kind']})")
+        self._after(lambda: self._start_capture(meeting))
         self._emit()
 
     def _pause(self, by_user: bool):
@@ -395,7 +459,7 @@ class SessionManager:
         self.paused_by_user = by_user
         self._paused_at = self._now()
         self._open_gap('paused')
-        self._stop_capture()
+        self._after(self._stop_capture)
         self.saver.flush()
         gap_s = float(self._settings('meeting.gap_minutes', 10) or 10) * 60
         self._cancel_gap_timer = self._schedule(gap_s, self._gap_elapsed)
@@ -406,17 +470,18 @@ class SessionManager:
         if self._cancel_gap_timer:
             self._cancel_gap_timer()
             self._cancel_gap_timer = None
+        meeting = self.meeting
         self.state = 'live'
         self.paused_by_user = False
         self._paused_at = None
         self._close_gap()
-        self._resumed_turn_index = len(self.meeting['turns'])
+        self._resumed_turn_index = len(meeting['turns'])
         self._set_notice(notice)
-        self._start_capture(self.meeting)
+        self._after(lambda: self._start_capture(meeting))
         self._emit()
 
     def _gap_elapsed(self):
-        with self._lock:
+        with self._transition():
             if self.state == 'paused' and not self.paused_by_user:
                 self._end()
 
@@ -426,7 +491,7 @@ class SessionManager:
             self._cancel_gap_timer()
             self._cancel_gap_timer = None
         if self.state == 'live':
-            self._stop_capture()
+            self._after(self._stop_capture)
         self._close_gap()
         ended = self._paused_at if (self.state == 'paused' and self._paused_at) else self._now()
         m['ended_at'] = ended.isoformat(timespec='seconds')

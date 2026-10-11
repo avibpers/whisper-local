@@ -1,10 +1,12 @@
 # services/meetings.py
-# Meeting mode, assembled: the detector feeds the session manager, a live
-# meeting opens the loopback stream and the microphone tap, their chunks go
-# to the transcriber, and turns come back into the meeting. This is the one
-# object the bridge, the tray and the hotkey talk to. Nothing here touches
-# the windows: the panel listens to the 'meeting' and 'meeting_turn' events.
+# Meeting mode, assembled: the detector feeds the session manager, an idle
+# listener hears the call before a meeting starts, a live meeting opens the
+# loopback stream and the microphone tap, their chunks go to the transcriber,
+# and turns come back into the meeting. This is the one object the bridge,
+# the tray and the hotkey talk to. Nothing here touches the windows: the panel
+# listens to the 'meeting' and 'meeting_turn' events.
 
+import importlib.util
 import logging
 import threading
 from typing import Callable, Optional
@@ -24,25 +26,35 @@ LOOPBACK_HINT = ("Meetings need the loopback package to hear the call. Install i
                  "or: pip install koli[loopback]")
 
 
+def _soundcard_installed() -> bool:
+    return importlib.util.find_spec('soundcard') is not None
+
+
 class MeetingService:
     def __init__(self, ctx, store: Optional[MeetingStore] = None, publish: Callable = None,
-                 loopback_factory: Callable = None, embedder_factory: Callable = None):
+                 loopback_factory: Callable = None, embedder_factory: Callable = None,
+                 speech_prob_factory: Callable = None, loopback_available: Callable[[], bool] = None,
+                 report: Callable[[str], None] = None):
         self.ctx = ctx
         self.store = store or MeetingStore()
         self._publish = publish or publish_event
         self._loopback_factory = loopback_factory or (lambda on_block, on_error: LoopbackStream(on_block, on_error))
         self._embedder_factory = embedder_factory or self._load_embedder
+        self._speech_prob_factory = speech_prob_factory or speech_prob_function
+        self._loopback_available = loopback_available or _soundcard_installed
+        self._report = report or report_problem
+        self._reported_missing = False
         self._lock = threading.Lock()
         self.detector: Optional[MeetingDetector] = None
+        self._idle_stream = None          # hears the call while a source waits for speech
         self._loopback = None
         self._mic_tap = None
         self._loop_chunker = None
         self._mic_chunker = None
-        self._speech_prob = None
         self.tracker = SpeakerTracker(embed=None)
         self._embedder_task = None
         self.session = SessionManager(self.store, start_capture=self._start_capture, stop_capture=self._stop_capture,
-                                      publish=self._publish, settings=self._setting)
+                                      publish=self._publish, settings=self._setting, on_speakers=self.tracker.load)
         self.transcriber = MeetingTranscriber(
             engine_provider=lambda: self.ctx.state_manager.whisper_engine,
             is_busy=lambda: not self.ctx.state_manager.is_idle(), tracker=self.tracker,
@@ -67,14 +79,28 @@ class MeetingService:
             else:
                 self.stop_detector()
 
-    # ── Detector ─────────────────────────────────────────────────────────────
+    # Without the loopback package nothing can hear the call: keep meeting
+    # mode off until it is installed. Startup only logs it; an explicit start
+    # raises the problem (with the Install row on the Meetings screen).
+    def _loopback_ok(self, report: bool = True) -> bool:
+        if self._loopback_available():
+            return True
+        if report and not self._reported_missing:
+            self._reported_missing = True
+            self._report(LOOPBACK_HINT)
+        logger.warning(LOOPBACK_HINT)
+        return False
+
+    # ── Detector and the idle listener ───────────────────────────────────────
 
     def start_detector(self):
+        if not self._loopback_ok(report=False):
+            return
         with self._lock:
             if self.detector is not None:
                 return
             self.detector = MeetingDetector(
-                on_sources=self.session.on_sources,
+                on_sources=self._on_sources,
                 rules_provider=lambda: list(getattr(self.ctx.state_manager.app_rules, 'rules', []) or []),
                 mode_provider=lambda: str(self._setting('meeting.detect', 'auto') or 'auto'))
             self.detector.start()
@@ -86,8 +112,35 @@ class MeetingService:
                 return
             self.detector.stop()
             self.detector = None
-        self.session.on_sources([])
+        self._on_sources([])
         logger.info("Meeting detection off")
+
+    # The detector's view: the session decides, then the idle listener opens
+    # or closes to match whether a source is waiting for speech.
+    def _on_sources(self, sources: list):
+        self.session.on_sources(sources)
+        self._sync_idle_listener()
+
+    def _sync_idle_listener(self):
+        want = self.session.pending_source() is not None
+        to_stop = None
+        with self._lock:
+            if want and self._idle_stream is None:
+                chunker = Chunker('loopback', self._speech_prob_factory(), lambda chunk: None,
+                                  on_speech=self._on_idle_speech)
+                self._idle_stream = self._loopback_factory(chunker.feed, self._loopback_failed)
+                self._idle_stream.start()
+            elif not want and self._idle_stream is not None:
+                to_stop, self._idle_stream = self._idle_stream, None
+        if to_stop is not None:
+            to_stop.stop()
+
+    # Speech from the idle listener's own thread. A start that follows stops
+    # the listener from inside its callback; LoopbackStream.stop never joins
+    # its own thread.
+    def _on_idle_speech(self, seconds: float):
+        self.session.on_speech(seconds)
+        self._sync_idle_listener()
 
     # ── Capture ──────────────────────────────────────────────────────────────
 
@@ -98,37 +151,50 @@ class MeetingService:
         return bool(self._setting('meeting.include_me', True)) and not self.session.excluded \
             and not sm.is_transcription_recording()
 
+    # Called by the session once a meeting is live (outside its lock). Each
+    # stream gets its own voice detector; chunks carry the meeting's id so a
+    # late one still reaches the right file.
     def _start_capture(self, meeting: dict):
+        meeting_id = meeting['id']
         self._ensure_embedder()
         self.tracker.load(meeting.get('speakers', []))
-        if self._speech_prob is None:
-            self._speech_prob = speech_prob_function()
-        self._loop_chunker = Chunker('loopback', self._speech_prob, self.transcriber.submit,
-                                     on_speech=self.session.on_speech)
-        self._mic_chunker = Chunker('mic', self._speech_prob, self.transcriber.submit)
-        self._loopback = self._loopback_factory(self._loop_chunker.feed, self._loopback_failed)
-        self._loopback.start()
-        self._mic_tap = MicTap(lambda: self.ctx.state_manager.audio_recorder, self._mic_chunker.feed, self._mic_allowed)
-        self._mic_tap.start()
+        idle = None
+        with self._lock:
+            idle, self._idle_stream = self._idle_stream, None
+        if idle is not None:
+            idle.stop()
+
+        def submit(chunk):
+            self.transcriber.submit({**chunk, 'meeting_id': meeting_id})
+        loop_chunker = Chunker('loopback', self._speech_prob_factory(), submit)
+        mic_chunker = Chunker('mic', self._speech_prob_factory(), submit)
+        loopback = self._loopback_factory(loop_chunker.feed, self._loopback_failed)
+        mic_tap = MicTap(lambda: self.ctx.state_manager.audio_recorder, mic_chunker.feed, self._mic_allowed)
+        with self._lock:
+            self._loop_chunker, self._mic_chunker = loop_chunker, mic_chunker
+            self._loopback, self._mic_tap = loopback, mic_tap
+        loopback.start()
+        mic_tap.start()
 
     def _stop_capture(self):
-        if self._loopback is not None:
-            self._loopback.stop()
-            self._loopback = None
-        if self._mic_tap is not None:
-            self._mic_tap.stop()
-            self._mic_tap = None
-        for chunker in (self._loop_chunker, self._mic_chunker):
-            if chunker is not None:
-                chunker.flush()
-        self._loop_chunker = self._mic_chunker = None
+        with self._lock:
+            loopback, self._loopback = self._loopback, None
+            mic_tap, self._mic_tap = self._mic_tap, None
+            chunkers = [c for c in (self._loop_chunker, self._mic_chunker) if c is not None]
+            self._loop_chunker = self._mic_chunker = None
+        if loopback is not None:
+            loopback.stop()
+        if mic_tap is not None:
+            mic_tap.stop()
+        for chunker in chunkers:
+            chunker.flush()
 
     def _loopback_failed(self, message: str):
         lowered = message.lower()
         if 'soundcard' in lowered or 'no module' in lowered:
-            report_problem(LOOPBACK_HINT)
+            self._report(LOOPBACK_HINT)
         else:
-            report_problem(message)
+            self._report(message)
 
     # The chunk being transcribed, so the panel can show a placeholder.
     def _on_pending(self, stream):
@@ -183,11 +249,15 @@ class MeetingService:
         return self.store.load(meeting_id)['turns']
 
     def start(self):
+        if not self._loopback_ok():
+            return
         self.session.start()
+        self._sync_idle_listener()
 
+    # Queued chunks are not dropped: they drain into the ended meeting's file.
     def end(self):
         self.session.end()
-        self.transcriber.clear()
+        self._sync_idle_listener()
 
     def new(self):
         self.session.new()
@@ -212,6 +282,7 @@ class MeetingService:
             self.session.offer_accept()
         else:
             self.session.offer_decline()
+        self._sync_idle_listener()
 
     def rename_speaker(self, speaker_id: str, name: str):
         if self.session.meeting:
@@ -252,4 +323,5 @@ class MeetingService:
         self.stop_detector()
         if self.session.state in ('live', 'paused'):
             self.session.end()
+        self._sync_idle_listener()
         self.transcriber.stop()

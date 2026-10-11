@@ -40,7 +40,7 @@ PANEL_HIDE_DELAY = 2.5
 BAR_TOPICS = {'state', 'bar', 'pipeline', 'notify', 'task', 'level', 'streaming_text', 'settings',
               'profile', 'window', 'auto_send', 'problem'}
 PANEL_TOPICS = {'meeting', 'meeting_turn', 'settings', 'task', 'problem'}
-COALESCE = {'level', 'vad', 'foreground', 'streaming_text', 'meeting'}
+COALESCE = {'level', 'vad', 'foreground', 'streaming_text'}
 PUSH_INTERVAL = 0.05
 
 

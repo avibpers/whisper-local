@@ -111,4 +111,4 @@ class MeetingTranscriber:
             if entry is not None:
                 self.on_speaker(entry)
         self.on_turn({'t0': chunk['t0'], 't1': chunk['t1'], 'stream': chunk['stream'],
-                      'speaker': speaker, 'text': text, 'lang': lang})
+                      'speaker': speaker, 'text': text, 'lang': lang, 'meeting_id': chunk.get('meeting_id')})

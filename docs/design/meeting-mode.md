@@ -286,6 +286,19 @@ re-clusters speakers and cleans text; search across meetings.
   tests because the macOS platform package needs `fcntl`.
 - The browser mock (`?mock=1&meeting`) drives a fake live meeting for the
   panel and the Meetings screen.
+- `meeting.model` exists in the defaults but is hidden: swapping the engine
+  for meetings is not wired yet.
+- Without the loopback package, meeting mode stays off: the detector does
+  not start and a manual start reports the problem (with the Install row on
+  the Meetings screen) instead of running mic-only.
+- Speaker names are renamed on the Meetings screen; the panel never takes
+  keyboard focus, so it cannot host a text field.
+- An idle listener (a loopback stream with a speech-only chunker) runs
+  while a source waits for speech; the meeting's own streams replace it.
+- Chunks carry their meeting's id, so a turn transcribed after its meeting
+  ended still lands in that meeting's file; ending a meeting drops nothing.
+- Capture callbacks run outside the session lock (queued as effects), and
+  the chunker's callbacks outside its own lock.
 
 ## Testing
 

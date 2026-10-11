@@ -59,8 +59,13 @@ def find_sources(sessions: list, tabs: list, rules: list, detect_default: str) -
     sources = []
     for exe in active:
         if exe in BROWSERS:
-            for tab in tabs:
-                if (tab.get('exe') or '').lower() != exe:
+            own = [t for t in tabs if (t.get('exe') or '').lower() == exe]
+            # The browser reports which tabs make sound: when it does, a
+            # silent Meet tab (the lobby) doesn't count because YouTube plays
+            # in another tab. A browser that reports nothing counts by title.
+            any_media = any(t.get('media') for t in own)
+            for tab in own:
+                if any_media and not tab.get('media'):
                     continue
                 title, _ = strip_media(tab.get('title') or '')
                 rule = next((r for r in meeting_rules if rule_matches(r, exe, title)), None)

@@ -755,7 +755,7 @@ class ServiceTests(unittest.TestCase):
         svc = MeetingService(ctx, store=MeetingStore(Path(self.tmp.name)),
                              publish=lambda t, p: self.events.append((t, p)),
                              loopback_factory=lambda on_block, on_error: fake_loopback(),
-                             embedder_factory=lambda: None)
+                             embedder_factory=lambda: None, loopback_available=lambda: True)
         self.addCleanup(svc.shutdown)
         return svc
 
@@ -822,6 +822,218 @@ class PanelPlacementTests(unittest.TestCase):
         self.assertEqual((x, y), (1920 - 380, 1040 - 420))
         x, y = panel_origin(area, (380, 420), 1.0, 'top-left', None)
         self.assertEqual((x, y), (6, 6))
+
+
+class FakeLoop:
+    # A loopback stream the test drives by hand: blocks go in through on_block.
+    made = []
+
+    def __init__(self, on_block, on_error):
+        self.on_block = on_block
+        self.on_error = on_error
+        self.started = False
+        self.stopped = False
+        FakeLoop.made.append(self)
+
+    def start(self):
+        self.started = True
+
+    def stop(self):
+        self.stopped = True
+
+
+class ReviewFixTests(unittest.TestCase):
+    # The chunker's callbacks run outside its lock: one that re-enters the
+    # chunker (or takes another lock) must not deadlock the audio thread.
+    def test_chunker_callbacks_run_outside_its_lock(self):
+        import threading
+        from koli.meeting.capture import Chunker
+        chunks = []
+        holder = {}
+
+        def on_chunk(chunk):
+            chunks.append(chunk)
+            holder['c'].flush()
+        c = Chunker('mic', lambda f: 0.9 if float(np.abs(f).mean()) > 0.1 else 0.0, on_chunk)
+        holder['c'] = c
+
+        def run():
+            c.feed(np.full(16000, 0.5, dtype=np.float32), 1.0)
+            c.feed(np.zeros(16000, dtype=np.float32), 2.0)
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        t.join(2.0)
+        self.assertFalse(t.is_alive(), 'feed deadlocked on its own lock')
+        self.assertEqual(len(chunks), 1)
+
+    # The session calls start/stop capture outside its lock, so a capture
+    # callback (or anything it triggers on another thread) can read the state.
+    def test_session_capture_callbacks_run_outside_its_lock(self):
+        import threading
+        from koli.meeting.session import SessionManager
+        from koli.meeting.store import MeetingStore
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        seen = []
+        holder = {}
+
+        def start_capture(m):
+            t = threading.Thread(target=lambda: seen.append(holder['sm'].state_payload()['state']), daemon=True)
+            t.start()
+            t.join(1.0)
+            seen.append('alive' if t.is_alive() else 'finished')
+        clock = FakeClock(at(30))
+        sm = SessionManager(MeetingStore(Path(tmp.name)), start_capture=start_capture, stop_capture=lambda: None,
+                            publish=lambda t, p: None, settings=lambda p, d=None: d, now=clock.now, schedule=clock.schedule)
+        holder['sm'] = sm
+        sm.start()
+        self.assertEqual(seen, ['live', 'finished'])
+
+    def _session(self):
+        from koli.meeting.session import SessionManager
+        from koli.meeting.store import MeetingStore
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        store = MeetingStore(Path(tmp.name))
+        clock = FakeClock(at(30))
+        self.reloads = []
+        sm = SessionManager(store, start_capture=lambda m: None, stop_capture=lambda: None, publish=lambda t, p: None,
+                            settings=lambda p, d=None: {'meeting.gap_minutes': 10, 'meeting.start_speech_seconds': 3}.get(p, d),
+                            now=clock.now, schedule=clock.schedule, on_speakers=self.reloads.append)
+        return sm, store, clock
+
+    # A chunk transcribed after its meeting ended still lands in that
+    # meeting's file (nothing is dropped), never in the next meeting.
+    def test_turn_of_an_ended_meeting_lands_in_its_file(self):
+        sm, store, clock = self._session()
+        sm.start()
+        m = sm.current()
+        base = started_at(m)
+        sm.end()
+        sm.add_turn({'meeting_id': m['id'], 't0': base + 5, 't1': base + 8, 'stream': 'mic', 'speaker': 'you',
+                     'text': 'last words', 'lang': 'en'})
+        saved = store.load(m['id'])
+        self.assertEqual(saved['turns'][-1]['text'], 'last words')
+        self.assertEqual(saved['turns'][-1]['start'], 5.0)
+
+    def test_turn_of_the_old_meeting_never_lands_in_the_new_one(self):
+        sm, store, clock = self._session()
+        sm.start()
+        m = sm.current()
+        base = started_at(m)
+        sm.new()
+        sm.add_turn({'meeting_id': m['id'], 't0': base + 1, 't1': base + 2, 'stream': 'mic', 'speaker': 'you',
+                     'text': 'old', 'lang': 'en'})
+        self.assertEqual(sm.current()['turns'], [])
+        self.assertEqual(store.load(m['id'])['turns'][-1]['text'], 'old')
+
+    # A Meet tab sitting in the lobby must not start a meeting because YouTube
+    # plays in another tab: when any tab of that browser carries a media
+    # state, only tabs with one count.
+    def test_lobby_tab_does_not_count_while_another_tab_plays(self):
+        from koli.meeting.detector import find_sources
+        sessions = [{'pid': 2, 'exe': 'chrome.exe', 'state': 1}]
+        lobby = {'exe': 'chrome.exe', 'title': 'Meet - abc-defg-hij', 'media': '', 'hwnd': 9}
+        youtube = {'exe': 'chrome.exe', 'title': 'Cat videos - YouTube', 'media': 'Audio playing', 'hwnd': 9}
+        self.assertEqual(find_sources(sessions, [lobby, youtube], RULES, 'auto'), [])
+        in_call = {**lobby, 'media': 'Microphone in use'}
+        self.assertEqual([s['code'] for s in find_sources(sessions, [in_call, youtube], RULES, 'auto')], ['abc-defg-hij'])
+        # A browser whose tabs report no media state at all still counts by title.
+        self.assertEqual(len(find_sources(sessions, [lobby], RULES, 'auto')), 1)
+
+    # Continuing the previous meeting (and splitting a resumed one) tells the
+    # speaker tracker which speakers it is now working with.
+    def test_speakers_reload_after_continue_previous_and_split(self):
+        sm, store, clock = self._session()
+        sm.on_sources([meet('abc-defg-hij')])
+        sm.on_speech(4.0)
+        sm.ensure_speaker({'id': 's1', 'name': 'Ilona', 'colour': 1, 'centroid': [1.0], 'count': 2})
+        sm.on_sources([])
+        clock.advance(60)
+        sm.on_sources([meet('zzz-zzzz-zzz')])
+        sm.on_speech(4.0)
+        sm.continue_previous()
+        self.assertEqual([s['name'] for s in self.reloads[-1]], ['You', 'Ilona'])
+        sm.split_resumed()
+        self.assertEqual([s['name'] for s in self.reloads[-1]], ['You', 'Ilona'])
+
+    def test_meeting_events_are_not_coalesced(self):
+        from koli.ui.host import COALESCE
+        self.assertNotIn('meeting', COALESCE)
+
+    def test_meeting_model_setting_is_hidden(self):
+        from koli.settings import schema
+        self.assertEqual(schema.get('meeting.model').mode, schema.HIDDEN)
+
+    def _service(self, **kw):
+        from koli.services.meetings import MeetingService
+        from koli.meeting.store import MeetingStore
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        values = {'meeting.enabled': False, 'meeting.detect': 'auto', 'meeting.include_me': True,
+                  'meeting.gap_minutes': 10, 'meeting.start_speech_seconds': 3, 'meeting.language': 'auto',
+                  'meeting.model': '', 'meeting.speaker_model': 'eres2net'}
+        ctx = type('Ctx', (), {})()
+        ctx.state_manager = FakeStateManager()
+        ctx.config_manager = FakeConfig(values)
+        ctx.model_registry = None
+        FakeLoop.made = []
+        self.probs = []
+
+        def prob_factory():
+            self.probs.append(1)
+            return lambda frame: 0.9
+        args = dict(store=MeetingStore(Path(tmp.name)), publish=lambda t, p: None, loopback_factory=FakeLoop,
+                    embedder_factory=lambda: None, speech_prob_factory=prob_factory, loopback_available=lambda: True)
+        args.update(kw)
+        svc = MeetingService(ctx, **args)
+        self.addCleanup(svc.shutdown)
+        return svc
+
+    # Detection end to end: a source appears, the idle listener hears speech,
+    # the meeting starts, and the meeting's own streams take over.
+    def test_sources_then_speech_start_a_meeting_automatically(self):
+        svc = self._service()
+        svc._on_sources([discord()])
+        self.assertEqual(len(FakeLoop.made), 1, 'an idle listener opens while a source waits for speech')
+        idle = FakeLoop.made[0]
+        for i in range(40):
+            idle.on_block(np.full(1600, 0.5, dtype=np.float32), 100.0 + i * 0.1)
+        self.assertEqual(svc.state()['state'], 'live')
+        self.assertTrue(idle.stopped)
+        self.assertEqual(len(FakeLoop.made), 2)
+        self.assertTrue(FakeLoop.made[1].started)
+        self.assertGreaterEqual(len(self.probs), 3, 'each stream gets its own voice detector')
+        svc._on_sources([])
+        self.assertEqual(svc.state()['state'], 'paused')
+        self.assertTrue(FakeLoop.made[1].stopped)
+
+    def test_idle_listener_closes_when_the_source_goes_away(self):
+        svc = self._service()
+        svc._on_sources([discord()])
+        svc._on_sources([])
+        self.assertTrue(FakeLoop.made[0].stopped)
+        self.assertEqual(svc.state()['state'], 'idle')
+
+    # Without the loopback package nothing starts, and the problem says why.
+    def test_missing_loopback_package_refuses_to_start(self):
+        problems = []
+        svc = self._service(loopback_available=lambda: False, report=problems.append)
+        svc.start()
+        self.assertEqual(svc.state()['state'], 'idle')
+        self.assertIn('loopback', problems[0].lower())
+        svc.apply_setting('meeting.enabled', True)
+        self.assertIsNone(svc.detector)
+
+    # Ending a meeting keeps what is still queued; it drains into the file.
+    def test_end_does_not_drop_queued_chunks(self):
+        svc = self._service()
+        svc.start()
+        svc.ctx.state_manager.processing = True      # the engine is busy, so the chunk stays queued
+        svc.transcriber.submit({'audio': np.zeros(16000, dtype=np.float32), 'stream': 'mic', 't0': 1.0, 't1': 2.0,
+                                'speech_s': 1.0, 'meeting_id': svc.state()['id']})
+        svc.end()
+        self.assertGreater(svc.transcriber.queued_seconds(), 0)
 
 
 if __name__ == '__main__':

@@ -13,7 +13,6 @@ import { Icon } from './ui.js';
 const panel = createStore({
   settings: null, meeting: { state: 'idle' }, turns: [], pending: null, menu: false, collapsed: false,
   shownInSharing: false, stuck: true,   // stuck: the list follows new turns
-  editing: null, draft: '',             // the speaker name being edited inline
 });
 
 function dir(text) { return /[֐-׿؀-ۿ]/.test(text || '') ? 'rtl' : 'ltr'; }
@@ -85,18 +84,11 @@ function Timer({ since, paused }) {
   return html`<span class="sub">${clock((now - new Date(since).getTime()) / 1000)}${paused ? ' · paused' : ''}</span>`;
 }
 
-// Inline edit of the name; never a browser prompt.
-function Who({ speaker, meeting }) {
-  const editing = panel.use((s) => s.editing);
-  const draft = panel.use((s) => s.draft);
-  if (editing === speaker.id) {
-    const commit = () => { call('meeting_rename', speaker.id, draft, meeting.id).catch(() => {}); panel.set({ editing: null }); };
-    return html`<input class="who edit" autofocus value=${draft} aria-label="Speaker name"
-      onInput=${(e) => panel.set({ draft: e.currentTarget.value })} onBlur=${commit}
-      onKeyDown=${(e) => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') panel.set({ editing: null }); }} />`;
-  }
-  return html`<button type="button" class="who" style=${`color:var(--sp${speaker.colour % 8})`} title="Rename"
-    onClick=${() => panel.set({ editing: speaker.id, draft: speaker.name })}>${speaker.name}</button>`;
+// The panel never takes keyboard focus (it must not steal it from the
+// call), so renaming happens in the app window's Meetings screen.
+function Who({ speaker }) {
+  return html`<button type="button" class="who" style=${`color:var(--sp${speaker.colour % 8})`} title="Rename in Koli"
+    onClick=${() => call('window_open', 'meetings')}>${speaker.name}</button>`;
 }
 
 function Turns() {
@@ -112,7 +104,7 @@ function Turns() {
   const last = turns.slice(-200);
   return html`<div class="turns" ref=${box} onScroll=${onScroll} aria-live="polite">
     ${last.length === 0 && !pending && html`<div class="empty">Listening…</div>`}
-    ${last.map((t) => html`<div class="turn"><${Who} speaker=${who(t.speaker)} meeting=${meeting} /><p dir=${dir(t.text)}>${t.text}</p></div>`)}
+    ${last.map((t) => html`<div class="turn"><${Who} speaker=${who(t.speaker)} /><p dir=${dir(t.text)}>${t.text}</p></div>`)}
     ${pending && html`<div class="turn pending"><span class="who" style=${`color:var(--sp${pending.stream === 'mic' ? 0 : 7})`}>${pending.stream === 'mic' ? 'You' : '…'}</span><p>…</p></div>`}
   </div>`;
 }
@@ -125,6 +117,7 @@ function Menu({ close }) {
     <label class="mi">Hide from screen sharing<input type="checkbox" checked=${hide} onChange=${(e) => call('settings_set', 'meeting.panel.hide_from_sharing', e.currentTarget.checked)} /></label>
     ${hide && html`<label class="mi">Show it this meeting<input type="checkbox" checked=${shown} onChange=${(e) => { panel.set({ shownInSharing: e.currentTarget.checked }); call('meeting_show_in_sharing', e.currentTarget.checked); }} /></label>`}
     <button type="button" class="mi" onClick=${() => { close(); call('window_open', 'meetings'); }}>Open in Koli</button>
+    <button type="button" class="mi" onClick=${() => { close(); call('window_open', 'meetings'); }}>Rename speakers…</button>
     <button type="button" class="mi" onClick=${() => { close(); call('meeting_new'); }}>New meeting</button>
     <button type="button" class="mi" onClick=${() => { close(); call('meeting_end'); }}>End meeting</button>
   </div>`;
@@ -142,6 +135,7 @@ function Panel() {
     call('meeting_collapse', true, Math.ceil(r.width), Math.ceil(r.height)).catch(() => {});
   }, [collapsed, m.state]);
   const title = m.title || 'Meeting';
+  if (m.state === 'idle') return null;
   if (m.state === 'offered') {
     const app = m.source && m.source.app ? m.source.app.replace('.exe', '') : 'A call';
     return html`<div class="panel"><div class="head" ...${drag}><span class="dot offered"></span><span class="title">Call detected</span></div>

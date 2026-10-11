@@ -348,8 +348,8 @@ SCHEMA = [
        help='So a notification ping never starts one.'),
     _S('meeting.language', 'Meeting language', 'meetings', 'select', choices=LANGUAGES, apply=NEXT_RECORDING,
        help='Auto-detect handles Hebrew and English in one call.'),
-    _S('meeting.model', 'Meeting model', 'meetings', 'text', apply=BACKGROUND,
-       help='A model key from the Model screen, or empty for the dictation model. Only worth it on a GPU.'),
+    # Reserved: a separate model for meetings is not wired yet, so it stays out of the page.
+    _S('meeting.model', 'Meeting model', 'meetings', 'text', apply=INTERNAL, mode=HIDDEN),
     _S('meeting.speaker_model', 'Voiceprint model', 'meetings', 'select', apply=BACKGROUND,
        choices=[['eres2net', '3D-Speaker ERes2Net (40 MB)']], help='Tells speakers apart. Downloaded at the first meeting.'),
     _S('meeting.speaker_models', 'Voiceprint models', 'meetings', 'readonly', help='Defined in user_settings.yaml.'),
