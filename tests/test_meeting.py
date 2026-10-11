@@ -2,10 +2,14 @@
 # Meeting mode: the store, the session state machine, detection, chunking,
 # speaker clustering and the transcriber, all without audio hardware.
 import datetime
+import logging
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
+
+import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
@@ -396,6 +400,113 @@ class DetectorTests(unittest.TestCase):
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
             self.assertEqual(getattr(module, fn)(), [])
+
+
+class CaptureTests(unittest.TestCase):
+    # A fake VAD: a frame is speech when its mean absolute level is above 0.1.
+    @staticmethod
+    def prob(frame):
+        return 0.9 if float(np.abs(frame).mean()) > 0.1 else 0.05
+
+    def make(self, **kw):
+        from koli.meeting.capture import Chunker
+        self.chunks = []
+        self.speech = []
+        return Chunker('loopback', self.prob, self.chunks.append, on_speech=self.speech.append, **kw)
+
+    @staticmethod
+    def seconds(level, s, rate=16000):
+        return np.full(int(s * rate), level, dtype=np.float32)
+
+    def test_cuts_at_a_pause_and_keeps_wall_clock_times(self):
+        c = self.make()
+        t = 1000.0
+        for block in (self.seconds(0.5, 1.0), self.seconds(0.0, 0.8)):
+            t += len(block) / 16000
+            c.feed(block, t)
+        self.assertEqual(len(self.chunks), 1)
+        ch = self.chunks[0]
+        self.assertEqual(ch['stream'], 'loopback')
+        self.assertAlmostEqual(ch['t0'], 1000.0, places=2)
+        self.assertLessEqual(ch['t1'], 1001.5)       # trailing silence trimmed
+        self.assertGreaterEqual(ch['t1'], 1001.0)
+        self.assertAlmostEqual(ch['speech_s'], 1.0, places=1)
+        self.assertGreater(sum(self.speech), 0.9)     # on_speech saw about a second
+
+    def test_cuts_at_max_length_while_still_speaking(self):
+        c = self.make(max_s=2.0)
+        t = 0.0
+        for _ in range(5):
+            block = self.seconds(0.5, 0.5)
+            t += 0.5
+            c.feed(block, t)
+        self.assertEqual(len(self.chunks), 1)
+        self.assertAlmostEqual(len(self.chunks[0]['audio']) / 16000, 2.0, places=1)
+
+    def test_drops_too_short_speech_and_pure_silence(self):
+        c = self.make()
+        c.feed(self.seconds(0.5, 0.1), 0.1)
+        c.feed(self.seconds(0.0, 1.0), 1.1)
+        c.feed(self.seconds(0.0, 3.0), 4.1)
+        self.assertEqual(self.chunks, [])
+
+    def test_flush_emits_the_open_chunk(self):
+        c = self.make()
+        c.feed(self.seconds(0.5, 0.7), 0.7)
+        self.assertEqual(self.chunks, [])
+        c.flush()
+        self.assertEqual(len(self.chunks), 1)
+
+    def test_loopback_stream_reports_after_retries(self):
+        from koli.meeting.capture import LoopbackStream
+        errors = []
+        attempts = []
+
+        def open_fn():
+            attempts.append(1)
+            raise RuntimeError('no loopback device')
+        s = LoopbackStream(on_block=lambda a, t: None, on_error=errors.append, retries=2, open_fn=open_fn, retry_wait=0.0)
+        s.start()
+        s._thread.join(2.0)
+        self.assertEqual(len(attempts), 3)
+        self.assertIn('no loopback device', errors[0])
+
+    def test_mic_tap_respects_allow(self):
+        from koli.meeting.capture import MicTap
+
+        class Recorder:
+            def __init__(self):
+                self.taps = []
+
+            def add_tap(self, fn):
+                self.taps.append(fn)
+
+            def remove_tap(self, fn):
+                self.taps.remove(fn)
+        rec = Recorder()
+        got = []
+        allowed = {'ok': True}
+        tap = MicTap(lambda: rec, lambda audio, when: got.append(audio), lambda: allowed['ok'])
+        tap.start()
+        rec.taps[0](np.zeros(160, dtype=np.float32), 1.0)
+        allowed['ok'] = False
+        rec.taps[0](np.zeros(160, dtype=np.float32), 2.0)
+        self.assertEqual(len(got), 1)
+        tap.stop()
+        self.assertEqual(rec.taps, [])
+
+    def test_recorder_calls_taps_with_16k_mono(self):
+        from koli.audio_recorder import AudioRecorder
+        rec = AudioRecorder.__new__(AudioRecorder)
+        rec._taps = []
+        rec._recording_rate = 48000
+        rec._needs_resampling_cached = True
+        rec.logger = logging.getLogger('test')
+        got = []
+        rec.add_tap(lambda audio, when: got.append(audio))
+        rec._notify_taps(np.zeros((4800, 1), dtype=np.float32))
+        self.assertEqual(got[0].shape, (1600,))
+        self.assertEqual(got[0].dtype, np.float32)
 
 
 if __name__ == '__main__':

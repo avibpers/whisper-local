@@ -93,6 +93,9 @@ class AudioRecorder:
         self._capture_thread = None
         self._stream_error = None
         self._current_level = 0.0
+        # Meeting mode listens to the microphone through taps: fn(mono 16 kHz
+        # float32, wall clock), called on the audio thread for every chunk.
+        self._taps = []
         self._start_capture()
 
     def _setup_continuous_vad_monitoring(self):
@@ -190,6 +193,32 @@ class AudioRecorder:
     def _handle_vad_event(self, event: VadEvent):
         self.on_vad_event(event)
 
+    # ── Taps ─────────────────────────────────────────────────────────────────
+
+    def add_tap(self, fn):
+        if fn not in self._taps:
+            self._taps.append(fn)
+
+    def remove_tap(self, fn):
+        if fn in self._taps:
+            self._taps.remove(fn)
+
+    # Each chunk to every tap, at Whisper's rate. A tap that raises is logged,
+    # never allowed to break the audio callback.
+    def _notify_taps(self, chunk: np.ndarray):
+        if not self._taps:
+            return
+        mono = chunk.reshape(-1) if chunk.ndim == 1 or chunk.shape[1] == 1 else chunk.mean(axis=1)
+        mono = mono.astype(np.float32, copy=False)
+        if self._needs_resampling_cached:
+            mono = self._resample_audio(mono, self._recording_rate, self.WHISPER_SAMPLE_RATE)
+        when = time.time()
+        for fn in list(self._taps):
+            try:
+                fn(mono, when)
+            except Exception as e:
+                self.logger.debug(f"Audio tap failed: {e}")
+
     def _test_audio_source(self):
         try:
             if self.device is not None:
@@ -270,6 +299,8 @@ class AudioRecorder:
             if not recording:
                 while len(self._buffer) > self._preroll_max_chunks:
                     self._buffer.popleft()
+
+        self._notify_taps(chunk)
 
         if recording:
             if self.continuous_vad and frames == self._vad_blocksize:

@@ -1252,6 +1252,8 @@ class StateManager:
         )
         params.update(overrides)
         new_recorder = AudioRecorder(**params)
+        # A meeting's microphone tap must follow the microphone.
+        new_recorder._taps = list(getattr(old, '_taps', []))
         with self._state_lock:
             self.audio_recorder = new_recorder
         try:
