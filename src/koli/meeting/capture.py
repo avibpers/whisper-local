@@ -237,3 +237,67 @@ class MicTap:
             except Exception:
                 pass
             self._attached = None
+
+
+# ── A microphone of its own ──────────────────────────────────────────────────
+
+def _open_input(device, rate: int, callback):
+    import sounddevice as sd
+    return sd.InputStream(device=device, samplerate=rate, channels=1, dtype='float32', callback=callback,
+                          latency='low')
+
+
+def _native_rate(device) -> int:
+    import sounddevice as sd
+    info = sd.query_devices(device, 'input') if device is not None else sd.query_devices(kind='input')
+    return int(info['default_samplerate'])
+
+
+# A second input device for the meeting's "You", when it isn't the dictation
+# microphone: opened at the device's own rate, handed on as 16 kHz mono, and
+# silenced by `allow()` exactly like the tap. start() says whether the device
+# opened; when it didn't, on_error has the reason and the caller falls back.
+class MicStream:
+    def __init__(self, device, on_block: Callable[[np.ndarray, float], None], allow: Callable[[], bool],
+                 on_error: Callable[[str], None], open_fn=None, device_rate=None):
+        self.device = None if device in ('default', '', None) else device
+        self.on_block = on_block
+        self.allow = allow
+        self.on_error = on_error
+        self._open = open_fn or _open_input
+        self._device_rate = device_rate or _native_rate
+        self._stream = None
+        self.rate = RATE
+
+    def start(self) -> bool:
+        try:
+            self.rate = int(self._device_rate(self.device))
+            self._stream = self._open(self.device, self.rate, self._callback)
+            self._stream.start()
+            logger.info(f"Meeting microphone: device {self.device if self.device is not None else 'default'} at {self.rate} Hz")
+            return True
+        except Exception as e:
+            self._stream = None
+            self.on_error(f"Meeting microphone could not be opened: {e}")
+            return False
+
+    # On the audio thread, like the recorder's callback.
+    def _callback(self, indata, frames, time_info, status):
+        if not self.allow():
+            return
+        mono = indata[:, 0] if getattr(indata, 'ndim', 1) > 1 else indata
+        mono = np.asarray(mono, dtype=np.float32)
+        if self.rate != RATE:
+            import soxr
+            mono = soxr.resample(mono, self.rate, RATE).astype(np.float32)
+        self.on_block(mono, time.time())
+
+    def stop(self):
+        stream, self._stream = self._stream, None
+        if stream is None:
+            return
+        for step in (stream.stop, stream.close):
+            try:
+                step()
+            except Exception:
+                pass

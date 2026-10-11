@@ -236,6 +236,7 @@ New section `meeting:` in `config.defaults.yaml`, schema section
 | `meeting.enabled` | true | toggle | live |
 | `meeting.detect` | auto | segmented auto / ask / off | live |
 | `meeting.include_me` | true | toggle | live |
+| `meeting.input_device` | '' (same as dictation) | microphone picker ('' / default / device id) | next meeting |
 | `meeting.gap_minutes` | 10 | number 1 to 60 | live |
 | `meeting.start_speech_seconds` | 3 | number 1 to 10 | live |
 | `meeting.language` | auto | select (auto, he, en, ...) | next chunk |

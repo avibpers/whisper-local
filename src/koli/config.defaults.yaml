@@ -552,6 +552,11 @@ meeting: # Meetings: calls in Discord, Zoom, Teams and the browser
     # Your own side, from the microphone, as "You". The panel's Exclude me
     # button turns it off for a while.
     include_me: true
+    # Which microphone hears you in meetings: '' for the dictation microphone
+    # (audio.input_device), "default" for the computer's default input, or a
+    # device id number. A device that won't open falls back to the dictation
+    # microphone for that meeting.
+    input_device: ''
     # Sound back from the same call within this many minutes resumes the
     # meeting; later, or from another call, starts a new one
     gap_minutes: 10

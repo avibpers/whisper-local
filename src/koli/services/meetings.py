@@ -11,7 +11,7 @@ import logging
 import threading
 from typing import Callable, Optional
 
-from ..meeting.capture import Chunker, LoopbackStream, MicTap, speech_prob_function
+from ..meeting.capture import Chunker, LoopbackStream, MicStream, MicTap, speech_prob_function
 from ..meeting.detector import MeetingDetector
 from ..meeting.session import SessionManager
 from ..meeting.speakers import SpeakerTracker, make_embedder
@@ -40,7 +40,7 @@ class MeetingService:
                  loopback_factory: Callable = None, embedder_factory: Callable = None,
                  speech_prob_factory: Callable = None, loopback_available: Callable[[], bool] = None,
                  report: Callable[[str], None] = None, sessions_fn: Callable[[], list] = None,
-                 autostart: bool = True):
+                 autostart: bool = True, mic_stream_factory: Callable = None):
         self.ctx = ctx
         self.store = store or MeetingStore()
         self._publish = publish or publish_event
@@ -51,6 +51,8 @@ class MeetingService:
         self._loopback_available = loopback_available or _soundcard_installed
         self._report = report or report_problem
         self._sessions_fn = sessions_fn or _active_sessions
+        self._mic_stream_factory = mic_stream_factory or (
+            lambda device, on_block, allow, on_error: MicStream(device, on_block, allow, on_error))
         self._reported_missing = False
         self._closed = False              # shutdown began: nothing opens any more
         self._lock = threading.Lock()
@@ -58,7 +60,7 @@ class MeetingService:
         self._idle_stream = None          # hears the call while a source waits for speech
         self._loopbacks = []              # one stream per output device the meeting listens to
         self._loop_chunkers = []
-        self._mic_tap = None
+        self._mic_source = None           # the tap on the dictation microphone, or a stream of its own
         self._mic_chunker = None
         self.tracker = SpeakerTracker(embed=None)
         self._embedder_task = None
@@ -197,13 +199,29 @@ class MeetingService:
             loop_chunkers.append(chunker)
             loopbacks.append(self._loopback_factory(chunker.feed, self._loopback_failed, device=device))
         mic_chunker = Chunker('mic', self._speech_prob_factory(), submit)
-        mic_tap = MicTap(lambda: self.ctx.state_manager.audio_recorder, mic_chunker.feed, self._mic_allowed)
+        mic_source = self._open_mic(mic_chunker)
         with self._lock:
             self._loop_chunkers, self._mic_chunker = loop_chunkers, mic_chunker
-            self._loopbacks, self._mic_tap = loopbacks, mic_tap
+            self._loopbacks, self._mic_source = loopbacks, mic_source
         for loopback in loopbacks:
             loopback.start()
-        mic_tap.start()
+
+    # Your side: the dictation microphone's always-open stream (a tap), or a
+    # device of your own for meetings. A device that won't open is reported
+    # and the tap is used, so a meeting never silently loses your side.
+    def _open_mic(self, mic_chunker: Chunker):
+        device = self._setting('meeting.input_device', '')
+        if device not in ('', None):
+            stream = self._mic_stream_factory(device, mic_chunker.feed, self._mic_allowed, self._mic_failed)
+            if stream.start():
+                return stream
+            logger.warning(f"Meeting microphone {device!r} unavailable; tapping the dictation microphone")
+        tap = MicTap(lambda: self.ctx.state_manager.audio_recorder, mic_chunker.feed, self._mic_allowed)
+        tap.start()
+        return tap
+
+    def _mic_failed(self, message: str):
+        self._report(f"{message}. Using the dictation microphone for this meeting.")
 
     # Which outputs to listen to: the one the detected call plays on; for a
     # meeting started by hand, every device with sound right now; and the
@@ -227,13 +245,13 @@ class MeetingService:
     def _stop_capture(self):
         with self._lock:
             loopbacks, self._loopbacks = self._loopbacks, []
-            mic_tap, self._mic_tap = self._mic_tap, None
+            mic_source, self._mic_source = self._mic_source, None
             chunkers = [c for c in (*self._loop_chunkers, self._mic_chunker) if c is not None]
             self._loop_chunkers, self._mic_chunker = [], None
         for loopback in loopbacks:
             loopback.stop()
-        if mic_tap is not None:
-            mic_tap.stop()
+        if mic_source is not None:
+            mic_source.stop()
         for chunker in chunkers:
             chunker.flush()
 

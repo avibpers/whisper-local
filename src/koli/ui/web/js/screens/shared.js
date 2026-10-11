@@ -16,14 +16,17 @@ export function useAudio() {
   return audio;
 }
 
-export function MicSelect({ compact = false }) {
+// The microphone picker. `path` is the setting it edits; `same` adds "Same as
+// dictation" (saved as '') on top, for the meeting microphone.
+export function MicSelect({ compact = false, path = 'audio.input_device', same = false }) {
   const audio = useAudio();
-  const value = useSetting('audio.input_device');
+  const value = useSetting(path);
   if (!audio) return html`<span class="muted small">Loading…</span>`;
-  const options = [['default', "Computer's default"], ...audio.devices.map((d) => [d.id, d.name])];
-  return html`<${Select} label="Microphone" value=${value} options=${options}
+  const options = [...(same ? [['', 'Same as dictation']] : []), ['default', "Computer's default"],
+    ...audio.devices.map((d) => [d.id, d.name])];
+  return html`<${Select} label="Microphone" value=${value == null ? '' : value} options=${options}
     style=${compact ? 'height:32px;max-width:100%' : 'flex:1 1 240px;max-width:420px'}
-    onChange=${(v) => saveSetting('audio.input_device', v)} />`;
+    onChange=${(v) => saveSetting(path, v)} />`;
 }
 
 // Level meter that listens while it is on screen (Test my microphone).
@@ -109,7 +112,7 @@ export function SettingControl({ s }) {
       locked=${s.path === 'postprocess.voice_editing_phrases' ? ['scratch that', 'delete that', 'strike that'] : []} />`;
     case 'choice_tags': return html`<${ChoiceTags} values=${value || []} options=${s.choices} label=${s.label} onChange=${save} />`;
     case 'hotkey': return html`<${HotkeyCapture} value=${value} label=${s.label} nullable=${s.nullable} onCommit=${save} />`;
-    case 'microphone': return html`<${MicSelect} />`;
+    case 'microphone': return html`<${MicSelect} path=${s.path} same=${s.path !== 'audio.input_device'} />`;
     case 'audiohost': return html`<${AudioHostSelect} s=${s} value=${value} />`;
     case 'sound': return html`<${SoundControl} s=${s} value=${value} />`;
     case 'readonly': return html`<span class="muted small">${typeof value === 'object' ? `${Object.keys(value || {}).length} defined in user_settings.yaml` : String(value)}</span>`;

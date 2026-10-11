@@ -345,6 +345,8 @@ SCHEMA = [
        help='Each app can override this on the Apps screen.'),
     _S('meeting.include_me', 'Include my side', 'meetings', 'toggle',
        help="Your microphone becomes \"You\" in the transcript. The panel's Exclude me button pauses it."),
+    _S('meeting.input_device', 'Microphone for meetings', 'meetings', 'microphone', apply=NEXT_RECORDING,
+       help='Same as dictation, or another input. Applies to the next meeting; one that won\'t open falls back to the dictation microphone.'),
     _S('meeting.gap_minutes', 'Resume within', 'meetings', 'number', min=1, max=60, unit='min',
        help='Sound back from the same call within this time resumes the meeting; later starts a new one.'),
     _S('meeting.start_speech_seconds', 'Speech before a meeting starts', 'meetings', 'number', min=1, max=10, unit='s',
@@ -504,6 +506,14 @@ def coerce(setting: Setting, value: Any) -> Any:
         return out
     if c in ('text', 'textarea', 'hotkey', 'sound'):
         return '' if value is None else str(value)
+    if c == 'microphone':
+        # '' (same as dictation) and 'default' stay words; a device id is a number.
+        if value in ('', 'default'):
+            return value
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"{setting.label} must be a device")
     return value
 
 

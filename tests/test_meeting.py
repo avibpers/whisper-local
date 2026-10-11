@@ -1245,5 +1245,142 @@ class StartupLoadTests(unittest.TestCase):
         self.assertEqual(sorted(probed), [1, 2, 3], 'a full scan after 15 s')
 
 
+class FakeInputStream:
+    # Stands in for sounddevice.InputStream: the test pushes blocks into the
+    # callback the way the audio thread would.
+    opened = []
+
+    def __init__(self, device, samplerate, callback):
+        self.device, self.samplerate, self.callback = device, samplerate, callback
+        self.started = False
+        self.closed = False
+        FakeInputStream.opened.append(self)
+
+    def start(self):
+        self.started = True
+
+    def stop(self):
+        self.started = False
+
+    def close(self):
+        self.closed = True
+
+
+class MeetingMicTests(unittest.TestCase):
+    def test_setting_exists_with_same_as_dictation_default(self):
+        import yaml
+        from koli.config_manager import _resolve_platform_values
+        from koli.settings import schema
+        defaults = _resolve_platform_values(yaml.safe_load(
+            (ROOT / 'src' / 'koli' / 'config.defaults.yaml').read_text(encoding='utf-8')))
+        self.assertEqual(defaults['meeting']['input_device'], '')
+        entry = schema.get('meeting.input_device')
+        self.assertEqual(entry.control, 'microphone')
+        self.assertEqual(schema.coerce(entry, ''), '')
+        self.assertEqual(schema.coerce(entry, 'default'), 'default')
+        self.assertEqual(schema.coerce(entry, '24'), 24)
+
+    # A separate microphone for meetings: opened at its own rate, handed on
+    # as 16 kHz mono, and silenced by allow() like the tap.
+    def test_mic_stream_feeds_16k_mono_and_honours_allow(self):
+        from koli.meeting.capture import MicStream
+        FakeInputStream.opened = []
+        got = []
+        allowed = {'ok': True}
+        opened = lambda device, rate, callback: FakeInputStream(device, rate, callback)
+        stream = MicStream(24, lambda audio, when: got.append(audio), lambda: allowed['ok'],
+                           on_error=lambda m: None, open_fn=opened, device_rate=lambda d: 48000)
+        stream.start()
+        s = FakeInputStream.opened[0]
+        self.assertEqual((s.device, s.samplerate), (24, 48000))
+        s.callback(np.zeros((4800, 1), dtype=np.float32), 4800, None, None)
+        self.assertEqual(got[0].shape, (1600,))
+        allowed['ok'] = False
+        s.callback(np.zeros((4800, 1), dtype=np.float32), 4800, None, None)
+        self.assertEqual(len(got), 1)
+        stream.stop()
+        self.assertTrue(s.closed)
+
+    def test_mic_stream_reports_when_the_device_cannot_open(self):
+        from koli.meeting.capture import MicStream
+        errors = []
+
+        def boom(device, rate, callback):
+            raise RuntimeError('Error opening InputStream: Invalid device')
+        stream = MicStream(99, lambda a, t: None, lambda: True, on_error=errors.append, open_fn=boom,
+                           device_rate=lambda d: 48000)
+        self.assertFalse(stream.start())
+        self.assertIn('Invalid device', errors[0])
+
+    def _service(self, values, mic_factory=None):
+        from koli.services.meetings import MeetingService
+        from koli.meeting.store import MeetingStore
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = {'meeting.enabled': False, 'meeting.detect': 'auto', 'meeting.include_me': True, 'meeting.gap_minutes': 10,
+                'meeting.start_speech_seconds': 3, 'meeting.language': 'auto', 'meeting.model': '',
+                'meeting.speaker_model': 'eres2net', 'meeting.input_device': ''}
+        base.update(values)
+        ctx = type('Ctx', (), {})()
+        ctx.state_manager = FakeStateManager()
+        self.taps = []
+        ctx.state_manager.audio_recorder = type('Rec', (), {'add_tap': lambda s, f: self.taps.append(f),
+                                                            'remove_tap': lambda s, f: self.taps.remove(f)})()
+        ctx.config_manager = FakeConfig(base)
+        ctx.model_registry = None
+        FakeLoop.made = []
+        self.problems = []
+        svc = MeetingService(ctx, store=MeetingStore(Path(tmp.name)), publish=lambda t, p: None, loopback_factory=FakeLoop,
+                             embedder_factory=lambda: None, speech_prob_factory=lambda: (lambda f: 0.9),
+                             loopback_available=lambda: True, sessions_fn=lambda: [], report=self.problems.append,
+                             mic_stream_factory=mic_factory)
+        self.addCleanup(svc.shutdown)
+        return svc
+
+    def test_same_as_dictation_taps_the_recorder(self):
+        svc = self._service({'meeting.input_device': ''})
+        svc.start()
+        self.assertEqual(len(self.taps), 1)
+
+    def test_a_separate_device_opens_its_own_stream(self):
+        made = []
+
+        class FakeMic:
+            def __init__(self, device, on_block, allow, on_error):
+                self.device = device
+                made.append(self)
+                self.stopped = False
+
+            def start(self):
+                return True
+
+            def stop(self):
+                self.stopped = True
+        svc = self._service({'meeting.input_device': 24}, mic_factory=FakeMic)
+        svc.start()
+        self.assertEqual([m.device for m in made], [24])
+        self.assertEqual(self.taps, [])
+        svc.end()
+        self.assertTrue(made[0].stopped)
+
+    # The chosen device failing to open must not cost your side of the
+    # meeting: the dictation microphone is tapped instead, and you are told.
+    def test_unopenable_device_falls_back_to_the_tap(self):
+        class BrokenMic:
+            def __init__(self, device, on_block, allow, on_error):
+                self.on_error = on_error
+
+            def start(self):
+                self.on_error('Error opening InputStream: Invalid device')
+                return False
+
+            def stop(self):
+                pass
+        svc = self._service({'meeting.input_device': 'default'}, mic_factory=BrokenMic)
+        svc.start()
+        self.assertEqual(len(self.taps), 1)
+        self.assertIn('Invalid device', self.problems[0])
+
+
 if __name__ == '__main__':
     unittest.main()
