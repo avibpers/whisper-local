@@ -77,8 +77,11 @@ class WhisperEngineCpp:
         except Exception as e:
             self.logger.debug(f"whisper.cpp warmup skipped: {e}")
 
+    # `language` overrides the engine's setting for one call (meeting mode):
+    # None keeps the setting, 'auto' detects, anything else forces that one.
     def transcribe_audio(self,
-                         audio_data: Optional[np.ndarray]) -> Optional[str]:
+                         audio_data: Optional[np.ndarray],
+                         language: Optional[str] = None) -> Optional[str]:
         if audio_data is None or len(audio_data) == 0:
             self.logger.warning("No audio data to transcribe")
             return None
@@ -93,9 +96,10 @@ class WhisperEngineCpp:
                 audio_data = audio_data.flatten()
             audio_data = audio_data.astype(np.float32)
 
+            forced = self.language if language is None else (None if language == 'auto' else language)
             kwargs = {}
-            if self.language:
-                kwargs['language'] = self.language
+            if forced:
+                kwargs['language'] = forced
             if self.task == 'translate':
                 kwargs['translate'] = True
 
@@ -111,7 +115,7 @@ class WhisperEngineCpp:
             elapsed = time.time() - t0
             print(f"   ✓ Transcription completed in {elapsed:.1f} seconds")
             self.last_info = {
-                'language': self.language or 'auto', 'language_probability': None,
+                'language': forced or 'auto', 'language_probability': None,
                 'seconds': round(elapsed, 2), 'model': self.model_key, 'device': self.device,
                 'compute_type': self.compute_type, 'beam_size': self.beam_size,
                 'backend': 'whisper_cpp',

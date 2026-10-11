@@ -224,14 +224,17 @@ class WhisperEngine:
     # English prompt pushes a Hebrew model off course. Runs on the engine
     # thread, inside the decode.
     # Returns (model, key, language, prompt, detection probability or None).
-    def _route(self, audio: np.ndarray) -> tuple:
+    # `language` overrides the engine's setting for one call (meeting mode):
+    # None keeps the setting, 'auto' detects, anything else forces that one.
+    def _route(self, audio: np.ndarray, language: Optional[str] = None) -> tuple:
+        forced = self.language if language is None else (None if language == 'auto' else language)
         if getattr(self, 'language_model', None) is None:
-            return self.model, self.model_key, self.language, self.initial_prompt, None
+            return self.model, self.model_key, forced, self.initial_prompt, None
         target = self.language_model_lang
-        if self.language:
-            if self.language == target:
+        if forced:
+            if forced == target:
                 return self.language_model, self.language_model_key, target, None, None
-            return self.model, self.model_key, self.language, self.initial_prompt, None
+            return self.model, self.model_key, forced, self.initial_prompt, None
         detected, probability, _ = self.model.detect_language(audio)
         self.logger.info(f"Detected {detected} ({probability:.2f}) for the model choice")
         if detected == target and probability >= 0.5:
@@ -334,7 +337,8 @@ class WhisperEngine:
     # full decode on an accidental hotkey press. Callers rely on this contract —
     # whisper_engine_cpp and system_audio both feed it the same array shape.
     def transcribe_audio(self,
-                         audio_data: np.ndarray) -> Optional[str]:
+                         audio_data: np.ndarray,
+                         language: Optional[str] = None) -> Optional[str]:
         if self.model is None:
             return None
         
@@ -364,8 +368,8 @@ class WhisperEngine:
             # with picking the model. Each piece keeps Whisper's own numbers on
             # how sure it was, so auto-dictation can leave out what was noise.
             def decode():
-                model, key, language, prompt, detected_probability = self._route(audio_data)
-                kwargs = dict(beam_size=self.beam_size, language=language, task=self.task,
+                model, key, lang, prompt, detected_probability = self._route(audio_data, language)
+                kwargs = dict(beam_size=self.beam_size, language=lang, task=self.task,
                               condition_on_previous_text=False)
                 if prompt:
                     kwargs["initial_prompt"] = prompt

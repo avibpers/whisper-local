@@ -577,5 +577,102 @@ class SpeakerTests(unittest.TestCase):
         self.assertFalse(r.is_speaker_model_cached('nope'))
 
 
+class FakeEngine:
+    def __init__(self, answers):
+        self.answers = list(answers)
+        self.calls = []
+        self.last_info = {}
+
+    def transcribe_audio(self, audio, language=None):
+        self.calls.append((len(audio), language))
+        text = self.answers.pop(0) if self.answers else None
+        self.last_info = {'language': 'he' if text and 'שלום' in text else 'en'}
+        return text
+
+
+class TranscriberTests(unittest.TestCase):
+    def run_chunks(self, chunks, answers, busy=None, tracker=None, language='auto'):
+        from koli.meeting.transcriber import MeetingTranscriber
+        from koli.meeting.speakers import SpeakerTracker
+        engine = FakeEngine(answers)
+        self.turns, self.speakers, self.pending, self.behind = [], [], [], []
+        busy_state = busy or {'busy': False}
+        t = MeetingTranscriber(engine_provider=lambda: engine, is_busy=lambda: busy_state['busy'],
+                               tracker=tracker or SpeakerTracker(embed=lambda a: np.array([1.0, 0.0])),
+                               language_provider=lambda: language,
+                               on_turn=self.turns.append, on_speaker=self.speakers.append,
+                               on_pending=self.pending.append, on_behind=self.behind.append, poll_s=0.01)
+        t.start()
+        for c in chunks:
+            t.submit(c)
+        deadline = time.time() + 3
+        while t.queued_seconds() > 0 or t.working:
+            if time.time() > deadline:
+                break
+            time.sleep(0.01)
+        t.stop()
+        return engine
+
+    @staticmethod
+    def chunk(stream, seconds=1.0, t0=100.0):
+        return {'audio': np.zeros(int(16000 * seconds), dtype=np.float32), 'stream': stream, 't0': t0,
+                't1': t0 + seconds, 'speech_s': seconds}
+
+    def test_mic_turn_is_you_and_loopback_turn_is_labelled(self):
+        engine = self.run_chunks([self.chunk('mic'), self.chunk('loopback', t0=105)], ['hello', 'שלום'])
+        self.assertEqual([(t['speaker'], t['text'], t['lang']) for t in self.turns],
+                         [('you', 'hello', 'en'), ('s1', 'שלום', 'he')])
+        self.assertEqual(self.speakers[0]['id'], 's1')
+        self.assertEqual(engine.calls[0][1], 'auto')
+        self.assertEqual(self.pending[0], 'mic')
+        self.assertIsNone(self.pending[-1])
+
+    def test_empty_transcription_makes_no_turn(self):
+        self.run_chunks([self.chunk('loopback')], [None])
+        self.assertEqual(self.turns, [])
+        self.assertEqual(self.speakers, [])
+        self.assertIsNone(self.pending[-1])
+
+    def test_waits_while_dictation_is_busy(self):
+        busy = {'busy': True}
+        from koli.meeting.transcriber import MeetingTranscriber
+        from koli.meeting.speakers import SpeakerTracker
+        engine = FakeEngine(['late'])
+        turns = []
+        t = MeetingTranscriber(engine_provider=lambda: engine, is_busy=lambda: busy['busy'], tracker=SpeakerTracker(),
+                               language_provider=lambda: 'en', on_turn=turns.append, on_speaker=lambda s: None,
+                               on_pending=lambda s: None, on_behind=lambda s: None, poll_s=0.01)
+        t.start()
+        t.submit(self.chunk('mic'))
+        time.sleep(0.1)
+        self.assertEqual(engine.calls, [])
+        busy['busy'] = False
+        time.sleep(0.3)
+        t.stop()
+        self.assertEqual([x['text'] for x in turns], ['late'])
+        self.assertEqual(engine.calls[0][1], 'en')
+
+    def test_behind_reports_queued_seconds(self):
+        self.run_chunks([self.chunk('mic', 2.0), self.chunk('mic', 3.0)], ['a', 'b'])
+        self.assertIn(5.0, self.behind)
+        self.assertEqual(self.behind[-1], 0.0)
+
+    def test_unknown_speaker_when_no_model(self):
+        from koli.meeting.speakers import SpeakerTracker
+        self.run_chunks([self.chunk('loopback')], ['x'], tracker=SpeakerTracker(embed=None))
+        self.assertEqual(self.turns[0]['speaker'], '?')
+
+
+class EngineLanguageTests(unittest.TestCase):
+    def test_route_honours_a_per_call_language(self):
+        from koli.whisper_engine import WhisperEngine
+        e = WhisperEngine.__new__(WhisperEngine)
+        e.model, e.model_key, e.language, e.initial_prompt = 'M', 'small', 'en', None
+        e.language_model = None
+        self.assertEqual(e._route(np.zeros(10))[2], 'en')
+        self.assertEqual(e._route(np.zeros(10), language='he')[2], 'he')
+        self.assertIsNone(e._route(np.zeros(10), language='auto')[2])
+
+
 if __name__ == '__main__':
     unittest.main()
