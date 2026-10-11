@@ -125,6 +125,8 @@ class StateManager:
         self._auto_pasted = False
         self._auto_pasted_words = 0
         self._auto_dictation = None
+        # MeetingService, set by main when the app window runs (meeting mode).
+        self.meetings = None
         # How loud you speak per microphone, learned from hotkey dictations
         # ("Only my voice"; see voice_filter.py).
         self.voice_levels = VoiceLevels(Path(get_user_app_data_path()) / 'voice_levels.json')
@@ -1187,6 +1189,14 @@ class StateManager:
 
     # One stage of a dictation, for the Live trace and the floating bar. Text is
     # only ever kept in memory for the UI; the log still follows log_transcriptions.
+    # The meeting hotkey and the tray: start a meeting or end the running one.
+    def toggle_meeting(self) -> bool:
+        if self.meetings is None:
+            self.system_tray.notify("Meetings need the app window (not --legacy-ui)")
+            return False
+        self.meetings.toggle()
+        return True
+
     def _emit_pipeline(self, stage: str, **data):
         data['stage'] = stage
         data['t'] = time.time()

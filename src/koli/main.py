@@ -417,6 +417,7 @@ def setup_hotkey_listener(hotkey_config, state_manager, voice_commands_enabled=T
         transforms_manager=getattr(state_manager, 'transforms_manager', None),
         recording_mode=hotkey_config.get('recording_mode', 'push_to_talk'),
         paste_last_hotkey=hotkey_config.get('paste_last_hotkey'),
+        meeting_hotkey=hotkey_config.get('meeting_hotkey'),
         double_tap_to_lock=bool(hotkey_config.get('double_tap_to_lock', False)),
         double_tap_window_ms=_int_setting(hotkey_config.get('double_tap_window_ms'), 400),
     )
@@ -478,6 +479,13 @@ def shutdown_app(hotkey_listener: HotkeyListener, state_manager: StateManager, l
             coordinator.stop()
     except Exception as ex:
         logger.error(f"Error stopping auto-dictation: {ex}")
+
+    meetings = getattr(state_manager, 'meetings', None) if state_manager else None
+    if meetings is not None:
+        try:
+            meetings.shutdown()
+        except Exception as ex:
+            logger.error(f"Error stopping meeting mode: {ex}")
 
     if state_manager:
         state_manager.shutdown()
@@ -831,6 +839,13 @@ def main():
             ui_host = UiHost(ctx, open_page=(args.page or '') if args.open else None,
                              dev=args.ui_dev, instance_name=instance_name, notices=STARTUP_NOTICES)
             ui_host.attach()
+            # Meeting mode needs the app window for its panel, so it only runs here.
+            try:
+                from .services.meetings import MeetingService
+                ctx.meetings = MeetingService(ctx)
+                state_manager.meetings = ctx.meetings
+            except Exception as e:
+                logger.error(f"Meeting mode not started: {e}", exc_info=True)
             server_cfg = config_manager.config.get('server') or {}
             if server_cfg.get('enabled'):
                 try:

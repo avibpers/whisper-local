@@ -28,6 +28,8 @@ TOPICS = (
     'devices_changed',
     'window',         # {'action': 'show'|'hide', 'page'}
     'problem',        # {'id', 'message', 'time'} something you must see, see report_problem
+    'meeting',        # the meeting panel's whole state, see SessionManager.state_payload
+    'meeting_turn',   # {'id', 'turn'} a transcribed turn; {'id', 'pending'} one in progress; {'id', 'reload': True}
 )
 
 Subscriber = Callable[[str, Any], None]

@@ -50,6 +50,9 @@ class SystemTray:
         self.on_open = None
         self.on_quit = None
         self.on_pause = None
+        # Meeting mode (app window): start or end a meeting, and whether one runs.
+        self.on_meeting_toggle = None
+        self.meeting_live = None
         self.current_state = "idle"
         self.available = True
         
@@ -409,6 +412,10 @@ class SystemTray:
             pystray.MenuItem("Resume hotkeys" if paused else "Pause hotkeys",
                              lambda icon, item: self._toggle_pause(not paused)),
         ]
+        if self.on_meeting_toggle:
+            live = bool(self.meeting_live and self.meeting_live())
+            items.append(pystray.MenuItem("End meeting" if live else "Start meeting",
+                                          lambda icon, item: self.on_meeting_toggle()))
         profile_items = self._build_profile_menu()
         if profile_items:
             active_profile = self.state_manager.get_active_profile() or "—"

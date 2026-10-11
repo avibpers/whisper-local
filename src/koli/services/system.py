@@ -222,6 +222,8 @@ def _run_pip(commands: list, what: str, reporter):
 # pip requirements). Matches [project.optional-dependencies] in pyproject.toml.
 EXTRAS = {
     'noise': ('noisereduce', ['noisereduce>=3.0.0']),
+    # Meeting mode hears the call through WASAPI loopback (meeting/capture.py)
+    'loopback': ('soundcard', ['soundcard>=0.4.2']),
 }
 
 

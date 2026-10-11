@@ -503,6 +503,87 @@ class Bridge:
         time.sleep(0.15)
         return self._sm.apply_transform(name)
 
+    # ── Meetings ─────────────────────────────────────────────────────────────
+
+    @property
+    def _meetings(self):
+        svc = getattr(self._host.ctx, 'meetings', None)
+        if svc is None:
+            raise ValueError("Meeting mode is not running")
+        return svc
+
+    @_api
+    def meeting_state(self):
+        return self._meetings.state()
+
+    @_api
+    def meeting_start(self):
+        self._meetings.start()
+
+    @_api
+    def meeting_end(self):
+        self._meetings.end()
+
+    @_api
+    def meeting_new(self):
+        self._meetings.new()
+
+    @_api
+    def meeting_pause(self):
+        self._meetings.pause()
+
+    @_api
+    def meeting_resume(self):
+        self._meetings.resume()
+
+    @_api
+    def meeting_exclude(self, on):
+        self._meetings.set_excluded(bool(on))
+
+    @_api
+    def meeting_offer(self, accept):
+        self._meetings.offer(bool(accept))
+
+    @_api
+    def meeting_rename(self, speaker_id, name, meeting_id=None):
+        svc = self._meetings
+        current = svc.state().get('id')
+        if meeting_id and meeting_id != current:
+            svc.rename_saved_speaker(meeting_id, speaker_id, name)
+        else:
+            svc.rename_speaker(speaker_id, name)
+
+    @_api
+    def meeting_continue_previous(self):
+        self._meetings.continue_previous()
+
+    @_api
+    def meeting_split(self):
+        self._meetings.split_resumed()
+
+    @_api
+    def meetings_list(self):
+        return self._meetings.list()
+
+    @_api
+    def meeting_get(self, meeting_id):
+        return self._meetings.get(meeting_id)
+
+    @_api
+    def meeting_delete(self, meeting_id):
+        return self._meetings.delete(meeting_id)
+
+    # Writes the export where the user picks; returns the path or None.
+    @_api
+    def meeting_export(self, meeting_id, fmt='txt'):
+        text = self._meetings.export(meeting_id, fmt)
+        path = self._host.pick('save', 'Export meeting', filename=f'{meeting_id}.{fmt}')
+        if not path:
+            return None
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(text)
+        return path
+
     # ── App rules and profiles ───────────────────────────────────────────────
 
     @_api

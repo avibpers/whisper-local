@@ -714,5 +714,101 @@ class MeetingSettingsTests(unittest.TestCase):
         self.assertTrue(any(prefix == 'meeting.' and fn is Appliers.meeting for prefix, fn in _PREFIX_HANDLERS))
 
 
+class FakeStateManager:
+    def __init__(self):
+        self.recording = False
+        self.processing = False
+        self.whisper_engine = FakeEngine(['hello'])
+        self.app_rules = type('R', (), {'rules': RULES})()
+        self.audio_recorder = type('Rec', (), {'add_tap': lambda s, f: None, 'remove_tap': lambda s, f: None})()
+
+    def is_idle(self):
+        return not (self.recording or self.processing)
+
+    def is_transcription_recording(self):
+        return self.recording
+
+
+class FakeConfig:
+    def __init__(self, values):
+        self.values = values
+
+    def get_path(self, path, default=None):
+        return self.values.get(path, default)
+
+
+class ServiceTests(unittest.TestCase):
+    def make(self, enabled=True):
+        from koli.services.meetings import MeetingService
+        from koli.meeting.store import MeetingStore
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        values = {'meeting.enabled': enabled, 'meeting.detect': 'auto', 'meeting.include_me': True,
+                  'meeting.gap_minutes': 10, 'meeting.start_speech_seconds': 3, 'meeting.language': 'auto',
+                  'meeting.model': '', 'meeting.speaker_model': 'eres2net'}
+        ctx = type('Ctx', (), {})()
+        ctx.state_manager = FakeStateManager()
+        ctx.config_manager = FakeConfig(values)
+        ctx.model_registry = None
+        self.events = []
+        fake_loopback = type('L', (), {'start': lambda s: None, 'stop': lambda s: None})
+        svc = MeetingService(ctx, store=MeetingStore(Path(self.tmp.name)),
+                             publish=lambda t, p: self.events.append((t, p)),
+                             loopback_factory=lambda on_block, on_error: fake_loopback(),
+                             embedder_factory=lambda: None)
+        self.addCleanup(svc.shutdown)
+        return svc
+
+    def test_manual_start_and_end_round_trip(self):
+        svc = self.make()
+        self.assertEqual(svc.state()['state'], 'idle')
+        svc.start()
+        self.assertEqual(svc.state()['state'], 'live')
+        svc.end()
+        self.assertEqual(svc.state()['state'], 'idle')
+        heads = svc.list()
+        self.assertEqual(len(heads), 1)
+        self.assertEqual(svc.get(heads[0]['id'])['turns'], [])
+        self.assertIn('Meeting', svc.export(heads[0]['id'], 'txt'))
+        self.assertTrue(svc.delete(heads[0]['id']))
+
+    def test_toggle_starts_then_ends(self):
+        svc = self.make()
+        svc.toggle()
+        self.assertEqual(svc.state()['state'], 'live')
+        svc.toggle()
+        self.assertEqual(svc.state()['state'], 'idle')
+
+    def test_detector_runs_only_when_enabled(self):
+        svc = self.make(enabled=False)
+        self.assertIsNone(svc.detector)
+        svc.apply_setting('meeting.enabled', True)
+        self.assertIsNotNone(svc.detector)
+        svc.apply_setting('meeting.enabled', False)
+        self.assertIsNone(svc.detector)
+
+    def test_mic_blocks_are_dropped_while_dictating_or_excluded(self):
+        svc = self.make()
+        svc.start()
+        self.assertTrue(svc._mic_allowed())
+        svc.ctx.state_manager.recording = True
+        self.assertFalse(svc._mic_allowed())
+        svc.ctx.state_manager.recording = False
+        svc.set_excluded(True)
+        self.assertFalse(svc._mic_allowed())
+        svc.set_excluded(False)
+        svc.ctx.config_manager.values['meeting.include_me'] = False
+        self.assertFalse(svc._mic_allowed())
+
+    def test_events_topics_registered(self):
+        from koli.ui.events import TOPICS
+        self.assertIn('meeting', TOPICS)
+        self.assertIn('meeting_turn', TOPICS)
+
+    def test_loopback_extra_is_installable(self):
+        from koli.services.system import EXTRAS
+        self.assertEqual(EXTRAS['loopback'][0], 'soundcard')
+
+
 if __name__ == '__main__':
     unittest.main()

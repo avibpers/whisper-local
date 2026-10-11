@@ -90,6 +90,12 @@ def _enable_drag_regions() -> bool:
     return True
 
 
+# Stands in for the meeting service until it exists (or under --legacy-ui).
+class _NoMeetings:
+    def toggle(self):
+        logger.info("Meeting mode is not running")
+
+
 class _PageChannel:
     def __init__(self, name, topics=None):
         self.name = name
@@ -138,6 +144,7 @@ class UiHost:
         self._maximized = False
         self._drag_regions = False   # WebView2 treats `app-region: drag` as the title bar
         self.custom_frame = False    # the page draws the title bar and window buttons
+        self._meeting_state = 'idle'  # last meeting state seen, for the tray and the panel
 
     @property
     def main_window(self):
@@ -184,6 +191,9 @@ class UiHost:
             tray.on_open = lambda page=None: self.show_main(page)
             tray.on_quit = self.quit
             tray.on_pause = lambda paused: self.bridge.dictation_pause(paused)
+            # The service is built after attach(), so it is looked up at call time.
+            tray.on_meeting_toggle = lambda: (getattr(self.ctx, 'meetings', None) or _NoMeetings()).toggle()
+            tray.meeting_live = lambda: self._meeting_state in ('live', 'paused')
             tray.refresh_menu()
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
@@ -646,10 +656,23 @@ class UiHost:
             self._last_pipeline.append(payload)
         elif topic == 'settings' and isinstance(payload, dict):
             self._on_setting(payload)
+        elif topic == 'meeting' and isinstance(payload, dict):
+            self._on_meeting_state(payload.get('state', 'idle'))
         item = {'topic': topic, 'payload': payload}
         self.main.queue.put(item)
         if topic in self.bar.topics:
             self.bar.queue.put(item)
+
+    # A meeting began, paused or ended: the tray's item changes with it.
+    def _on_meeting_state(self, state):
+        changed = state != self._meeting_state
+        self._meeting_state = state
+        tray = self.ctx.system_tray
+        if changed and tray is not None:
+            try:
+                tray.refresh_menu()
+            except Exception:
+                pass
 
     def _on_setting(self, payload):
         path = payload.get('path', '')
