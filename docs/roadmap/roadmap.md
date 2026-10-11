@@ -88,7 +88,6 @@
 
 ### Real-Time Transcription
 - As a *user* I want **real-time transcription** so I can preview text as I speak
-- As a *user* I want **meeting mode** so I can transcribe an entire meeting in real-time
 
 ### Cross-Platform
 - As a *Linux user* I want **Linux desktop support** so I can use Koli on my Linux machine — add `platform/linux/` with evdev-based global hotkeys and key simulation, XDG paths, and fcntl instance locking ([research](../research/2026-02-16-linux-support-research.md))

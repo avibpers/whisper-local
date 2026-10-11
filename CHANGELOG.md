@@ -5,6 +5,23 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 ## [Unreleased]
 
 ### Added
+- **Meeting mode.** When a call runs in Discord, Zoom, Teams, Slack or a
+  browser tab (Google Meet and the web versions), Koli notices, listens to
+  what you hear and to your microphone, and shows the conversation in a dark
+  translucent panel as it happens, each turn labelled "You" or "Speaker N"
+  (rename by clicking). Meetings are saved with speakers and times and listed
+  on the new Meetings screen, with export as .txt or .md. A call that drops
+  and comes back within 10 minutes resumes the same meeting; a different call
+  or a longer gap starts a new one, with a one-click undo either way. The
+  panel has Exclude me (your mic stays out while you dictate elsewhere), Pause
+  and New meeting, and stays out of screen sharing. Settings → Meetings holds
+  automatic / ask / never, the gap, the language and the panel; each app rule
+  can override it ("Calls in this app" on the Apps screen), and the tray and
+  an optional hotkey start or end a meeting. Needs the loopback extra
+  (`pip install koli[loopback]`), offered with an Install button on the
+  Meetings screen. Hebrew and English in one meeting work with language
+  auto-detect; speakers are told apart by a small sherpa-onnx voiceprint model
+  downloaded at the first meeting. Design: `docs/design/meeting-mode.md`.
 - **History remembers which window you dictated into.** Each new entry keeps
   the window's title (which usually names the chat, channel, tab or file, like
   "@Efrat - Discord"), the window's id and the process id, so dictations can be

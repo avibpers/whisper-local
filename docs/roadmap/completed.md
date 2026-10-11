@@ -23,6 +23,7 @@
 - As a *user*, I want to **hide the console window** so the app runs cleanly in the background
 - As a *user*, I want to **select audio source** so I can transcribe from different microphones or system audio
 - As a *developer*, I want to **WASAPI loopback supported out of the box** so I can implement features like meeting transcription based on audio outputs
+- As a *user* I want **meeting mode** so I can transcribe an entire meeting in real-time, with who said what
 - As a *user*, I want to **load custom local models** so I can use specialized or fine-tuned models
 - As a *user*, I want **shortcuts to access log and settings** in the systray menu so I can quickly troubleshoot issues
 - As a *mac user*, I want **Fn key as modifier** so I can use the ergonomic bottom-left corner for recording

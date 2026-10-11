@@ -108,6 +108,7 @@ This is a **community tool**, not a product. There's no support SLA, no roadmap 
 - 📖 **Vocabulary corrections** — map one canonical spelling to every way Whisper mishears it (`CAPEX: [cap x, copics]`), applied in a single pass with longest-match-wins
 - 🧠 **Self-improving accuracy** — from the history window, turn any misrecognition into a permanent correction ("Fix this everywhere…"), or let it mine your own history for names to add to your dictionary ("Suggest hotwords"). All offline; corrections apply on your next dictation, no restart
 - 🔊 **System-audio capture** *(experimental)* — `koli --transcribe-system` transcribes what you *hear* (meetings, videos), not just the mic (`pip install 'koli[loopback]'`, Windows-first)
+- 🗣️ **Meeting mode** — calls in Discord, Zoom, Teams or Google Meet are transcribed as they happen, with who said what, in a translucent panel that stays out of screen sharing; meetings are saved on the Meetings screen (`pip install 'koli[loopback]'`, Windows first)
 - 🔔 **Opt-in update notifications** — daily GitHub release check, fully offline by default (`update_check.enabled: true` to opt in)
 - 🎚️ **Noise suppression** — spectral gating via `noisereduce`, off by default (`pip install 'koli[noise]'`)
 - 🩺 **`--selftest`** — one-command sanity check (mic, model, transcription, clipboard) — perfect for first-launch

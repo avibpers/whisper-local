@@ -270,6 +270,23 @@ meetings; reading speaker names from the meeting app; per-app loopback
 loopback (needs a virtual audio device); a slower second pass that
 re-clusters speakers and cleans text; search across meetings.
 
+## Found while building (2026-10-11)
+
+- The panel's dragged spot is stored as `meeting.panel.custom_x` /
+  `custom_y`, like the bubble's, not as one `panel.custom` key.
+- `meeting.model` is a text field (a model key), not a picker: the Settings
+  page has no generic model picker outside the Model screen.
+- Rules that carry only a `meeting` key are skipped by delivery matching
+  (`app_rules.is_meeting_only`), so the shipped "discord.exe holds calls"
+  rule never claims a Discord window from the user's own chat rule.
+- The voiceprint model file is 40 MB, not 26.
+- Two meetings started in the same second get ids ending `-2`, `-3`.
+- The bundled PortAudio (19.7.0) lists no loopback devices, which is why the
+  loopback stream uses `soundcard`; the macOS stubs are loaded by path in the
+  tests because the macOS platform package needs `fcntl`.
+- The browser mock (`?mock=1&meeting`) drives a fake live meeting for the
+  panel and the Meetings screen.
+
 ## Testing
 
 Unit tests (no hardware, `tests/test_meeting.py`):
