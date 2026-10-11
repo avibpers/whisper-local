@@ -5927,7 +5927,8 @@ class LanguageModelRoutingTests(unittest.TestCase):
     # A second model for one language (Hebrew → ivrit-ai): the main model
     # detects the language, that language goes to the second model, anything
     # else is transcribed by the main model in the language it detected.
-    def _engine(self, detected=('en', 0.98), forced=None, second=True):
+    # `detected` is (language, probability[, every language's score]).
+    def _engine(self, detected=('en', 0.98), forced=None, second=True, allowed=None):
         import unittest.mock as mock
         from koli import whisper_engine
 
@@ -5942,7 +5943,7 @@ class LanguageModelRoutingTests(unittest.TestCase):
 
             def detect_language(self, audio, **kwargs):
                 self.calls.append(('detect', {}))
-                return detected[0], detected[1], []
+                return detected[0], detected[1], (detected[2] if len(detected) > 2 else [])
 
             def transcribe(self, audio, **kwargs):
                 self.calls.append(('transcribe', kwargs))
@@ -5954,6 +5955,7 @@ class LanguageModelRoutingTests(unittest.TestCase):
         engine.language_model = Model('hebrew') if second else None
         engine.language_model_lang = 'he' if second else None
         engine.language_model_key = 'hebrew-large-v3-turbo' if second else None
+        engine.allowed_languages = allowed or []
         engine.vad_manager = None
         engine.logger = __import__('logging').getLogger('test')
         engine.beam_size, engine.language, engine.task = 5, forced, 'transcribe'
@@ -6008,6 +6010,46 @@ class LanguageModelRoutingTests(unittest.TestCase):
         self.assertEqual(self._run(engine), 'main text')
         self.assertEqual([c[0] for c in engine.model.calls], ['transcribe'])
         self.assertIsNone(engine.model.calls[-1][1]['language'])
+
+    # ── Languages I speak ──
+    # A 3-second Hebrew clip that scores Icelandic highest still comes out as
+    # Hebrew when only English and Hebrew are allowed.
+    _ICELANDIC_FIRST = ('is', 0.55, [('is', 0.55), ('he', 0.30), ('en', 0.05), ('ar', 0.04)])
+
+    def test_the_best_listed_language_wins_over_an_unlisted_one(self):
+        engine = self._engine(detected=self._ICELANDIC_FIRST, second=False, allowed=['en', 'he'])
+        self._run(engine)
+        self.assertEqual([c[0] for c in engine.model.calls], ['detect', 'transcribe'])
+        self.assertEqual(engine.model.calls[-1][1]['language'], 'he')
+        self.assertAlmostEqual(engine.last_info['language_probability'], 0.857, places=3)
+
+    def test_a_listed_language_still_reaches_the_second_model(self):
+        engine = self._engine(detected=self._ICELANDIC_FIRST, allowed=['en', 'he'])
+        self.assertEqual(self._run(engine), 'hebrew text')
+        self.assertNotIn('initial_prompt', engine.language_model.calls[-1][1])
+
+    # A list of one is a fixed language: no detection at all.
+    def test_a_one_language_list_skips_detection(self):
+        engine = self._engine(second=False, allowed=['he'])
+        self._run(engine)
+        self.assertEqual([c[0] for c in engine.model.calls], ['transcribe'])
+        self.assertEqual(engine.model.calls[-1][1]['language'], 'he')
+
+    # A language set in settings, a rule or a profile beats the list.
+    def test_a_forced_language_ignores_the_list(self):
+        engine = self._engine(forced='fr', second=False, allowed=['en', 'he'])
+        self._run(engine)
+        self.assertEqual([c[0] for c in engine.model.calls], ['transcribe'])
+        self.assertEqual(engine.model.calls[-1][1]['language'], 'fr')
+
+    # English-only models can't detect a language; they get English.
+    def test_an_english_only_model_skips_detection(self):
+        import unittest.mock as mock
+        engine = self._engine(second=False, allowed=['en', 'he'])
+        engine.model.model = mock.Mock(is_multilingual=False)
+        self._run(engine)
+        self.assertEqual([c[0] for c in engine.model.calls], ['transcribe'])
+        self.assertEqual(engine.model.calls[-1][1]['language'], 'en')
 
     # Off, the main model itself, or an unknown model: no second model.
     def test_which_second_model_is_loaded(self):

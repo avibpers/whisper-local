@@ -283,6 +283,7 @@ def setup_whisper_engine(whisper_config, vad_manager, model_registry, log_transc
             log_transcriptions=log_transcriptions,
             device_index=int(whisper_config.get('device_index') or 0),
             language_model=language_model_choice(whisper_config, model_registry),
+            allowed_languages=whisper_config.get('languages') or [],
         )
     except RuntimeError as e:
         if whisper_config['device'] != 'cuda' or not config_manager:

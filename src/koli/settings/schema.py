@@ -25,7 +25,7 @@ class Setting:
     label: str
     section: str
     control: str                  # toggle | segmented | select | number | range | text | textarea |
-                                  # tags | hotkey | sound | microphone | audiohost | model_table |
+                                  # tags | choice_tags | hotkey | sound | microphone | audiohost | model_table |
                                   # cue_table | styles | table | readonly
     help: str = ''
     apply: str = LIVE
@@ -91,6 +91,9 @@ SCHEMA = [
     # ── General ──────────────────────────────────────────────────────────────
     _S('whisper.language', 'Language', 'general', 'select', mode=SIMPLE, choices=LANGUAGES,
        help='Auto-detect, or force one. Forcing is faster and avoids wrong-language guesses.'),
+    _S('whisper.languages', 'Languages I speak', 'general', 'choice_tags', choices=LANGUAGES[1:],
+       help='Auto-detect picks only from these, so a short clip never comes back as a language you '
+       "don't speak. Empty = any language. Used only while Language is Auto-detect."),
     _S('whisper.task', 'Output', 'general', 'segmented',
        choices=[['transcribe', 'Transcribe'], ['translate', 'Translate to English']],
        help='Translate turns any spoken language into English.'),

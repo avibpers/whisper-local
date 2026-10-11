@@ -5,6 +5,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 ## [Unreleased]
 
 ### Added
+- **Languages I speak.** Settings → General: pick the languages you dictate
+  in (say English and Hebrew) and auto-detect chooses only among them, so a
+  short clip no longer comes back as Icelandic. The best-scoring language on
+  your list wins; one language works like setting it outright. A language set
+  in settings, an app rule or a profile still comes first.
 - **History remembers which window you dictated into.** Each new entry keeps
   the window's title (which usually names the chat, channel, tab or file, like
   "@Efrat - Discord"), the window's id and the process id, so dictations can be

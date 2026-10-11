@@ -7,7 +7,7 @@
 import { html, useEffect, useState } from '../../vendor/preact-htm.module.js';
 import { call } from '../api.js';
 import { app, getPath, live, saveSetting, toast, useSetting } from '../store.js';
-import { HotkeyCapture, Icon, NumberField, RangeField, Segmented, Select, TagInput, TextArea, TextField, Toggle } from '../ui.js';
+import { ChoiceTags, HotkeyCapture, Icon, NumberField, RangeField, Segmented, Select, TagInput, TextArea, TextField, Toggle } from '../ui.js';
 
 export function useAudio() {
   const version = app.use((s) => s.devicesVersion || 0);
@@ -107,6 +107,7 @@ export function SettingControl({ s }) {
     case 'textarea': return html`<${TextArea} value=${value} label=${s.label} mono=${s.path.includes('ollama')} onCommit=${save} />`;
     case 'tags': return html`<${TagInput} values=${value || []} label=${s.label} onChange=${save}
       locked=${s.path === 'postprocess.voice_editing_phrases' ? ['scratch that', 'delete that', 'strike that'] : []} />`;
+    case 'choice_tags': return html`<${ChoiceTags} values=${value || []} options=${s.choices} label=${s.label} onChange=${save} />`;
     case 'hotkey': return html`<${HotkeyCapture} value=${value} label=${s.label} nullable=${s.nullable} onCommit=${save} />`;
     case 'microphone': return html`<${MicSelect} />`;
     case 'audiohost': return html`<${AudioHostSelect} s=${s} value=${value} />`;
@@ -116,7 +117,7 @@ export function SettingControl({ s }) {
   }
 }
 
-const WIDE = new Set(['textarea', 'tags']);
+const WIDE = new Set(['textarea', 'tags', 'choice_tags']);
 
 // Progress of one background task: a bar (moving when the total isn't known
 // yet), what it is doing ("Downloading 120 of 466 MB") and a Cancel button.
