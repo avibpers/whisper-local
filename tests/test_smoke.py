@@ -16,7 +16,8 @@ sys.path.insert(0, str(ROOT / "src"))
 # The real platform modules are never evicted either. On macOS, re-running
 # platform/macos/app.py redefines an Objective-C class, which pyobjc refuses.
 _PLATFORM_SUBMODULES = ('hotkeys', 'keyboard', 'foreground', 'app', 'console',
-                        'permissions', 'icons', 'paths', 'instance_lock', 'gpu')
+                        'permissions', 'icons', 'paths', 'instance_lock', 'gpu',
+                        'audio_sessions', 'browser_tabs')
 
 
 # A module whose every attribute is a MagicMock unless set explicitly.
@@ -3351,7 +3352,9 @@ class LayeredDefaultsTests(unittest.TestCase):
         rules = self._load_rules()
         self.assertEqual([r.get('id') for r in rules],
                          ['password-managers', 'terminals', 'code-editors',
-                          'chat-apps', 'email-clients'])
+                          'chat-apps', 'email-clients', 'meeting-discord', 'meeting-zoom',
+                          'meeting-teams', 'meeting-slack', 'meeting-google-meet',
+                          'meeting-teams-web', 'meeting-zoom-web', 'meeting-discord-web'])
         self.assertEqual(self._read('app_rules.yaml').get('rules'), [],
                          'a fresh user file must start empty, not as a copy of the defaults')
 
@@ -3538,7 +3541,7 @@ class LayeredDefaultsTests(unittest.TestCase):
         self.assertEqual([r for r in rules if not r.get('id')], [],
                          'it should have become an override, not a rule of its own')
         import koli.app_rules as ar
-        self.assertFalse(any(ar.rule_matches(r, 'discord.exe', '') for r in rules),
+        self.assertFalse(any(ar.rule_matches(r, 'discord.exe', '') for r in rules if not ar.is_meeting_only(r)),
                          'discord was removed from the list but still matches')
         self.assertTrue(any(ar.rule_matches(r, 'slack.exe', '') for r in rules))
 
@@ -3551,7 +3554,9 @@ class LayeredDefaultsTests(unittest.TestCase):
         rules = self._load_rules()
         self.assertEqual([r.get('id') for r in rules],
                          ['password-managers', 'terminals', 'code-editors',
-                          'chat-apps', 'email-clients'])
+                          'chat-apps', 'email-clients', 'meeting-discord', 'meeting-zoom',
+                          'meeting-teams', 'meeting-slack', 'meeting-google-meet',
+                          'meeting-teams-web', 'meeting-zoom-web', 'meeting-discord-web'])
         self.assertEqual((self.dir / 'app_rules.yaml').read_text(encoding='utf-8'), broken)
         self.assertEqual(list(self.dir.glob('*.bak')), [])
 

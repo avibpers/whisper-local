@@ -317,5 +317,86 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(p['behind_s'], 12.5)
 
 
+RULES = [
+    {'id': 'discord', 'match': ['discord.exe'], 'meeting': 'default'},
+    {'id': 'zoom', 'match': ['zoom.exe'], 'meeting': 'ask'},
+    {'id': 'meet', 'match': ['chrome.exe', 'msedge.exe', 'brave.exe'], 'window_title': ['Meet - '], 'meeting': 'default'},
+    {'id': 'teams-web', 'match': ['chrome.exe', 'msedge.exe'], 'window_title': ['Microsoft Teams'], 'meeting': 'off'},
+    {'id': 'terminals', 'match': ['cmd.exe', 'WindowsTerminal.exe'], 'auto_send': False},
+]
+
+
+class DetectorTests(unittest.TestCase):
+    def test_native_app_with_active_session_is_a_source(self):
+        from koli.meeting.detector import find_sources
+        sources = find_sources([{'pid': 1, 'exe': 'discord.exe', 'state': 1}], [], RULES, 'auto')
+        self.assertEqual(sources, [{'key': 'discord.exe', 'app': 'discord.exe', 'kind': 'native', 'title': '', 'code': '',
+                                    'mode': 'auto'}])
+
+    def test_inactive_session_and_unlisted_app_are_ignored(self):
+        from koli.meeting.detector import find_sources
+        sessions = [{'pid': 1, 'exe': 'discord.exe', 'state': 0}, {'pid': 2, 'exe': 'spotify.exe', 'state': 1},
+                    {'pid': 3, 'exe': 'cmd.exe', 'state': 1}]
+        self.assertEqual(find_sources(sessions, [], RULES, 'auto'), [])
+
+    def test_rule_mode_wins_over_default_and_off_drops(self):
+        from koli.meeting.detector import find_sources
+        sessions = [{'pid': 1, 'exe': 'zoom.exe', 'state': 1}, {'pid': 2, 'exe': 'chrome.exe', 'state': 1}]
+        tabs = [{'exe': 'chrome.exe', 'title': 'Microsoft Teams - Audio playing', 'media': 'Audio playing', 'hwnd': 9}]
+        sources = find_sources(sessions, tabs, RULES, 'auto')
+        self.assertEqual([(s['app'], s['mode']) for s in sources], [('zoom.exe', 'ask')])
+
+    def test_browser_tab_behind_others_with_code(self):
+        from koli.meeting.detector import find_sources
+        sessions = [{'pid': 2, 'exe': 'chrome.exe', 'state': 1}]
+        tabs = [{'exe': 'chrome.exe', 'title': 'Inbox - Gmail', 'media': '', 'hwnd': 9},
+                {'exe': 'chrome.exe', 'title': 'Meet - abc-defg-hij', 'media': 'Camera and microphone in use', 'hwnd': 9}]
+        sources = find_sources(sessions, tabs, RULES, 'auto')
+        self.assertEqual(sources, [{'key': 'chrome.exe|Meet - abc-defg-hij', 'app': 'chrome.exe', 'kind': 'browser',
+                                    'title': 'Meet - abc-defg-hij', 'code': 'abc-defg-hij', 'mode': 'auto'}])
+
+    def test_browser_tab_without_audio_session_is_not_a_source(self):
+        from koli.meeting.detector import find_sources
+        tabs = [{'exe': 'chrome.exe', 'title': 'Meet - abc-defg-hij', 'media': '', 'hwnd': 9}]
+        self.assertEqual(find_sources([{'pid': 2, 'exe': 'chrome.exe', 'state': 0}], tabs, RULES, 'auto'), [])
+
+    def test_strip_media_suffix(self):
+        from koli.meeting.detector import strip_media
+        self.assertEqual(strip_media('Meet - abc-defg-hij - Microphone in use'), ('Meet - abc-defg-hij', 'Microphone in use'))
+        self.assertEqual(strip_media('Inbox - Gmail'), ('Inbox - Gmail', ''))
+        self.assertEqual(strip_media('Tab - Audio muted'), ('Tab', 'Audio muted'))
+
+    def test_detector_tick_reports_every_time(self):
+        from koli.meeting.detector import MeetingDetector
+        seen = []
+        d = MeetingDetector(on_sources=seen.append, rules_provider=lambda: RULES, mode_provider=lambda: 'auto',
+                            sessions_fn=lambda: [{'pid': 1, 'exe': 'discord.exe', 'state': 1}], tabs_fn=lambda: [])
+        d.tick()
+        d.tick()
+        self.assertEqual(len(seen), 2)
+        self.assertEqual(seen[0][0]['app'], 'discord.exe')
+
+    def test_detector_survives_probe_errors(self):
+        from koli.meeting.detector import MeetingDetector
+        seen = []
+
+        def boom():
+            raise RuntimeError('COM failed')
+        d = MeetingDetector(on_sources=seen.append, rules_provider=lambda: RULES, mode_provider=lambda: 'auto',
+                            sessions_fn=boom, tabs_fn=lambda: [])
+        d.tick()
+        self.assertEqual(seen, [[]])
+
+    # Loaded by path: the macOS package itself needs fcntl, which Windows lacks.
+    def test_platform_stubs_import_everywhere(self):
+        import importlib.util
+        for name, fn in (('audio_sessions', 'active'), ('browser_tabs', 'tabs')):
+            path = ROOT / 'src' / 'koli' / 'platform' / 'macos' / f'{name}.py'
+            spec = importlib.util.spec_from_file_location(f'stub_{name}', path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            self.assertEqual(getattr(module, fn)(), [])
+
+
 if __name__ == '__main__':
     unittest.main()

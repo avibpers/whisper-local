@@ -104,6 +104,18 @@ def rule_matches(rule: dict, exe: str, title: str) -> bool:
     return not required_titles or _contains_any(required_titles, title)
 
 
+# Keys that say which windows a rule is for, not what it changes.
+_SELECTOR_KEYS = ('id', 'name', 'match', 'window_title', 'disabled', 'meeting')
+
+
+# A rule that only marks an app as holding calls (meeting mode) changes
+# nothing about delivery, so delivery matching passes over it; otherwise a
+# shipped "discord.exe is a meeting app" rule would claim every Discord
+# window from the user's own chat rule.
+def is_meeting_only(rule: dict) -> bool:
+    return 'meeting' in rule and all(k in _SELECTOR_KEYS for k in rule)
+
+
 # What identified a rule before ids existed: the set of strings it matches on.
 # Used once, to work out which shipped rule an old hand-copied rule came from.
 def _match_identity(rule: dict) -> tuple:
@@ -184,4 +196,4 @@ class AppRules:
     def match_for(self, exe: str, title: str) -> Optional[dict]:
         if not exe and not title:
             return None
-        return next((rule for rule in self.rules if rule_matches(rule, exe, title)), None)
+        return next((rule for rule in self.rules if not is_meeting_only(rule) and rule_matches(rule, exe, title)), None)

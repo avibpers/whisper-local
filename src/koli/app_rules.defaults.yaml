@@ -17,6 +17,13 @@
 #                                 focus in this app: true turns it on here
 #                                 even with the Settings switch off, false
 #                                 turns it off here
+#   meeting:     default | auto | ask | off - this app (or browser tab, by
+#                                 window_title) holds calls Koli can
+#                                 transcribe: default follows the Meetings
+#                                 setting, auto starts a meeting when the
+#                                 call has sound, ask offers one, off ignores
+#                                 it. A rule without `meeting` is never a
+#                                 meeting source.
 #   initial_prompt: <string>    - prime Whisper with context for this app
 #                                 (concatenated after your global initial_prompt)
 #   language:    "en"|"es"|...  - force a transcription language for this app
@@ -94,3 +101,36 @@ rules:
     match: ["outlook.exe", "thunderbird.exe", "Mail"]
     style: formal
     initial_prompt: "Professional email body. Polite, clear sentences."
+
+  # ── Meetings ─────────────────────────────────────────────────────────────
+  # Calls Koli can transcribe (Settings → Meetings). These rules only say
+  # which apps hold calls; delivery keeps following the rules above. Browser
+  # tabs match by the tab's title.
+  - id: meeting-discord
+    match: ["discord.exe"]
+    meeting: default
+  - id: meeting-zoom
+    match: ["zoom.exe"]
+    meeting: default
+  - id: meeting-teams
+    match: ["ms-teams.exe", "teams.exe"]
+    meeting: default
+  - id: meeting-slack
+    match: ["slack.exe"]
+    meeting: default
+  - id: meeting-google-meet
+    match: ["chrome.exe", "msedge.exe", "brave.exe"]
+    window_title: ["Meet - "]
+    meeting: default
+  - id: meeting-teams-web
+    match: ["chrome.exe", "msedge.exe", "brave.exe"]
+    window_title: ["Microsoft Teams"]
+    meeting: default
+  - id: meeting-zoom-web
+    match: ["chrome.exe", "msedge.exe", "brave.exe"]
+    window_title: ["Zoom Meeting", "Zoom Workplace"]
+    meeting: default
+  - id: meeting-discord-web
+    match: ["chrome.exe", "msedge.exe", "brave.exe"]
+    window_title: ["Discord"]
+    meeting: default
