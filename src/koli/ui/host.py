@@ -22,7 +22,7 @@ from ..settings.appliers import Appliers
 from ..settings.service import SettingsService
 from . import win32
 from .bridge import Bridge
-from .events import get_bus, publish
+from .events import get_bus, open_problems, publish
 from .floating_bar import EDGE_MARGIN, FallbackToWindow, FloatingBar, bar_origin, dropped_spot, is_upright
 from .tasks import get_task_manager
 
@@ -36,7 +36,7 @@ BAR_TITLE = 'Koli · bubble'
 
 # Topics each page cares about. Latest-wins topics are coalesced per batch.
 BAR_TOPICS = {'state', 'bar', 'pipeline', 'notify', 'task', 'level', 'streaming_text', 'settings',
-              'profile', 'window', 'auto_send'}
+              'profile', 'window', 'auto_send', 'problem'}
 COALESCE = {'level', 'vad', 'foreground', 'streaming_text'}
 PUSH_INTERVAL = 0.05
 
@@ -628,6 +628,8 @@ class UiHost:
             data['webview2'] = win32.webview2_version()
             data['undo'] = self.settings.can_undo()
             data['frame'] = self.frame_state()
+            # Problems from while the window was closed still need to be seen.
+            data['problems'] = open_problems()
         else:
             # The resting tab's shape where the bubble sits now.
             data['upright'] = self._bar_geometry(*self._bar_size)[3]

@@ -106,15 +106,9 @@ function wireEvents() {
     const prev = app.get().tasks[t.id];
     app.set((s) => ({ tasks: { ...s.tasks, [t.id]: t } }));
     if (prev && prev.status === 'running' && t.status === 'done') toast(`Done · ${t.label}`);
-    if (t.status === 'failed' && (!prev || prev.status === 'running')) {
-      // A GPU switch that failed for missing CUDA libraries can be fixed here.
-      const cuda = /cuda|cublas|cudnn/i.test(t.error || '');
-      toast(`${t.label} didn't work, so the previous setting is back. ${t.error}`, {
-        kind: 'err', timeout: cuda ? 0 : 9000,
-        action: cuda ? { label: 'Install GPU support', run: () => call('gpu_install').then(() => toast('Installing GPU support in the background')).catch((e) => toast(e.message, { kind: 'err' })) } : null,
-      });
-    }
+    // A failed job arrives as a 'problem' too, which shows it (see showProblem).
   });
+  on('problem', showProblem);
   on('settings', (p) => {
     applySettingLocally(p.path, p.new);
     if (p.path === 'ui.theme') applyTheme();
@@ -137,12 +131,29 @@ function wireEvents() {
   });
 }
 
+// Something that went wrong and must be seen: a toast that stays until it is
+// closed, and closing it tells Koli it was seen. Problems from while the
+// window was closed arrive with the bootstrap. Missing CUDA libraries can be
+// fixed from the toast.
+const shownProblems = new Set();
+function showProblem(p) {
+  if (!p || shownProblems.has(p.id)) return;
+  shownProblems.add(p.id);
+  const missingCuda = /cublas|cudnn|CUDA libraries/i.test(p.message);
+  toast(p.message, {
+    kind: 'err', timeout: 0,
+    onDismiss: () => call('problem_dismiss', p.id).catch(() => {}),
+    action: missingCuda ? { label: 'Install GPU support', run: () => call('gpu_install').then(() => toast('Installing GPU support in the background')).catch((e) => toast(e.message, { kind: 'err' })) } : null,
+  });
+}
+
 async function refresh() {
   try {
     const data = await call('app_bootstrap', 'main');
     app.set({ settings: data.settings, state: data.state, logs: data.logs, pipeline: data.pipeline,
       tasks: Object.fromEntries(data.tasks.map((t) => [t.id, t])), recent: data.recent,
       foreground: data.foreground || {}, profile: data.profile, undo: data.undo, frame: data.frame || app.get().frame });
+    (data.problems || []).forEach(showProblem);
     applyTheme();
   } catch (e) { /* the next event will catch up */ }
 }
@@ -160,6 +171,7 @@ async function boot() {
     frame: app.get().frame || data.frame || { custom: false, maximized: false },
   });
   applyTheme();
+  (data.problems || []).forEach(showProblem);
   const mode = data.settings.ui && data.settings.ui.mode;
   const start = routeFromHash() || (data.settings.ui && !data.settings.ui.welcome_done ? 'welcome' : mode === 'advanced' ? 'live' : 'home');
   navigate(start);
@@ -274,6 +286,36 @@ function TitleStrip() {
   return custom ? html`<div class="titlebar-strip"><${WindowControls} /></div>` : null;
 }
 
+// Header monitor: memory on the graphics card Koli runs on and how much of it
+// is Koli's, or Koli's memory and processor use on the CPU. Polled every few
+// seconds while the window shows; the tooltip has the details.
+function ResourceChip() {
+  const [r, setR] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    const poll = () => {
+      if (document.visibilityState === 'visible') call('resources').then((d) => { if (alive) setR(d); }).catch(() => {});
+    };
+    poll();
+    const timer = setInterval(poll, 3000);
+    return () => { alive = false; clearInterval(timer); };
+  }, []);
+  if (!r) return null;
+  const gb = (mb) => (mb / 1024).toFixed(1);
+  const models = `Models: ${(r.models || []).join(', ') || 'none'}`;
+  if (r.device === 'cuda' && r.gpu) {
+    const share = r.gpu.used_mb / r.gpu.total_mb;
+    const mine = r.koli_gpu_mb != null ? gb(r.koli_gpu_mb) : null;
+    const tip = [`${r.gpu.name} (card ${r.gpu_index})`, `In use on the card: ${gb(r.gpu.used_mb)} of ${gb(r.gpu.total_mb)} GB`,
+      `Koli: ${mine != null ? `${mine} GB` : 'unknown'}`, models].join('\n');
+    return html`<span class=${'chip res' + (share > 0.85 ? ' warn' : '')} title=${tip} aria-label=${tip}>
+      ${mine != null ? `Koli ${mine} · ` : ''}GPU ${gb(r.gpu.used_mb)}/${gb(r.gpu.total_mb)} GB
+      <span class="res-bar" aria-hidden="true"><span style=${`width:${Math.min(100, Math.round(share * 100))}%`}></span></span></span>`;
+  }
+  const tip = ['Koli runs on the processor', `Memory: ${gb(r.ram_mb)} GB · CPU ${r.cpu_percent}%`, models].join('\n');
+  return html`<span class="chip res" title=${tip} aria-label=${tip}>RAM ${gb(r.ram_mb)} GB · CPU ${r.cpu_percent}%</span>`;
+}
+
 function TopBar({ route }) {
   const mode = app.use((s) => getPath(s.settings, 'ui.mode')) || 'simple';
   const theme = app.use((s) => getPath(s.settings, 'ui.theme'));
@@ -292,7 +334,7 @@ function TopBar({ route }) {
       ${nav.map(([id, label]) => html`<a class=${'tab' + (base === id ? ' on' : '')} href=${`#/${id}`} aria-current=${base === id ? 'page' : undefined}>${label}</a>`)}
     </nav>
     <div class="top-actions">
-      <${TaskChip} /><${StatusChip} />
+      <${ResourceChip} /><${TaskChip} /><${StatusChip} />
       ${mode === 'advanced' && html`<${ProfileSelect} />`}
       <button type="button" class="btn ghost icon" aria-label="Search (Ctrl K)" title="Search · Ctrl K" onClick=${() => app.set({ searchOpen: !searchOpen })}><${Icon} name="search" /></button>
       <label class="mode-switch">Advanced <input type="checkbox" class="sw" checked=${mode === 'advanced'} onChange=${(e) => switchMode(e.currentTarget.checked ? 'advanced' : 'simple')} /></label>

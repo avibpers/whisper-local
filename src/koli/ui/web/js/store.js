@@ -116,14 +116,17 @@ export async function undo() {
 // ── Toasts ────────────────────────────────────────────────────────────────
 
 let toastId = 0;
-export function toast(message, { kind = 'info', action = null, timeout = 4500 } = {}) {
+// `timeout: 0` keeps the toast until it is closed; `onDismiss` runs when it is.
+export function toast(message, { kind = 'info', action = null, timeout = 4500, onDismiss = null } = {}) {
   const id = ++toastId;
-  app.set((s) => ({ toasts: [...s.toasts.slice(-3), { id, message, kind, action }] }));
+  app.set((s) => ({ toasts: [...s.toasts.slice(-3), { id, message, kind, action, onDismiss }] }));
   if (timeout) setTimeout(() => dismissToast(id), timeout);
   return id;
 }
 export function dismissToast(id) {
+  const closing = app.get().toasts.find((t) => t.id === id);
   app.set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }));
+  if (closing && closing.onDismiss) closing.onDismiss();
 }
 
 // ── Modals (in-page; the app never uses alert/confirm/prompt) ─────────────

@@ -61,8 +61,8 @@ export function SimpleSettingsScreen() {
       <${Line} title="Reduce background noise" help="For fans, air conditioning or a noisy office."><${Toggle} checked=${a.noise} label="Reduce background noise" onChange=${(v) => set('noise', v)} /></${Line}>
       ${a.noise && html`<div style="padding:0 22px 14px"><${ExtraInstall} name="noise" /></div>`}
       <${Line} title="I speak quietly" help="Turns up soft voices, for whispering in an open office."><${Toggle} checked=${a.quiet} label="I speak quietly" onChange=${(v) => set('quiet', v)} /></${Line}>
-      <${Line} title="Pause my music while I talk" help="Pauses Spotify, YouTube and others. Press play again yourself."><${Toggle} checked=${a.music} label="Pause music" onChange=${(v) => set('music', v)} /></${Line}>
-      <${Line} title="Turn the computer down while I talk" help="Lowers the volume while you record, then puts it back. Only if it is louder than this.">
+      <${Line} title="Pause my music while I talk" help="Pauses Spotify, YouTube and others once you start talking, and plays them again when you're done."><${Toggle} checked=${a.music} label="Pause music" onChange=${(v) => set('music', v)} /></${Line}>
+      <${Line} title="Turn the computer down while I talk" help="Lowers the volume once you start talking, then puts it back when you're done. Only if it is louder than this.">
         <${Select} label="Turn the computer down while I talk" value=${a.volume || 'off'} style="max-width:180px"
           options=${[['off', 'Off'], ['5', 'To 5%'], ['10', 'To 10%'], ['20', 'To 20%'], ['30', 'To 30%'], ['50', 'To 50%']]}
           onChange=${(v) => set('volume', v)} /></${Line}>

@@ -104,6 +104,9 @@
 - As a *user*, I want **automatic punctuation and text formatting** so the output is human-friendly (not just LLM)
 - As a *user*, I want to see my **transcription history** so I can search through it
 
+### Auto-dictation
+- As a *user* I want **a dictation session per text field** so that when I move to another app's field while Koli is still transcribing my last words, those words still land in the field I said them in, and the new field starts listening at once instead of waiting. *Parked 2026-10-11:* Windows only pastes into the focused field. Writing into the old field through UI Automation fails in chat apps, hopping back to its window flickers and can catch my typing, and holding the text until I return isn't smooth; only a per-app send API would be clean, and most apps have none. Today leaving a field drops the words not yet pasted, and a new recording can't start while one is transcribing (`can_start_recording` checks `is_processing`)
+
 ### Recording
 - As a *user* I want **hotkey-per-audio-source bindings** so I can quickly switch between microphone input and speaker/system audio capture
 - As a *user*, I want **real-time transcription** so that I can get immediate feedback

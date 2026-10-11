@@ -417,3 +417,91 @@ def _test_ct2_gpu(ct2_variant: str) -> bool:
             _status(f"   ✗ Missing CUDA libraries: {', '.join(missing)}", 'warning')
             return False
     return True
+
+
+# ── Memory in use (the app's header monitor) ─────────────────────────────────
+# Read often (every few seconds while the window is open), so both readers are
+# direct driver calls, never a process: NVML (nvml.dll, installed with every
+# NVIDIA driver) for a card's memory, and the Windows "GPU Process Memory"
+# performance counter for how much of it one process holds. Any failure is
+# None: the monitor just shows less.
+
+class _NvmlMemory(ctypes.Structure):
+    _fields_ = [('total', ctypes.c_ulonglong), ('free', ctypes.c_ulonglong), ('used', ctypes.c_ulonglong)]
+
+
+_nvml = None
+
+
+def _nvml_lib():
+    global _nvml
+    if _nvml is None:
+        try:
+            lib = ctypes.WinDLL('nvml.dll')
+            _nvml = lib if lib.nvmlInit_v2() == 0 else False
+        except OSError:
+            _nvml = False
+    return _nvml or None
+
+
+# The card's name and memory in MB, by NVIDIA's numbering (nvidia-smi's, which
+# matches the CUDA numbering Koli's "Graphics card" setting uses on most PCs).
+def gpu_memory(index: int):
+    lib = _nvml_lib()
+    if lib is None:
+        return None
+    try:
+        handle = ctypes.c_void_p()
+        if lib.nvmlDeviceGetHandleByIndex_v2(ctypes.c_uint(int(index)), ctypes.byref(handle)) != 0:
+            return None
+        memory = _NvmlMemory()
+        if lib.nvmlDeviceGetMemoryInfo(handle, ctypes.byref(memory)) != 0:
+            return None
+        name = ctypes.create_string_buffer(96)
+        lib.nvmlDeviceGetName(handle, name, ctypes.c_uint(96))
+        return {'name': name.value.decode(errors='replace'), 'used_mb': memory.used // 2 ** 20,
+                'total_mb': memory.total // 2 ** 20}
+    except Exception as e:
+        logger.debug(f"GPU memory read failed: {e}")
+        return None
+
+
+class _PdhValue(ctypes.Structure):
+    _fields_ = [('status', ctypes.c_ulong), ('value', ctypes.c_longlong)]
+
+
+# Dedicated graphics memory held by one process, in MB, over all its cards.
+def process_gpu_memory_mb(pid: int):
+    try:
+        pdh = ctypes.WinDLL('pdh.dll')
+        pattern = f"\\GPU Process Memory(pid_{int(pid)}_*)\\Dedicated Usage"
+        size = ctypes.c_ulong(0)
+        pdh.PdhExpandWildCardPathW(None, pattern, None, ctypes.byref(size), 0)
+        if not size.value:
+            return 0
+        buffer = ctypes.create_unicode_buffer(size.value)
+        if pdh.PdhExpandWildCardPathW(None, pattern, buffer, ctypes.byref(size), 0) != 0:
+            return None
+        paths = [p for p in ctypes.wstring_at(ctypes.addressof(buffer), size.value).split('\x00') if p]
+        query = ctypes.c_void_p()
+        if pdh.PdhOpenQueryW(None, None, ctypes.byref(query)) != 0:
+            return None
+        try:
+            counters = []
+            for path in paths:
+                counter = ctypes.c_void_p()
+                if pdh.PdhAddEnglishCounterW(query, path, None, ctypes.byref(counter)) == 0:
+                    counters.append(counter)
+            if pdh.PdhCollectQueryData(query) != 0:
+                return None
+            total = 0
+            for counter in counters:
+                value = _PdhValue()
+                if pdh.PdhGetFormattedCounterValue(counter, 0x400, None, ctypes.byref(value)) == 0:   # PDH_FMT_LARGE
+                    total += value.value
+            return total // 2 ** 20
+        finally:
+            pdh.PdhCloseQuery(query)
+    except Exception as e:
+        logger.debug(f"Process GPU memory read failed: {e}")
+        return None

@@ -31,19 +31,30 @@ class AutoDictation:
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
+    # The Settings switch: on everywhere unless an app rule turns it off.
     def enabled(self) -> bool:
         cfg = self.cm.config.get('auto_dictation') or {}
         return bool(cfg.get('enabled', False))
 
+    # An app rule set to On turns it on in that app even with the switch off,
+    # so the watcher has to run for those apps too.
+    def _wanted(self) -> bool:
+        if self.enabled():
+            return True
+        try:
+            return bool(self.app_rules and self.app_rules.any_rule_sets('auto_dictation'))
+        except Exception:
+            return False
+
     def is_running(self) -> bool:
         return self._running
 
-    # Hooks the platform watcher when the setting is on. Idempotent, and a
-    # platform without a watcher (macOS for now) just stays off.
+    # Hooks the platform watcher when the setting or an app rule wants it.
+    # Idempotent, and a platform without a watcher (macOS for now) stays off.
     def start(self) -> bool:
         if self._running:
             return True
-        if not self.enabled():
+        if not self._wanted():
             return False
         watcher = self._get_watcher()
         if watcher is None:
@@ -75,10 +86,10 @@ class AutoDictation:
                 self.logger.debug(f"Auto-dictation: watcher stop failed: {e}")
         self.logger.info("Auto-dictation off")
 
-    # Called by the settings applier and after a profile switch: starts or
-    # stops to match the current setting.
+    # Called by the settings applier, after a profile switch and after an app
+    # rule changes: starts or stops to match the setting and the rules.
     def apply_settings(self) -> None:
-        if self.enabled():
+        if self._wanted():
             self.start()
         else:
             self.stop()
@@ -184,6 +195,8 @@ class AutoDictation:
             rule = None
         if rule and rule.get('auto_dictation') is False:
             return f"app rule {rule.get('id') or rule.get('match')} turns it off"
+        if not self.enabled() and not (rule and rule.get('auto_dictation') is True):
+            return 'off here (on only in apps whose rule turns it on)'
         if getattr(self.sm, 'is_paused', False):
             return 'hotkeys paused'
         if not self.sm.can_start_recording():

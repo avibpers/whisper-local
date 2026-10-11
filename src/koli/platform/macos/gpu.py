@@ -9,3 +9,12 @@ def detect_and_print(configured_device):
 # No CUDA backend on macOS, so there is never anything missing.
 def missing_gpu_libraries():
     return []
+
+
+# The header monitor's readers: no NVIDIA card or Windows counters here.
+def gpu_memory(index):
+    return None
+
+
+def process_gpu_memory_mb(pid):
+    return None

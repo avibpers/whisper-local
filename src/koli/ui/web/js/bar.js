@@ -79,10 +79,12 @@ function wire() {
     if (t.status === 'running') bar.set({ task: t });
     else if (cur && cur.id === t.id) {
       bar.set({ task: null });
-      if (t.status === 'failed') flash('fail', `${t.label} failed`, {}, 4500);
-      else if (t.status === 'done' && (t.kind === 'engine' || t.kind === 'audio')) flash('ok', `Done · ${t.label.replace(/^Switching to /, '')}`, {}, 2000);
+      // A failure arrives as a 'problem' as well, flashed below.
+      if (t.status === 'done' && (t.kind === 'engine' || t.kind === 'audio')) flash('ok', `Done · ${t.label.replace(/^Switching to /, '')}`, {}, 2000);
     }
   });
+  // Something that went wrong: shown long enough to read; the app keeps it.
+  on('problem', (p) => flash('fail', p.message, { problem: true }, 8000));
   on('settings', (p) => {
     const s = bar.get().settings;
     if (!s) return;
@@ -282,7 +284,8 @@ function Status() {
   if (fl) {
     const look = { ok: ['ok', 'check'], fail: ['warn', 'alert'], warn: ['warn', 'alert'], acc: ['acc', 'copy'], info: ['acc', 'check'] }[fl.kind] || ['ok', 'check'];
     return html`<div class="bub">
-      <${Badge} tone=${look[0]} icon=${look[1]} /><span class="text">${fl.message}</span>
+      <${Badge} tone=${look[0]} icon=${look[1]} /><span class="text" title=${fl.message}>${fl.message}</span>
+      ${fl.problem && html`<button type="button" class="btn" onClick=${() => call('window_open', null)}>Details</button>`}
       ${fl.outcome === 'pasted' && html`<button type="button" class="btn" onClick=${() => { call('copy_text', fl.text); flash('ok', 'Copied', {}, 1200); }}>Copy</button>
         <button type="button" class="btn" onClick=${() => call('paste_last')}>Again</button>`}
       ${fl.outcome === 'copied' && html`<button type="button" class="btn" onClick=${() => call('window_open', 'apps')}>Why?</button>`}

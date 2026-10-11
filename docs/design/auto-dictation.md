@@ -22,8 +22,10 @@ gets out of the way the moment you type.
 | Focus stays in the same field after a stop or cancel | Nothing. It arms again only when focus moves to a field (the same one counts after focus has been elsewhere). |
 | Password field | Never starts. |
 | Koli's own window | Never starts. |
-| Per-app rule says `auto_dictation: false` | Never starts in that app. Rules can also say `true` to override nothing (reserved for a future "only these apps" mode; today the default is already on everywhere). |
+| Per-app rule says `auto_dictation: false` | Never starts in that app. A rule saying `true` turns it on in that app even with the Settings switch off ("only these apps"); the watcher then runs while any such rule is in effect. |
 | Hotkeys paused, model loading, transcribing, or a recording already running | Never starts. |
+| App rule with `auto_send: true` (chat apps) | A pause never presses Enter (each would be a message of its own). When the session ends (quiet after the last phrase, or its final words), it is sent once after the rule's `auto_send_delay` or the main wait, through the cancellable countdown. No wait set: not sent, since auto-dictation hears whatever is around. Typing or leaving the field sends nothing. |
+| Whisper returns only words from its prompt (noise filled with "Conversational chat message.") | Dropped as noise, nothing typed (applies to every recording). |
 | Hotkey pressed during an auto recording | Normal hotkey behaviour: stop and deliver, or cancel. |
 | Feature off (default) | Nothing is hooked. No background thread, no COM objects. |
 

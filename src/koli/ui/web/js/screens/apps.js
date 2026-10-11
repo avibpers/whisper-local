@@ -21,6 +21,7 @@ function summary(e) {
   if (e.suppress) bits.push('Never deliver');
   if (e.auto_paste === false) bits.push('Copy only');
   if (e.auto_send === true) bits.push('Auto-send');
+  if (e.auto_send_delay != null) bits.push(e.auto_send_delay ? `wait ${e.auto_send_delay}s` : 'no wait');
   if (e.auto_dictation === false) bits.push('No auto-listen');
   if (e.auto_dictation === true) bits.push('Auto-listen');
   if (e.style) bits.push(e.style.replace('_', ' '));
@@ -42,6 +43,8 @@ function RuleEditor({ item, foreground, onSaved, onDeleted }) {
   const set = (k, v) => setE((cur) => { const n = { ...cur }; if (v === null || v === undefined || v === '') delete n[k]; else n[k] = v; return n; });
   const save = () => call('rule_save', e, item.isNew ? null : item.id).then((id) => { toast('Rule saved'); onSaved(id); }).catch((err) => toast(err.message, { kind: 'err' }));
   const pasteMode = e.auto_paste === false ? false : e.auto_paste === true ? true : null;
+  // The main "Wait before sending", shown as what Default means here.
+  const mainWait = app.use((s) => (s.settings.clipboard || {}).auto_send_delay);
   const titles = e.window_title || [];
   const setTitles = (v) => set('window_title', v.length ? v : null);
   const lastTitleParts = titleParts(foreground && foreground.title);
@@ -64,6 +67,9 @@ function RuleEditor({ item, foreground, onSaved, onDeleted }) {
           onClick=${() => setTitles([...titles, part])}><${Icon} name="plus" size="sm" />${part}</button>`)}</div>`}</div>
     <div class="eyebrow" style="margin-top:10px">Delivery</div>
     <${Row} label="Press Enter after pasting"><${Segmented} label="Auto-send" value=${e.auto_send ?? null} options=${TRI} onChange=${(v) => set('auto_send', v)} /></${Row}>
+    <${Row} label="Wait before sending"><${Select} label="Wait before sending" value=${e.auto_send_delay ?? null}
+      options=${[[null, `Main setting (${mainWait ? `${mainWait} s` : 'no wait'})`], [0, 'Send at once'], [2, '2 seconds'], [3, '3 seconds'],
+        [5, '5 seconds'], [10, '10 seconds']]} onChange=${(v) => set('auto_send_delay', v)} /></${Row}>
     <${Row} label="Paste at cursor"><${Segmented} label="Paste" value=${pasteMode} options=${[[null, 'Default'], [true, 'Paste'], [false, 'Copy only']]} onChange=${(v) => set('auto_paste', v)} /></${Row}>
     <${Row} label="Don't deliver at all"><${Toggle} checked=${!!e.suppress} label="Suppress" onChange=${(v) => set('suppress', v || null)} /></${Row}>
     <div class="eyebrow" style="margin-top:10px">Listening</div>

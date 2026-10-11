@@ -164,6 +164,12 @@ class AppRules:
             self.logger.info(f"Reloading {self._path}")
             self._reload_from_disk()
 
+    # Whether any rule in effect sets `key` to true: auto_dictation, say, which
+    # then needs the focus watcher even with its Settings switch off.
+    def any_rule_sets(self, key: str) -> bool:
+        self._reload_if_changed()
+        return any(rule.get(key) is True for rule in self.rules)
+
     def match_for_foreground(self) -> Optional[dict]:
         self._reload_if_changed()
         if not self.rules:

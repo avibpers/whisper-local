@@ -51,6 +51,7 @@ Koli is a fork of `drajb/whisper-local` by Rohit Burani (repo `avibpers/whisper-
 | **Hotkey Gestures** | `hotkey_gestures.py` | Double-tap-to-lock state machine for push-to-talk | threading |
 | **Delayed Send** | `delayed_send.py` | Countdown before an auto-send presses Enter; cancels on Esc, typing, new dictation or window change | threading |
 | **Auto-dictation** | `auto_dictation.py` | Starts listening when a text field gets focus; quiet cancel without speech, cancel on typing (design: `docs/design/auto-dictation.md`) | threading |
+| **Only My Voice** | `voice_filter.py` | Learns your speaking level from hotkey dictations; drops much quieter speech (TV, others) per Whisper segment | numpy |
 | **Whisper Mode** | `audio_gain.py` | Boosts quiet recordings before transcription | numpy |
 | **Corrections** | `corrections.py` | Persist post-transcription replacements (history "Fix this everywhere") | ruamel.yaml |
 | **System Audio** | `system_audio.py` | `--transcribe-system` loopback capture (experimental, opt-in) | soundcard |

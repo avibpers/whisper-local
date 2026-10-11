@@ -135,17 +135,25 @@ class Appliers:
                   'whisper.device': 'Switching to GPU' if value == 'cuda' else 'Switching to CPU',
                   'whisper.compute_type': f"Switching precision to {value}",
                   'whisper.device_index': 'Switching graphics card',
-                  'whisper.backend': f"Switching engine to {value}"}
+                  'whisper.backend': f"Switching engine to {value}",
+                  'whisper.language_model.language': 'Setting up the second model' if value else 'Removing the second model',
+                  'whisper.language_model.model': f"Loading {value} as the second model"}
         label = labels.get(path, 'Reloading the model')
         sm, cm = self.sm, self.cm
+        # Picking the second model while it is off changes nothing yet.
+        if path == 'whisper.language_model.model' and not cm.get_path('whisper.language_model.language'):
+            return self._live()
 
         def job(reporter):
-            from ..main import setup_whisper_engine
+            from ..main import language_model_choice, setup_whisper_engine
             from ..services import models as model_service
             whisper_cfg = cm.get_whisper_config()
             registry = self.ctx.model_registry
             if whisper_cfg.get('backend', 'faster_whisper') == 'faster_whisper' and registry is not None:
                 model_service.ensure_downloaded(registry, whisper_cfg['model'], reporter)
+                second = language_model_choice(whisper_cfg, registry)
+                if second:
+                    model_service.ensure_downloaded(registry, second[1], reporter)
             reporter.report(None, 'Loading the model…')
             log_t = cm.get_logging_config().get('log_transcriptions', False)
             engine = setup_whisper_engine(whisper_cfg, sm.vad_manager, registry, log_t, None)
@@ -162,7 +170,8 @@ class Appliers:
             for t in running:
                 self.tasks.cancel(t.id)
         # A model switch is "about" the new model, so its row shows the download.
-        return self._background(label, 'engine', path, old, job, ref=value if path == 'whisper.model' else None)
+        ref = value if path in ('whisper.model', 'whisper.language_model.model') else None
+        return self._background(label, 'engine', path, old, job, ref=ref)
 
     # ── Audio ────────────────────────────────────────────────────────────────
 
@@ -459,6 +468,8 @@ _HANDLERS = {
     'whisper.device_index': Appliers.engine_rebuild,
     'whisper.compute_type': Appliers.engine_rebuild,
     'whisper.backend': Appliers.engine_rebuild,
+    'whisper.language_model.language': Appliers.engine_rebuild,
+    'whisper.language_model.model': Appliers.engine_rebuild,
     'audio.input_device': Appliers.recorder_rebuild,
     'audio.channels': Appliers.recorder_rebuild,
     'audio.dtype': Appliers.recorder_rebuild,

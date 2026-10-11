@@ -3267,7 +3267,7 @@ class ReleaseReviewFixTests(unittest.TestCase):
     def test_whisper_mode_boosts_after_silence_trimming(self):
         source = (ROOT / 'src' / 'koli' / 'audio_recorder.py').read_text(encoding='utf-8')
         body = source[source.index('def _build_audio_array'):source.index('def _parse_whisper_mode')]
-        self.assertLess(body.index('_trim_trailing_silence(audio_array)'), body.index('boost_quiet_audio('),
+        self.assertLess(body.index('_trim_trailing_silence(audio_array)'), body.index('boost_gain('),
                         'a boosted noise floor would defeat the anti-hallucination trims')
 
     def test_settings_window_tolerates_non_mapping_sections(self):
@@ -4464,7 +4464,7 @@ class UnknownModelFallbackTests(unittest.TestCase):
         return ModelRegistry(whisper_models_config=defaults['whisper']['models'])
 
     def test_an_unknown_model_falls_back_to_the_default(self):
-        self.assertEqual(self._registry().usable_key('hebrew-large-v3-turbo', 'base'), ('base', True))
+        self.assertEqual(self._registry().usable_key('no-such-model', 'base'), ('base', True))
 
     def test_known_models_repos_and_folders_are_kept(self):
         import tempfile
@@ -4529,6 +4529,10 @@ class _FakeMediaBackend:
         self.paused += 1
         return ['Spotify.exe']
 
+    def resume_playing(self, apps):
+        self.resumed = list(apps)
+        return list(apps)
+
 
 class MediaControlTests(unittest.TestCase):
     def _control(self, volume=0.6):
@@ -4568,10 +4572,72 @@ class MediaControlTests(unittest.TestCase):
         self.assertAlmostEqual(backend.volume, 0.6)
         self.assertEqual(backend.paused, 0)
 
+    MUSIC = {'pause_media_on_record': True, 'lower_volume': {'enabled': False}}
+
+    # Without voice detection there is no "you started talking": pause at once.
     def test_pause_music_asks_the_media_players_to_pause(self):
         control, backend = self._control()
-        control.on_recording_start({'pause_media_on_record': True, 'lower_volume': {'enabled': False}})
+        control.on_recording_start(self.MUSIC)
         self.assertEqual(backend.paused, 1)
+
+    # With voice detection the music plays on until you actually speak.
+    def test_music_waits_for_your_voice(self):
+        control, backend = self._control()
+        control.on_recording_start(self.MUSIC, hears_voice=True)
+        self.assertEqual(backend.paused, 0, 'nothing said yet')
+        control.on_speech()
+        self.assertEqual(backend.paused, 1)
+        control.on_speech()
+        self.assertEqual(backend.paused, 1, 'once per recording')
+
+    # A recording in which you never spoke leaves the music alone.
+    def test_no_speech_means_no_pause_and_no_resume(self):
+        control, backend = self._control()
+        control.on_recording_start(self.MUSIC, hears_voice=True)
+        control.on_recording_end()
+        control.on_speech()                       # a late event from that recording
+        self.assertEqual(backend.paused, 0)
+        self.assertFalse(hasattr(backend, 'resumed'))
+
+    # What was paused plays again when the recording ends, once.
+    def test_the_paused_music_plays_again_after_the_recording(self):
+        control, backend = self._control()
+        control.on_recording_start(self.MUSIC, hears_voice=True)
+        control.on_speech()
+        control.on_recording_end()
+        self.assertEqual(backend.resumed, ['Spotify.exe'])
+        backend.resumed = None
+        control.on_recording_end()                # processing -> idle: no second play
+        self.assertIsNone(backend.resumed)
+
+    # The volume also waits for your voice, and comes back at the end.
+    def test_volume_waits_for_your_voice(self):
+        control, backend = self._control(0.6)
+        control.on_recording_start(self.CFG, hears_voice=True)
+        self.assertAlmostEqual(backend.volume, 0.6, msg='nothing said yet')
+        control.on_speech()
+        self.assertAlmostEqual(backend.volume, 0.20)
+        control.on_recording_end()
+        self.assertAlmostEqual(backend.volume, 0.6)
+
+    # Never spoke: the volume was never touched.
+    def test_volume_untouched_without_speech(self):
+        control, backend = self._control(0.6)
+        control.on_recording_start(self.CFG, hears_voice=True)
+        control.on_recording_end()
+        control.on_speech()
+        self.assertAlmostEqual(backend.volume, 0.6)
+
+    # The background worker keeps order: a play never overtakes its pause.
+    def test_the_worker_runs_pause_before_resume(self):
+        import threading
+        from koli.media_control import _SerialWorker
+        worker, done, order = _SerialWorker(), threading.Event(), []
+        worker(lambda: order.append('pause'))
+        worker(lambda: order.append('resume'))
+        worker(done.set)
+        self.assertTrue(done.wait(2))
+        self.assertEqual(order, ['pause', 'resume'])
 
     def test_lower_volume_is_in_the_settings(self):
         from koli.settings import schema
@@ -4667,11 +4733,17 @@ class _AutoStateManager:
 
 
 class _AutoRules:
-    def __init__(self, rule=None):
+    # `rule` matches the app in front; `elsewhere_on` stands for a rule that
+    # turns auto-dictation on for some other app.
+    def __init__(self, rule=None, elsewhere_on=False):
         self.rule = rule
+        self.elsewhere_on = elsewhere_on
 
     def match_for_foreground(self):
         return self.rule
+
+    def any_rule_sets(self, key):
+        return self.elsewhere_on or bool(self.rule and self.rule.get(key) is True)
 
 
 class _AutoCfg:
@@ -4687,13 +4759,36 @@ def _auto_field(**over):
 
 
 class AutoDictationCoordinatorTests(unittest.TestCase):
-    def _make(self, enabled=True, rule=None):
+    def _make(self, enabled=True, rule=None, elsewhere_on=False):
         from koli.auto_dictation import AutoDictation
         self.sm = _AutoStateManager()
         self.watcher = _AutoWatcher()
-        ad = AutoDictation(self.sm, _AutoCfg(enabled), _AutoRules(rule), watcher=self.watcher, own_pid=4242)
+        self.rules = _AutoRules(rule, elsewhere_on)
+        ad = AutoDictation(self.sm, _AutoCfg(enabled), self.rules, watcher=self.watcher, own_pid=4242)
         ad.start()
         return ad
+
+    # An app rule set to On works with the Settings switch off: the watcher
+    # runs, and only that app starts recordings.
+    def test_app_rule_can_turn_it_on_with_the_setting_off(self):
+        ad = self._make(enabled=False, rule={'match': ['chrome.exe'], 'auto_dictation': True})
+        self.assertTrue(ad.is_running())
+        ad.on_focus(_auto_field())
+        ad.flush_timer()
+        self.assertEqual(self.sm.starts, 1)
+
+    def test_with_the_setting_off_other_apps_stay_quiet(self):
+        ad = self._make(enabled=False, rule=None, elsewhere_on=True)
+        self.assertTrue(ad.is_running(), 'a rule elsewhere needs the watcher')
+        ad.on_focus(_auto_field())
+        ad.flush_timer()
+        self.assertEqual(self.sm.starts, 0)
+
+    def test_removing_the_last_on_rule_unhooks(self):
+        ad = self._make(enabled=False, rule=None, elsewhere_on=True)
+        self.rules.elsewhere_on = False
+        ad.apply_settings()
+        self.assertFalse(ad.is_running())
 
     def test_off_by_default_hooks_nothing(self):
         ad = self._make(enabled=False)
@@ -4883,6 +4978,44 @@ class AutoDictationVadTests(unittest.TestCase):
         self.assertNotIn(VadEvent.PHRASE_PAUSE, more)
         self.assertEqual(det.snapshot()['phrase_pause_s'], 0.032)
 
+    # SPEECH_START (it quiets the music) needs enough speech in total, fires
+    # once per recording, and again after a reset.
+    def test_speech_start_fires_once_after_real_speech(self):
+        from koli.voice_activity_detection import ContinuousVoiceDetector, VadEvent
+        self.vad = _AutoTenVad()
+        det = ContinuousVoiceDetector(self.vad, 0.7, 0.55, 1.0, 0.016, speech_start_seconds=0.048)  # three frames
+        self.vad.probability = 0.9
+        blip = [det.process_chunk(self._chunk()) for _ in range(2)]
+        self.vad.probability = 0.0
+        det.process_chunk(self._chunk())
+        self.assertNotIn(VadEvent.SPEECH_START, blip, 'too short to be talking')
+        self.vad.probability = 0.9
+        talk = [det.process_chunk(self._chunk()) for _ in range(6)]
+        self.assertEqual(talk.count(VadEvent.SPEECH_START), 1)
+        det.reset()
+        again = [det.process_chunk(self._chunk()) for _ in range(3)]
+        self.assertEqual(again.count(VadEvent.SPEECH_START), 1, 'the next recording announces again')
+
+    # With your level known, speech quieter than it (a TV, another room) is
+    # not you starting to talk; the level holds across recordings.
+    def test_speech_start_needs_your_loudness(self):
+        import numpy as np
+        from koli.voice_activity_detection import ContinuousVoiceDetector, VadEvent, chunk_level_db
+        self.vad = _AutoTenVad()
+        det = ContinuousVoiceDetector(self.vad, 0.7, 0.55, 1.0, 0.016, speech_start_seconds=0.048)
+        det.set_voice_start_level(-20.0)
+        quiet = np.full(256, 0.01, dtype=np.float32)   # -40 dBFS
+        loud = np.full(256, 0.3, dtype=np.float32)     # about -10 dBFS
+        self.assertAlmostEqual(chunk_level_db(quiet), -40.0, places=1)
+        self.vad.probability = 0.9
+        far_off = [det.process_chunk(quiet) for _ in range(10)]
+        self.assertNotIn(VadEvent.SPEECH_START, far_off, 'speech, but much quieter than you')
+        you = [det.process_chunk(loud) for _ in range(3)]
+        self.assertEqual(you.count(VadEvent.SPEECH_START), 1)
+        det.reset()
+        self.assertEqual(det.voice_start_db, -20.0)
+        self.assertNotIn(VadEvent.SPEECH_START, [det.process_chunk(quiet) for _ in range(5)])
+
     def test_set_silence_timeout_changes_the_frame_budget(self):
         det = self._detector(timeout=0.32)        # twenty frames
         det.set_silence_timeout(0.048)
@@ -4899,6 +5032,7 @@ class AutoDictationStateManagerTests(unittest.TestCase):
         sm._state_lock = __import__('threading').Lock()
         sm._pipeline_lock = __import__('threading').Lock()
         sm._auto_started = True
+        sm._auto_pasted = False
         sm._command_mode = False
         sm._rephrase_mode = False
         sm._rephrase_selection = ''
@@ -4963,6 +5097,40 @@ class AutoDictationStateManagerTests(unittest.TestCase):
         sm.audio_feedback.play_start_sound.assert_not_called()
         sm.audio_recorder.start_recording.assert_called_once_with(silence_timeout=5.0, phrase_pause=1.0)
 
+    # Speech starting is what pauses the music, and it never ends a recording.
+    def test_speech_start_pauses_the_music_only(self):
+        from koli.voice_activity_detection import VadEvent
+        sm = self._sm(had_speech=True)
+        sm.handle_vad_event(VadEvent.SPEECH_START)
+        sm.media_control.on_speech.assert_called_once()
+        sm.audio_recorder.stop_recording.assert_not_called()
+        sm._transcription_pipeline.assert_not_called()
+
+    # The music waits for your voice only when voice detection is running.
+    def test_media_control_is_told_whether_voice_is_detected(self):
+        import unittest.mock as mock
+        sm = self._sm(had_speech=False)
+        sm.config_manager = mock.Mock(config={'audio': {'pause_media_on_record': True}})
+        sm._maybe_pause_media()
+        self.assertTrue(sm.media_control.on_recording_start.call_args.kwargs['hears_voice'])
+        sm.audio_recorder.continuous_vad = None
+        sm._maybe_pause_media()
+        self.assertFalse(sm.media_control.on_recording_start.call_args.kwargs['hears_voice'])
+
+    # The detector is told how loud "you" are: your level less the margin, or
+    # None (any speech) until it is learned.
+    def test_detector_gets_your_voice_level(self):
+        import unittest.mock as mock
+        sm = self._sm(had_speech=False)
+        sm.config_manager = mock.Mock(config={'audio': {'voice_filter': {'margin_db': 10}}})
+        detector = sm.audio_recorder.continuous_vad
+        sm.voice_levels = mock.Mock(my_level=mock.Mock(return_value=None))
+        sm._maybe_pause_media()
+        detector.set_voice_start_level.assert_called_with(None)
+        sm.voice_levels.my_level.return_value = -18.0
+        sm._maybe_pause_media()
+        detector.set_voice_start_level.assert_called_with(-28.0)
+
     def test_typing_cancel_only_touches_auto_recordings(self):
         import unittest.mock as mock
         sm = self._sm(had_speech=False)
@@ -5013,12 +5181,183 @@ class AutoDictationStateManagerTests(unittest.TestCase):
              mock.patch('koli.state_manager.foreground') as fg:
             fg.get_foreground_app.return_value = {'exe': 'discord.exe'}
             sm._transcription_pipeline(np.zeros(16000, dtype=np.float32), phrase=True)
-        sm.clipboard_manager.deliver_transcription.assert_called_once_with('hello there ', False, allow_delay=False)
+        sm.clipboard_manager.deliver_transcription.assert_called_once_with('hello there ', False, allow_delay=False,
+                                                                           send_delay=None)
         sm.audio_feedback.play_stop_sound.assert_not_called()
         sm.audio_feedback.play_transcription_complete_sound.assert_not_called()
         sm._update_ui_state.assert_not_called()       # still "recording" on the bar
         self.assertTrue(sm._auto_started, 'the session goes on')
         self.assertFalse(sm.is_processing)
+
+    # Runs the real pipeline on an auto-started session with this transcript
+    # and app rule; returns the clipboard mock.
+    def _run_auto_pipeline(self, text, rule, phrase, prompt=None, main_wait=0, info=None, auto=True,
+                           audio=None, levels=None, config=None):
+        import unittest.mock as mock
+        import numpy as np
+        sm = self._sm(had_speech=True)
+        sm._auto_started = auto
+        self.last_sm = sm
+        del sm._transcription_pipeline
+        sm.audio_recorder.get_audio_duration.return_value = 1.5
+        sm.audio_recorder.gain_for.return_value = 1.0
+        if levels is not None:
+            sm.voice_levels = levels
+        sm.whisper_engine = mock.Mock(last_info=info or {}, initial_prompt=prompt, language=None)
+        sm.whisper_engine.transcribe_audio.return_value = text
+        sm.app_rules = mock.Mock()
+        sm.app_rules.match_for_foreground.return_value = rule
+        sm.config_manager = mock.Mock(config=config or {})
+        sm.config_manager.get_postprocess_config.return_value = {}
+        sm.clipboard_manager = mock.Mock(auto_paste=True, delivery_method='paste', auto_send_delay=main_wait)
+        sm.clipboard_manager.deliver_transcription.return_value = True
+        sm.clipboard_manager.send_is_pending.return_value = False
+        sm._foreground_is_textable = lambda: True
+        sm._pending_model_change = sm._pending_device_change = None
+        sm._idle_actions = []
+        sm._update_ui_state = mock.Mock()
+        with mock.patch('builtins.print'), mock.patch('koli.state_manager.publish'), \
+             mock.patch('koli.state_manager.postprocess', side_effect=lambda t, cfg, trace=None: t), \
+             mock.patch('koli.state_manager.record_transcription'), mock.patch('koli.state_manager.record_transcript'), \
+             mock.patch('koli.state_manager.foreground') as fg:
+            fg.get_foreground_app.return_value = {'exe': 'whatsapp.root.exe'}
+            sm._transcription_pipeline(np.zeros(16000, dtype=np.float32) if audio is None else audio, phrase=phrase)
+        return sm.clipboard_manager
+
+    # ── Only my voice (loudness) ──
+
+    def _me_then_tv(self):
+        import unittest.mock as mock
+        import numpy as np
+        t = np.arange(16000) / 16000
+        me, tv = 0.1 * np.sin(2 * np.pi * 220 * t), 0.01 * np.sin(2 * np.pi * 220 * t)   # TV 20 dB lower
+        audio = np.concatenate([me, tv]).astype(np.float32)
+        info = {'language_probability': 0.95, 'segments': [
+            {'text': ' Why you stop doing that?', 'start': 0.0, 'end': 1.0, 'no_speech_prob': 0.05,
+             'avg_logprob': -0.3, 'compression_ratio': 1.2},
+            {'text': " Do you know what I'm saying?", 'start': 1.0, 'end': 2.0, 'no_speech_prob': 0.05,
+             'avg_logprob': -0.3, 'compression_ratio': 1.2}]}
+        levels = mock.Mock()
+        levels.my_level.return_value = -23.0
+        return audio, info, levels
+
+    def test_auto_dictation_leaves_out_voices_much_quieter_than_me(self):
+        audio, info, levels = self._me_then_tv()
+        cb = self._run_auto_pipeline('both', None, True, info=info, audio=audio, levels=levels)
+        self.assertEqual(cb.deliver_transcription.call_args.args[0], 'Why you stop doing that? ')
+
+    # A hotkey dictation is you: it teaches Koli your level, and by default
+    # isn't filtered.
+    def test_a_hotkey_dictation_teaches_my_level(self):
+        audio, info, levels = self._me_then_tv()
+        cb = self._run_auto_pipeline('both', None, False, info=info, audio=audio, levels=levels, auto=False)
+        self.assertEqual(cb.deliver_transcription.call_args.args[0], 'both')
+        levels.learn.assert_called_once()
+        device, level = levels.learn.call_args.args
+        self.assertEqual(device, 'default')
+        self.assertAlmostEqual(level, -23.0, delta=0.5)
+        levels = self._me_then_tv()[2]
+        self._run_auto_pipeline('both', None, True, info=info, audio=audio, levels=levels)
+        levels.learn.assert_not_called()      # an auto session could be anyone
+
+    def test_all_recordings_filters_hotkey_dictation_too(self):
+        audio, info, levels = self._me_then_tv()
+        config = {'audio': {'voice_filter': {'apply_to': 'all', 'quieter_than_me': True, 'margin_db': 12}}}
+        cb = self._run_auto_pipeline('both', None, False, info=info, audio=audio, levels=levels, auto=False,
+                                     config=config)
+        self.assertEqual(cb.deliver_transcription.call_args.args[0], 'Why you stop doing that?')
+
+    def test_the_loudness_check_can_be_turned_off(self):
+        audio, info, levels = self._me_then_tv()
+        config = {'audio': {'voice_filter': {'quieter_than_me': False}}}
+        cb = self._run_auto_pipeline('both', None, True, info=info, audio=audio, levels=levels, config=config)
+        self.assertEqual(cb.deliver_transcription.call_args.args[0], 'both ')
+
+    # Auto-dictation hears whatever is around, so a paste never carries its own
+    # Enter: not after each pause, and not with the final words.
+    def test_auto_dictation_pastes_never_press_enter(self):
+        chat = {'id': 'chat-apps', 'match': ['whatsapp'], 'auto_send': True}
+        for phrase in (True, False):
+            cb = self._run_auto_pipeline('see you tomorrow', chat, phrase)
+            args = cb.deliver_transcription.call_args
+            self.assertFalse(args.args[1], f'Enter pressed (phrase={phrase})')
+            self.assertFalse(args.kwargs['allow_delay'])
+
+    # The session as a whole is sent once, after the rule's wait (or the main
+    # one), through the countdown that Esc, typing or Cancel stop.
+    def test_a_finished_session_is_sent_after_the_wait(self):
+        chat = {'id': 'chat-apps', 'match': ['whatsapp'], 'auto_send': True, 'auto_send_delay': 3}
+        cb = self._run_auto_pipeline('see you tomorrow', chat, phrase=False)
+        cb.delayed_send.schedule.assert_called_once_with(3.0)
+        cb = self._run_auto_pipeline('see you tomorrow', {**chat, 'auto_send_delay': None}, phrase=False, main_wait=5)
+        cb.delayed_send.schedule.assert_called_once_with(5.0)
+
+    # No wait anywhere: nothing would stop a stray message, so it isn't sent.
+    def test_without_a_wait_the_session_is_not_sent(self):
+        chat = {'id': 'chat-apps', 'match': ['whatsapp'], 'auto_send': True}
+        cb = self._run_auto_pipeline('see you tomorrow', chat, phrase=False, main_wait=0)
+        cb.delayed_send.schedule.assert_not_called()
+        cb = self._run_auto_pipeline('see you tomorrow', {'match': ['whatsapp']}, phrase=False, main_wait=5)
+        cb.delayed_send.schedule.assert_not_called()
+
+    def test_a_pause_does_not_send(self):
+        chat = {'id': 'chat-apps', 'match': ['whatsapp'], 'auto_send': True, 'auto_send_delay': 3}
+        cb = self._run_auto_pipeline('see you tomorrow', chat, phrase=True)
+        cb.delayed_send.schedule.assert_not_called()
+        self.assertTrue(self.last_sm._auto_pasted)
+
+    # The usual end: every word already pasted, then quiet. That is a finished
+    # session too, so it is sent.
+    def test_a_quiet_end_after_pasted_phrases_sends(self):
+        import unittest.mock as mock
+        from koli.voice_activity_detection import VadEvent
+        sm = self._sm(had_speech=True)
+        sm.audio_recorder.continuous_vad.phrase_pause_sec = 1.0
+        sm.audio_recorder.continuous_vad.speech_since_phrase = False
+        sm._auto_pasted = True
+        sm.app_rules = mock.Mock()
+        sm.app_rules.match_for_foreground.return_value = {'auto_send': True, 'auto_send_delay': 2}
+        sm.clipboard_manager = mock.Mock(auto_send_delay=0)
+        sm.cancel_active_recording = mock.Mock()
+        with mock.patch('builtins.print'):
+            sm.handle_vad_event(VadEvent.SILENCE_TIMEOUT)
+        sm.clipboard_manager.delayed_send.schedule.assert_called_once_with(2.0)
+
+    # Leaving the field or typing means "not this": nothing is sent.
+    def test_a_cancelled_session_is_not_sent(self):
+        import unittest.mock as mock
+        sm = self._sm(had_speech=True)
+        sm._auto_pasted = True
+        sm.app_rules = mock.Mock()
+        sm.app_rules.match_for_foreground.return_value = {'auto_send': True, 'auto_send_delay': 2}
+        sm.clipboard_manager = mock.Mock(auto_send_delay=0)
+        sm.cancel_active_recording = mock.Mock()
+        with mock.patch('builtins.print'):
+            sm.cancel_auto_recording('you started typing')
+        sm.clipboard_manager.delayed_send.schedule.assert_not_called()
+        self.assertFalse(sm._auto_pasted)
+
+    # Nobody pressed a key to say "I'm talking now", so an auto session drops
+    # what Whisper is unsure of; a hotkey recording is not second-guessed.
+    def test_auto_dictation_drops_what_whisper_is_unsure_of(self):
+        unsure = {'language_probability': 0.48, 'segments': [
+            {'text': " Do you know what I'm saying?", 'no_speech_prob': 0.1, 'avg_logprob': -0.5,
+             'compression_ratio': 1.2}]}
+        cb = self._run_auto_pipeline("Do you know what I'm saying?", None, True, info=unsure)
+        cb.deliver_transcription.assert_not_called()
+        cb = self._run_auto_pipeline("Do you know what I'm saying?", None, False, info=unsure, auto=False)
+        cb.deliver_transcription.assert_called_once()
+
+    # Whisper fills noise with its own prompt: "Conversational chat message."
+    # from the chat rule's "Casual chat message. Conversational tone."
+    def test_an_echo_of_the_prompt_is_dropped(self):
+        prompt = 'Casual chat message. Conversational tone.'
+        cb = self._run_auto_pipeline('Conversational chat message.', None, True, prompt=prompt)
+        cb.deliver_transcription.assert_not_called()
+        cb = self._run_auto_pipeline('Conversational chat message.', None, False, prompt=prompt)
+        cb.deliver_transcription.assert_not_called()
+        cb = self._run_auto_pipeline('Our chat about the message went well', None, True, prompt=prompt)
+        cb.deliver_transcription.assert_called_once()
 
     def test_session_ends_quietly_when_every_phrase_was_already_pasted(self):
         import unittest.mock as mock
@@ -5100,8 +5439,10 @@ class EngineThreadTests(unittest.TestCase):
         from koli import whisper_engine
         seen = []
 
-        class Segment:
+        class Segment:   # what faster-whisper yields
             text = 'hello'
+            start, end = 0.0, 1.0
+            no_speech_prob, avg_logprob, compression_ratio = 0.02, -0.2, 1.1
 
         class Model:
             def transcribe(self, audio, **kwargs):
@@ -5410,18 +5751,392 @@ class DelayedSendDeliveryTests(unittest.TestCase):
         cb.send_enter_key.assert_not_called()
         cb.delayed_send.schedule.assert_not_called()
 
+    # An app rule's own wait replaces the main one; 0 sends at once.
+    def test_an_app_rules_wait_overrides_the_main_setting(self):
+        cb = self._clipboard(5)
+        cb.deliver_transcription('hello', use_auto_enter=True, allow_delay=True, send_delay=2)
+        cb.delayed_send.schedule.assert_called_once_with(2)
+        cb = self._clipboard(5)
+        cb.deliver_transcription('hello', use_auto_enter=True, allow_delay=True, send_delay=0)
+        cb.send_enter_key.assert_called_once()
+        cb.delayed_send.schedule.assert_not_called()
+        cb = self._clipboard(0)
+        cb.deliver_transcription('hello', use_auto_enter=True, allow_delay=True, send_delay=3)
+        cb.delayed_send.schedule.assert_called_once_with(3)
+
+
+class ProblemReportTests(unittest.TestCase):
+    # Something that went wrong and that you must see is kept until you
+    # dismiss it (a window opened later still shows it) and published for the
+    # bubble and the app.
+    def setUp(self):
+        from koli.ui import events
+        for p in events.open_problems():
+            events.dismiss_problem(p['id'])
+
+    def test_a_problem_is_published_kept_and_dismissed(self):
+        import unittest.mock as mock
+        from koli.ui import events
+        with mock.patch.object(events, 'publish') as publish:
+            problem = events.report_problem('The Hebrew model could not load')
+        publish.assert_called_once_with('problem', problem)
+        self.assertEqual([p['message'] for p in events.open_problems()], ['The Hebrew model could not load'])
+        events.dismiss_problem(problem['id'])
+        self.assertEqual(events.open_problems(), [])
+
+    def test_only_the_latest_are_kept(self):
+        from koli.ui import events
+        for i in range(15):
+            events.report_problem(f'problem {i}')
+        kept = events.open_problems()
+        self.assertEqual(len(kept), events.MAX_PROBLEMS)
+        self.assertEqual(kept[-1]['message'], 'problem 14')
+
+    def test_a_failed_background_job_is_a_problem(self):
+        import time
+        from koli.ui import events
+        from koli.ui.tasks import TaskManager
+
+        def job(reporter):
+            raise RuntimeError('CUDA failed with error out of memory')
+        TaskManager().run('Setting up the second model', job)
+        for _ in range(50):
+            if events.open_problems():
+                break
+            time.sleep(0.02)
+        message = events.open_problems()[-1]['message']
+        self.assertIn('Setting up the second model', message)
+        self.assertIn('out of memory', message)
+
+    # The main model loaded but the second didn't: dictation works, so it is
+    # not a failed job, but you must still hear about it.
+    def test_a_second_model_that_fails_to_load_is_a_problem(self):
+        import unittest.mock as mock
+        from koli import whisper_engine
+        from koli.ui import events
+        engine = whisper_engine.WhisperEngine.__new__(whisper_engine.WhisperEngine)
+        engine.logger = __import__('logging').getLogger('test')
+        engine.language_model_lang, engine.language_model_key = 'he', 'hebrew-large-v3-turbo'
+        engine.device, engine.device_index, engine.compute_type, engine.registry = 'cuda', 1, 'float16', None
+        with mock.patch.object(whisper_engine, 'WhisperModel', side_effect=RuntimeError('out of memory')), \
+                mock.patch('builtins.print'):
+            engine._load_language_model()
+        self.assertIsNone(engine.language_model)
+        self.assertIn('out of memory', events.open_problems()[-1]['message'])
+
+    def test_a_failed_transcription_is_a_problem(self):
+        import unittest.mock as mock
+        import numpy as np
+        from koli import whisper_engine
+        from koli.ui import events
+        engine = whisper_engine.WhisperEngine.__new__(whisper_engine.WhisperEngine)
+        engine.logger = __import__('logging').getLogger('test')
+        engine.model = mock.Mock()
+        engine.model.detect_language.side_effect = RuntimeError('CUDA error')
+        engine.model.transcribe.side_effect = RuntimeError('CUDA error')
+        engine.language_model = None
+        engine.vad_manager = None
+        engine.beam_size, engine.language, engine.task = 5, None, 'transcribe'
+        engine.initial_prompt = engine.hotwords = None
+        engine.model_key = 'large-v3-turbo'
+        with mock.patch('builtins.print'):
+            self.assertIsNone(engine.transcribe_audio(np.zeros(16000, dtype=np.float32)))
+        self.assertIn('CUDA error', events.open_problems()[-1]['message'])
+
+
+class LanguageModelRoutingTests(unittest.TestCase):
+    # A second model for one language (Hebrew → ivrit-ai): the main model
+    # detects the language, that language goes to the second model, anything
+    # else is transcribed by the main model in the language it detected.
+    def _engine(self, detected=('en', 0.98), forced=None, second=True):
+        import unittest.mock as mock
+        from koli import whisper_engine
+
+        class Segment:
+            def __init__(self, text):
+                self.text, self.start, self.end = text, 0.0, 1.0
+                self.no_speech_prob, self.avg_logprob, self.compression_ratio = 0.02, -0.2, 1.1
+
+        class Model:
+            def __init__(self, name):
+                self.name, self.calls = name, []
+
+            def detect_language(self, audio, **kwargs):
+                self.calls.append(('detect', {}))
+                return detected[0], detected[1], []
+
+            def transcribe(self, audio, **kwargs):
+                self.calls.append(('transcribe', kwargs))
+                return iter([Segment(f'{self.name} text')]), mock.Mock(
+                    language=kwargs.get('language') or 'en', language_probability=0.99)
+
+        engine = whisper_engine.WhisperEngine.__new__(whisper_engine.WhisperEngine)
+        engine.model, engine.model_key = Model('main'), 'large-v3-turbo'
+        engine.language_model = Model('hebrew') if second else None
+        engine.language_model_lang = 'he' if second else None
+        engine.language_model_key = 'hebrew-large-v3-turbo' if second else None
+        engine.vad_manager = None
+        engine.logger = __import__('logging').getLogger('test')
+        engine.beam_size, engine.language, engine.task = 5, forced, 'transcribe'
+        engine.initial_prompt, engine.hotwords = 'Casual chat message.', 'Koli'
+        engine.device, engine.compute_type = 'cuda', 'float16'
+        engine.log_transcriptions = False
+        return engine
+
+    def _run(self, engine):
+        import unittest.mock as mock
+        import numpy as np
+        with mock.patch('builtins.print'):
+            return engine.transcribe_audio(np.zeros(16000, dtype=np.float32))
+
+    def test_hebrew_goes_to_the_second_model_without_the_english_prompt(self):
+        engine = self._engine(detected=('he', 0.97))
+        self.assertEqual(self._run(engine), 'hebrew text')
+        kind, kwargs = engine.language_model.calls[-1]
+        self.assertEqual((kind, kwargs['language']), ('transcribe', 'he'))
+        self.assertNotIn('initial_prompt', kwargs)
+        self.assertEqual(kwargs.get('hotwords'), 'Koli', 'your words still help')
+        self.assertEqual([c[0] for c in engine.model.calls], ['detect'])
+        self.assertEqual(engine.last_info['model'], 'hebrew-large-v3-turbo')
+
+    def test_other_languages_stay_on_the_main_model_detected_once(self):
+        engine = self._engine(detected=('en', 0.98))
+        self.assertEqual(self._run(engine), 'main text')
+        kinds = [c[0] for c in engine.model.calls]
+        self.assertEqual(kinds, ['detect', 'transcribe'])
+        kwargs = engine.model.calls[-1][1]
+        self.assertEqual((kwargs['language'], kwargs['initial_prompt']), ('en', 'Casual chat message.'))
+        self.assertEqual(engine.language_model.calls, [])
+        self.assertEqual(engine.last_info['model'], 'large-v3-turbo')
+
+    # An unsure guess is not passed on: the main model decides for itself.
+    def test_an_unsure_detection_lets_the_main_model_decide(self):
+        engine = self._engine(detected=('ar', 0.3))
+        self._run(engine)
+        self.assertIsNone(engine.model.calls[-1][1]['language'])
+
+    # A rule or profile that sets the language skips detection.
+    def test_a_forced_language_picks_the_model_directly(self):
+        engine = self._engine(forced='he')
+        self.assertEqual(self._run(engine), 'hebrew text')
+        self.assertEqual(engine.model.calls, [])
+        engine = self._engine(forced='en')
+        self.assertEqual(self._run(engine), 'main text')
+        self.assertEqual([c[0] for c in engine.model.calls], ['transcribe'])
+
+    def test_without_a_second_model_nothing_changes(self):
+        engine = self._engine(second=False)
+        self.assertEqual(self._run(engine), 'main text')
+        self.assertEqual([c[0] for c in engine.model.calls], ['transcribe'])
+        self.assertIsNone(engine.model.calls[-1][1]['language'])
+
+    # Off, the main model itself, or an unknown model: no second model.
+    def test_which_second_model_is_loaded(self):
+        from koli.main import language_model_choice
+        from koli.model_registry import ModelRegistry
+        registry = ModelRegistry(whisper_models_config={'large-v3-turbo': {'label': 'T'},
+                                                        'hebrew-large-v3-turbo': {'source': 'ivrit-ai/x', 'label': 'H'}})
+        cfg = {'model': 'large-v3-turbo', 'language_model': {'language': 'he', 'model': 'hebrew-large-v3-turbo'}}
+        self.assertEqual(language_model_choice(cfg, registry), ('he', 'hebrew-large-v3-turbo'))
+        self.assertIsNone(language_model_choice({**cfg, 'language_model': {'language': '', 'model': 'x'}}, registry))
+        self.assertIsNone(language_model_choice({**cfg, 'model': 'hebrew-large-v3-turbo'}, registry))
+        self.assertIsNone(language_model_choice({**cfg, 'language_model': {'language': 'he', 'model': 'nope'}}, registry))
+
+    # A swapped-out engine gives its graphics memory back at once: two turbo
+    # models must fit on a 12 GB card after a few model switches.
+    def test_unloading_frees_both_models(self):
+        import unittest.mock as mock
+        engine = self._engine()
+        main, second = mock.Mock(), mock.Mock()
+        engine.model, engine.language_model = main, second
+        engine.unload()
+        main.model.unload_model.assert_called_once()
+        second.model.unload_model.assert_called_once()
+        self.assertIsNone(engine.model)
+        self.assertIsNone(engine.language_model)
+
+    def test_a_replaced_engine_is_unloaded(self):
+        import threading
+        import unittest.mock as mock
+        from koli.state_manager import StateManager
+        sm = StateManager.__new__(StateManager)
+        sm.logger = __import__('logging').getLogger('test')
+        sm._state_lock = threading.Lock()
+        old, new = mock.Mock(model_key='large'), mock.Mock(model_key='large-v3-turbo')
+        sm.whisper_engine = old
+        sm.replace_whisper_engine(new)
+        self.assertIs(sm.whisper_engine, new)
+        old.unload.assert_called_once()
+
+    # main() must not keep the first engine alive for the whole session.
+    def test_main_does_not_hold_the_startup_engine(self):
+        source = (ROOT / 'src' / 'koli' / 'main.py').read_text(encoding='utf-8')
+        body = source[source.index('state_manager = StateManager('):]
+        self.assertIn('del whisper_engine', body[:body.index('state_manager.')])
+
+    def test_the_ivrit_ai_models_are_in_the_list(self):
+        from ruamel.yaml import YAML
+        models = YAML().load((ROOT / 'src' / 'koli' / 'config.defaults.yaml').read_text(encoding='utf-8'))['whisper']['models']
+        self.assertEqual(models['hebrew-large-v3-turbo']['source'], 'ivrit-ai/whisper-large-v3-turbo-ct2')
+        self.assertEqual(models['hebrew-large-v3']['source'], 'ivrit-ai/whisper-large-v3-ct2')
+
+
+class VoiceLevelTests(unittest.TestCase):
+    # "Only my voice", step 1: Koli learns how loud you are from your hotkey
+    # dictations and leaves out speech much quieter than that (a TV across
+    # the room).
+    RATE = 16000
+
+    def _tone(self, amplitude, seconds):
+        import numpy as np
+        t = np.arange(int(self.RATE * seconds)) / self.RATE
+        return (amplitude * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+
+    def test_speech_level_is_the_loud_part_in_dbfs(self):
+        import numpy as np
+        from koli.voice_filter import speech_level_db
+        level = speech_level_db(np.concatenate([self._tone(0.1, 1.0), np.zeros(self.RATE, dtype=np.float32)]))
+        self.assertAlmostEqual(level, -23.0, delta=0.5)      # a 0.1 sine is about -23 dBFS
+        self.assertIsNone(speech_level_db(np.zeros(self.RATE, dtype=np.float32)))
+        self.assertIsNone(speech_level_db(self._tone(0.1, 0.05)))   # too short to judge
+
+    def test_a_boost_is_taken_back_out(self):
+        from koli.voice_filter import speech_level_db
+        plain = speech_level_db(self._tone(0.05, 1.0))
+        boosted = speech_level_db(self._tone(0.2, 1.0), gain=4.0)
+        self.assertAlmostEqual(plain, boosted, delta=0.2)
+
+    def test_my_level_is_learned_per_microphone_and_kept(self):
+        import tempfile
+        from koli.voice_filter import VoiceLevels
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / 'voice_levels.json'
+        levels = VoiceLevels(path)
+        levels.learn('Headset', -20.0)
+        levels.learn('Headset', -22.0)
+        self.assertIsNone(levels.my_level('Headset'), 'too few dictations to know yet')
+        levels.learn('Headset', -30.0)
+        self.assertEqual(levels.my_level('Headset'), -22.0)   # the middle one
+        self.assertIsNone(levels.my_level('Laptop mic'))
+        for _ in range(40):
+            levels.learn('Headset', -18.0)
+        self.assertEqual(VoiceLevels(path).my_level('Headset'), -18.0, 'kept on disk, recent ones count')
+
+    def test_pieces_much_quieter_than_me_are_left_out(self):
+        import numpy as np
+        from koli.voice_filter import keep_my_voice
+        audio = np.concatenate([self._tone(0.1, 1.0), self._tone(0.01, 1.0)])   # me, then a TV 20 dB lower
+        pieces = [{'text': ' Why you stop doing that?', 'start': 0.0, 'end': 1.0},
+                  {'text': " Do you know what I'm saying?", 'start': 1.0, 'end': 2.0}]
+        text, why = keep_my_voice('...', audio, pieces, my_level_db=-23.0, margin_db=12)
+        self.assertEqual(text, 'Why you stop doing that?')
+        self.assertIn('quieter', why)
+        text, why = keep_my_voice('...', audio, pieces, my_level_db=-23.0, margin_db=25)
+        self.assertEqual(why, '', 'within the margin both stay')
+
+    # whisper.cpp gives no piece times: the clip is judged as a whole.
+    def test_without_piece_times_the_whole_clip_is_judged(self):
+        from koli.voice_filter import keep_my_voice
+        self.assertEqual(keep_my_voice('hi', self._tone(0.01, 1.0), None, -23.0, 12)[0], '')
+        self.assertEqual(keep_my_voice('hi', self._tone(0.1, 1.0), [], -23.0, 12)[0], 'hi')
+
+
+class ConfidentSpeechTests(unittest.TestCase):
+    # Whisper's own numbers for a clip nobody spoke into: unsure of the
+    # language, pieces it rates as unlikely speech. Auto-dictation keeps only
+    # what it is sure of.
+    def _seg(self, text, no_speech=0.05, logprob=-0.3, ratio=1.3):
+        return {'text': text, 'no_speech_prob': no_speech, 'avg_logprob': logprob, 'compression_ratio': ratio}
+
+    def test_an_unsure_language_guess_drops_the_clip(self):
+        from koli.dictation_cleanup import confident_speech
+        info = {'language_probability': 0.48, 'segments': [self._seg(" Do you know what I'm saying?")]}
+        text, reason = confident_speech("Do you know what I'm saying?", info, language_forced=False)
+        self.assertEqual(text, '')
+        self.assertIn('0.48', reason)
+
+    def test_a_forced_language_skips_the_language_check(self):
+        from koli.dictation_cleanup import confident_speech
+        info = {'language_probability': 0.48, 'segments': [self._seg(' shalom')]}
+        self.assertEqual(confident_speech('shalom', info, language_forced=True)[0], 'shalom')
+
+    def test_unsure_pieces_are_dropped_and_sure_ones_kept(self):
+        from koli.dictation_cleanup import confident_speech
+        info = {'language_probability': 0.91, 'segments': [
+            self._seg(' Why you stop doing that?'),
+            self._seg(" Yes, I'm sick, I'm sick.", ratio=2.6),          # repetition
+            self._seg(' Thank you.', no_speech=0.8),                       # not speech
+            self._seg(' Mm hmm.', logprob=-1.4)]}                          # low confidence
+        text, reason = confident_speech('...', info, language_forced=False)
+        self.assertEqual(text, 'Why you stop doing that?')
+        self.assertIn('3', reason)
+
+    def test_nothing_sure_left_means_nothing(self):
+        from koli.dictation_cleanup import confident_speech
+        info = {'language_probability': 0.9, 'segments': [self._seg(' Thank you.', no_speech=0.9)]}
+        self.assertEqual(confident_speech('Thank you.', info, language_forced=False)[0], '')
+
+    # whisper.cpp and older info carry no per-piece numbers: only the language check.
+    def test_without_piece_numbers_the_text_stands(self):
+        from koli.dictation_cleanup import confident_speech
+        self.assertEqual(confident_speech('hello', {'language_probability': 0.9}, False), ('hello', ''))
+        self.assertEqual(confident_speech('hello', {}, False), ('hello', ''))
+
+
+class PromptEchoTests(unittest.TestCase):
+    PROMPT = 'Casual chat message. Conversational tone.'
+
+    def test_words_all_taken_from_the_prompt_are_an_echo(self):
+        from koli.dictation_cleanup import is_prompt_echo
+        self.assertTrue(is_prompt_echo('Conversational chat message.', self.PROMPT))
+        self.assertTrue(is_prompt_echo('casual chat message', self.PROMPT))
+        self.assertTrue(is_prompt_echo('Conversational tone', self.PROMPT))
+
+    def test_real_speech_is_not(self):
+        from koli.dictation_cleanup import is_prompt_echo
+        self.assertFalse(is_prompt_echo('See you in the chat tomorrow', self.PROMPT))
+        self.assertFalse(is_prompt_echo('Our chat about the message went well', self.PROMPT))
+        self.assertFalse(is_prompt_echo('', self.PROMPT))
+        self.assertFalse(is_prompt_echo('chat message', ''))
+        self.assertFalse(is_prompt_echo('chat message', None))
+
 
 class AutoSendPlanTests(unittest.TestCase):
-    # (auto_enter, may_wait): only an app rule's automatic auto-send may wait.
+    # (auto_enter, may_wait, wait): only an app rule's automatic auto-send may
+    # wait; `wait` is the rule's own seconds, None for the main setting.
     def test_only_the_rules_automatic_send_may_wait(self):
         from koli.state_manager import StateManager
         plan = StateManager._auto_send_plan
-        self.assertEqual(plan(False, None), (False, False))
-        self.assertEqual(plan(True, None), (True, False))                       # send key
-        self.assertEqual(plan(False, {'auto_send': True}), (True, True))        # automatic
-        self.assertEqual(plan(True, {'auto_send': True}), (True, False))        # send key wins
-        self.assertEqual(plan(True, {'auto_send': False}), (False, False))      # rule says never
-        self.assertEqual(plan(False, {'auto_paste': True}), (False, False))
+        self.assertEqual(plan(False, None), (False, False, None))
+        self.assertEqual(plan(True, None), (True, False, None))                       # send key
+        self.assertEqual(plan(False, {'auto_send': True}), (True, True, None))        # automatic
+        self.assertEqual(plan(True, {'auto_send': True}), (True, False, None))        # send key wins
+        self.assertEqual(plan(True, {'auto_send': False}), (False, False, None))      # rule says never
+        self.assertEqual(plan(False, {'auto_paste': True}), (False, False, None))
+
+    def test_a_rule_can_set_its_own_wait(self):
+        from koli.state_manager import StateManager
+        plan = StateManager._auto_send_plan
+        self.assertEqual(plan(False, {'auto_send': True, 'auto_send_delay': 3}), (True, True, 3))
+        self.assertEqual(plan(False, {'auto_send': True, 'auto_send_delay': 0}), (True, True, 0))
+        # The send key still sends at once.
+        self.assertEqual(plan(True, {'auto_send': True, 'auto_send_delay': 3}), (True, False, None))
+
+    # Saved from the rule editor: a number of seconds within the main
+    # setting's range, or nothing (the main setting).
+    def test_saving_a_rule_keeps_a_clean_wait(self):
+        import tempfile
+        import unittest.mock as mock
+        from koli.services import rules as svc
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        with mock.patch.object(svc, '_rules_path', return_value=Path(tmp.name) / 'app_rules.yaml'):
+            rule_id = svc.save_rule({'match': ['whatsapp.exe'], 'auto_send': True, 'auto_send_delay': '4'})
+            saved = [r for r in svc.list_rules() if r['id'] == rule_id][0]['entry']
+            self.assertEqual(saved['auto_send_delay'], 4)
+            with self.assertRaises(ValueError):
+                svc.save_rule({'match': ['whatsapp.exe'], 'auto_send_delay': 99}, rule_id)
 
 
 class DelayedSendStateManagerTests(unittest.TestCase):

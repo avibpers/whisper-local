@@ -4,8 +4,10 @@
 # bridge subscribes and forwards to the web pages. Publishing never raises and
 # never blocks on a slow subscriber, so it is safe from the audio thread.
 
+import itertools
 import logging
 import threading
+import time
 from collections import defaultdict
 from typing import Any, Callable
 
@@ -25,6 +27,7 @@ TOPICS = (
     'foreground',     # {'exe', 'title', 'rule'}
     'devices_changed',
     'window',         # {'action': 'show'|'hide', 'page'}
+    'problem',        # {'id', 'message', 'time'} something you must see, see report_problem
 )
 
 Subscriber = Callable[[str, Any], None]
@@ -70,3 +73,35 @@ def get_bus() -> EventBus:
 
 def publish(topic: str, payload: Any = None):
     _bus.publish(topic, payload)
+
+
+# ── Problems ─────────────────────────────────────────────────────────────────
+# Something that went wrong and that you must see: a model that didn't load, a
+# background job that failed, a transcription that broke. Logged, published
+# as 'problem' (the bubble flashes it, the app shows a toast that stays), and
+# kept until dismissed, so an app window opened later still shows it.
+
+MAX_PROBLEMS = 10
+_problems: list = []
+_problem_ids = itertools.count(1)
+_problems_lock = threading.Lock()
+
+
+def report_problem(message: str) -> dict:
+    problem = {'id': next(_problem_ids), 'message': str(message), 'time': time.time()}
+    with _problems_lock:
+        _problems.append(problem)
+        del _problems[:-MAX_PROBLEMS]
+    logger.warning(f"Problem: {message}")
+    publish('problem', problem)
+    return problem
+
+
+def open_problems() -> list:
+    with _problems_lock:
+        return list(_problems)
+
+
+def dismiss_problem(problem_id) -> None:
+    with _problems_lock:
+        _problems[:] = [p for p in _problems if p['id'] != problem_id]

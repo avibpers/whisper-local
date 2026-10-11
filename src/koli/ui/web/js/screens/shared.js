@@ -64,6 +64,9 @@ function DynamicSelect({ s, value }) {
     if (s.source === 'streaming_models') {
       call('models_list').then((m) => setOptions(m.streaming.map((k) => [k, k]))).catch(() => {});
     }
+    if (s.source === 'whisper_models') {
+      call('models_list').then((m) => setOptions(m.models.filter((x) => x.enabled).map((x) => [x.key, x.label]))).catch(() => {});
+    }
   }, [s.source]);
   return html`<${Select} label=${s.label} value=${value} options=${options} onChange=${(v) => saveSetting(s.path, v)} />`;
 }

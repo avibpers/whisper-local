@@ -118,9 +118,11 @@ SCHEMA = [
     _S('audio.max_duration', 'Longest recording', 'audio', 'number', min=0, max=36000, step=1, unit='seconds',
        help='0 means no limit.'),
     _S('audio.pause_media_on_record', 'Pause music while recording', 'audio', 'toggle', apply=NEXT_RECORDING,
-       mode=SIMPLE, help='Pauses Spotify, YouTube and other players. Does not resume by itself.'),
+       mode=SIMPLE, help='Pauses Spotify, YouTube and other players once you start talking (at your own loudness, '
+                         'not every noise), and plays them again when the recording ends.'),
     _S('audio.lower_volume.enabled', 'Lower the volume while recording', 'audio', 'toggle', apply=NEXT_RECORDING,
-       mode=SIMPLE, help='Turns the computer down while you talk, then back up. Only when it is louder than the level below.'),
+       mode=SIMPLE, help='Turns the computer down once you start talking (at your own loudness, not every noise), '
+                         'then back up when the recording ends. Only when it is louder than the level below.'),
     _S('audio.lower_volume.level', 'Volume while recording', 'audio', 'range', apply=NEXT_RECORDING,
        mode=SIMPLE, min=0, max=100, step=5, unit='%',
        help='The volume to turn down to. If the computer is already quieter, it is left alone.'),
@@ -132,6 +134,15 @@ SCHEMA = [
        help='Boosts quiet speech for open offices. Only ever turns the volume up.'),
     _S('audio.whisper_mode.max_gain', 'Maximum boost', 'audio', 'range', apply=NEXT_RECORDING,
        min=1, max=16, step=0.5, unit='×'),
+    _S('audio.voice_filter.quieter_than_me', 'Ignore voices quieter than mine', 'audio', 'toggle', mode=SIMPLE,
+       group='Only my voice', help='A TV across the room or someone talking in your pauses is left out. '
+                                   'Koli learns how loud you are from your hotkey dictations (after 3).'),
+    _S('audio.voice_filter.margin_db', 'How much quieter', 'audio', 'range', group='Only my voice',
+       min=6, max=30, step=1, unit='dB', help='6 dB is about half as loud. Raise it if your own words get dropped, or the music '
+                                         "doesn't pause when you talk."),
+    _S('audio.voice_filter.apply_to', 'Use it for', 'audio', 'segmented', group='Only my voice',
+       choices=[['auto', 'Auto-dictation'], ['all', 'All recordings']],
+       help='Auto-dictation starts without a key press, so it hears the most around you.'),
     _S('vad.vad_precheck_enabled', 'Skip recordings with no speech', 'audio', 'toggle', group='Voice detection',
        help='Stops Whisper from inventing text on silence.'),
     _S('vad.vad_onset_threshold', 'Speech starts at', 'audio', 'range', apply=NEXT_RECORDING,
@@ -169,6 +180,16 @@ SCHEMA = [
        help='Primes Whisper with style or vocabulary. App rules and profiles add their own after this one.'),
     _S('whisper.prompt_from_selection', 'Use selected text as context', 'model', 'toggle', apply=NEXT_RECORDING,
        help='Grabs your current selection when you start recording.'),
+    _S('whisper.language_model.language', 'Second model for', 'model', 'select', apply=BACKGROUND,
+       group='A second model for one language',
+       choices=[['', 'Off'], ['he', 'Hebrew'], ['ar', 'Arabic'], ['ru', 'Russian'], ['es', 'Spanish'],
+                ['fr', 'French'], ['de', 'German']],
+       help='Each dictation\'s language is detected; this language goes to the second model, everything '
+            'else stays on the main one. Hebrew: the ivrit.ai models are far more accurate.'),
+    _S('whisper.language_model.model', 'Second model', 'model', 'select', apply=BACKGROUND, source='whisper_models',
+       group='A second model for one language',
+       help='Loaded next to the main model (about as much graphics memory again). It gets no prompt, only '
+            'your favored words.'),
     _S('streaming.streaming_enabled', 'Show words while you speak', 'model', 'toggle', apply=BACKGROUND,
        group='Live preview (experimental)',
        help='A small streaming model shows text in the bubble. English only for now.'),

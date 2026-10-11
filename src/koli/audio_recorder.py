@@ -65,6 +65,8 @@ class AudioRecorder:
         self.logger = logging.getLogger(__name__)
         self._noise_suppression_config = noise_suppression_config or {}
         self._whisper_mode_gain = self._parse_whisper_mode(whisper_mode_config)
+        # (audio array, Whisper-mode boost) for the last few handed out.
+        self._recent_gains = collections.deque(maxlen=4)
 
         self.vad_manager = vad_manager
         self.on_vad_event = on_vad_event
@@ -356,13 +358,25 @@ class AudioRecorder:
         # Whisper mode boosts last: the trims above judge silence against an
         # absolute level, and a boosted noise floor would read as speech,
         # switching off the anti-hallucination trimming.
+        gain = 1.0
         if self._whisper_mode_gain:
-            from .audio_gain import boost_quiet_audio
-            audio_array = boost_quiet_audio(audio_array, self._whisper_mode_gain)
+            from .audio_gain import boost_gain
+            gain = boost_gain(audio_array, self._whisper_mode_gain)
+            if gain > 1.0:
+                audio_array = np.clip(audio_array * gain, -1.0, 1.0).astype(audio_array.dtype, copy=False)
+        self._recent_gains.append((audio_array, gain))
 
         duration = self.get_audio_duration(audio_array)
         self.logger.info(f"Recorded {duration:.2f}s (incl. preroll, mid-pauses + trailing silence trimmed)")
         return audio_array
+
+    # The Whisper-mode boost given to an array this recorder handed out (1.0 if
+    # none), so "Only my voice" can measure your real level.
+    def gain_for(self, audio: np.ndarray) -> float:
+        for array, gain in reversed(self._recent_gains):
+            if array is audio:
+                return gain
+        return 1.0
 
     # The whisper-mode max gain, or None when it's off. Validated once here: a
     # hand-edited `whisper_mode: true` or `max_gain: 8x` must not break every

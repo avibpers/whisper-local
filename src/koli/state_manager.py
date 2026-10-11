@@ -21,6 +21,7 @@
 import collections
 import logging
 import time
+from pathlib import Path
 import threading
 import platform
 from typing import Optional
@@ -33,7 +34,7 @@ from .clipboard_manager import ClipboardManager
 from .system_tray import SystemTray
 from .config_manager import ConfigManager
 from .audio_feedback import AudioFeedback
-from .utils import OptionalComponent
+from .utils import OptionalComponent, get_user_app_data_path
 from .voice_activity_detection import VadEvent, VadManager
 from .voice_commands import VoiceCommandManager
 from .profiles import ProfileManager
@@ -41,6 +42,8 @@ from .app_rules import AppRules, formatting_overrides as app_rules_formatting_ov
 from .streaming_delivery import StreamingDelivery, decide_stream_delivery
 from .transforms import TransformsManager
 from .text_postprocess import postprocess
+from .dictation_cleanup import confident_speech, is_prompt_echo
+from .voice_filter import VoiceLevels, keep_my_voice, my_voice_pieces, speech_level_db
 from .stats import record_transcription
 from .audit_log import record as audit_record
 from .terminal_title import TerminalTitle
@@ -115,7 +118,13 @@ class StateManager:
         # True while the running recording was started by auto-dictation (a text
         # field got focus) rather than a hotkey; see auto_dictation.py.
         self._auto_started = False
+        # Something was pasted in the running auto-dictation session, so its
+        # end may send it (see _finish_auto_session).
+        self._auto_pasted = False
         self._auto_dictation = None
+        # How loud you speak per microphone, learned from hotkey dictations
+        # ("Only my voice"; see voice_filter.py).
+        self.voice_levels = VoiceLevels(Path(get_user_app_data_path()) / 'voice_levels.json')
         self._warned_no_vad_for_auto = False
         from .media_control import MediaControl
         self.media_control = MediaControl()
@@ -180,6 +189,10 @@ class StateManager:
         self._transcription_pipeline(audio_data, use_auto_enter=False)
 
     def handle_vad_event(self, event: VadEvent):
+        if event == VadEvent.SPEECH_START:
+            # You started talking: now the music can pause (media_control.py).
+            self.media_control.on_speech()
+            return
         if event == VadEvent.PHRASE_PAUSE:
             # A short pause while auto-dictation listens: paste the words so
             # far and keep the microphone open for the next phrase.
@@ -192,6 +205,13 @@ class StateManager:
             # An auto-started recording in which nobody spoke is not a dictation:
             # drop it without a sound, so a field you merely clicked stays quiet.
             if self._auto_started and not self._detector_heard_speech():
+                if self._auto_pasted:
+                    # Every word was already pasted: the session is done.
+                    self.logger.info("Auto-dictation: quiet after the last phrase - session done")
+                    print(f"   ✓ Done listening: quiet for {self._active_silence_timeout():g}s")
+                    self.cancel_active_recording(quiet=True)
+                    self._finish_auto_session()
+                    return
                 self.logger.info("Auto-dictation: no speech heard - cancelling quietly")
                 print(f"   ✗ Listening cancelled: nothing heard for {self._active_silence_timeout():g}s")
                 self.cancel_active_recording(quiet=True)
@@ -275,20 +295,27 @@ class StateManager:
             return True
         return self._cancel_pending_send('Esc')
 
-    # Whether this dictation ends with Enter, and whether that Enter may wait
-    # (clipboard.auto_send_delay). Only the automatic kind waits: an app
-    # rule's auto-send. The send key is a deliberate "send it", so it sends at
-    # once, and a rule saying auto_send: false wins over everything.
+    # Whether this dictation ends with Enter, whether that Enter may wait, and
+    # for how long: the rule's own auto_send_delay, or None for the main
+    # clipboard.auto_send_delay. Only the automatic kind waits: an app rule's
+    # auto-send. The send key is a deliberate "send it", so it sends at once,
+    # and a rule saying auto_send: false wins over everything. Auto-dictation
+    # never sends: it hears whatever is around, and each pause would be a
+    # message of its own.
     @staticmethod
-    def _auto_send_plan(use_auto_enter: bool, rule) -> tuple:
-        auto_enter, may_wait = bool(use_auto_enter), False
+    def _auto_send_plan(use_auto_enter: bool, rule, auto_dictation: bool = False) -> tuple:
+        if auto_dictation:
+            return False, False, None
+        auto_enter, may_wait, wait = bool(use_auto_enter), False, None
         if rule:
             if rule.get('auto_send') is True:
                 may_wait = not use_auto_enter
                 auto_enter = True
             elif rule.get('auto_send') is False:
                 auto_enter = False
-        return auto_enter, may_wait
+            if may_wait and rule.get('auto_send_delay') is not None:
+                wait = rule['auto_send_delay']
+        return auto_enter, may_wait, wait
 
     # A send waiting to press Enter is stopped by anything that starts a new
     # message, so two messages never get mixed. Hands-free restarts don't call
@@ -396,6 +423,7 @@ class StateManager:
 
         if success:
             self._auto_started = auto_started
+            self._auto_pasted = False
             # Only spin up the streaming-delivery worker once recording is
             # confirmed — otherwise a failed start would leak the worker thread.
             self._setup_streaming_delivery()
@@ -444,8 +472,108 @@ class StateManager:
             return False
         self.logger.info(f"Auto-dictation: cancelled ({reason or 'cancelled'})")
         print(f"   ✗ Listening cancelled: {reason or 'cancelled'}")
+        self._auto_pasted = False   # typing or leaving the field: nothing is sent
         self.cancel_active_recording(quiet=True)
         return True
+
+    # ── Only my voice ────────────────────────────────────────────────────────
+
+    def _voice_filter_config(self) -> dict:
+        audio = (getattr(self.config_manager, 'config', None) or {}).get('audio') or {}
+        cfg = audio.get('voice_filter')
+        return cfg if isinstance(cfg, dict) else {}
+
+    # The learned level belongs to a microphone: another mic sits elsewhere.
+    def _mic_key(self) -> str:
+        try:
+            name = self.audio_recorder.describe().get('name')
+        except Exception:
+            name = None
+        return name if isinstance(name, str) and name else 'default'
+
+    def _audio_gain(self, audio) -> float:
+        try:
+            gain = self.audio_recorder.gain_for(audio)
+        except Exception:
+            gain = 1.0
+        return float(gain) if isinstance(gain, (int, float)) and gain > 0 else 1.0
+
+    # How much quieter than you a voice may be and still count as yours (dB).
+    def _voice_margin_db(self) -> float:
+        try:
+            return float(self._voice_filter_config().get('margin_db', 12))
+        except (TypeError, ValueError):
+            return 12.0
+
+    # The loudness (dBFS) your speech reaches on this microphone, less the
+    # margin: quieter speech is a TV or someone else, not you starting to talk.
+    # None until Koli has learned your level from 3 hotkey dictations.
+    def _my_voice_floor_db(self):
+        levels = getattr(self, 'voice_levels', None)
+        mine = levels.my_level(self._mic_key()) if levels is not None else None
+        return None if mine is None else mine - self._voice_margin_db()
+
+    def _learn_my_level(self, audio) -> None:
+        levels = getattr(self, 'voice_levels', None)
+        if levels is None:
+            return
+        level = speech_level_db(audio, gain=self._audio_gain(audio))
+        if level is not None:
+            levels.learn(self._mic_key(), level)
+
+    # Drops the pieces of a recording much quieter than your learned level.
+    # Returns the text left and the engine info with only the kept pieces, so
+    # later checks don't bring a dropped piece back.
+    def _keep_my_voice(self, text: str, audio, info: dict, auto_session: bool) -> tuple:
+        cfg = self._voice_filter_config()
+        levels = getattr(self, 'voice_levels', None)
+        if levels is None or not cfg.get('quieter_than_me', True):
+            return text, info
+        if cfg.get('apply_to', 'auto') != 'all' and not auto_session:
+            return text, info
+        mine = levels.my_level(self._mic_key())
+        if mine is None:
+            return text, info   # not enough hotkey dictations yet to know your level
+        margin = self._voice_margin_db()
+        gain = self._audio_gain(audio)
+        pieces = info.get('segments')
+        if pieces:
+            pieces, why = my_voice_pieces(audio, pieces, mine, margin, gain)
+            if why:
+                text = ''.join(p.get('text', '') for p in pieces).strip()
+                info = {**info, 'segments': pieces}
+        else:
+            text, why = keep_my_voice(text, audio, None, mine, margin, gain)
+        if why:
+            self.logger.info(f"Only my voice: {why} (your level {mine:.0f} dB)")
+            print(f"   ✗ Not your voice: {why}" if not text else f"   ✓ Kept your voice ({why})")
+        return text, info
+
+    # A finished auto-dictation session that pasted something is sent once,
+    # by the app rule's auto-send, after its wait (or the main one) so a stray
+    # message can still be stopped. No wait set: it is left unsent.
+    def _finish_auto_session(self) -> None:
+        pasted, self._auto_pasted = self._auto_pasted, False
+        if not pasted:
+            return
+        try:
+            rule = self.app_rules.match_for_foreground() or {}
+        except Exception:
+            rule = {}
+        if rule.get('auto_send') is not True:
+            return
+        wait = rule.get('auto_send_delay')
+        if wait is None:
+            wait = getattr(self.clipboard_manager, 'auto_send_delay', 0)
+        wait = float(wait or 0)
+        delayed = getattr(self.clipboard_manager, 'delayed_send', None)
+        if wait <= 0 or delayed is None:
+            self.logger.info("Auto-dictation: not sending - auto-send needs a wait so it can be stopped")
+            print("   ↵ Not sent: set a wait before sending for this app to send automatically")
+            return
+        self.logger.info(f"Auto-dictation: session done - sending in {wait:g}s")
+        print(f"   ↵ Sending in {wait:g}s (Esc, typing or Cancel stops it)")
+        delayed.schedule(wait)
 
     def _auto_silence_timeout(self) -> float:
         cfg = self.config_manager.config.get('auto_dictation') or {}
@@ -570,11 +698,17 @@ class StateManager:
         threading.Thread(target=restart, daemon=True, name='continuous-restart').start()
 
     # Pause the music and/or lower the volume, as the audio settings say
-    # (media_control.py); the volume comes back when the recording ends.
+    # (media_control.py); both come back when the recording ends. With voice
+    # detection running they wait until you actually speak, at your own level,
+    # so a field that starts auto-dictation or a noise in the room doesn't
+    # quiet the computer for nothing.
     def _maybe_pause_media(self):
         audio_cfg = self.config_manager.config.get('audio', {})
+        detector = getattr(self.audio_recorder, 'continuous_vad', None)
         try:
-            self.media_control.on_recording_start(audio_cfg)
+            if detector is not None:
+                detector.set_voice_start_level(self._my_voice_floor_db())
+            self.media_control.on_recording_start(audio_cfg, hears_voice=detector is not None)
         except Exception as e:
             self.logger.warning(f"Media control skipped: {e}")
 
@@ -666,13 +800,20 @@ class StateManager:
     # recording state, sounds and idle hand-off are left alone.
     def _transcription_pipeline(self, audio_data, use_auto_enter: bool = False, phrase: bool = False):
         with self._pipeline_lock:
+            with self._state_lock:
+                ends_auto_session = not phrase and bool(self._auto_started)
             self._transcription_pipeline_locked(audio_data, use_auto_enter, phrase)
+            # The last words of an auto-dictation session (or none, after an
+            # echo was dropped): the session as a whole may now be sent.
+            if ends_auto_session:
+                self._finish_auto_session()
 
     def _transcription_pipeline_locked(self, audio_data, use_auto_enter: bool = False, phrase: bool = False):
         mode = 'dictate'
         try:
             with self._state_lock:
                 self.is_processing = True
+                auto_session = bool(self._auto_started)   # read before the final run clears it
                 if not phrase:
                     self._auto_started = False
                 command_mode = self._command_mode
@@ -731,6 +872,39 @@ class StateManager:
                 return
 
             self._emit_pipeline('transcribed', mode=mode, raw=transcribed_text, info=info)
+
+            # Noise that Whisper filled with its own prompt is not speech.
+            if is_prompt_echo(transcribed_text, getattr(self.whisper_engine, 'initial_prompt', None)):
+                self.logger.info(f"Dropped an echo of the prompt, not speech: {transcribed_text!r}")
+                print("   ✗ Heard only noise (Whisper repeated its prompt) - nothing typed")
+                self._emit_pipeline('empty', mode=mode, info=info)
+                return
+
+            # A hotkey dictation is you: it teaches Koli how loud you are.
+            if not auto_session:
+                self._learn_my_level(audio_data)
+
+            # Only my voice: leave out speech much quieter than you (a TV across
+            # the room, someone talking in your pauses).
+            transcribed_text, info = self._keep_my_voice(transcribed_text, audio_data, info, auto_session)
+            if not transcribed_text:
+                self._emit_pipeline('empty', mode=mode, info=info)
+                return
+
+            # Auto-dictation picks up whatever is around: keep only what Whisper
+            # is sure is speech. A hotkey recording is not second-guessed.
+            if auto_session:
+                forced = bool(getattr(self.whisper_engine, 'language', None))
+                kept, why = confident_speech(transcribed_text, info, language_forced=forced)
+                if why:
+                    self.logger.info(f"Auto-dictation: {why}")
+                if not kept:
+                    print(f"   ✗ Not sure that was speech ({why}) - nothing typed")
+                    self._emit_pipeline('empty', mode=mode, info=info)
+                    return
+                if why:
+                    print(f"   ✓ Kept what was clearly speech ({why})")
+                transcribed_text = kept
 
             if command_mode:
                 matched = self._handle_command_transcription(transcribed_text, use_auto_enter)
@@ -825,7 +999,8 @@ class StateManager:
                     self.level_overlay.flash_success()
                 return
 
-            effective_auto_enter, send_may_wait = self._auto_send_plan(use_auto_enter, rule)
+            effective_auto_enter, send_may_wait, send_wait = self._auto_send_plan(
+                use_auto_enter, rule, auto_dictation=auto_session)
             effective_auto_paste = None
             if rule:
                 if 'auto_paste' in rule:
@@ -846,13 +1021,15 @@ class StateManager:
                 # A phrase gets a trailing space so the next one does not glue to it.
                 success = self.clipboard_manager.deliver_transcription(
                     transcribed_text + ' ' if phrase else transcribed_text, effective_auto_enter,
-                    allow_delay=send_may_wait,
+                    allow_delay=send_may_wait, send_delay=send_wait,
                 )
             finally:
                 if previous_auto_paste is not None:
                     self.clipboard_manager.update_auto_paste(previous_auto_paste)
 
             delivered_paste = self.clipboard_manager.auto_paste
+            if success and auto_session and delivered_paste:
+                self._auto_pasted = True   # the session's end may send it
             self._emit_pipeline(
                 'delivered', mode=mode,
                 outcome=('pasted' if delivered_paste else 'copied') if success else 'failed',
@@ -1039,6 +1216,13 @@ class StateManager:
             self.whisper_engine = new_engine
         self.logger.info(f"Whisper engine swapped: {getattr(old, 'model_key', '?')} -> "
                          f"{getattr(new_engine, 'model_key', '?')} on {getattr(new_engine, 'device', '?')}")
+        # Free the old engine's graphics memory now, not whenever Python gets
+        # to it: otherwise a few switches leave no room for a second model.
+        if old is not None and old is not new_engine and hasattr(old, 'unload'):
+            try:
+                old.unload()
+            except Exception as e:
+                self.logger.warning(f"Could not unload the old engine: {e}")
 
     # Build a new recorder with the same callbacks and any changed parameters,
     # swap it in, then stop the old one's capture thread.

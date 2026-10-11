@@ -3,9 +3,58 @@
 # text: backtracking ("at 2, actually 3" → "at 3"), stutter removal ("I I think"
 # → "I think"), spoken lists ("first … second …" → a numbered list) and the
 # lowercase used by the "very casual" style. Pure functions, all O(n).
-# Wired into the pipeline by text_postprocess.postprocess().
+# Wired into the pipeline by text_postprocess.postprocess(); is_prompt_echo and
+# confident_speech (noise that Whisper turned into words) are checked by the
+# state manager before delivery.
 
 import re
+
+_WORD_RE = re.compile(r"[\w']+", re.UNICODE)
+
+
+# Whisper fills noise with words from its own prompt: the chat rule's "Casual
+# chat message. Conversational tone." comes back as "Conversational chat
+# message." A transcript whose every word is a prompt word is that echo, not
+# speech.
+def is_prompt_echo(text: str, prompt) -> bool:
+    if not isinstance(text, str) or not isinstance(prompt, str):
+        return False
+    words = _WORD_RE.findall(text.lower())
+    prompt_words = set(_WORD_RE.findall(prompt.lower()))
+    return bool(words) and bool(prompt_words) and all(w in prompt_words for w in words)
+
+
+# How sure Whisper must be before auto-dictation types something. A recording
+# nobody started on purpose picks up whatever is around, and Whisper turns
+# noise into fluent sentences ("Do you know what I'm saying?") while its own
+# numbers say it is unsure. Hotkey recordings are not filtered.
+MIN_LANGUAGE_CONFIDENCE = 0.6    # its guess of the language, when not set
+MAX_NO_SPEECH = 0.6              # a piece it rates as more likely silence
+MIN_AVG_LOGPROB = -1.0           # a piece it was unsure of word by word
+MAX_COMPRESSION = 2.4            # a piece that repeats itself ("I'm sick, I'm sick")
+
+
+def _unsure_piece(piece: dict) -> bool:
+    return (piece.get('no_speech_prob', 0) > MAX_NO_SPEECH or piece.get('avg_logprob', 0) < MIN_AVG_LOGPROB
+            or piece.get('compression_ratio', 0) > MAX_COMPRESSION)
+
+
+# The text worth typing from an auto-dictation clip, and why anything was left
+# out. `info` is the engine's last_info: language_probability, and per piece
+# (segment) its text and numbers when the backend gives them.
+def confident_speech(text: str, info: dict, language_forced: bool) -> tuple:
+    info = info or {}
+    probability = info.get('language_probability')
+    if not language_forced and probability is not None and probability < MIN_LANGUAGE_CONFIDENCE:
+        return '', f'language guess only {probability:.2f} sure'
+    pieces = info.get('segments')
+    if not pieces:
+        return text, ''
+    kept = [p for p in pieces if not _unsure_piece(p)]
+    if len(kept) == len(pieces):
+        return text, ''
+    dropped = len(pieces) - len(kept)
+    return ''.join(p.get('text', '') for p in kept).strip(), f'{dropped} unsure part(s) left out'
 
 # Where a sentence ends. A backtrack never reaches across one, so a
 # correction can only replace something in the sentence it was spoken in.

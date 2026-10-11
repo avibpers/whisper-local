@@ -12,8 +12,8 @@ from .. import defaults_merge as dm
 from .. import profiles as pf
 from ..utils import get_user_app_data_path
 
-RULE_KEYS = ('match', 'window_title', 'auto_send', 'auto_paste', 'suppress', 'initial_prompt', 'language', 'task',
-             'style', 'auto_dictation') + ar.FORMATTING_KEYS
+RULE_KEYS = ('match', 'window_title', 'auto_send', 'auto_send_delay', 'auto_paste', 'suppress', 'initial_prompt',
+             'language', 'task', 'style', 'auto_dictation') + ar.FORMATTING_KEYS
 
 
 def _rules_path() -> Path:
@@ -63,6 +63,10 @@ def save_rule(entry: dict, original_id: str = None) -> str:
         value = entry.get(key)
         if value in (None, ''):
             continue
+        if key == 'auto_send_delay':
+            # Same seconds and limits as the main "Wait before sending".
+            from ..settings import schema
+            value = schema.coerce(schema.get('clipboard.auto_send_delay'), value)
         clean[key] = value
     return dm.save_entry(ar.DEFAULTS_FILE, _rules_path(), 'rules', ar.USER_FILE_HEADER,
                          clean, id_key='id', original_id=original_id)

@@ -222,6 +222,19 @@ def setup_streaming(streaming_config, model_registry):
 STARTUP_NOTICES = []
 
 
+# The (language, model key) of the second model, or None when it is off, set
+# to the main model itself, or names a model this version doesn't know.
+def language_model_choice(whisper_config, model_registry):
+    cfg = whisper_config.get('language_model') or {}
+    language, key = str(cfg.get('language') or '').strip(), str(cfg.get('model') or '').strip()
+    if not language or language == 'auto' or not key or key == whisper_config.get('model'):
+        return None
+    if model_registry is not None and model_registry.usable_key(key, None)[1]:
+        logging.getLogger(__name__).warning(f"Second model '{key}' isn't defined; using the main model for {language}")
+        return None
+    return language, key
+
+
 def setup_whisper_engine(whisper_config, vad_manager, model_registry, log_transcriptions=False, config_manager=None,
                          ask=True):
     backend = whisper_config.get('backend', 'faster_whisper')
@@ -269,6 +282,7 @@ def setup_whisper_engine(whisper_config, vad_manager, model_registry, log_transc
             model_registry=model_registry,
             log_transcriptions=log_transcriptions,
             device_index=int(whisper_config.get('device_index') or 0),
+            language_model=language_model_choice(whisper_config, model_registry),
         )
     except RuntimeError as e:
         if whisper_config['device'] != 'cuda' or not config_manager:
@@ -776,6 +790,10 @@ def main():
             voice_command_manager=voice_command_manager,
             terminal_title=terminal_title
         )
+        # The state manager owns the engine from here. Keeping this name would
+        # hold the first engine (and its graphics memory) for the whole session,
+        # even after a model switch replaced it.
+        del whisper_engine
         audio_recorder = setup_audio_recorder(audio_config, state_manager, vad_manager, streaming_manager)
         system_tray = setup_system_tray(tray_config, config_manager, state_manager, model_registry, console_config)
         ui_host = None

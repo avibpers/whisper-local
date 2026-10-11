@@ -44,6 +44,7 @@ export function createMock(emit) {
     if (!new URLSearchParams(location.search).has('welcome')) data.settings.ui.welcome_done = true;
     if (new URLSearchParams(location.search).has('advanced')) data.settings.ui.mode = 'advanced';
   });
+  window.mockEmit = emit;   // so a check in the browser can push any event
   const undo = [];
   const tasks = {};
   let state = { state: 'idle', mode: 'dictate', paused: false, model: 'small', device: 'cpu' };
@@ -260,6 +261,10 @@ export function createMock(emit) {
     bar_resize: () => ok({ max_height: Math.max(20, window.innerHeight - 56) }),
     // Kept on the page so a drag can be checked in the browser.
     bar_drag: (...args) => { (window.mockDrags = window.mockDrags || []).push(args); return ok(); },
+    resources: () => ok({ device: 'cuda', gpu_index: 1, models: ['large-v3-turbo', 'hebrew-large-v3-turbo'],
+      gpu: { name: 'NVIDIA GeForce RTX 4070 SUPER', used_mb: 7350, total_mb: 12282 }, koli_gpu_mb: 4520,
+      ram_mb: 1830, cpu_percent: 3.2 }),
+    problem_dismiss: () => ok(),
   };
 
   return new Proxy(api, {

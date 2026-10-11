@@ -1,8 +1,10 @@
 # voice_activity_detection.py
 # Voice activity detection via TEN VAD. Two modes: a one-shot pre-check that
 # scans a whole recording for speech, and a continuous realtime detector that
-# processes 256-sample chunks on the audio thread and fires a SILENCE_TIMEOUT
-# event (once) when the user stops talking. Hysteresis smooths on/off flapping.
+# processes 256-sample chunks on the audio thread and fires SPEECH_START (once)
+# when the user starts talking (at their own learned level, when known) and
+# SILENCE_TIMEOUT (once) when they stop.
+# Hysteresis smooths on/off flapping.
 
 import logging
 import threading
@@ -22,6 +24,16 @@ except ImportError:
 SAMPLE_RATE = 16000  # Fixed 16kHz sample rate for TEN VAD and Whisper
 VAD_HOP_DURATION_SEC = 0.016  # Fixed 256 samples at 16kHz
 VAD_CHUNK_SIZE = 256
+# How much of your voice (in total, this recording) before SPEECH_START fires.
+SPEECH_START_SECONDS = 0.25
+
+# A chunk's loudness in dBFS, on the same scale as voice_filter.speech_level_db.
+def chunk_level_db(audio_chunk: np.ndarray) -> float:
+    samples = audio_chunk.astype(np.float64)
+    if audio_chunk.dtype == np.int16:
+        samples /= 32768.0
+    rms = float(np.sqrt(np.mean(samples ** 2))) if samples.size else 0.0
+    return 20 * np.log10(max(rms, 1e-10))
 
 def convert_audio_for_ten_vad(audio_data: np.ndarray) -> np.ndarray:
     # Flatten audio (TEN VAD expects 1D array)
@@ -48,6 +60,7 @@ class VadEvent(Enum):
     NO_EVENT = "no_event"
     SILENCE_TIMEOUT = "silence_timeout"
     PHRASE_PAUSE = "phrase_pause"      # a short pause after speech: deliver what was said, keep listening
+    SPEECH_START = "speech_start"      # you started talking, at your own level (fires once)
 
 class VadManager:
     def __init__(self,
@@ -172,7 +185,8 @@ class Hysteresis:
 class ContinuousVoiceDetector:
     def __init__(self, ten_vad, vad_onset_threshold, vad_offset_threshold,
                  vad_silence_timeout_seconds, frame_duration_sec,
-                 event_callback: Optional[Callable[[VadEvent], None]] = None):
+                 event_callback: Optional[Callable[[VadEvent], None]] = None,
+                 speech_start_seconds: float = SPEECH_START_SECONDS):
         self.ten_vad = ten_vad
         self.hysteresis = Hysteresis(high_threshold=vad_onset_threshold,
                                    low_threshold=vad_offset_threshold,
@@ -186,6 +200,14 @@ class ContinuousVoiceDetector:
         # True once any speech was heard this recording. Auto-dictation uses it
         # to tell "you never spoke" (cancel quietly) from "you stopped" (deliver).
         self.had_speech = False
+        # SPEECH_START ("you started talking") waits for this many frames that
+        # are speech AND at least `voice_start_db` loud, so a click, a cough or a
+        # TV across the room doesn't count. None = any speech counts (your level
+        # isn't learned yet). The level is set per recording and survives reset().
+        self.frames_for_speech_start = max(1, int(round(speech_start_seconds / frame_duration_sec)))
+        self.voice_start_db = None
+        self._voice_frames = 0
+        self._speech_announced = False
         # Phrase delivery: after `phrase_pause_sec` of silence following speech,
         # one PHRASE_PAUSE fires so the words so far can be pasted while the
         # recording goes on. `speech_since_phrase` is what is still undelivered.
@@ -216,6 +238,12 @@ class ContinuousVoiceDetector:
             self.phrase_pause_sec = max(0.0, float(seconds or 0))
             self.frames_for_phrase = int(self.phrase_pause_sec / self.frame_duration_sec) if self.phrase_pause_sec else 0
 
+    # The loudness (dBFS) speech must reach to count toward SPEECH_START, or
+    # None for any speech.
+    def set_voice_start_level(self, min_db: Optional[float]):
+        with self._lock:
+            self.voice_start_db = None if min_db is None else float(min_db)
+
     def _dispatch_event(self, event: VadEvent):
         if self.event_callback:
             threading.Thread(target=self.event_callback, args=(event,), daemon=True).start()
@@ -240,13 +268,13 @@ class ContinuousVoiceDetector:
             self.last_probability = float(probability)
             speech_detected = self.hysteresis.detect_speech(probability)
             self.probability_buffer.append(probability)
-            return self._update_state(speech_detected)
+            return self._update_state(speech_detected, chunk_level_db(audio_chunk))
 
         except Exception as e:
             self.logger.error(f"Error processing VAD chunk: {e}")
             return VadEvent.NO_EVENT
 
-    def _update_state(self, speech_detected: bool) -> VadEvent:
+    def _update_state(self, speech_detected: bool, level_db: Optional[float] = None) -> VadEvent:
         with self._lock:
             current_state = self.state
             event = VadEvent.NO_EVENT
@@ -255,6 +283,12 @@ class ContinuousVoiceDetector:
                 self.had_speech = True
                 self.speech_since_phrase = True
                 self._phrase_fired = False
+                loud_enough = self.voice_start_db is None or (level_db is not None and level_db >= self.voice_start_db)
+                if loud_enough and not self._speech_announced:
+                    self._voice_frames += 1
+                    if self._voice_frames >= self.frames_for_speech_start:
+                        self._speech_announced = True
+                        event = VadEvent.SPEECH_START
 
             if current_state == VadState.SPEECH_DETECTED:
                 if speech_detected:
@@ -291,6 +325,8 @@ class ContinuousVoiceDetector:
             self.state = VadState.SILENCE_COUNTING
             self.silence_frame_count = 0
             self.had_speech = False
+            self._voice_frames = 0
+            self._speech_announced = False
             self.speech_since_phrase = False
             self._phrase_fired = False
             self.probability_buffer.clear()

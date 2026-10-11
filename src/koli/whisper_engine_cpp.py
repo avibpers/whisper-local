@@ -151,3 +151,7 @@ class WhisperEngineCpp:
 
     def is_loading(self) -> bool:
         return False
+
+    # Mirrors WhisperEngine.unload: drop the model so its memory goes now.
+    def unload(self) -> None:
+        self.model = None

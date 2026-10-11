@@ -127,6 +127,30 @@ whisper: # Whisper AI Model Settings
             group: custom
             enabled: true
 
+        # Hebrew-tuned models (ivrit.ai), far more accurate than the official
+        # models for Hebrew. Trained on Hebrew only: use them as the second
+        # model for Hebrew (language_model below) rather than for everything.
+        hebrew-large-v3-turbo:
+            source: ivrit-ai/whisper-large-v3-turbo-ct2
+            label: "Hebrew Large-V3-Turbo (ivrit.ai, 1.6GB)"
+            group: custom
+            enabled: true
+        hebrew-large-v3:
+            source: ivrit-ai/whisper-large-v3-ct2
+            label: "Hebrew Large-V3 (ivrit.ai, 3GB)"
+            group: custom
+            enabled: true
+
+    # A second model for one language, loaded next to the main one. Each
+    # dictation's language is detected by the main model; that language goes
+    # to this model, everything else stays on the main model. A language set
+    # by an app rule or profile picks the model directly. The second model
+    # gets no prompt (an English prompt hurts it), only your hotwords.
+    # language: '' (off), he, ar, ... ; model: a key from the list above
+    language_model:
+        language: ''
+        model: hebrew-large-v3-turbo
+
 streaming: # Real-time STT (Experimental)
     # Real-time streaming speech recognition using sherpa-onnx
     streaming_enabled: false
@@ -254,14 +278,21 @@ audio: # Audio Recording Settings
     # 2 = stereo
     channels: 1
 
-    # Pause currently-playing media on recording start (Spotify, YouTube,
-    # browsers...) through the Windows media sessions, or the play/pause key
-    # where those aren't available. Does NOT auto-resume.
+    # "Once you start talking" below means a quarter second of speech at your
+    # own loudness (learned for "Only my voice", less its margin_db), so other
+    # voices and noises don't count; until your level is learned, any speech
+    # counts. With "Stop on silence" off both happen when recording starts.
+
+    # Pause currently-playing media (Spotify, YouTube, browsers...) once you
+    # start talking, and play it again when the recording ends, through the
+    # Windows media sessions, or the play/pause key where those aren't
+    # available.
     pause_media_on_record: false
 
-    # Lower the computer's volume while you talk, so speakers don't drown out
-    # your voice. Only lowers it when it is louder than `level` (percent), and
-    # puts it back when the recording ends unless you changed it meanwhile.
+    # Lower the computer's volume once you start talking, so speakers don't
+    # drown out your voice. Only lowers it when it is louder than `level`
+    # (percent), and puts it back when the recording ends unless you changed
+    # it meanwhile.
     lower_volume:
         enabled: false
         level: 20
@@ -301,6 +332,18 @@ audio: # Audio Recording Settings
     whisper_mode:
         enabled: false
         max_gain: 8.0
+
+    # Only my voice: leave out speech that isn't yours (a TV across the room,
+    # someone talking in your pauses). Koli learns how loud you speak from
+    # your hotkey dictations (after 3 of them, per microphone) and drops the
+    # parts of a recording much quieter than that.
+    voice_filter:
+        # auto = auto-dictation only (you didn't press a key to start), or all
+        apply_to: auto
+        quieter_than_me: true
+        # How much quieter than you a voice must be to be left out (dB).
+        # 6 dB is about half as loud; a TV across the room is often 15+.
+        margin_db: 12
 
 clipboard: # Clipboard Behavior
     # Automatically paste after transcription

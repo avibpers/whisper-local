@@ -108,6 +108,37 @@ class Bridge:
         # The page caps its menu at this height and scrolls the rest.
         return {'max_height': self._host._max_bar_height()}
 
+    # What the header monitor shows: the graphics card Koli runs on (its memory
+    # in use, and how much of it is Koli's) or, on the CPU, Koli's memory and
+    # processor use; plus which models are loaded. Polled every few seconds
+    # while the window is open.
+    @_api
+    def resources(self):
+        import psutil
+        from ..platform import gpu
+        engine = self._sm.whisper_engine
+        if getattr(self, '_process', None) is None:
+            self._process = psutil.Process()
+        process = self._process
+        models = [getattr(engine, 'model_key', None)]
+        if getattr(engine, 'language_model', None) is not None:
+            models.append(engine.language_model_key)
+        out = {'device': getattr(engine, 'device', 'cpu'), 'models': [m for m in models if m],
+               'ram_mb': process.memory_info().rss // 2 ** 20,
+               'cpu_percent': round(process.cpu_percent(None) / (psutil.cpu_count() or 1), 1)}
+        if out['device'] == 'cuda':
+            index = int(getattr(engine, 'device_index', 0) or 0)
+            out['gpu'] = gpu.gpu_memory(index)
+            out['gpu_index'] = index
+            out['koli_gpu_mb'] = gpu.process_gpu_memory_mb(os.getpid())
+        return out
+
+    # The toast of a problem was closed: it is not shown again.
+    @_api
+    def problem_dismiss(self, problem_id):
+        from .events import dismiss_problem
+        dismiss_problem(int(problem_id))
+
     # Press-and-drag on the bubble: numbered moves in page pixels from where
     # the press began; the last one (done) remembers the spot.
     @_api
@@ -485,17 +516,27 @@ class Bridge:
     @_api
     def rule_save(self, entry, original_id=None):
         from ..services import rules
-        return rules.save_rule(entry, original_id)
+        ident = rules.save_rule(entry, original_id)
+        self._rules_changed()
+        return ident
 
     @_api
     def rule_enable(self, ident, enabled):
         from ..services import rules
         rules.set_rule_enabled(ident, bool(enabled))
+        self._rules_changed()
 
     @_api
     def rule_delete(self, ident):
         from ..services import rules
         rules.delete_rule(ident)
+        self._rules_changed()
+
+    # A rule may turn auto-dictation on for its app: hook or unhook focus now.
+    def _rules_changed(self):
+        coordinator = getattr(self._sm, '_auto_dictation', None)
+        if coordinator is not None:
+            coordinator.apply_settings()
 
     @_api
     def rules_reorder(self, ids):

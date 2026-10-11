@@ -92,6 +92,16 @@ class _EngineThread:
 ENGINE_THREAD = _EngineThread()
 
 
+# A problem you must see (bubble and app). The UI's event module is optional
+# here: the engine also runs headless (--serve, tests).
+def _report_problem(message: str) -> None:
+    try:
+        from .ui.events import report_problem
+        report_problem(message)
+    except Exception:
+        pass
+
+
 class WhisperEngine:
     def __init__(self,
                  model_key: str = "tiny",
@@ -105,9 +115,14 @@ class WhisperEngine:
                  vad_manager = None,
                  model_registry = None,
                  log_transcriptions: bool = False,
-                 device_index: int = 0):
+                 device_index: int = 0,
+                 language_model: Optional[tuple] = None):
 
         self.model_key = model_key
+        # An optional second model for one language, as (language, model key):
+        # ("he", "hebrew-large-v3-turbo") sends Hebrew to ivrit-ai's model.
+        self.language_model = None
+        self.language_model_lang, self.language_model_key = language_model or (None, None)
         self.device = device
         # Which graphics card, when there is more than one (0 = the first).
         self.device_index = int(device_index or 0)
@@ -178,6 +193,52 @@ class WhisperEngine:
         except Exception as e:
             self.logger.error(f"Failed to load Whisper model: {e}")
             raise
+        self._load_language_model()
+
+    # The second model, loaded next to the main one so switching per dictation
+    # costs nothing. If it fails, dictation carries on with the main model.
+    def _load_language_model(self):
+        if not self.language_model_lang or not self.language_model_key:
+            return
+        try:
+            print(f"🧠 Loading the {self.language_model_lang} model [{self.language_model_key}]...")
+            self.language_model = ENGINE_THREAD.run(
+                WhisperModel,
+                self._get_model_source(self.language_model_key),
+                device=self.device,
+                device_index=self.device_index if self.device == 'cuda' else 0,
+                compute_type=self.compute_type
+            )
+            print(f"   ✓ {self.language_model_lang} speech goes to [{self.language_model_key}]")
+        except Exception as e:
+            self.language_model = None
+            self.logger.error(f"Second model [{self.language_model_key}] failed to load, using the main model: {e}")
+            print(f"   ⚠ The {self.language_model_lang} model could not load; the main model does everything")
+            _report_problem(f"The second model ({self.language_model_key}) could not load, so the main model "
+                            f"transcribes everything. {e}")
+
+    # Which model transcribes this clip, in which language, with which prompt.
+    # With a second model: a language set by a rule or profile picks directly;
+    # otherwise the main model detects the language (fast, one pass) and that
+    # language goes to the second model. The second model gets no prompt: an
+    # English prompt pushes a Hebrew model off course. Runs on the engine
+    # thread, inside the decode.
+    # Returns (model, key, language, prompt, detection probability or None).
+    def _route(self, audio: np.ndarray) -> tuple:
+        if getattr(self, 'language_model', None) is None:
+            return self.model, self.model_key, self.language, self.initial_prompt, None
+        target = self.language_model_lang
+        if self.language:
+            if self.language == target:
+                return self.language_model, self.language_model_key, target, None, None
+            return self.model, self.model_key, self.language, self.initial_prompt, None
+        detected, probability, _ = self.model.detect_language(audio)
+        self.logger.info(f"Detected {detected} ({probability:.2f}) for the model choice")
+        if detected == target and probability >= 0.5:
+            return self.language_model, self.language_model_key, target, None, probability
+        # Detected once already: pass a sure guess on instead of detecting again.
+        return (self.model, self.model_key, detected if probability >= 0.5 else None,
+                self.initial_prompt, probability)
 
     # Fail fast when the CUDA runtime is incomplete. The model itself loads
     # without cuBLAS/cuDNN; their absence only shows on the first inference,
@@ -298,42 +359,50 @@ class WhisperEngine:
             
             audio_data = audio_data.astype(np.float32)
             
-            transcribe_kwargs = dict(
-                beam_size=self.beam_size,
-                language=self.language,
-                task=self.task,
-                condition_on_previous_text=False,
-            )
-            if self.initial_prompt:
-                transcribe_kwargs["initial_prompt"] = self.initial_prompt
-            if self.hotwords:
-                transcribe_kwargs["hotwords"] = self.hotwords
-
             # The segments come back as a lazy generator; consuming it is where
-            # the decoding runs, so that stays on the engine thread too.
+            # the decoding runs, so that stays on the engine thread too, along
+            # with picking the model. Each piece keeps Whisper's own numbers on
+            # how sure it was, so auto-dictation can leave out what was noise.
             def decode():
-                segments, info = self.model.transcribe(audio_data, **transcribe_kwargs)
-                return ''.join(segment.text for segment in segments), info
+                model, key, language, prompt, detected_probability = self._route(audio_data)
+                kwargs = dict(beam_size=self.beam_size, language=language, task=self.task,
+                              condition_on_previous_text=False)
+                if prompt:
+                    kwargs["initial_prompt"] = prompt
+                if self.hotwords:
+                    kwargs["hotwords"] = self.hotwords
+                segments, info = model.transcribe(audio_data, **kwargs)
+                pieces = [{'text': s.text, 'start': float(s.start), 'end': float(s.end),
+                           'no_speech_prob': round(float(s.no_speech_prob), 3),
+                           'avg_logprob': round(float(s.avg_logprob), 3),
+                           'compression_ratio': round(float(s.compression_ratio), 2)} for s in segments]
+                return pieces, info, key, detected_probability
 
-            transcribed_text, info = ENGINE_THREAD.run(decode)
-            transcribed_text = transcribed_text.strip()
-            
+            pieces, info, used_key, detected_probability = ENGINE_THREAD.run(decode)
+            transcribed_text = ''.join(p['text'] for p in pieces).strip()
+
             end_time = time.time()
             transcription_time = end_time - start_time
             print(f"   ✓ Transcription completed in {transcription_time:.1f} seconds")
-            
-            # Log some info about what we transcribed
+
+            # Log some info about what we transcribed. A language Koli detected
+            # and passed on reads as certain to Whisper; the detection's own
+            # confidence is the honest one.
             detected_language = info.language
-            confidence = info.language_probability
+            confidence = detected_probability if detected_probability is not None else info.language_probability
             self.last_info = {
                 'language': detected_language,
                 'language_probability': round(float(confidence or 0), 3),
                 'seconds': round(transcription_time, 2),
-                'model': self.model_key, 'device': self.device,
+                'model': used_key, 'device': self.device,
                 'compute_type': self.compute_type, 'beam_size': self.beam_size,
                 'backend': 'faster_whisper',
+                'segments': pieces,
             }
             self.logger.info(f"Transcription complete. Language: {detected_language} (confidence: {confidence:.2f}) - Time: {transcription_time:.2f}s")
+            # The numbers only, never the text: why a piece was kept or left out.
+            self.logger.info("Pieces (no-speech / log-prob / repetition): " + ', '.join(
+                f"{p['no_speech_prob']:.2f}/{p['avg_logprob']:.2f}/{p['compression_ratio']:.1f}" for p in pieces))
             if self.log_transcriptions:
                 self.logger.info(f"Transcribed text: '{transcribed_text}'")
             else:
@@ -348,9 +417,28 @@ class WhisperEngine:
                 
         except Exception as e:
             self.logger.error(f"Transcription failed: {e}")
+            _report_problem(f"Transcription failed: {e}")
             return None
     
     
+    # Gives the graphics memory back now instead of whenever Python collects
+    # the engine: after a few model switches the old weights would otherwise
+    # keep a card too full for a second model. Called on a swapped-out engine.
+    def unload(self) -> None:
+        def free():
+            for model in (self.model, getattr(self, 'language_model', None)):
+                if model is None:
+                    continue
+                try:
+                    model.model.unload_model()
+                except Exception as e:
+                    self.logger.debug(f"Unloading a model failed: {e}")
+        ENGINE_THREAD.run(free)
+        self.model = None
+        self.language_model = None
+        self.logger.info(f"Unloaded [{self.model_key}]"
+                         + (f" and [{self.language_model_key}]" if getattr(self, 'language_model_key', None) else ''))
+
     def change_model(self,
                      new_model_key: str,
                      progress_callback: Optional[Callable[[str], None]] = None):

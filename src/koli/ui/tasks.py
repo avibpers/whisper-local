@@ -10,7 +10,7 @@ import threading
 import time
 from typing import Callable, Optional
 
-from .events import publish
+from .events import publish, report_problem
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +101,8 @@ class TaskManager:
                 task.status = 'failed'
                 task.error = str(e) or e.__class__.__name__
                 logger.error(f"Task '{label}' failed: {e}", exc_info=True)
+                # Seen in the bubble and the app, even if the window is closed now.
+                report_problem(f"{label} didn't work, so the previous setting is back. {task.error}")
             task.finished = time.time()
             self._emit(task)
             if on_done:

@@ -5,6 +5,28 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 ## [Unreleased]
 
 ### Added
+- **Memory monitor in the header.** A chip shows the graphics card Koli runs
+  on: how much Koli itself uses and the card's total in use ("Koli 4.4 · GPU
+  7.2/12 GB"), turning orange above 85%; on the processor, Koli's memory and
+  CPU use. Hover for the card's name and the models loaded.
+- **Problems you can't miss.** A model that didn't load, a background job
+  that failed or a transcription that broke now flashes in the bubble (with
+  Details) and stays as a toast in the app until you close it, including
+  problems from while the window was closed.
+- **A second model for one language.** Settings → Model & engine → "Second
+  model for": pick a language (say Hebrew) and a model for it (the new
+  ivrit.ai Hebrew models are in the list). Each dictation's language is
+  detected by the main model; that language goes to the second model and
+  everything else stays on the main one. An app rule or profile that sets the
+  language picks the model directly. The second model gets no prompt (an
+  English prompt hurts a Hebrew model), only your favored words. Off by
+  default; both models stay loaded, so switching costs nothing per dictation.
+- **Only my voice (loudness).** Koli learns how loud you speak from your
+  hotkey dictations (per microphone, after 3) and leaves out the parts of a
+  recording much quieter than you: a TV across the room, someone talking in
+  your pauses. Settings → Microphone & audio → Only my voice: on by default for
+  auto-dictation, optionally for all recordings, with how much quieter (12 dB
+  by default).
 - **A slimmer bubble you can place anywhere.** While Koli waits it is a thin
   line close to the screen edge, upright on a side and flat at the top or
   bottom. Press on the bubble and drag it anywhere; it stays where you drop
@@ -13,6 +35,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
   text field", which moves it to the right end of each text field you click
   into. "Where Koli sits" is drawn as a small screen with every spot in its
   real place.
+- **A wait before sending per app.** An app rule (say chat-apps) can set its
+  own "Wait before sending", replacing the main one in that app, or send at
+  once there.
 - **App rules for some windows of a program.** A rule can now require words in
   the window title as well as the program, e.g. Chrome only when the title
   contains "WhatsApp" (`window_title: ["WhatsApp"]` in `app_rules.yaml`). The
@@ -60,7 +85,38 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 - `--open` starts with the window open. `--replace` restores the old
   "take over" behaviour of a second launch.
 
+### Changed
+- **Pausing the music and lowering the volume wait for your voice.** Both now
+  happen once Koli hears you start talking, not when the recording starts, so
+  a text field that starts auto-dictation no longer quiets the computer for
+  nothing. "You" means a quarter second of speech at your own loudness, the
+  level "Only my voice" learns (less its margin), so a TV, someone across the
+  room or a noise doesn't count; until your level is learned, any speech does.
+  When the recording ends, the players Koli paused play again (one you already
+  restarted is left alone) and the volume comes back. With "Stop on silence"
+  off both still happen when recording starts.
+
 ### Fixed
+- **Switching models leaked graphics memory.** The engine Koli started with
+  was never freed, and a swapped-out engine kept its models until Python got
+  around to it, so after a few switches a second model no longer fit (6.4 GB
+  held with one 2.4 GB model loaded). The old engine is now unloaded at once.
+- **Auto-dictation sent messages on its own in chat apps.** With an app rule
+  that auto-sends, every pause pressed Enter, so one listening session became
+  several sent messages, some of them made of background noise. Now each pause
+  only pastes, and the finished session is sent once, after the app's wait
+  before sending (or the main one), with the bubble's countdown to stop it.
+  Without a wait set, auto-dictation leaves the message unsent.
+- **Made-up text from noise.** Whisper sometimes fills a noisy clip with its
+  own prompt ("Conversational chat message." from the chat rule's prompt).
+  A transcript made only of prompt words is now dropped instead of typed.
+  Auto-dictation also leaves out what Whisper itself is unsure of: a clip
+  whose language it could barely guess, or parts it rates as likely silence,
+  low-confidence or repeating ("I'm sick, I'm sick"). Hotkey recordings are
+  not filtered. The log now records those numbers (never the text).
+- **An app rule's "Start listening when a text field gets focus: On" did
+  nothing** unless the Settings switch was on too. It now turns auto-dictation
+  on in that app alone, and saving the rule applies it at once.
 - **Minimize, maximize and close were sometimes missing** from the app
   window's top bar: the page's startup data could arrive after, and overwrite,
   the message that the window draws its own title bar.
