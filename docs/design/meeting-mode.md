@@ -310,6 +310,13 @@ re-clusters speakers and cleans text; search across meetings.
 - Short fragments can be misdetected (en/es/it for Hebrew "no, no, no");
   "Languages I speak" in Settings → General constrains detection for
   meetings too.
+- Second real test: one remote person became twelve "Speaker N"s from 1-2 s
+  chunks; their stored voiceprints agreed at cosine 0.02-0.59 (median 0.26)
+  against a 0.55 threshold. Measured on two synthetic voices, the VoxCeleb
+  ERes2Net separates better than the Chinese one, so it is the default; the
+  threshold is 0.30; a chunk under 2 s of speech never opens a speaker (it
+  joins its best match or whoever spoke last, without moving a voiceprint);
+  the last speaker keeps the turn down to 0.20.
 - Startup: pywebview gives the hidden main window 10 s to show before it
   creates the other windows, and under load (a Meet call already running,
   twelve Chrome windows to probe, a loopback opening, a model loading) it

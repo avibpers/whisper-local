@@ -107,7 +107,7 @@ class MeetingTranscriber:
         if chunk['stream'] == 'mic':
             speaker = 'you'
         else:
-            speaker, entry = self.tracker.label(chunk['audio'])
+            speaker, entry = self.tracker.label(chunk['audio'], speech_s=chunk.get('speech_s'))
             if entry is not None:
                 self.on_speaker(entry)
         self.on_turn({'t0': chunk['t0'], 't1': chunk['t1'], 'stream': chunk['stream'],

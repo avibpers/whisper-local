@@ -558,6 +558,47 @@ class SpeakerTests(unittest.TestCase):
         t2 = SpeakerTracker(embed=lambda audio: None)
         self.assertEqual(t2.label(np.zeros(16000)), (SpeakerTracker.UNKNOWN, None))
 
+    # A short chunk's voiceprint is unreliable (a real call turned one person
+    # into twelve "speakers" from 1-2 s chunks), so it never opens a new
+    # speaker: it joins the best match when there is any resemblance, else
+    # whoever spoke last on the loopback.
+    def test_short_chunk_never_creates_a_speaker(self):
+        from koli.meeting.speakers import SpeakerTracker
+        vecs = {'a': self.unit(1, 0, 0, 0), 'a_short': self.unit(0.5, 0.86, 0, 0), 'far': self.unit(0, 0, 1, 0),
+                'e': self.unit(0, 0, 0, 1)}
+        t = SpeakerTracker(embed=lambda audio: vecs[audio], similarity=0.30)
+        self.assertEqual(t.label('far', speech_s=1.0)[0], 's1', 'the first voice is kept even when short')
+        self.assertEqual(t.label('a', speech_s=4.0)[0], 's2')
+        self.assertEqual(t.label('a_short', speech_s=1.0)[0], 's2', 'some resemblance to a: joins a')
+        sid, entry = t.label('e', speech_s=1.0)
+        self.assertEqual(sid, 's2', 'far from everyone but short: stays with the last speaker')
+        self.assertIsNone(entry, 'a continuity join leaves the voiceprint alone')
+        self.assertEqual(t.label('e', speech_s=4.0)[0], 's3', 'long and far: a new speaker')
+
+    # Near the threshold the speaker who just spoke wins (turns are sticky).
+    def test_last_speaker_is_sticky_near_the_threshold(self):
+        from koli.meeting.speakers import SpeakerTracker
+        vecs = {'a': self.unit(1, 0, 0), 'b': self.unit(0, 1, 0), 'near_a': self.unit(0.25, 0.97, 0),
+                'weak': self.unit(0.25, 0.0, 0.97)}
+        t = SpeakerTracker(embed=lambda audio: vecs[audio], similarity=0.30)
+        t.label('a', speech_s=4.0)
+        t.label('b', speech_s=4.0)
+        self.assertEqual(t.label('near_a', speech_s=4.0)[0], 's2', 'a clear better match wins')
+        t.label('a', speech_s=4.0)
+        # 0.25 to the last speaker (a), 0.0 to b: under the threshold but within the sticky margin of a
+        self.assertEqual(t.label('weak', speech_s=4.0)[0], 's1')
+
+    def test_default_voiceprint_model_is_the_voxceleb_one(self):
+        import yaml
+        from koli.config_manager import _resolve_platform_values
+        from koli.settings import schema
+        d = _resolve_platform_values(yaml.safe_load(
+            (ROOT / 'src' / 'koli' / 'config.defaults.yaml').read_text(encoding='utf-8')))['meeting']
+        self.assertEqual(d['speaker_model'], 'eres2net-en')
+        self.assertEqual(d['speaker_models']['eres2net-en']['files']['model'],
+                         '3dspeaker_speech_eres2net_sv_en_voxceleb_16k.onnx')
+        self.assertIn('eres2net-en', [c[0] for c in schema.get('meeting.speaker_model').choices])
+
     def test_colours_wrap_after_seven(self):
         from koli.meeting.speakers import SpeakerTracker
         t = SpeakerTracker(embed=lambda audio: audio, similarity=0.99)
@@ -690,8 +731,8 @@ class MeetingSettingsTests(unittest.TestCase):
         self.assertEqual(d['start_speech_seconds'], 3)
         self.assertEqual(d['language'], 'auto')
         self.assertEqual(d['model'], '')
-        self.assertEqual(d['speaker_model'], 'eres2net')
-        self.assertIn('eres2net', d['speaker_models'])
+        self.assertEqual(d['speaker_model'], 'eres2net-en')
+        self.assertIn('eres2net-en', d['speaker_models'])
         self.assertEqual(d['panel']['opacity'], 85)
         self.assertEqual(d['panel']['position'], 'right-edge')
         self.assertEqual((d['panel']['width'], d['panel']['height']), (380, 420))

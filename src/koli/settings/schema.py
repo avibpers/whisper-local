@@ -356,7 +356,8 @@ SCHEMA = [
     # Reserved: a separate model for meetings is not wired yet, so it stays out of the page.
     _S('meeting.model', 'Meeting model', 'meetings', 'text', apply=INTERNAL, mode=HIDDEN),
     _S('meeting.speaker_model', 'Voiceprint model', 'meetings', 'select', apply=BACKGROUND,
-       choices=[['eres2net', '3D-Speaker ERes2Net (40 MB)']], help='Tells speakers apart. Downloaded at the first meeting.'),
+       choices=[['eres2net-en', '3D-Speaker ERes2Net VoxCeleb (26 MB)'], ['eres2net', '3D-Speaker ERes2Net Chinese (40 MB)']],
+       help='Tells speakers apart. Downloaded at the first meeting.'),
     _S('meeting.speaker_models', 'Voiceprint models', 'meetings', 'readonly', help='Defined in user_settings.yaml.'),
     _S('meeting.panel.opacity', 'Panel opacity', 'meetings', 'range', min=40, max=100, step=5, unit='%', group='Panel'),
     _S('meeting.panel.position', 'Panel position', 'meetings', 'segmented', choices=POSITIONS, group='Panel',
