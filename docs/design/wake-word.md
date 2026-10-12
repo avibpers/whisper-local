@@ -71,6 +71,15 @@ mic ──► TEN VAD ──► speech burst ──► [personal word: is it you
    Koli keeps the audio. The check runs on the first ~2 s, or on the whole
    burst if it is shorter. A burst that has already been checked and wasn't
    the wake word is ignored until the next silence.
+   **Quieter than you is silence.** Music from the speakers reads as speech
+   to TEN VAD and never pauses, so in the first real test (2026-10-12) every
+   burst ran to the 8 s cut: commands waited ~6 s and a wake word said
+   mid-burst was never checked. Speech more than the margin (12 dB) under
+   your level, on a 0.3 s energy average like the recorder's own gate,
+   counts as silence. Your level is the one measured when you recorded your
+   word on this microphone, else the one learned from hotkey dictations.
+   Whatever keeps sounding, a command is cut 4 s after the wake word, and a
+   command after a pause or a follow-up at 4 s.
 3. **Your voice (personal word only).** `my_voice_similarity(audio, mic)`
    compares the burst with your voiceprint on this microphone. Below the
    threshold, the burst is dropped before Whisper runs. That keeps the TV

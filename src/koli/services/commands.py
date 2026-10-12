@@ -5,6 +5,7 @@
 # changes on its own (both files hot-reload); transforms also re-register
 # their shortcuts.
 
+import statistics
 from pathlib import Path
 
 from .. import defaults_merge as dm
@@ -243,7 +244,8 @@ def wake_record(sm) -> dict:
     voiceprint = meetings.voiceprint_of(audio)
     if voiceprint is None:
         raise ValueError("Too short or too quiet to learn your voice from. Say it again.")
-    listener.recordings.append({'heard': heard, 'voiceprint': voiceprint})
+    from ..voice_filter import speech_level_db
+    listener.recordings.append({'heard': heard, 'voiceprint': voiceprint, 'level': speech_level_db(audio)})
     return {'heard': heard, 'count': len(listener.recordings), 'needed': WAKE_RECORDINGS}
 
 
@@ -266,7 +268,11 @@ def wake_save(sm, settings) -> dict:
         spellings = existing + [s for s in spellings if s not in existing]
     else:
         listener.wake_voices.clear()
-    listener.wake_voices.set(_wake_mic(sm), [r['voiceprint'] for r in recordings])
+    # How loud you said it: quieter sound on this microphone (music from the
+    # speakers) then doesn't hold the wake word's bursts open.
+    levels = [r['level'] for r in recordings if r.get('level') is not None]
+    level_db = float(statistics.median(levels)) if levels else None
+    listener.wake_voices.set(_wake_mic(sm), [r['voiceprint'] for r in recordings], level_db=level_db)
     settings.set('wake_word.phrases', spellings, source='app', record_undo=False)
     settings.set('wake_word.only_my_voice', True, source='app', record_undo=False)
     listener.recordings = []

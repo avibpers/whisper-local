@@ -171,8 +171,16 @@ class WakeVoices:
         norm = float(np.linalg.norm(vec))
         return vec / norm if norm > 0 else None
 
-    # Keeps the average of `vectors` (one per recording) for `mic`.
-    def set(self, mic: str, vectors: List[np.ndarray]) -> None:
+    # How loud you said your word on `mic` (dBFS), or None.
+    def level(self, mic: str) -> Optional[float]:
+        with self._lock:
+            entry = self._read().get(mic or 'default') or {}
+        value = entry.get('level_db')
+        return float(value) if isinstance(value, (int, float)) else None
+
+    # Keeps the average of `vectors` (one per recording) for `mic`, and how
+    # loud you said it, so quieter sound there isn't taken for you.
+    def set(self, mic: str, vectors: List[np.ndarray], level_db: Optional[float] = None) -> None:
         units = []
         for v in vectors:
             v = np.asarray(v, dtype=np.float32)
@@ -186,6 +194,8 @@ class WakeVoices:
             data = self._read()
             data[mic or 'default'] = {'centroid': [round(float(x), 6) for x in centroid], 'count': len(units),
                                       'saved': time.strftime('%Y-%m-%dT%H:%M:%S')}
+            if level_db is not None:
+                data[mic or 'default']['level_db'] = round(float(level_db), 1)
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self.path.write_text(json.dumps(data), encoding='utf-8')
 
@@ -211,6 +221,7 @@ class Burst:
         self.over = False
         self.head_done = False
         self.is_wake = False      # this burst held the wake word
+        self.max_frames = 0       # cut here even if it never goes quiet (set by the cutter)
 
     def audio(self) -> np.ndarray:
         return np.concatenate(self.frames) if self.frames else np.zeros(0, dtype=np.float32)
@@ -243,6 +254,7 @@ class BurstCutter:
         if burst is None:
             if speech and may_start():
                 burst = self.burst = Burst(self._preroll)
+                burst.max_frames = self.max_frames
                 self._preroll.clear()
             else:
                 self._preroll.append(frame)
@@ -254,7 +266,7 @@ class BurstCutter:
         else:
             burst.silence_frames += 1
         events = []
-        over = burst.silence_frames >= self.end_frames or len(burst.frames) >= self.max_frames
+        over = burst.silence_frames >= self.end_frames or len(burst.frames) >= burst.max_frames
         if over:
             burst.over = True
             self.burst = None
@@ -264,6 +276,15 @@ class BurstCutter:
         if over:
             events.append(('end', burst))
         return events
+
+    # How long new bursts may run before they are cut.
+    def set_max_seconds(self, seconds: float) -> None:
+        self.max_frames = max(self.head_frames, int(round(seconds / FRAME_S)))
+
+    # Cut the burst in progress `seconds` from now at the latest.
+    def cut_after(self, seconds: float) -> None:
+        if self.burst is not None:
+            self.burst.max_frames = min(self.burst.max_frames, len(self.burst.frames) + int(round(seconds / FRAME_S)))
 
     # Forget the burst in progress (Koli got busy, the queue fell behind).
     def drop(self) -> None:
@@ -289,6 +310,17 @@ class WakeListener:
     LOCK_POLL_S = 2.0
     BUSY_POLL_S = 0.25
     QUEUE_SECONDS = 20.0      # audio waiting for the worker before it gives up on a burst
+    # Commands are short: whatever keeps sounding (music, a TV), the command
+    # is cut this long after the wake word, and a command said after a pause
+    # (or a follow-up) is cut at COMMAND_MAX_S, never at the 8 s burst cut.
+    COMMAND_AFTER_WAKE_S = 4.0
+    COMMAND_MAX_S = 4.0
+    # Sound quieter than your voice by more than the margin is silence: music
+    # from the speakers reads as speech to TEN VAD and would hold every burst
+    # open. Judged on the last LEVEL_WINDOW_S, like the recorder's own gate.
+    LEVEL_WINDOW_S = 0.3
+    FLOOR_CACHE_S = 5.0
+    DEFAULT_MARGIN_DB = 12.0
     DEFAULT_VOICE_MATCH = 0.45
 
     def __init__(self, state_manager, config_manager, *,
@@ -300,6 +332,8 @@ class WakeListener:
                  is_locked: Optional[Callable[[], bool]] = None,
                  publish: Optional[Callable] = None,
                  play_sound: Optional[Callable[[], None]] = None,
+                 frame_level: Optional[Callable[[np.ndarray], float]] = None,
+                 learned_level: Optional[Callable[[str], Optional[float]]] = None,
                  clock: Callable[[], float] = time.monotonic):
         self.sm = state_manager
         self.cm = config_manager
@@ -311,6 +345,10 @@ class WakeListener:
         self._is_locked = is_locked or _platform_is_locked
         self._publish = publish or _publish
         self._play_sound = play_sound or self._wake_sound
+        self._frame_level = frame_level or _frame_level_db
+        self._learned_level = learned_level or self._state_manager_level
+        self._recent_power = collections.deque(maxlen=max(1, int(round(self.LEVEL_WINDOW_S / FRAME_S))))
+        self._floor_cache = (None, None, -1e9)     # (mic, floor dB, when)
         self._clock = clock
         self.budget = CheckBudget(clock)
         self.cutter = BurstCutter()
@@ -486,6 +524,9 @@ class WakeListener:
 
     def feed(self, frame: np.ndarray, prob: float) -> None:
         self._warm_voice_model()
+        loud = self._loud_enough(frame)      # every frame, so the level window stays current
+        if prob >= BurstCutter.SPEECH and not loud:
+            prob = 0.0           # speech-like, but much quieter than you: music, a TV across the room
         for event, burst in self.cutter.feed(frame, prob, may_start=self._may_start):
             if event == 'head':
                 self._on_head(burst)
@@ -507,6 +548,43 @@ class WakeListener:
                 return
         if self.state in (WAITING, FOLLOW_UP) and self.cutter.burst is None and now >= self._deadline:
             self._sleep()
+
+    # Whether the last LEVEL_WINDOW_S is loud enough to be you: the mean of
+    # its energy (time before counts as silent) against your level less the
+    # margin. True when your level on this microphone isn't known.
+    def _loud_enough(self, frame: np.ndarray) -> bool:
+        rms = 10 ** (self._frame_level(frame) / 20)
+        self._recent_power.append(rms * rms)
+        floor = self.voice_floor_db()
+        if floor is None:
+            return True
+        power = sum(self._recent_power) / self._recent_power.maxlen
+        return 10 * np.log10(max(power, 1e-20)) >= floor
+
+    # Your level on this microphone less the margin (dBFS), or None. Your
+    # recorded wake word sets the level; otherwise the one learned from hotkey
+    # dictations ("Only my voice"). Looked up every FLOOR_CACHE_S.
+    def voice_floor_db(self) -> Optional[float]:
+        mic, floor, at = self._floor_cache
+        now = self._clock()
+        current = self._mic()
+        if current == mic and now - at < self.FLOOR_CACHE_S:
+            return floor
+        level = self.wake_voices.level(current)
+        if level is None:
+            try:
+                level = self._learned_level(current)
+            except Exception:
+                level = None
+        floor = None if level is None else float(level) - self._margin_db()
+        self._floor_cache = (current, floor, now)
+        return floor
+
+    def _margin_db(self) -> float:
+        try:
+            return float(self.sm._voice_margin_db())
+        except Exception:
+            return self.DEFAULT_MARGIN_DB
 
     def _may_start(self) -> bool:
         return self._clock() >= self._chime_until and self.may_listen()
@@ -558,6 +636,7 @@ class WakeListener:
         burst.is_wake = True
         if not burst.over:
             self._enter(AWAKE)                       # still talking: the command follows
+            self.cutter.cut_after(self.COMMAND_AFTER_WAKE_S)
         elif rest:
             self._run(text=rest, first=True)         # "Hey Koli next", all inside the head
         else:
@@ -691,11 +770,14 @@ class WakeListener:
     def _enter(self, state: str, seconds: float = 0.0) -> None:
         self.state = state
         self._deadline = self._clock() + seconds
+        # A command after a pause, or a follow-up, is short: cut it soon.
+        self.cutter.set_max_seconds(self.COMMAND_MAX_S if state in (WAITING, FOLLOW_UP) else BurstCutter.MAX_S)
         self._busy_checked = self._clock()
         self._publish('wake', {'phase': 'follow_up' if state == FOLLOW_UP else 'awake'})
 
     def _sleep(self) -> None:
         was, self.state = self.state, SLEEPING
+        self.cutter.set_max_seconds(BurstCutter.MAX_S)
         if was != SLEEPING:
             self._publish('wake', {'phase': 'sleeping'})
 
@@ -762,10 +844,20 @@ class WakeListener:
     def _state_manager_run(self, **kwargs) -> str:
         return self.sm.run_wake_command(**kwargs)
 
+    # Your speaking level on `mic`, learned from hotkey dictations.
+    def _state_manager_level(self, mic: str) -> Optional[float]:
+        levels = getattr(self.sm, 'voice_levels', None)
+        return levels.my_level(mic) if levels is not None else None
+
     def _wake_sound(self) -> None:
         feedback = getattr(self.sm, 'audio_feedback', None)
         if feedback is not None:
             feedback.play_wake_sound()
+
+
+def _frame_level_db(frame: np.ndarray) -> float:
+    from .voice_activity_detection import chunk_level_db
+    return chunk_level_db(frame)
 
 
 def _speech_prob_function():

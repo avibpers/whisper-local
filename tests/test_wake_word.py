@@ -128,8 +128,13 @@ class CheckBudgetTests(unittest.TestCase):
 
 import numpy as np  # noqa: E402
 
-WORDS = {1: 'hey koli', 2: 'next song', 3: 'undo', 4: 'koli', 5: 'ding', 9: 'blah blah'}
+# 8 is music from the speakers, quiet at the microphone: Whisper writes
+# nothing for it, but TEN VAD hears it as speech. 9 is loud talk (a TV).
+WORDS = {1: 'hey koli', 2: 'next song', 3: 'undo', 4: 'koli', 5: 'ding', 8: '', 9: 'blah blah'}
 COMMANDS = {'next song': 'media', 'undo': 'other'}
+# How loud each token is at the microphone (dBFS); you speak at -18.
+LEVELS = {0: -90.0, 8: -45.0}
+MY_LEVEL = -18.0
 
 
 def fake_transcribe(audio):
@@ -137,7 +142,11 @@ def fake_transcribe(audio):
     for value in np.round(audio).astype(int):
         if value and (not tokens or tokens[-1] != value):
             tokens.append(int(value))
-    return ' '.join(WORDS[t] for t in tokens) or None
+    return ' '.join(WORDS[t] for t in tokens if WORDS[t]) or None
+
+
+def fake_level(frame):
+    return LEVELS.get(int(round(float(frame[0]))), MY_LEVEL)
 
 
 class FakeStateManager:
@@ -185,7 +194,7 @@ class Config:
 
 
 class ListenerTestCase(unittest.TestCase):
-    def make(self, voiceprint=None, locked=False, outcomes=None, **wake):
+    def make(self, voiceprint=None, locked=False, outcomes=None, learned_level=None, **wake):
         from koli import wake_word
         import tempfile
         self.ww = wake_word
@@ -193,6 +202,7 @@ class ListenerTestCase(unittest.TestCase):
         self.sm = FakeStateManager()
         self.transcribed = []
         self.runs = []
+        self.run_times = []
         self.events = []
         self.sounds = 0
         self.locked = locked
@@ -212,11 +222,12 @@ class ListenerTestCase(unittest.TestCase):
             said = said if rest is None else rest
             self.runs.append({'text': said, 'audio': audio is not None, 'only_media': only_media,
                               'report_miss': report_miss})
+            self.run_times.append(self.clock.now)
             if self.outcomes:
                 return self.outcomes.pop(0)
             if not said:
                 return wake_word.EMPTY
-            kind = COMMANDS.get(said)
+            kind = next((k for phrase, k in COMMANDS.items() if phrase in said), None)
             if kind is None or (only_media and kind != 'media'):
                 return wake_word.MISSED
             return wake_word.RAN
@@ -228,7 +239,8 @@ class ListenerTestCase(unittest.TestCase):
             self.sm, Config(**wake), transcribe=transcribe, voiceprint=voiceprint, run_command=run_command,
             wake_voices=self.voices, speech_prob=lambda frame: 0.9 if np.any(frame) else 0.0,
             is_locked=lambda: self.locked, publish=lambda topic, payload: self.events.append((topic, payload)),
-            play_sound=sound, clock=self.clock)
+            play_sound=sound, clock=self.clock, frame_level=fake_level,
+            learned_level=lambda mic: learned_level)
         return self.listener
 
     def feed(self, value, seconds):
@@ -368,6 +380,50 @@ class WakeListenerTests(ListenerTestCase):
         self.quiet(0.8)
         self.assertEqual(self.runs, [])
         self.assertEqual(listener.state, self.ww.WAITING)
+
+
+# Music from the speakers sounds like speech to TEN VAD. Quieter than your
+# voice by more than the margin, it is silence, so bursts end when you stop;
+# and whatever keeps sounding, a command never waits for the 8 s cut.
+class BackgroundSoundTests(ListenerTestCase):
+    def test_quiet_music_doesnt_hold_bursts_open(self):
+        listener = self.make(learned_level=MY_LEVEL)
+        self.say(8, seconds=3)                 # music before you speak
+        self.say(1, 2, seconds=0.6)            # "hey koli next song", over the music
+        spoke = self.clock.now
+        self.say(8, seconds=3)                 # the music goes on
+        self.assertEqual(self.runs[-1]['text'], 'next song')
+        self.assertLess(self.run_times[-1] - spoke, 1.0, 'runs when you stop, not at the 8 s cut')
+        self.assertEqual(listener.state, self.ww.FOLLOW_UP)
+
+    def test_your_recorded_words_level_gates_without_a_learned_one(self):
+        self.make()
+        self.voices.set('Jabra', [np.ones(3, dtype=np.float32)], level_db=MY_LEVEL)
+        self.say(8, seconds=3)
+        self.say(1, 2, seconds=0.6)
+        spoke = self.clock.now
+        self.say(8, seconds=3)
+        self.assertEqual(self.runs[-1]['text'], 'next song')
+        self.assertLess(self.run_times[-1] - spoke, 1.0)
+
+    def test_without_a_level_the_command_is_cut_soon_after_the_wake(self):
+        self.make()
+        start = self.clock.now
+        self.say(1, 2, seconds=0.8)            # wake and command...
+        self.say(9, seconds=8)                 # ...then loud talk that never stops
+        self.assertTrue(self.runs)
+        self.assertEqual(self.runs[0]['text'], 'next song blah blah')
+        self.assertLessEqual(self.run_times[0] - start, 2.0 + self.ww.WakeListener.COMMAND_AFTER_WAKE_S + 0.1)
+
+    def test_waiting_for_a_command_doesnt_wait_for_the_8_s_cut(self):
+        listener = self.make()
+        self.say(1)
+        self.quiet(1)
+        self.assertEqual(listener.state, self.ww.WAITING)
+        start = self.clock.now
+        self.say(9, seconds=8)
+        self.assertTrue(self.runs)
+        self.assertLessEqual(self.run_times[0] - start, self.ww.WakeListener.COMMAND_MAX_S + 0.1)
 
 
 class PersonalWakeWordTests(ListenerTestCase):
@@ -675,7 +731,7 @@ class WakeSetupTests(ListenerTestCase):
         listener = self.make(voiceprint=lambda audio: self.sm.meetings.voice)
         self.sm.meetings = FakeVoiceMeetings(self.mine if voice is None else voice)
         self.sm._wake_listener = listener
-        said = [np.full(800, float(w), dtype=np.float32) for w in words]
+        said = [np.full(16000, float(w), dtype=np.float32) for w in words]
         listener.capture_word = lambda timeout=6.0, max_seconds=3.0: said.pop(0) if said else None
         self.settings = FakeSettings(listener.cm)
         return listener
@@ -689,6 +745,7 @@ class WakeSetupTests(ListenerTestCase):
         self.assertEqual((status['personal'], status['word'], status['recorded_here']), (True, 'koli', True))
         self.assertIn(('wake_word.only_my_voice', True, 'app'), self.settings.sets)
         self.assertIsNotNone(listener.wake_voices.get('Jabra'))
+        self.assertIsNotNone(listener.wake_voices.level('Jabra'), 'how loud you said it gates quieter sound')
         self.assertEqual(listener.recordings, [])
 
     def test_different_words_are_refused_and_start_over(self):
@@ -808,7 +865,7 @@ class WakeSafetyTests(unittest.TestCase):
         if sys.platform != 'win32':
             self.skipTest('Windows only')
         from koli.platform.windows import session
-        self.assertFalse(session.is_locked(), 'this desktop is unlocked')
+        self.assertIsInstance(session.is_locked(), bool)   # this desktop may be locked or not right now
         with mock.patch.object(session, '_user32', None):
             self.assertTrue(session.is_locked())
         broken = mock.Mock()
