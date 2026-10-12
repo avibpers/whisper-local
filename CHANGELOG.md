@@ -5,6 +5,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 ## [Unreleased]
 
 ### Added
+- **A detected meeting counts down before it starts.** When a call is found
+  in auto mode, the meeting panel shows which one ("Google Meet · Chrome")
+  and starts transcribing after 3 seconds, with **Stop** and **Start now**.
+  The panel also has a **Stop** button while the meeting runs. Once you stop
+  a meeting (or the countdown), it won't start again by itself until the call
+  has been quiet for 5 minutes; starting by hand always works. Both times are
+  in Settings → Meetings.
 - **Meetings tell people apart.** Each piece of the call is split where the
   voice changes, so three people talking in a row get three turns and their
   own labels, not one "Speaker 1" for everyone. Uses a small extra model

@@ -40,6 +40,8 @@ chunks, so text appears a few seconds behind speech.
 | A dictation recording (hotkey or auto-dictation) runs during a meeting | Those microphone seconds go to the dictation only, never into the meeting. The loopback keeps going. |
 | A dictation is being transcribed | The meeting's chunks wait. Dictation keeps its latency. |
 | Transcription falls behind (slow machine, big model) | Nothing is dropped. The header shows "25 s behind". |
+| Call detected in auto mode, speech heard | The panel shows "Meeting detected · Google Meet · Chrome" and "Transcribing in 3 s" with Stop and Start now (the session is `offered` with `offer.starts_at`); the meeting starts when the countdown ends. `meeting.countdown_seconds: 0` starts at once, as before. |
+| You stop a meeting, or the countdown | Saved (or not started), and auto start waits until the call has been silent for `meeting.quiet_minutes_after_stop` (5); speech heard on the call while waiting restarts the wait. A meeting that ends by itself (the call ended) doesn't wait. Starting by hand always works and ends the wait. The state carries `auto_paused`. |
 | Loopback chunk transcribed | The chunk is split by voice; each voice's sentences become a turn of their own. Each voice gets a voiceprint; it joins the nearest known speaker, takes the name of a voice you named in an earlier meeting, or becomes "Speaker N". Two voices of one chunk are never the same speaker. |
 | Microphone chunk transcribed | Speaker "You", always the same colour. |
 | Whisper wasn't sure of a sentence | It is left out: the auto-dictation check per sentence, and a clip under 2 s must be clearly sure. |
@@ -271,6 +273,8 @@ New section `meeting:` in `config.defaults.yaml`, schema section
 | `meeting.model` | "" (dictation model) | select from models | background |
 | `meeting.speaker_model` | eres2net | select | background |
 | `meeting.segmentation_model` | pyannote-segmentation | select (on / off) | next meeting |
+| `meeting.countdown_seconds` | 3 | number 0 to 30 (0 = start at once) | next detection |
+| `meeting.quiet_minutes_after_stop` | 5 | number 0 to 60 | next detection |
 | `meeting.remember_voices` | true | toggle | meeting end |
 | `meeting.keep_audio` | false | toggle | next chunk |
 | `meeting.speaker_models` | table | model_table | internal |

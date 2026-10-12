@@ -62,7 +62,8 @@ export function createMock(emit) {
   const LINES = [['s2', 'We fixed it, but if it breaks again, who knows.'], ['you', 'And the bridge is not working now?'],
     ['s1', 'On Friday they hit one or two bridges.'], ['you', 'שלום, אני אגיע מחר בבוקר.']];
   const emptyMeeting = () => ({ state: 'idle', id: null, title: '', source: {}, started_at: null, elapsed_s: 0, paused_by_user: false,
-    excluded: false, behind_s: 0, speakers: [], notice: null, turns: 0, can_continue: false, can_split: false, offer: null });
+    excluded: false, behind_s: 0, speakers: [], notice: null, turns: 0, can_continue: false, can_split: false, offer: null,
+    auto_paused: false });
   let meeting = emptyMeeting();
   const saved = { '2026-10-10-150000': { id: '2026-10-10-150000', title: 'Discord', source: { app: 'discord.exe', kind: 'native', title: '', code: '' },
     started_at: '2026-10-10T15:00:00+03:00', ended_at: '2026-10-10T15:42:00+03:00', language: 'auto', speakers: SPEAKERS,
@@ -94,7 +95,20 @@ export function createMock(emit) {
     meeting = emptyMeeting();
     emitMeeting();
   };
-  loaded.then(() => { if (new URLSearchParams(location.search).has('meeting')) startMeeting(); });
+  // ?detect: a Meet call found in auto mode, counting down like the real panel.
+  let countdown = null;
+  const detectMeeting = () => {
+    const source = { key: 'chrome.exe|Meet - abc-defg-hij', app: 'chrome.exe', kind: 'browser', title: 'Meet - abc-defg-hij' };
+    meeting = { ...emptyMeeting(), state: 'offered', source,
+      offer: { ...source, label: 'Google Meet', app_name: 'Chrome', starts_at: Date.now() / 1000 + 3 } };
+    emitMeeting();
+    countdown = setTimeout(() => { if (meeting.state === 'offered') startMeeting(); }, 3000);
+  };
+  loaded.then(() => {
+    const params = new URLSearchParams(location.search);
+    if (params.has('meeting')) startMeeting();
+    else if (params.has('detect')) detectMeeting();
+  });
 
   const log = (lv, msg, mod = 'koli.state_manager') => {
     seq += 1;
@@ -315,7 +329,11 @@ export function createMock(emit) {
     meeting_pause: () => { meeting = { ...meeting, state: 'paused', paused_by_user: true }; emitMeeting(); return ok(); },
     meeting_resume: () => { meeting = { ...meeting, state: 'live', paused_by_user: false, notice: 'resumed', can_split: true }; emitMeeting(); return ok(); },
     meeting_exclude: (on) => { meeting = { ...meeting, excluded: !!on }; emitMeeting(); return ok(); },
-    meeting_offer: (accept) => { if (accept) startMeeting(); else { meeting = emptyMeeting(); emitMeeting(); } return ok(); },
+    meeting_offer: (accept) => {
+      clearTimeout(countdown);
+      if (accept) startMeeting(); else { meeting = { ...emptyMeeting(), auto_paused: true }; emitMeeting(); }
+      return ok();
+    },
     meeting_rename: (sid, name) => { const sp = SPEAKERS.find((s) => s.id === sid); if (sp) sp.name = name; emitMeeting(); return ok(); },
     meeting_voices: () => ok(voices.slice()),
     meeting_forget_voice: (id) => { const had = voices.some((v) => v.id === id); voices = voices.filter((v) => v.id !== id); return ok(had); },

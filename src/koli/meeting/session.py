@@ -153,6 +153,10 @@ class SessionManager:
         self._pending = None             # the source waiting for speech, or offered
         self._speech_s = 0.0             # speech heard since the pending source appeared
         self._declined = set()           # source keys answered "Not now"
+        self._countdown_until = None     # an auto-detected call starts by itself at this moment
+        self._cancel_countdown = None
+        self._stopped_at = None          # you stopped a meeting: auto start waits for a quiet call
+        self._last_call_speech = None    # speech heard on the call since you stopped
         self._paused_at = None           # when the current pause began
         self._gap_open = None            # index into meeting['gaps'] of the open gap
         self._cancel_gap_timer = None
@@ -213,8 +217,21 @@ class SessionManager:
                 'turns': len(m['turns']) if m else 0,
                 'can_continue': self._previous is not None and self.state == 'live',
                 'can_split': self._resumed_turn_index is not None and self.state == 'live',
-                'offer': dict(self._pending) if self.state == 'offered' and self._pending else None,
+                'offer': self._offer_payload(),
+                'auto_paused': self._stopped_at is not None,
             }
+
+    # The detected call, for the panel: its name ("Google Meet"), its app
+    # ("Chrome") and, for an auto start, when the countdown ends.
+    def _offer_payload(self) -> Optional[dict]:
+        if self.state != 'offered' or not self._pending:
+            return None
+        app = self._pending.get('app', '')
+        offer = {**self._pending, 'label': title_for(self._pending),
+                 'app_name': APP_NAMES.get(app, app.replace('.exe', '').title())}
+        if self._countdown_until is not None:
+            offer['starts_at'] = self._countdown_until.timestamp()
+        return offer
 
     def _emit(self):
         self._publish('meeting', self.state_payload())
@@ -246,6 +263,7 @@ class SessionManager:
                 return
             if self.state == 'offered':
                 if self._pending['key'] not in keys:
+                    self._clear_countdown()
                     self._pending = None
                     self.state = 'idle'
                     self._emit()
@@ -285,9 +303,15 @@ class SessionManager:
         return src.get('app') == source.get('app') and src.get('title') == source.get('title')
 
     # Speech heard on the loopback: a pending source starts once enough of it.
+    # In auto mode the panel first counts down (meeting.countdown_seconds)
+    # with Stop and Start now; 0 starts at once. After you stopped a meeting,
+    # nothing starts until the call has been quiet for a while.
     def on_speech(self, seconds: float):
         with self._transition():
             if self.state != 'idle' or not self._pending:
+                return
+            if self._waiting_for_quiet():
+                self._last_call_speech = self._now()
                 return
             self._speech_s += float(seconds)
             if self._speech_s < float(self._settings('meeting.start_speech_seconds', 3) or 3):
@@ -297,22 +321,78 @@ class SessionManager:
                 self.state = 'offered'
                 self._emit()
                 return
-            self._begin(source, notice=None)
+            countdown = float(self._settings('meeting.countdown_seconds', 3) or 0)
+            if countdown <= 0:
+                self._begin(source, notice=None)
+                return
+            self.state = 'offered'
+            self._countdown_until = self._now() + datetime.timedelta(seconds=countdown)
+            self._cancel_countdown = self._schedule(countdown, self._countdown_done)
+            self._emit()
+
+    def _countdown_done(self):
+        with self._transition():
+            self._cancel_countdown = None
+            if self.state == 'offered' and self._countdown_until is not None and self._pending:
+                self._countdown_until = None
+                self._begin(self._pending, notice=None)
+
+    def _clear_countdown(self):
+        if self._cancel_countdown:
+            self._cancel_countdown()
+        self._cancel_countdown = None
+        self._countdown_until = None
+
+    # ── Quiet after you stop ─────────────────────────────────────────────────
+    # Stopping a meeting (or an auto start's countdown) means "not this call":
+    # auto start stays off until the call has been silent for
+    # meeting.quiet_minutes_after_stop, so it doesn't start again a second
+    # later. Starting by hand always works and ends the wait.
+
+    def _stopped_by_you(self):
+        self._stopped_at = self._now()
+        self._last_call_speech = None
+        logger.info("Auto start waits for the call to be quiet")
+
+    # Whether auto start is still waiting; ends the wait once the call has
+    # been quiet long enough since you stopped or since it last spoke.
+    def _waiting_for_quiet(self) -> bool:
+        if self._stopped_at is None:
+            return False
+        quiet_s = float(self._settings('meeting.quiet_minutes_after_stop', 5) or 0) * 60
+        since = self._last_call_speech or self._stopped_at
+        if (self._now() - since).total_seconds() >= quiet_s:
+            self._stopped_at = self._last_call_speech = None
+            logger.info("The call was quiet; auto start is back")
+            return False
+        return True
 
     def offer_accept(self):
         with self._transition():
             if self.state != 'offered' or not self._pending:
                 return
+            self._clear_countdown()
             self._begin(self._pending, notice=None)
 
+    # "Not now" (ask) skips this call until it goes away; Stop on an auto
+    # start's countdown waits for the call to be quiet instead (the call
+    # stays pending, so its speech keeps the wait going).
     def offer_decline(self):
         with self._transition():
             if self.state != 'offered' or not self._pending:
                 return
+            self._drop_offer()
+            self._emit()
+
+    def _drop_offer(self):
+        if self._countdown_until is not None:
+            self._stopped_by_you()
+        else:
             self._declined.add(self._pending['key'])
             self._pending = None
-            self.state = 'idle'
-            self._emit()
+        self._clear_countdown()
+        self.state = 'idle'
+        self._speech_s = 0.0
 
     # ── Commands ─────────────────────────────────────────────────────────────
 
@@ -320,17 +400,20 @@ class SessionManager:
         with self._transition():
             if self.state in ('live', 'paused'):
                 return
+            self._clear_countdown()
+            self._stopped_at = self._last_call_speech = None
             source = source or self._pending or (self._sources[0] if self._sources else None) or MANUAL_SOURCE
             self._begin(source, notice=None)
 
+    # You stopped it (panel, app, tray, hotkey): saved, and auto start waits
+    # for the call to be quiet before it would start this call again.
     def end(self):
         with self._transition():
             if self.state == 'offered':
-                self._declined.add(self._pending['key'])
-                self._pending = None
-                self.state = 'idle'
+                self._drop_offer()
                 self._emit()
             elif self.state in ('live', 'paused'):
+                self._stopped_by_you()
                 self._end()
 
     def new(self):

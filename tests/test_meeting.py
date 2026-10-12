@@ -134,7 +134,7 @@ class SessionTests(unittest.TestCase):
         self.clock = FakeClock(at(30))
         self.captures = []
         self.events = []
-        self.settings = {'meeting.gap_minutes': 10, 'meeting.start_speech_seconds': 3, 'meeting.language': 'auto',
+        self.settings = {'meeting.gap_minutes': 10, 'meeting.start_speech_seconds': 3, 'meeting.countdown_seconds': 0, 'meeting.language': 'auto',
                          'meeting.include_me': True}
         self.sm = SessionManager(self.store, start_capture=lambda m: self.captures.append(('start', m['id'])),
                                  stop_capture=lambda: self.captures.append(('stop',)),
@@ -393,6 +393,80 @@ class SessionTests(unittest.TestCase):
                           'text': 'Move it to next week.', 'lang': 'en'})
         self.assertEqual(len(m['turns']), 2)
 
+    # ── Auto start: countdown, Stop, and quiet after you stop ────────────────
+
+    def counting(self):
+        self.settings.update({'meeting.countdown_seconds': 3, 'meeting.quiet_minutes_after_stop': 5})
+        self.sm.on_sources([meet()])
+        self.sm.on_speech(3.5)
+
+    def test_a_detected_call_counts_down_then_starts(self):
+        self.counting()
+        self.assertEqual(self.sm.state, 'offered')
+        offer = self.sm.state_payload()['offer']
+        self.assertEqual((offer['label'], offer['app_name']), ('Google Meet', 'Chrome'))
+        self.assertAlmostEqual(offer['starts_at'], self.clock.now().timestamp() + 3, places=3)
+        self.assertEqual(self.captures, [])
+        self.clock.advance(3)
+        self.assertEqual(self.sm.state, 'live')
+
+    def test_start_now_skips_the_countdown(self):
+        self.counting()
+        self.sm.offer_accept()
+        self.assertEqual(self.sm.state, 'live')
+        self.clock.advance(3)
+        self.assertEqual(len([c for c in self.captures if c[0] == 'start']), 1, 'the timer does nothing more')
+
+    # Stop on the countdown: nothing starts while the call keeps talking,
+    # until it has been quiet for 5 minutes.
+    def test_stop_waits_until_the_call_is_quiet(self):
+        self.counting()
+        self.sm.offer_decline()
+        self.assertEqual(self.sm.state, 'idle')
+        self.clock.advance(3)
+        self.assertEqual(self.sm.state, 'idle', 'the countdown was cancelled')
+        self.assertTrue(self.sm.state_payload()['auto_paused'])
+        for _ in range(6):                       # the call keeps talking for 6 minutes
+            self.clock.advance(60)
+            self.sm.on_speech(5.0)
+            self.assertEqual(self.sm.state, 'idle')
+        self.clock.advance(5 * 60)               # then 5 quiet minutes
+        self.sm.on_speech(4.0)
+        self.assertEqual(self.sm.state, 'offered', 'counting down again')
+        self.assertFalse(self.sm.state_payload()['auto_paused'])
+
+    def test_stopping_a_meeting_waits_for_quiet_too(self):
+        self.counting()
+        self.clock.advance(3)
+        self.sm.end()
+        self.assertEqual(self.sm.state, 'idle')
+        self.sm.on_sources([meet()])
+        self.clock.advance(60)
+        self.sm.on_speech(10.0)
+        self.assertEqual(self.sm.state, 'idle', "it doesn't start again a minute later")
+        self.clock.advance(5 * 60 + 1)
+        self.sm.on_speech(4.0)
+        self.assertEqual(self.sm.state, 'offered')
+
+    # A call that ends by itself isn't you stopping it: no wait.
+    def test_a_meeting_that_ends_by_itself_does_not_wait(self):
+        self.counting()
+        self.clock.advance(3)
+        self.sm.on_sources([])
+        self.clock.advance(10 * 60 + 1)
+        self.assertEqual(self.sm.state, 'idle')
+        self.assertFalse(self.sm.state_payload()['auto_paused'])
+        self.sm.on_sources([meet('zzz-zzzz-zzz')])
+        self.sm.on_speech(4.0)
+        self.assertEqual(self.sm.state, 'offered')
+
+    def test_starting_by_hand_always_works_and_ends_the_wait(self):
+        self.counting()
+        self.sm.offer_decline()
+        self.sm.start()
+        self.assertEqual(self.sm.state, 'live')
+        self.assertFalse(self.sm.state_payload()['auto_paused'])
+
     def test_payload_shape(self):
         p = self.sm.state_payload()
         self.assertEqual(p['state'], 'idle')
@@ -400,7 +474,7 @@ class SessionTests(unittest.TestCase):
         self.sm.set_behind(12.5)
         p = self.sm.state_payload()
         for key in ('state', 'id', 'title', 'source', 'started_at', 'elapsed_s', 'paused_by_user', 'excluded', 'behind_s',
-                    'speakers', 'notice', 'turns', 'can_continue', 'can_split', 'offer'):
+                    'speakers', 'notice', 'turns', 'can_continue', 'can_split', 'offer', 'auto_paused'):
             self.assertIn(key, p)
         self.assertEqual(p['behind_s'], 12.5)
 
@@ -893,7 +967,7 @@ class ServiceTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         values = {'meeting.enabled': enabled, 'meeting.detect': 'auto', 'meeting.include_me': True,
-                  'meeting.gap_minutes': 10, 'meeting.start_speech_seconds': 3, 'meeting.language': 'auto',
+                  'meeting.gap_minutes': 10, 'meeting.start_speech_seconds': 3, 'meeting.countdown_seconds': 0, 'meeting.language': 'auto',
                   'meeting.model': '', 'meeting.speaker_model': 'eres2net'}
         ctx = type('Ctx', (), {})()
         ctx.state_manager = FakeStateManager()
@@ -1049,7 +1123,7 @@ class ReviewFixTests(unittest.TestCase):
         clock = FakeClock(at(30))
         self.reloads = []
         sm = SessionManager(store, start_capture=lambda m: None, stop_capture=lambda: None, publish=lambda t, p: None,
-                            settings=lambda p, d=None: {'meeting.gap_minutes': 10, 'meeting.start_speech_seconds': 3}.get(p, d),
+                            settings=lambda p, d=None: {'meeting.gap_minutes': 10, 'meeting.start_speech_seconds': 3, 'meeting.countdown_seconds': 0}.get(p, d),
                             now=clock.now, schedule=clock.schedule, on_speakers=self.reloads.append)
         return sm, store, clock
 
@@ -1122,7 +1196,7 @@ class ReviewFixTests(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         values = {'meeting.enabled': False, 'meeting.detect': 'auto', 'meeting.include_me': True,
-                  'meeting.gap_minutes': 10, 'meeting.start_speech_seconds': 3, 'meeting.language': 'auto',
+                  'meeting.gap_minutes': 10, 'meeting.start_speech_seconds': 3, 'meeting.countdown_seconds': 0, 'meeting.language': 'auto',
                   'meeting.model': '', 'meeting.speaker_model': 'eres2net'}
         ctx = type('Ctx', (), {})()
         ctx.state_manager = FakeStateManager()
@@ -1241,7 +1315,7 @@ class DeviceRoutingTests(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         values = {'meeting.enabled': enabled, 'meeting.detect': 'auto', 'meeting.include_me': True,
-                  'meeting.gap_minutes': 10, 'meeting.start_speech_seconds': 3, 'meeting.language': 'auto',
+                  'meeting.gap_minutes': 10, 'meeting.start_speech_seconds': 3, 'meeting.countdown_seconds': 0, 'meeting.language': 'auto',
                   'meeting.model': '', 'meeting.speaker_model': 'eres2net'}
         ctx = type('Ctx', (), {})()
         ctx.state_manager = FakeStateManager()
@@ -1467,7 +1541,7 @@ class MeetingMicTests(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         base = {'meeting.enabled': False, 'meeting.detect': 'auto', 'meeting.include_me': True, 'meeting.gap_minutes': 10,
-                'meeting.start_speech_seconds': 3, 'meeting.language': 'auto', 'meeting.model': '',
+                'meeting.start_speech_seconds': 3, 'meeting.countdown_seconds': 0, 'meeting.language': 'auto', 'meeting.model': '',
                 'meeting.speaker_model': 'eres2net', 'meeting.input_device': ''}
         base.update(values)
         ctx = type('Ctx', (), {})()

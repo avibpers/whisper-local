@@ -361,6 +361,11 @@ SCHEMA = [
        help='Sound back from the same call within this time resumes the meeting; later starts a new one.'),
     _S('meeting.start_speech_seconds', 'Speech before a meeting starts', 'meetings', 'number', min=1, max=10, unit='s',
        help='So a notification ping never starts one.'),
+    _S('meeting.countdown_seconds', 'Countdown before an auto start', 'meetings', 'number', min=0, max=30, unit='s',
+       help='The panel shows the detected call with Stop and Start now while it counts down. 0 starts at once.'),
+    _S('meeting.quiet_minutes_after_stop', 'After you stop, wait for quiet', 'meetings', 'number', min=0, max=60,
+       unit='min', help="Once you stop a meeting, it won't start again by itself until the call has been quiet "
+       'this long. Starting by hand always works.'),
     _S('meeting.language', 'Meeting language', 'meetings', 'select', choices=LANGUAGES, apply=NEXT_RECORDING,
        help='Auto-detect handles Hebrew and English in one call.'),
     # Reserved: a separate model for meetings is not wired yet, so it stays out of the page.

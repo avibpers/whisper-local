@@ -1,6 +1,7 @@
 // meeting.js
-// The meeting panel: who said what as it happens. Shows an offer when a call
-// is detected in "ask" mode, the live transcript with speaker colours, the
+// The meeting panel: who said what as it happens. Shows a detected call (in
+// auto mode with a countdown, Stop and Start now; in "ask" mode Not now and
+// Start), the live transcript with speaker colours and a Stop button, the
 // paused and excluded states, the resumed/new notices with their undo, and
 // "Saved" at the end. The header drags the window; the corner handle resizes
 // it; collapse shrinks it to a pill and reports the pill's size.
@@ -84,6 +85,26 @@ function Timer({ since, paused }) {
   return html`<span class="sub">${clock((now - new Date(since).getTime()) / 1000)}${paused ? ' · paused' : ''}</span>`;
 }
 
+// Seconds left until an auto-detected call starts by itself, ticking.
+function Countdown({ until }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 200); return () => clearInterval(t); }, []);
+  return html`<b>${Math.max(1, Math.ceil(until - now / 1000))}</b>`;
+}
+
+// A call was detected: what it is, and in auto mode a countdown with Stop
+// and Start now; in ask mode Not now and Start.
+function Offer({ m, drag }) {
+  const offer = m.offer || {};
+  const what = offer.label && offer.label !== offer.app_name ? `${offer.label} · ${offer.app_name}` : (offer.app_name || 'A call');
+  const auto = !!offer.starts_at;
+  return html`<div class="panel"><div class="head" ...${drag}><span class="dot offered"></span><span class="title">Meeting detected</span></div>
+    <div class="offer"><div><b>${what}</b></div>
+      <div>${auto ? html`Transcribing in <${Countdown} until=${offer.starts_at} /> s` : 'Transcribe it?'}</div>
+      <div class="row"><button type="button" class="btn" onClick=${() => call('meeting_offer', false)}>${auto ? 'Stop' : 'Not now'}</button>
+        <button type="button" class="btn pri" onClick=${() => call('meeting_offer', true)}>${auto ? 'Start now' : 'Start'}</button></div></div></div>`;
+}
+
 // The panel never takes keyboard focus (it must not steal it from the
 // call), so renaming happens in the app window's Meetings screen.
 function Who({ speaker }) {
@@ -136,13 +157,7 @@ function Panel() {
   }, [collapsed, m.state]);
   const title = m.title || 'Meeting';
   if (m.state === 'idle') return null;
-  if (m.state === 'offered') {
-    const app = m.source && m.source.app ? m.source.app.replace('.exe', '') : 'A call';
-    return html`<div class="panel"><div class="head" ...${drag}><span class="dot offered"></span><span class="title">Call detected</span></div>
-      <div class="offer"><div>${app} has sound. Transcribe it?</div>
-        <div class="row"><button type="button" class="btn" onClick=${() => call('meeting_offer', false)}>Not now</button>
-          <button type="button" class="btn pri" onClick=${() => call('meeting_offer', true)}>Start</button></div></div></div>`;
-  }
+  if (m.state === 'offered') return html`<${Offer} m=${m} drag=${drag} />`;
   if (m.state === 'ended') {
     return html`<div class="panel"><div class="head"><span class="dot ended"></span><span class="title">Saved · ${clock(m.duration_s || 0)}</span></div></div>`;
   }
@@ -170,6 +185,8 @@ function Panel() {
       <button type="button" class="btn" onClick=${() => call(paused ? 'meeting_resume' : 'meeting_pause')}><${Icon} name=${paused ? 'play' : 'pause'} />${paused ? 'Resume' : 'Pause'}</button>
       <span class="grow"></span>
       <button type="button" class="btn icon" aria-label="Open in Koli" title="Open in Koli" onClick=${() => call('window_open', 'meetings')}><${Icon} name="doc" /></button>
+      <button type="button" class="btn" title="Stop and save. It won't start again by itself until the call is quiet for a while."
+        onClick=${() => call('meeting_end')}><${Icon} name="x" />Stop</button>
     </div>
     <${Grip} />
   </div>`;
