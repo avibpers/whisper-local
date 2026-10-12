@@ -322,6 +322,15 @@ re-clusters speakers and cleans text; search across meetings.
   same seconds, text similarity 0.8-0.97). A mic turn that overlaps a
   loopback turn for half its length with text similarity 0.6 or more is
   an echo and is dropped, whichever of the two was transcribed first.
+- Fourth real test (a 24-minute Hebrew Meet): that rule let 34 of 82 "You"
+  turns through. The mic's copy is cut at other seconds, so it spans two
+  loopback turns and matches neither, and difflib's autojunk scored two
+  copies of one long sentence at 0.02. Now a mic turn's words are looked
+  for in all the overlapping loopback turns joined (autojunk off): copies
+  kept 48-78% of their words, unrelated speech under 11%, so 35% is the
+  line. Turns of one or two words keep the strict one-turn match, so a
+  quick "כן" is never dropped. Replayed on that meeting, "You" went from
+  82 turns to 47, all of them really the user.
 - Startup: pywebview gives the hidden main window 10 s to show before it
   creates the other windows, and under load (a Meet call already running,
   twelve Chrome windows to probe, a loopback opening, a model loading) it

@@ -333,6 +333,48 @@ class SessionTests(unittest.TestCase):
         self.assertEqual([t['speaker'] for t in m['turns']], ['s1'])
         self.assertEqual(self.events[-1], ('meeting_turn', {'id': m['id'], 'reload': True}))
 
+    # From a real Hebrew meeting: the mic's copy is cut at other seconds than
+    # the loopback, so it spans two loopback turns and reads differently from
+    # each (character similarity 0.03 and 0.40). Its words, looked for in both
+    # joined, are mostly there, so it is still the call's echo.
+    def test_mic_copy_spanning_two_loopback_turns_is_dropped(self):
+        m = self.live()
+        base = started_at(m)
+        self.sm.add_turn({'t0': base + 16.4, 't1': base + 31.4, 'stream': 'loopback', 'speaker': 's2',
+                          'text': 'יש הבדל בין, אתה יושב מול קלוד ואתה באיטרציות מול העובד ברמה שאתה נותן לו את הפרומפט, עושה את העבודה.',
+                          'lang': 'he'})
+        self.sm.add_turn({'t0': base + 31.4, 't1': base + 36.1, 'stream': 'loopback', 'speaker': 's2',
+                          'text': 'אתה מסתכל עליו רבע שעה, הוא חוזר, שואל אותך, ואתה כל הזמן בהרבה אינטראקציות איתו.',
+                          'lang': 'he'})
+        self.sm.add_turn({'t0': base + 29.5, 't1': base + 36.0, 'stream': 'mic', 'speaker': 'you',
+                          'text': 'ואתה באיטרציות לא לא עובד לרמה שאתה נותן אותו פה, אתה עושה את העבודה, '
+                                  'אתה מסתכל עליו רבע שעה, הוא חוזר, שואל אותך, ואתה כל הזמן',
+                          'lang': 'he'})
+        self.assertEqual([t['stream'] for t in m['turns']], ['loopback', 'loopback'])
+
+    # Your own sentence while someone else talks shares a word or two at most.
+    def test_your_own_words_over_someone_else_are_kept(self):
+        m = self.live()
+        base = started_at(m)
+        self.sm.add_turn({'t0': base + 240.0, 't1': base + 251.0, 'stream': 'loopback', 'speaker': 's2',
+                          'text': 'אז אני לא יודע מה ויקטור עושה כרגע, לא חוץ מהעמודי ההורדה שתוכננו לעשות והוא מתחיל, אבל',
+                          'lang': 'he'})
+        self.sm.add_turn({'t0': base + 243.5, 't1': base + 251.0, 'stream': 'mic', 'speaker': 'you',
+                          'text': "ויקטור עובד על הדאונלוד פאג' אולי הוא לא עשה קומיט ולכן סם לא יודע",
+                          'lang': 'he'})
+        self.assertEqual([t['stream'] for t in m['turns']], ['loopback', 'mic'])
+
+    # A one-word "yes" from you is kept even when the other side said "yes"
+    # somewhere in a long turn at the same time.
+    def test_a_short_word_of_yours_is_not_taken_for_an_echo(self):
+        m = self.live()
+        base = started_at(m)
+        self.sm.add_turn({'t0': base + 50.0, 't1': base + 65.0, 'stream': 'loopback', 'speaker': 's2',
+                          'text': 'כן, אז מה שאני אומר זה שצריך לבנות את התהליך מחדש לפני שמתחילים', 'lang': 'he'})
+        self.sm.add_turn({'t0': base + 55.0, 't1': base + 55.6, 'stream': 'mic', 'speaker': 'you',
+                          'text': 'כן.', 'lang': 'he'})
+        self.assertEqual([t['stream'] for t in m['turns']], ['loopback', 'mic'])
+
     def test_talking_over_each_other_keeps_both_turns(self):
         m = self.live()
         base = started_at(m)

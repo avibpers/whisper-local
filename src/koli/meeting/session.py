@@ -10,6 +10,7 @@ import contextlib
 import datetime
 import difflib
 import logging
+import re
 import threading
 from typing import Callable, Optional
 
@@ -19,20 +20,48 @@ logger = logging.getLogger(__name__)
 
 STATES = ('idle', 'offered', 'live', 'paused', 'ended')
 NOTICE_SECONDS = 6.0
-ECHO_SIMILARITY = 0.6    # text match for a mic turn to count as the call's echo
+ECHO_SIMILARITY = 0.6    # text match for a short mic turn to count as the call's echo
+ECHO_WORD_SHARE = 0.35   # share of a mic turn's words also heard in the call at that time
+ECHO_MIN_WORDS = 3       # shorter mic turns ("כן") need the strict one-turn match
 ECHO_WINDOW = 20         # recent turns an echo is looked for in
 
 
-# True when `mic` (a microphone turn) says what `loop` (a loopback turn) says
-# at the same time: they overlap for at least half the shorter one, and the
-# texts match closely. Talking over each other has different words; saying
-# the same thing later has no overlap.
-def is_echo(mic: dict, loop: dict) -> bool:
-    shorter = min(mic['end'] - mic['start'], loop['end'] - loop['start'])
-    overlap = min(mic['end'], loop['end']) - max(mic['start'], loop['start'])
-    if shorter <= 0 or overlap < 0.5 * shorter:
+def _overlap(a: dict, b: dict) -> float:
+    return min(a['end'], b['end']) - max(a['start'], b['start'])
+
+
+def _words(text: str) -> list:
+    return re.findall(r'\w+', text.lower())
+
+
+# True when `mic` (a microphone turn) repeats what the call (`loops`, the
+# loopback turns) said at the same time. The mic's copy is transcribed from
+# fainter audio and is cut at other seconds, so one mic turn often spans two
+# loopback turns and reads differently from both. Its words are therefore
+# looked for in all the overlapping loopback turns joined: in a real meeting
+# copies kept 48–78% of their words and unrelated speech under 11%. Talking
+# over each other has different words; saying the same thing later has no
+# overlap. A turn of a word or two must match one loopback turn closely, so a
+# quick "yes" is never dropped because someone else said it too.
+# (autojunk is off: on texts over 200 characters it treats common letters as
+# noise, and two copies of the same sentence scored 0.02.)
+def is_echo(mic: dict, loops: list) -> bool:
+    duration = mic['end'] - mic['start']
+    overlapping = sorted((t for t in loops if _overlap(mic, t) > 0), key=lambda t: t['start'])
+    if duration <= 0 or not overlapping:
         return False
-    return difflib.SequenceMatcher(None, mic['text'].lower(), loop['text'].lower()).ratio() >= ECHO_SIMILARITY
+    mic_words = _words(mic['text'])
+    if len(mic_words) < ECHO_MIN_WORDS:
+        return any(_overlap(mic, t) >= 0.5 * min(duration, t['end'] - t['start'])
+                   and difflib.SequenceMatcher(None, mic['text'].lower(), t['text'].lower(),
+                                               autojunk=False).ratio() >= ECHO_SIMILARITY
+                   for t in overlapping)
+    if sum(_overlap(mic, t) for t in overlapping) < 0.5 * duration:
+        return False
+    call_words = [w for t in overlapping for w in _words(t['text'])]
+    matcher = difflib.SequenceMatcher(None, mic_words, call_words, autojunk=False)
+    found = sum(block.size for block in matcher.get_matching_blocks())
+    return found / len(mic_words) >= ECHO_WORD_SHARE
 
 # Friendly names for the apps the shipped rules know.
 APP_NAMES = {'discord.exe': 'Discord', 'zoom.exe': 'Zoom', 'ms-teams.exe': 'Teams', 'teams.exe': 'Teams',
@@ -330,10 +359,11 @@ class SessionManager:
                     return
                 stored = self._stored_turn(m, turn)
                 recent = m['turns'][-ECHO_WINDOW:]
-                if stored['stream'] == 'mic' and any(t['stream'] == 'loopback' and is_echo(stored, t) for t in recent):
+                recent_call = [t for t in recent if t['stream'] == 'loopback']
+                if stored['stream'] == 'mic' and is_echo(stored, recent_call):
                     logger.info("Dropped a microphone turn that echoed the call")
                     return
-                echoes = [t for t in recent if t['stream'] == 'mic' and is_echo(t, stored)] \
+                echoes = [t for t in recent if t['stream'] == 'mic' and is_echo(t, recent_call + [stored])] \
                     if stored['stream'] == 'loopback' else []
                 for echo in echoes:
                     m['turns'].remove(echo)
