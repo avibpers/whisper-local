@@ -38,7 +38,7 @@ PANEL_HIDE_DELAY = 2.5
 
 # Topics each page cares about. Latest-wins topics are coalesced per batch.
 BAR_TOPICS = {'state', 'bar', 'pipeline', 'notify', 'task', 'level', 'streaming_text', 'settings',
-              'profile', 'window', 'auto_send', 'problem'}
+              'profile', 'window', 'auto_send', 'problem', 'meeting'}
 PANEL_TOPICS = {'meeting', 'meeting_turn', 'settings', 'task', 'problem'}
 COALESCE = {'level', 'vad', 'foreground', 'streaming_text'}
 PUSH_INTERVAL = 0.05
@@ -812,8 +812,10 @@ class UiHost:
             data['meeting'] = state
             data['turns'] = svc.turns(state['id']) if svc and state.get('id') else []
         else:
-            # The resting tab's shape where the bubble sits now.
+            # The resting tab's shape where the bubble sits now, and the
+            # meeting (a detected call counts down in the bubble too).
             data['upright'] = self._bar_geometry(*self._bar_size)[3]
+            data['meeting'] = self._meeting_payload()
         return data
 
     def _meeting_payload(self):

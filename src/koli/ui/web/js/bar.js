@@ -2,9 +2,10 @@
 // Koli's edge bubble: a slim turquoise tab while idle, and a short status
 // while something happens — talking (with your wave and live text), writing,
 // done, copy-only, nothing heard, command, rephrase, paused, background task,
-// no text field, and the countdown before an auto-send presses Enter. Click
-// (or right-click) opens quick actions. After every change the page reports
-// its size so the window fits it exactly.
+// no text field, the countdown before an auto-send presses Enter, and a
+// detected meeting counting down (Stop, Start now). Hovering during a
+// meeting offers Stop. Click (or right-click) opens quick actions. After
+// every change the page reports its size so the window fits it exactly.
 
 import { html, render, useEffect, useLayoutEffect, useRef, useState } from '../vendor/preact-htm.module.js';
 import { call, on } from './api.js';
@@ -18,7 +19,10 @@ const bar = createStore({
   sending: null,   // { remaining, total } while an auto-send waits before Enter
   upright: true,   // the resting tab stands on a side or beside a field; flat at the top or bottom
   dragging: false,
+  meeting: { state: 'idle' },   // the meeting's state, as the meeting panel gets it
 });
+
+const MEETING_ON = new Set(['live', 'paused']);
 
 let flashTimer = null;
 function flash(kind, message, extra = {}, ms = 2600) {
@@ -97,6 +101,14 @@ function wire() {
     if (p.path === 'overlay.rest_color') applyRestColor(bar.get().settings);
   });
   on('profile', (p) => bar.set({ profile: p.active }));
+  on('meeting', (m) => {
+    const prev = bar.get().meeting;
+    bar.set({ meeting: m });
+    if (m.state === 'ended') flash('ok', 'Meeting saved', {}, 2600);
+    else if (m.state === 'idle' && m.auto_paused && !prev.auto_paused && prev.state === 'offered') {
+      flash('info', "Not starting · it waits until the call is quiet", {}, 3500);
+    }
+  });
 }
 
 // ── Theme ─────────────────────────────────────────────────────────────────
@@ -134,6 +146,26 @@ function Timer() {
 }
 
 const Badge = ({ tone, icon }) => html`<span class=${`badge ${tone}`}><${Icon} name=${icon} /></span>`;
+
+// A call was detected: which one, and in auto mode a countdown with Stop and
+// Start now (like the auto-send countdown); in ask mode Not now and Start.
+function MeetingOffer({ meeting }) {
+  const offer = meeting.offer || {};
+  const auto = !!offer.starts_at;
+  const [now, setNow] = useState(Date.now());
+  const [total] = useState(() => (auto ? Math.max(1, offer.starts_at - Date.now() / 1000) : 1));
+  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 200); return () => clearInterval(t); }, []);
+  const what = offer.label && offer.label !== offer.app_name ? `${offer.label} · ${offer.app_name}` : (offer.app_name || 'A call');
+  const left = auto ? Math.max(0, offer.starts_at - now / 1000) : 0;
+  return html`<div class="bub">
+    <span class="badge acc" aria-hidden="true">${auto ? html`<b>${Math.max(1, Math.ceil(left))}</b>` : html`<${Icon} name="mic" />`}</span>
+    <span class="text" role="status" title=${`Meeting detected · ${what}`}>${what}</span>
+    ${auto && html`<span class="prog"><span style=${`width:${Math.round((left / total) * 100)}%`}></span></span>`}
+    <button type="button" class="btn" title=${auto ? "Don't transcribe; it waits until the call is quiet before trying again" : ''}
+      onClick=${() => call('meeting_offer', false)}>${auto ? 'Stop' : 'Not now'}</button>
+    <button type="button" class="btn pri" onClick=${() => call('meeting_offer', true)}>${auto ? 'Start now' : 'Start'}</button>
+  </div>`;
+}
 
 // Where the bubble can sit, laid out as on the screen: [setting, name, row, column].
 const POSITIONS = [
@@ -188,6 +220,7 @@ function Menu() {
   const settings = bar.use((s) => s.settings);
   const profile = bar.use((s) => s.profile);
   const paused = bar.use((s) => s.state.paused);
+  const meeting = bar.use((s) => s.meeting);
   const [profiles, setProfiles] = useState([]);
   const [transforms, setTransforms] = useState([]);
   const [recent, setRecent] = useState([]);
@@ -215,6 +248,9 @@ function Menu() {
       class=${lang === v ? 'on' : ''} style="text-transform:none" onClick=${() => set('whisper.language', v)}>${t}</button>`)}
       ${!['auto', 'en', 'he'].includes(lang) && html`<button type="button" class="on" style="text-transform:none">${lang}</button>`}</div>
     <div class="sep"></div>
+    ${MEETING_ON.has(meeting.state)
+      ? html`<button type="button" class="mi" onClick=${() => { close(); call('meeting_end'); }}><${Badge} tone="warn" icon="x" />Stop meeting</button>`
+      : html`<button type="button" class="mi" onClick=${() => { close(); call('meeting_start'); }}><${Badge} tone="acc" icon="mic" />Start a meeting</button>`}
     <button type="button" class="mi" onClick=${() => { close(); call('paste_last'); }}><${Badge} tone="acc" icon="copy" />Paste last dictation<span class="r">${prettyKeys(settings.hotkey.paste_last_hotkey).join(' ')}</span></button>
     ${transforms.length > 0 && html`<button type="button" class="mi" onClick=${() => setShowTransforms(!showTransforms)}><${Badge} tone="purple" icon="pen" />Transform selection<span class="r">${showTransforms ? '▾' : '›'}</span></button>
       ${showTransforms && transforms.map((t) => html`<button type="button" class="mi" style="padding-inline-start:52px"
@@ -245,6 +281,7 @@ function Status() {
   const settings = bar.use((s) => s.settings);
   const sending = bar.use((s) => s.sending);
   const upright = bar.use((s) => s.upright);
+  const meeting = bar.use((s) => s.meeting);
   const openMenu = () => bar.set({ menu: true });
   if (!settings) return html`<div class="bub rest" aria-label="Koli is starting"></div>`;
   const keys = prettyKeys(settings.hotkey.recording_hotkey).join(' ');
@@ -281,6 +318,7 @@ function Status() {
       <button type="button" class="btn pri" onClick=${() => call('auto_send_now')}>Send now</button>
     </div>`;
   }
+  if (meeting.state === 'offered') return html`<${MeetingOffer} meeting=${meeting} />`;
   if (fl) {
     const look = { ok: ['ok', 'check'], fail: ['warn', 'alert'], warn: ['warn', 'alert'], acc: ['acc', 'copy'], info: ['acc', 'check'] }[fl.kind] || ['ok', 'check'];
     return html`<div class="bub">
@@ -303,8 +341,11 @@ function Status() {
       <span class="text">${task.label}</span>${pct != null && html`<span class="prog"><span style=${`width:${pct}%`}></span></span>`}</div>`;
   }
   if (hover) {
+    const inMeeting = MEETING_ON.has(meeting.state);
     return html`<div class="bub" style="cursor:pointer" onClick=${openMenu} title="Quick actions">
       <${KoliMark} size=${40} />${settings.hotkey.recording_mode === 'toggle' ? 'Press' : 'Hold'} <span class="keys">${keys}</span>
+      ${inMeeting && html`<button type="button" class="btn" title="Stop the meeting and save it"
+        onClick=${(e) => { e.stopPropagation(); call('meeting_end'); }}><${Icon} name="x" />Stop meeting</button>`}
       <button type="button" class="btn round" aria-label="Quick actions" style="width:34px;height:34px"><${Icon} name="dots" /></button></div>`;
   }
   // Upright on a side of the screen or beside a field, flat at the top or bottom.
@@ -314,7 +355,7 @@ function Status() {
 // True while the bubble is the slim resting tab (painted in its resting colour).
 function isResting(s) {
   return !!s.settings && !s.menu && !s.hover && !s.flash && !s.task && !s.sending && s.state.state !== 'recording'
-    && s.state.state !== 'processing' && !s.state.paused;
+    && s.state.state !== 'processing' && !s.state.paused && s.meeting.state !== 'offered';
 }
 
 // ── Dragging ──────────────────────────────────────────────────────────────
@@ -407,7 +448,8 @@ async function boot() {
   wire();
   render(html`<${Bar} />`, document.getElementById('root'));
   const data = await call('app_bootstrap', 'bar');
-  bar.set({ settings: data.settings, state: data.state, profile: data.profile, upright: data.upright !== false });
+  bar.set({ settings: data.settings, state: data.state, profile: data.profile, upright: data.upright !== false,
+            meeting: data.meeting || { state: 'idle' } });
   applyTheme(data.settings);
   applyRestColor(data.settings);
   const running = (data.tasks || []).filter((t) => t.status === 'running');
