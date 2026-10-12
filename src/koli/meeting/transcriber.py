@@ -15,19 +15,18 @@ from typing import Callable, List, Optional
 
 import numpy as np
 
-from ..dictation_cleanup import is_prompt_echo, unsure_piece
+from ..dictation_cleanup import SHORT_CLIP_MIN_LOGPROB, SHORT_CLIP_S, is_prompt_echo, unsure_piece
 from .diarize import parts_by_voice, voice_audio, voice_seconds
 from .speakers import SpeakerTracker
 
 logger = logging.getLogger(__name__)
 
 RATE = 16000
-# A clip this short that Whisper wasn't clearly sure of is dropped whole.
-# From a real Hebrew Meet: made-up clips under 2 s ("Bet.", "PR in Chile.",
-# "We'll see you next time.") scored -0.45 to -1.12 log-prob per word, while
-# real short speech ("כל פעם לפני שעולה גרסה.", 1.95 s) scored -0.09.
-SHORT_CLIP_S = 2.0
-SHORT_CLIP_MIN_LOGPROB = -0.35
+# A clip under SHORT_CLIP_S that Whisper wasn't clearly sure of is dropped
+# whole (dictation_cleanup; auto-dictation uses the same rule). From a real
+# Hebrew Meet: made-up clips under 2 s ("Bet.", "PR in Chile.", "We'll see
+# you next time.") scored -0.45 to -1.12 log-prob per word, while real short
+# speech ("כל פעם לפני שעולה גרסה.", 1.95 s) scored -0.09.
 
 
 # The pieces (Whisper segments) of one clip worth keeping. Each is checked

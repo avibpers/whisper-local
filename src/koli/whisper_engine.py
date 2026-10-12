@@ -233,6 +233,7 @@ class WhisperEngine:
     # `language` overrides the engine's setting for one call (meeting mode):
     # None keeps the setting, 'auto' detects, anything else forces that one.
     def _route(self, audio: np.ndarray, language: Optional[str] = None) -> tuple:
+        self._raw_language_probability = None
         second = getattr(self, 'language_model', None)
         allowed = getattr(self, 'allowed_languages', None) or []
         forced = self.language if language is None else (None if language == 'auto' else language)
@@ -249,7 +250,10 @@ class WhisperEngine:
     # unsure guess (under 50%) comes back as None so Whisper decides while
     # transcribing. With a list, the best-scoring listed language always wins,
     # and the certainty is its share among the listed ones: Icelandic 55%,
-    # Hebrew 30%, English 5% with [en, he] gives Hebrew at 86%.
+    # Hebrew 30%, English 5% with [en, he] gives Hebrew at 86%. The raw score
+    # of the language picked (30% there) is kept too: the share is always high
+    # with a short list, and auto-dictation's "is this even speech?" guard
+    # needs how sure Whisper really was.
     def _detect_language(self, audio: np.ndarray, allowed: list) -> tuple:
         # English-only models (base.en, ...) can't detect; they only do English.
         if not getattr(getattr(self.model, 'model', None), 'is_multilingual', True):
@@ -257,6 +261,7 @@ class WhisperEngine:
         detected, probability, all_probs = self.model.detect_language(audio)
         if not allowed:
             self.logger.info(f"Detected {detected} ({probability:.2f})")
+            self._raw_language_probability = probability
             return (detected if probability >= 0.5 else None), probability
         scores = {code: score for code, score in (all_probs or []) if code in allowed}
         total = sum(scores.values())
@@ -265,6 +270,7 @@ class WhisperEngine:
             return (detected if detected in allowed else None), None
         best = max(scores, key=scores.get)
         share = scores[best] / total
+        self._raw_language_probability = scores[best]
         self.logger.info(f"Detected {detected} ({probability:.2f}); among {', '.join(allowed)}: {best} ({share:.2f})")
         return best, share
 
@@ -409,9 +415,9 @@ class WhisperEngine:
                            'no_speech_prob': round(float(s.no_speech_prob), 3),
                            'avg_logprob': round(float(s.avg_logprob), 3),
                            'compression_ratio': round(float(s.compression_ratio), 2)} for s in segments]
-                return pieces, info, key, detected_probability
+                return pieces, info, key, detected_probability, getattr(self, '_raw_language_probability', None)
 
-            pieces, info, used_key, detected_probability = ENGINE_THREAD.run(decode)
+            pieces, info, used_key, detected_probability, raw_probability = ENGINE_THREAD.run(decode)
             transcribed_text = ''.join(p['text'] for p in pieces).strip()
 
             end_time = time.time()
@@ -423,9 +429,15 @@ class WhisperEngine:
             # confidence is the honest one.
             detected_language = info.language
             confidence = detected_probability if detected_probability is not None else info.language_probability
+            # `language_raw_probability`: Whisper's own score for the language
+            # picked (not its share of your language list), for the guards;
+            # `audio_seconds`: how long the clip was.
+            raw = raw_probability if raw_probability is not None else confidence
             self.last_info = {
                 'language': detected_language,
                 'language_probability': round(float(confidence or 0), 3),
+                'language_raw_probability': round(float(raw or 0), 3),
+                'audio_seconds': round(len(audio_data) / 16000, 2),
                 'seconds': round(transcription_time, 2),
                 'model': used_key, 'device': self.device,
                 'compute_type': self.compute_type, 'beam_size': self.beam_size,

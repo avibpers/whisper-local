@@ -32,6 +32,11 @@ MIN_LANGUAGE_CONFIDENCE = 0.6    # its guess of the language, when not set
 MAX_NO_SPEECH = 0.6              # a piece it rates as more likely silence
 MIN_AVG_LOGPROB = -1.0           # a piece it was unsure of word by word
 MAX_COMPRESSION = 2.4            # a piece that repeats itself ("I'm sick, I'm sick")
+# A clip this short must be clearly sure: Whisper turns a breath or a click
+# into "Thank you." Made-up short clips in a real meeting scored -0.45 to
+# -1.12 per word; real short speech -0.09. Meeting turns use the same rule.
+SHORT_CLIP_S = 2.0
+SHORT_CLIP_MIN_LOGPROB = -0.35
 
 
 # A piece (Whisper segment) Whisper itself wasn't sure of. Also used by
@@ -44,14 +49,20 @@ def unsure_piece(piece: dict) -> bool:
 # The text worth typing from an auto-dictation clip, and why anything was left
 # out. `info` is the engine's last_info: language_probability, and per piece
 # (segment) its text and numbers when the backend gives them.
+# With "Languages I speak" the language's share of the list is always high, so
+# the guard reads Whisper's raw score for the language it picked.
 def confident_speech(text: str, info: dict, language_forced: bool) -> tuple:
     info = info or {}
-    probability = info.get('language_probability')
+    probability = info.get('language_raw_probability', info.get('language_probability'))
     if not language_forced and probability is not None and probability < MIN_LANGUAGE_CONFIDENCE:
         return '', f'language guess only {probability:.2f} sure'
     pieces = info.get('segments')
     if not pieces:
         return text, ''
+    seconds = info.get('audio_seconds')
+    if seconds is not None and seconds < SHORT_CLIP_S \
+            and any(p.get('avg_logprob', 0) < SHORT_CLIP_MIN_LOGPROB for p in pieces):
+        return '', f'{seconds:.1f} s clip Whisper was not clearly sure of'
     kept = [p for p in pieces if not unsure_piece(p)]
     if len(kept) == len(pieces):
         return text, ''

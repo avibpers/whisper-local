@@ -6166,6 +6166,9 @@ class LanguageModelRoutingTests(unittest.TestCase):
         self.assertEqual([c[0] for c in engine.model.calls], ['detect', 'transcribe'])
         self.assertEqual(engine.model.calls[-1][1]['language'], 'he')
         self.assertAlmostEqual(engine.last_info['language_probability'], 0.857, places=3)
+        self.assertAlmostEqual(engine.last_info['language_raw_probability'], 0.30, places=3,
+                               msg="Whisper's own score for Hebrew, for the guards")
+        self.assertEqual(engine.last_info['audio_seconds'], 1.0)
 
     def test_a_listed_language_still_reaches_the_second_model(self):
         engine = self._engine(detected=self._ICELANDIC_FIRST, allowed=['en', 'he'])
@@ -6351,6 +6354,27 @@ class ConfidentSpeechTests(unittest.TestCase):
         from koli.dictation_cleanup import confident_speech
         info = {'language_probability': 0.9, 'segments': [self._seg(' Thank you.', no_speech=0.9)]}
         self.assertEqual(confident_speech('Thank you.', info, language_forced=False)[0], '')
+
+    # With "Languages I speak" the language's share of the list read 1.00 while
+    # Whisper was only 0.36 sure, and made-up text was typed. The raw score counts.
+    def test_the_raw_language_score_counts_not_the_share_of_the_list(self):
+        from koli.dictation_cleanup import confident_speech
+        info = {'language_probability': 1.0, 'language_raw_probability': 0.36,
+                'segments': [self._seg(' Thank you for watching.')]}
+        text, reason = confident_speech('Thank you for watching.', info, language_forced=False)
+        self.assertEqual(text, '')
+        self.assertIn('0.36', reason)
+
+    # A 0.7 s scrap at the end of a session came out "Thank you." (-0.85).
+    def test_a_short_clip_must_be_clearly_sure(self):
+        from koli.dictation_cleanup import confident_speech
+        made_up = {'language_raw_probability': 0.88, 'audio_seconds': 0.7,
+                   'segments': [self._seg(' Thank you.', logprob=-0.85)]}
+        self.assertEqual(confident_speech('Thank you.', made_up, False)[0], '')
+        real = {'language_raw_probability': 0.95, 'audio_seconds': 1.4, 'segments': [self._seg(' Yes, send it.', logprob=-0.1)]}
+        self.assertEqual(confident_speech('Yes, send it.', real, False)[0], 'Yes, send it.')
+        longer = {'language_raw_probability': 0.9, 'audio_seconds': 4.0, 'segments': [self._seg(' Fine.', logprob=-0.85)]}
+        self.assertEqual(confident_speech('Fine.', longer, False)[0], 'Fine.', 'only short clips need the closer bar')
 
     # whisper.cpp and older info carry no per-piece numbers: only the language check.
     def test_without_piece_numbers_the_text_stands(self):
