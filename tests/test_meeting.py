@@ -309,6 +309,48 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(m['speakers'][1]['name'], 'Ilona')
         self.assertEqual(self.sm.state_payload()['speakers'][1], {'id': 's1', 'name': 'Ilona', 'colour': 1})
 
+    # The microphone hears the call's audio (a headset leaking, a desk mic):
+    # the other side's words then arrive twice, once from the loopback and
+    # once as "You" with near-identical text at the same seconds. A mic turn
+    # that repeats an overlapping loopback turn is an echo and is dropped,
+    # whichever of the two was transcribed first.
+    def test_mic_echo_of_a_loopback_turn_is_dropped(self):
+        m = self.live()
+        base = started_at(m)
+        self.sm.add_turn({'t0': base + 24.7, 't1': base + 28.6, 'stream': 'loopback', 'speaker': 's1',
+                          'text': 'This will be in builder in some way to show for people.', 'lang': 'en'})
+        self.sm.add_turn({'t0': base + 24.8, 't1': base + 28.4, 'stream': 'mic', 'speaker': 'you',
+                          'text': 'This will be a builder in some way to show it for people.', 'lang': 'en'})
+        self.assertEqual([t['speaker'] for t in m['turns']], ['s1'])
+
+    def test_mic_echo_transcribed_first_is_removed_when_the_loopback_turn_arrives(self):
+        m = self.live()
+        base = started_at(m)
+        self.sm.add_turn({'t0': base + 43.6, 't1': base + 48.8, 'stream': 'mic', 'speaker': 'you',
+                          'text': 'And what we have now, do auto scroll to it. It will show full.', 'lang': 'en'})
+        self.sm.add_turn({'t0': base + 42.9, 't1': base + 48.5, 'stream': 'loopback', 'speaker': 's1',
+                          'text': 'And what we have now, do auto-scroll to drop-down list to show full.', 'lang': 'en'})
+        self.assertEqual([t['speaker'] for t in m['turns']], ['s1'])
+        self.assertEqual(self.events[-1], ('meeting_turn', {'id': m['id'], 'reload': True}))
+
+    def test_talking_over_each_other_keeps_both_turns(self):
+        m = self.live()
+        base = started_at(m)
+        self.sm.add_turn({'t0': base + 10.5, 't1': base + 11.5, 'stream': 'loopback', 'speaker': 's1',
+                          'text': 'We chat.', 'lang': 'en'})
+        self.sm.add_turn({'t0': base + 10.6, 't1': base + 14.7, 'stream': 'mic', 'speaker': 'you',
+                          'text': 'With Jumbo form, what we said.', 'lang': 'en'})
+        self.assertEqual([t['speaker'] for t in m['turns']], ['s1', 'you'])
+
+    def test_repeating_the_other_side_later_is_not_an_echo(self):
+        m = self.live()
+        base = started_at(m)
+        self.sm.add_turn({'t0': base + 10.0, 't1': base + 13.0, 'stream': 'loopback', 'speaker': 's1',
+                          'text': 'Move it to next week.', 'lang': 'en'})
+        self.sm.add_turn({'t0': base + 20.0, 't1': base + 23.0, 'stream': 'mic', 'speaker': 'you',
+                          'text': 'Move it to next week.', 'lang': 'en'})
+        self.assertEqual(len(m['turns']), 2)
+
     def test_payload_shape(self):
         p = self.sm.state_payload()
         self.assertEqual(p['state'], 'idle')

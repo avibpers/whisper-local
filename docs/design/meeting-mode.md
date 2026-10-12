@@ -317,6 +317,11 @@ re-clusters speakers and cleans text; search across meetings.
   threshold is 0.30; a chunk under 2 s of speech never opens a speaker (it
   joins its best match or whoever spoke last, without moving a voiceprint);
   the last speaker keeps the turn down to 0.20.
+- Third real test: the headset microphone heard the call itself, so the
+  other side's words arrived twice (loopback as Speaker 1, mic as You,
+  same seconds, text similarity 0.8-0.97). A mic turn that overlaps a
+  loopback turn for half its length with text similarity 0.6 or more is
+  an echo and is dropped, whichever of the two was transcribed first.
 - Startup: pywebview gives the hidden main window 10 s to show before it
   creates the other windows, and under load (a Meet call already running,
   twelve Chrome windows to probe, a loopback opening, a model loading) it

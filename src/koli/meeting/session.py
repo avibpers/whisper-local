@@ -8,6 +8,7 @@
 
 import contextlib
 import datetime
+import difflib
 import logging
 import threading
 from typing import Callable, Optional
@@ -18,6 +19,20 @@ logger = logging.getLogger(__name__)
 
 STATES = ('idle', 'offered', 'live', 'paused', 'ended')
 NOTICE_SECONDS = 6.0
+ECHO_SIMILARITY = 0.6    # text match for a mic turn to count as the call's echo
+ECHO_WINDOW = 20         # recent turns an echo is looked for in
+
+
+# True when `mic` (a microphone turn) says what `loop` (a loopback turn) says
+# at the same time: they overlap for at least half the shorter one, and the
+# texts match closely. Talking over each other has different words; saying
+# the same thing later has no overlap.
+def is_echo(mic: dict, loop: dict) -> bool:
+    shorter = min(mic['end'] - mic['start'], loop['end'] - loop['start'])
+    overlap = min(mic['end'], loop['end']) - max(mic['start'], loop['start'])
+    if shorter <= 0 or overlap < 0.5 * shorter:
+        return False
+    return difflib.SequenceMatcher(None, mic['text'].lower(), loop['text'].lower()).ratio() >= ECHO_SIMILARITY
 
 # Friendly names for the apps the shipped rules know.
 APP_NAMES = {'discord.exe': 'Discord', 'zoom.exe': 'Zoom', 'ms-teams.exe': 'Teams', 'teams.exe': 'Teams',
@@ -303,6 +318,9 @@ class SessionManager:
     # A turn from the transcriber, with wall-clock t0/t1 (time.time()) and the
     # id of the meeting its audio came from. One that arrives after its
     # meeting ended still lands in that meeting's file, never in the next one.
+    # The microphone can hear the call (a headset leaking, a desk mic): a mic
+    # turn that repeats an overlapping loopback turn is an echo and is
+    # dropped, whichever of the two was transcribed first.
     def add_turn(self, turn: dict):
         meeting_id = turn.get('meeting_id')
         with self._transition():
@@ -311,9 +329,21 @@ class SessionManager:
                 if self.state not in ('live', 'paused'):
                     return
                 stored = self._stored_turn(m, turn)
+                recent = m['turns'][-ECHO_WINDOW:]
+                if stored['stream'] == 'mic' and any(t['stream'] == 'loopback' and is_echo(stored, t) for t in recent):
+                    logger.info("Dropped a microphone turn that echoed the call")
+                    return
+                echoes = [t for t in recent if t['stream'] == 'mic' and is_echo(t, stored)] \
+                    if stored['stream'] == 'loopback' else []
+                for echo in echoes:
+                    m['turns'].remove(echo)
                 m['turns'].append(stored)
                 self.saver.mark(m)
-                self._publish('meeting_turn', {'id': m['id'], 'turn': stored})
+                if echoes:
+                    logger.info(f"Dropped {len(echoes)} microphone turn(s) that echoed the call")
+                    self._publish('meeting_turn', {'id': m['id'], 'reload': True})
+                else:
+                    self._publish('meeting_turn', {'id': m['id'], 'turn': stored})
             elif meeting_id:
                 self._append_saved(meeting_id, turn)
 
