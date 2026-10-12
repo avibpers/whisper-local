@@ -3,6 +3,8 @@
 # pumps its run loop, which Cocoa requires on the MAIN thread — the reason the
 # platform layer exposes thread requirements at all.
 # Windows mirror: platform/windows/app.py (no such constraint).
+import contextlib
+
 from AppKit import NSApplication, NSApplicationActivationPolicyAccessory, NSEventMaskAny, NSDefaultRunLoopMode
 from Foundation import NSDate, NSObject, NSOperationQueue, NSThread
 
@@ -85,6 +87,13 @@ def run_on_ui_thread(fn):
         fn()
         return
     NSOperationQueue.mainQueue().addOperationWithBlock_(fn)
+
+
+# Windows mirror joins COM so WASAPI streams can start on a worker thread.
+# Core Audio needs nothing per thread, so this only keeps the API the same.
+@contextlib.contextmanager
+def audio_thread():
+    yield
 
 
 def run_event_loop(shutdown_event):

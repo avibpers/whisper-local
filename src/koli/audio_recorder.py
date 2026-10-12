@@ -27,7 +27,18 @@ import numpy as np
 import sounddevice as sd
 import soxr
 
+from .platform import app
 from .voice_activity_detection import VadEvent, VAD_CHUNK_SIZE
+
+
+# A problem you must see (bubble and app). The UI is optional: the recorder
+# also runs headless (--selftest, tests).
+def _report_problem(message: str) -> None:
+    try:
+        from .ui.events import report_problem
+        report_problem(message)
+    except Exception:
+        pass
 
 
 class AudioRecorder:
@@ -158,12 +169,26 @@ class AudioRecorder:
 
     # The configured microphone could not be opened (unplugged, or its device
     # index moved): record from the default input instead, at that device's rate.
+    # Said out loud, since the default can be a different microphone altogether.
     def _fall_back_to_default_device(self):
+        chosen = self._device_name(self.device) if self.device is not None else None
         self.device = None
         self._resolve_hostapi(None)
         self._configure_for_device_rate()
         self.logger.info(f"Recording from the default input at {self._recording_rate} Hz "
                          f"(VAD block {self._vad_blocksize} samples)")
+        if chosen:
+            _report_problem(f"{chosen} couldn't be opened, so Koli is recording from "
+                            f"{self._device_name(None)} instead.")
+
+    # A device's name for messages; the default input when `device` is None.
+    @staticmethod
+    def _device_name(device) -> str:
+        try:
+            info = sd.query_devices(device) if device is not None else sd.query_devices(kind='input')
+            return info['name']
+        except Exception:
+            return 'your microphone' if device is not None else 'the default microphone'
 
     def _resolve_hostapi(self, device_info):
         try:
@@ -236,7 +261,13 @@ class AudioRecorder:
         self._capture_thread = threading.Thread(target=self._capture_loop, daemon=True, name="audio-capture")
         self._capture_thread.start()
 
+    # The audio thread's whole life runs inside app.audio_thread(): on Windows
+    # it joins COM, without which a WASAPI microphone can never start here.
     def _capture_loop(self):
+        with app.audio_thread():
+            self._run_capture()
+
+    def _run_capture(self):
         retry_count = 0
         max_retries = 3
         while self._capture_running and retry_count <= max_retries:

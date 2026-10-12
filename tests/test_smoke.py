@@ -5565,6 +5565,39 @@ class AutoDictationShapeTests(unittest.TestCase):
         self.assertTrue(rec._needs_resampling_cached)
         self.assertEqual(rec._preroll_max_chunks, int(AudioRecorder.PREROLL_SECONDS / (768 / 48000)))
 
+    # Falling back from the microphone you chose is said out loud, naming both:
+    # the default can be another microphone altogether (a headset, not the EMEET).
+    # Falling back again from the default says nothing new.
+    def test_falling_back_from_your_microphone_tells_you_which_one_records(self):
+        import unittest.mock as mock
+        from koli import audio_recorder
+        rec = audio_recorder.AudioRecorder.__new__(audio_recorder.AudioRecorder)
+        rec.logger = __import__('logging').getLogger('test')
+        rec.device = 24
+        names = {24: 'Microphone (EMEET Piko+)', None: 'Microphone (Logitech USB Headset)'}
+        with mock.patch.object(rec, '_resolve_hostapi'), mock.patch.object(rec, '_configure_for_device_rate'), \
+                mock.patch.object(rec, '_recording_rate', 16000, create=True), \
+                mock.patch.object(rec, '_vad_blocksize', 256, create=True), \
+                mock.patch.object(audio_recorder.AudioRecorder, '_device_name', side_effect=lambda d: names[d]), \
+                mock.patch.object(audio_recorder, '_report_problem') as report:
+            rec._fall_back_to_default_device()
+            rec._fall_back_to_default_device()
+        report.assert_called_once()
+        self.assertIn('EMEET Piko+', report.call_args[0][0])
+        self.assertIn('Logitech USB Headset', report.call_args[0][0])
+
+    # Every thread that opens a stream needs the same per-thread setup on both
+    # systems (COM on Windows, nothing on macOS).
+    def test_audio_thread_setup_is_mirrored(self):
+        import importlib
+        for name in ('koli.platform.macos.app', 'koli.platform.windows.app'):
+            try:
+                mod = importlib.import_module(name)
+            except Exception:
+                continue
+            with mod.audio_thread():
+                pass
+
     def test_taking_recorded_audio_keeps_the_recording_going(self):
         import unittest.mock as mock
         import numpy as np
