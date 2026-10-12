@@ -361,9 +361,13 @@ class WhisperEngine:
     # An optional VAD pre-check short-circuits silent clips so we don't pay for a
     # full decode on an accidental hotkey press. Callers rely on this contract —
     # whisper_engine_cpp and system_audio both feed it the same array shape.
+    # `use_prompt=False` leaves out the dictation prompt (meeting mode): it is
+    # a style hint for the app in front ("Friendly tone."), which a meeting
+    # never wants, and on a short or quiet clip Whisper writes it back as text.
     def transcribe_audio(self,
                          audio_data: np.ndarray,
-                         language: Optional[str] = None) -> Optional[str]:
+                         language: Optional[str] = None,
+                         use_prompt: bool = True) -> Optional[str]:
         if self.model is None:
             return None
         
@@ -396,7 +400,7 @@ class WhisperEngine:
                 model, key, lang, prompt, detected_probability = self._route(audio_data, language)
                 kwargs = dict(beam_size=self.beam_size, language=lang, task=self.task,
                               condition_on_previous_text=False)
-                if prompt:
+                if prompt and use_prompt:
                     kwargs["initial_prompt"] = prompt
                 if self.hotwords:
                     kwargs["hotwords"] = self.hotwords

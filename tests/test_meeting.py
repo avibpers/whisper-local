@@ -703,13 +703,16 @@ class SpeakerTests(unittest.TestCase):
 
 
 class FakeEngine:
-    def __init__(self, answers):
+    def __init__(self, answers, initial_prompt=None):
         self.answers = list(answers)
         self.calls = []
+        self.prompt_used = []
         self.last_info = {}
+        self.initial_prompt = initial_prompt
 
-    def transcribe_audio(self, audio, language=None):
+    def transcribe_audio(self, audio, language=None, use_prompt=True):
         self.calls.append((len(audio), language))
+        self.prompt_used.append(use_prompt)
         text = self.answers.pop(0) if self.answers else None
         self.last_info = {'language': 'he' if text and 'שלום' in text else 'en'}
         return text
@@ -751,6 +754,27 @@ class TranscriberTests(unittest.TestCase):
         self.assertEqual(engine.calls[0][1], 'auto')
         self.assertEqual(self.pending[0], 'mic')
         self.assertIsNone(self.pending[-1])
+
+    # The dictation prompt is a style hint for the app in front; meetings never
+    # send it, and a turn that only repeats it is Whisper's echo, not speech.
+    def test_meeting_turns_skip_the_dictation_prompt(self):
+        from koli.meeting.transcriber import MeetingTranscriber
+        from koli.meeting.speakers import SpeakerTracker
+        engine = FakeEngine(['Friendly tone.', 'שלום לכולם'], initial_prompt='Friendly tone.')
+        turns = []
+        t = MeetingTranscriber(engine_provider=lambda: engine, is_busy=lambda: False,
+                               tracker=SpeakerTracker(embed=lambda a: np.array([1.0, 0.0])),
+                               language_provider=lambda: 'auto', on_turn=turns.append, on_speaker=lambda s: None,
+                               on_pending=lambda s: None, on_behind=lambda s: None, poll_s=0.01)
+        t.start()
+        t.submit(self.chunk('mic'))
+        t.submit(self.chunk('mic', t0=102))
+        deadline = time.time() + 3
+        while (t.queued_seconds() > 0 or t.working) and time.time() < deadline:
+            time.sleep(0.01)
+        t.stop()
+        self.assertEqual(engine.prompt_used, [False, False])
+        self.assertEqual([turn['text'] for turn in turns], ['שלום לכולם'])
 
     def test_empty_transcription_makes_no_turn(self):
         self.run_chunks([self.chunk('loopback')], [None])

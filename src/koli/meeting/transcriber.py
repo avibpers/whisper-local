@@ -11,6 +11,7 @@ import threading
 import time
 from typing import Callable, Optional
 
+from ..dictation_cleanup import is_prompt_echo
 from .speakers import SpeakerTracker
 
 logger = logging.getLogger(__name__)
@@ -100,8 +101,10 @@ class MeetingTranscriber:
         if engine is None:
             return
         self.on_pending(chunk['stream'])
-        text = engine.transcribe_audio(chunk['audio'], language=self.language_provider() or 'auto')
-        if not text:
+        # No dictation prompt: it's a style hint for the app in front, and on a
+        # short or quiet clip Whisper wrote it back as the turn ("Friendly tone.").
+        text = engine.transcribe_audio(chunk['audio'], language=self.language_provider() or 'auto', use_prompt=False)
+        if not text or is_prompt_echo(text, getattr(engine, 'initial_prompt', None)):
             return
         lang = (getattr(engine, 'last_info', None) or {}).get('language') or ''
         if chunk['stream'] == 'mic':

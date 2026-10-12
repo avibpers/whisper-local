@@ -6087,6 +6087,16 @@ class LanguageModelRoutingTests(unittest.TestCase):
         self.assertEqual(self._run(engine), 'hebrew text')
         self.assertNotIn('initial_prompt', engine.language_model.calls[-1][1])
 
+    # Meeting mode asks for no prompt: the app's style hint stays out.
+    def test_use_prompt_false_leaves_the_prompt_out(self):
+        import unittest.mock as mock
+        import numpy as np
+        engine = self._engine(second=False)
+        with mock.patch('builtins.print'):
+            engine.transcribe_audio(np.zeros(16000, dtype=np.float32), language='auto', use_prompt=False)
+        self.assertNotIn('initial_prompt', engine.model.calls[-1][1])
+        self.assertEqual(engine.model.calls[-1][1].get('hotwords'), 'Koli', 'your words still help')
+
     # A list of one is a fixed language: no detection at all.
     def test_a_one_language_list_skips_detection(self):
         engine = self._engine(second=False, allowed=['he'])
