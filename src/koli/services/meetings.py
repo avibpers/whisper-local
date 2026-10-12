@@ -16,7 +16,7 @@ from pathlib import Path
 from ..meeting.capture import Chunker, LoopbackStream, MicStream, MicTap, speech_prob_function
 from ..meeting.detector import MeetingDetector
 from ..meeting.diarize import make_splitter
-from ..meeting.session import SessionManager
+from ..meeting.session import SessionManager, merge_speaker_into, same_name_as
 from ..meeting.speakers import SpeakerTracker, make_embedder
 from ..meeting.store import MeetingStore
 from ..meeting.transcriber import MeetingTranscriber
@@ -432,16 +432,30 @@ class MeetingService:
         self._sync_idle_listener()
 
     # Naming a speaker also remembers the voice, so the next meeting knows it.
+    # The name of another speaker in the same meeting merges the two: they
+    # were one person the splitter cut in two.
     def rename_speaker(self, speaker_id: str, name: str):
-        if self.session.meeting:
+        m = self.session.meeting
+        if not m:
+            return
+        twin = same_name_as(m, speaker_id, name)
+        if twin:
+            self.session.merge_speakers(speaker_id, twin)
+            self.tracker.merge(speaker_id, twin)
+            speaker_id = twin
+        else:
             self.session.rename_speaker(speaker_id, name)
             self.tracker.rename(speaker_id, str(name).strip()[:40])
-            voiceprint = self.tracker.voiceprint(speaker_id)
-            if voiceprint:
-                self.voices.remember(name, *voiceprint)
+        voiceprint = self.tracker.voiceprint(speaker_id)
+        if voiceprint:
+            self.voices.remember(name, *voiceprint)
 
     def rename_saved_speaker(self, meeting_id: str, speaker_id: str, name: str):
         m = self.store.load(meeting_id)
+        twin = same_name_as(m, speaker_id, name)
+        if twin:
+            merge_speaker_into(m, speaker_id, twin)
+            speaker_id = twin
         for s in m['speakers']:
             if s['id'] == speaker_id:
                 s['name'] = str(name).strip()[:40] or s['name']

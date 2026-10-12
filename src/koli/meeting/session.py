@@ -14,6 +14,8 @@ import re
 import threading
 from typing import Callable, Optional
 
+import numpy as np
+
 from .store import MeetingStore, ThrottledSaver, duration_s, new_id, new_meeting, started_ts
 from .voices import is_default_name
 
@@ -63,6 +65,33 @@ def is_echo(mic: dict, loops: list) -> bool:
     matcher = difflib.SequenceMatcher(None, mic_words, call_words, autojunk=False)
     found = sum(block.size for block in matcher.get_matching_blocks())
     return found / len(mic_words) >= ECHO_WORD_SHARE
+
+# Two labels that are one person, in a meeting dict: `from_id`'s turns
+# become `into_id`'s, the voiceprints combine by how many chunks made each,
+# and `from_id` goes away. Returns whether anything changed.
+def merge_speaker_into(meeting: dict, from_id: str, into_id: str) -> bool:
+    speakers = {s['id']: s for s in meeting['speakers']}
+    source, target = speakers.get(from_id), speakers.get(into_id)
+    if source is None or target is None or source is target or 'you' in (from_id, into_id):
+        return False
+    if source.get('centroid') and target.get('centroid'):
+        a, b = np.asarray(target['centroid']), np.asarray(source['centroid'])
+        na, nb = int(target.get('count', 1)), int(source.get('count', 1))
+        merged = a * na + b * nb
+        target['centroid'] = [round(float(x), 5) for x in merged / (np.linalg.norm(merged) or 1.0)]
+        target['count'] = na + nb
+    for turn in meeting['turns']:
+        if turn['speaker'] == from_id:
+            turn['speaker'] = into_id
+    meeting['speakers'] = [s for s in meeting['speakers'] if s['id'] != from_id]
+    return True
+
+
+# The speaker in `meeting` other than `speaker_id` already called `name`.
+def same_name_as(meeting: dict, speaker_id: str, name: str) -> Optional[str]:
+    name = str(name).strip().lower()
+    return next((s['id'] for s in meeting['speakers']
+                 if s['id'] not in (speaker_id, 'you') and s['name'].strip().lower() == name), None)
 
 # Friendly names for the apps the shipped rules know.
 APP_NAMES = {'discord.exe': 'Discord', 'zoom.exe': 'Zoom', 'ms-teams.exe': 'Teams', 'teams.exe': 'Teams',
@@ -426,6 +455,15 @@ class SessionManager:
                     s['name'] = str(name).strip()[:40] or s['name']
             self.saver.mark(m)
             self._emit()
+
+    def merge_speakers(self, from_id: str, into_id: str):
+        with self._transition():
+            m = self.meeting
+            if not m or not merge_speaker_into(m, from_id, into_id):
+                return
+            self.saver.mark(m)
+            self._emit()
+            self._publish('meeting_turn', {'id': m['id'], 'reload': True})
 
     def _speakers_changed(self, speakers: list):
         if self._on_speakers:

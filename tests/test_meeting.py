@@ -1658,7 +1658,7 @@ class TrackerVoicesTests(unittest.TestCase):
     # their voiceprints come out close.
     def test_two_voices_of_one_chunk_are_never_one_speaker(self):
         from koli.meeting.speakers import SpeakerTracker
-        vecs = {'a': self.unit(1, 0, 0), 'b': self.unit(0.8, 0.6, 0)}   # cosine 0.8: would join
+        vecs = {'a': self.unit(1, 0, 0), 'b': self.unit(0.6, 0.8, 0)}   # cosine 0.6: would join, yet under SAME_VOICE
         t = SpeakerTracker(embed=lambda audio: vecs[audio], similarity=0.30)
         first, _ = t.label('a', speech_s=4.0)
         second, _ = t.label('b', speech_s=4.0, exclude=[first])
@@ -1701,6 +1701,63 @@ class TrackerVoicesTests(unittest.TestCase):
         _, entry = t.label('x', speech_s=4.0)
         self.assertEqual(entry['name'], 'Moshe')
         self.assertNotIn('voice', entry)
+
+
+# A real Meet: the splitter cut Speaker 1 in two inside a chunk, and "two
+# voices of one chunk are two people" made "Speaker 3", who never spoke
+# (voiceprints 0.86 alike; the real people were 0.12-0.30 apart).
+class FalseSplitTests(unittest.TestCase):
+    @staticmethod
+    def unit(*xs):
+        v = np.array(xs, dtype=np.float32)
+        return v / np.linalg.norm(v)
+
+    def test_a_part_that_is_clearly_the_other_voice_is_not_a_new_speaker(self):
+        from koli.meeting.speakers import SpeakerTracker
+        vecs = {'a': self.unit(1, 0, 0), 'a_cut': self.unit(0.86, 0.51, 0), 'b': self.unit(0.3, 0.95, 0)}
+        t = SpeakerTracker(embed=lambda audio: vecs[audio], similarity=0.30)
+        first, _ = t.label('a', speech_s=4.0)
+        self.assertEqual(t.label('a_cut', speech_s=4.0, exclude=[first])[0], first)
+        self.assertNotEqual(t.label('b', speech_s=4.0, exclude=[first])[0], first, 'a different voice still splits')
+
+    def test_merging_two_labels_moves_the_turns_and_joins_the_voiceprints(self):
+        from koli.meeting.session import merge_speaker_into
+        m = {'speakers': [{'id': 'you', 'name': 'You', 'colour': 0},
+                          {'id': 's1', 'name': 'Speaker 1', 'colour': 1, 'centroid': [1.0, 0.0], 'count': 3},
+                          {'id': 's3', 'name': 'Speaker 3', 'colour': 3, 'centroid': [0.0, 1.0], 'count': 1}],
+             'turns': [{'speaker': 's1'}, {'speaker': 's3'}, {'speaker': 'you'}]}
+        self.assertTrue(merge_speaker_into(m, 's3', 's1'))
+        self.assertEqual([t['speaker'] for t in m['turns']], ['s1', 's1', 'you'])
+        self.assertEqual([s['id'] for s in m['speakers']], ['you', 's1'])
+        self.assertEqual(m['speakers'][1]['count'], 4)
+        self.assertGreater(m['speakers'][1]['centroid'][0], m['speakers'][1]['centroid'][1])
+        self.assertFalse(merge_speaker_into(m, 'you', 's1'), 'You is never merged')
+
+    # Renaming "Speaker 3" to Speaker 1's name merges them, in a saved meeting too.
+    def test_renaming_to_a_name_in_the_meeting_merges_a_saved_meeting(self):
+        from koli.services.meetings import MeetingService
+        from koli.meeting.store import MeetingStore, new_meeting
+        from koli.meeting.voices import VoiceBook
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        ctx = type('Ctx', (), {})()
+        ctx.state_manager = FakeStateManager()
+        ctx.config_manager = FakeConfig({'meeting.enabled': False})
+        ctx.model_registry = None
+        store = MeetingStore(Path(tmp.name) / 'meetings')
+        m = new_meeting('m1', 'Meeting', {'key': 'manual', 'app': '', 'kind': 'manual'}, at(0))
+        m['speakers'] += [{'id': 's1', 'name': 'Eran', 'colour': 1, 'centroid': [1.0, 0.0], 'count': 5},
+                          {'id': 's3', 'name': 'Speaker 3', 'colour': 3, 'centroid': [0.9, 0.1], 'count': 1}]
+        m['turns'] = [{'start': 0, 'end': 1, 'stream': 'loopback', 'speaker': 's3', 'text': 'x', 'lang': 'en'}]
+        store.save(m)
+        svc = MeetingService(ctx, store=store, publish=lambda t, p: None, embedder_factory=lambda: None,
+                             loopback_available=lambda: True, sessions_fn=lambda: [],
+                             voices=VoiceBook(Path(tmp.name) / 'voices.json'))
+        self.addCleanup(svc.shutdown)
+        svc.rename_saved_speaker('m1', 's3', 'eran')
+        saved = store.load('m1')
+        self.assertEqual([s['id'] for s in saved['speakers'] if s['id'] != 'you'], ['s1'])
+        self.assertEqual(saved['turns'][0]['speaker'], 's1')
 
 
 class SessionVoiceNameTests(unittest.TestCase):

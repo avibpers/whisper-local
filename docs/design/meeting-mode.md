@@ -373,6 +373,15 @@ re-clusters speakers and cleans text; search across meetings.
   A mute hotkey (hotkey.meeting_mute_hotkey) mutes the meeting microphone
   in Windows, so the meeting app sends silence and the meeting excludes
   you; Meet's own mute can't be seen from outside the browser.
+- Same English Meet, three remote people: Koli showed four, and "Speaker 3"
+  never spoke. The stored voiceprints told the story: Speaker 3 was 0.86
+  alike to Speaker 1, while the three real people were 0.12, 0.13 and 0.30
+  apart. The splitter had cut Speaker 1 in two inside a chunk and the
+  "never one speaker" rule opened a new label for the second half. Now a
+  voice part that matches an excluded speaker at SAME_VOICE (0.7) joins
+  it anyway. Renaming a speaker to another speaker's name in the same
+  meeting merges them (turns relabelled, voiceprints combined by chunk
+  count), live or saved.
 - Same meeting: Whisper made up short English clips in a Hebrew call
   ("Bet.", "PR in Chile.", "We'll see you next time.", log-prob -0.45 to
   -1.12 on clips under 2 s) and garbage on the mic (-1.5 to -4.5), while

@@ -13,6 +13,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 - **Meetings remember voices.** Rename "Speaker 2" to "Eran" once, and later
   meetings call him Eran from his first sentence. The Meetings screen lists
   the known voices; forget one to stop it. Stored only on this computer.
+- **No more speakers who never spoke, and merging by name.** When the voice
+  splitter cut one person in two, the second half became a new "Speaker N"
+  who never said a word. A part that clearly matches the voice it was cut
+  from now stays with it. And renaming a speaker to the name of another
+  speaker in the same meeting merges the two, in past meetings too.
 - **"You" is only you.** Headphones leak a faint copy of the call into the
   headset's microphone, and Koli wrote it down as you speaking. A microphone
   chunk that is far quieter than the call and rises and falls with it is now

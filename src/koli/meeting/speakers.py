@@ -26,6 +26,11 @@ SIMILARITY = 0.30
 STICKY_MARGIN = 0.10     # the speaker who just spoke keeps the turn this far under the threshold
 WEAK_MATCH = 0.15        # a short chunk joins its best match from here up
 MIN_NEW_SPEECH_S = 2.0   # speech needed in a chunk before it may open a new speaker
+# The splitter sometimes cuts one person in two inside a chunk. Such a part
+# still matches the speaker it was cut from: a real Meet made "Speaker 3"
+# out of Speaker 1 (their voiceprints 0.86 alike), while the three real
+# people stayed 0.12-0.30 apart. At this similarity the split is ignored.
+SAME_VOICE = 0.7
 COLOURS = 7              # colours 1..7 for the others; 0 is "You"
 RATE = 16000
 
@@ -100,6 +105,14 @@ class SpeakerTracker:
                     best, best_sim = s, sim
             last = self._last if self._last in candidates else None
             last_sim = float(np.dot(last['centroid'], vec)) if last is not None else -1.0
+            twin, twin_sim = None, SAME_VOICE
+            for s in self._speakers:
+                if s['id'] in exclude:
+                    sim = float(np.dot(s['centroid'], vec))
+                    if sim >= twin_sim:
+                        twin, twin_sim = s, sim
+            if twin is not None and (best is None or twin_sim > best_sim):
+                return self._join(twin, vec)
             if best is not None and best_sim >= self.similarity:
                 return self._join(best, vec)
             if last is not None and last_sim >= self.similarity - STICKY_MARGIN:
@@ -146,6 +159,20 @@ class SpeakerTracker:
             for s in self._speakers:
                 if s['id'] == speaker_id:
                     s['name'] = name
+
+    # Two labels you said are one person: `from_id` joins `into_id`, their
+    # voiceprints combined by how many chunks made each.
+    def merge(self, from_id: str, into_id: str):
+        with self._lock:
+            source = next((s for s in self._speakers if s['id'] == from_id), None)
+            target = next((s for s in self._speakers if s['id'] == into_id), None)
+            if source is None or target is None or source is target:
+                return
+            target['centroid'] = self._unit(target['centroid'] * target['count'] + source['centroid'] * source['count'])
+            target['count'] += source['count']
+            self._speakers.remove(source)
+            if self._last is source:
+                self._last = target
 
     # A speaker's voiceprint and how many chunks made it, for remembering.
     def voiceprint(self, speaker_id: str) -> Optional[tuple]:
