@@ -149,6 +149,9 @@ SCHEMA = [
     _S('audio.voice_filter.margin_db', 'How much quieter', 'audio', 'range', group='Only my voice',
        min=6, max=30, step=1, unit='dB', help='6 dB is about half as loud. Raise it if your own words get dropped, or the music '
                                          "doesn't pause when you talk."),
+    _S('audio.voice_filter.voiceprint', 'Only voices that sound like me', 'audio', 'toggle', group='Only my voice',
+       help='Koli learns how you sound on each microphone from your hotkey dictations (after 3), and '
+       'auto-dictation only types what sounds like you there. Stored only on this computer.'),
     _S('audio.voice_filter.apply_to', 'Use it for', 'audio', 'segmented', group='Only my voice',
        choices=[['auto', 'Auto-dictation'], ['all', 'All recordings']],
        help='Auto-dictation starts without a key press, so it hears the most around you.'),

@@ -87,7 +87,8 @@ function KnownVoices() {
   const load = () => call('meeting_voices').then(setVoices).catch(() => {});
   useEffect(() => { load(); }, []);
   useEffect(() => on('meeting', load), []);
-  const label = (v) => v.name || `Voice ${v.id.slice(2, 6)}`;
+  // Your own voice is kept per microphone, so its label names the mic.
+  const label = (v) => (v.self && v.mic ? `You · ${v.mic}` : v.name || `Voice ${v.id.slice(2, 6)}`);
   const forget = async (v) => {
     if (await confirmModal({ title: `Forget ${label(v)}?`, body: 'Its voiceprint is deleted; later meetings no longer recognise it. Past meetings keep their labels.', confirm: 'Forget', danger: true })) {
       call('meeting_forget_voice', v.id).then(load).catch((e) => toast(e.message, { kind: 'err' }));

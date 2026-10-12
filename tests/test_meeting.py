@@ -1994,6 +1994,48 @@ class YouVoiceTests(unittest.TestCase):
         self.assertEqual(book.self_voice()[2], 4, 'a meeting counts once')
         self.assertTrue(next(v for v in book.all() if v['id'] == mine)['self'])
 
+    # Every microphone hears you differently: one voiceprint each.
+    def test_your_voice_is_kept_per_microphone(self):
+        from koli.meeting.voices import VoiceBook
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        book = VoiceBook(Path(tmp.name) / 'voices.json')
+        emeet = book.keep_self([1.0, 0.0], 1, mic='Microphone (EMEET Piko+)')
+        headset = book.keep_self([0.0, 1.0], 1, mic='Microphone (Logitech USB Headset)')
+        self.assertNotEqual(emeet, headset)
+        book.keep_self([1.0, 0.0], 1, mic='Microphone (EMEET Piko+)')      # dictations always add
+        self.assertEqual(book.self_voice(mic='Microphone (EMEET Piko+)')[2], 2)
+        self.assertEqual(book.self_voice(mic='Microphone (Logitech USB Headset)')[2], 1)
+        self.assertIsNone(book.self_voice(mic='Microphone (NVIDIA Broadcast)'))
+
+    # Auto-dictation's check: nothing is judged until 3 hotkey dictations
+    # taught your voice on that microphone.
+    def test_dictation_voice_check_waits_for_three_samples(self):
+        from koli.services.meetings import MeetingService
+        from koli.meeting.store import MeetingStore
+        from koli.meeting.voices import VoiceBook
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        ctx = type('Ctx', (), {})()
+        ctx.state_manager = FakeStateManager()
+        ctx.config_manager = FakeConfig({'meeting.enabled': False})
+        ctx.model_registry = None
+        svc = MeetingService(ctx, store=MeetingStore(Path(tmp.name) / 'meetings'), publish=lambda t, p: None,
+                             embedder_factory=lambda: None, loopback_available=lambda: True, sessions_fn=lambda: [],
+                             voices=VoiceBook(Path(tmp.name) / 'voices.json'))
+        self.addCleanup(svc.shutdown)
+        you, tv = self.unit(1, 0, 0), self.unit(0.1, 1, 0)
+        svc.tracker.embed = lambda audio: you if float(audio[0]) == 1.0 else tv
+        mine, other = np.ones(16000 * 2, dtype=np.float32), np.full(16000 * 2, 2.0, dtype=np.float32)
+        mic = 'Microphone (EMEET Piko+)'
+        svc.learn_my_voice(mine, mic)
+        svc.learn_my_voice(mine, mic)
+        self.assertIsNone(svc.my_voice_similarity(other, mic), 'two samples: not judged yet')
+        svc.learn_my_voice(mine, mic)
+        self.assertGreater(svc.my_voice_similarity(mine, mic), 0.9)
+        self.assertLess(svc.my_voice_similarity(other, mic), 0.2)
+        self.assertIsNone(svc.my_voice_similarity(other, 'Microphone (Logitech USB Headset)'), 'another mic is unknown')
+
     # The transcriber: a chunk over a silent call teaches your voice; one over
     # a talking call that sounds like Eran is left out before Whisper runs.
     def transcribe_chunks(self, chunks, call_loud, you=None):

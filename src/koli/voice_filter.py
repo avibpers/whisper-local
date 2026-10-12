@@ -2,8 +2,9 @@
 # "Only my voice": leaves out speech that isn't yours, so a TV across the room
 # or someone talking in your pauses doesn't get typed. Step 1 is loudness:
 # Koli learns how loud you are from your hotkey dictations (always you, close
-# to the mic) and drops pieces of a recording much quieter than that. Pure
-# numpy; the state manager calls it per Whisper segment.
+# to the mic) and drops pieces of a recording much quieter than that. Step 2
+# is your voiceprint per microphone (VOICEPRINT_MATCH below). Pure numpy; the
+# state manager calls it per Whisper segment.
 
 import json
 import logging
@@ -22,6 +23,13 @@ SILENT_RMS = 1e-4          # below this a frame is silence, not quiet speech
 MIN_FRAMES = 6             # ~0.2 s of sound before a level means anything
 LEARN_KEEP = 20            # recent dictations a microphone's level is taken from
 LEARN_MIN = 3              # dictations needed before the level is trusted
+# Step 2 is your voiceprint on each microphone (meeting/voices.py, learned from
+# hotkey dictations): an auto-dictation recording must sound at least this
+# much like you there (cosine) to be typed. Measured on a real camera mic:
+# 3 s pieces of the user 0.50-0.54 against their voiceprint, other voices
+# about 0.0, room-like noise (what Whisper turns into "Thank you.") 0.36.
+VOICEPRINT_MATCH = 0.43
+LEARN_VOICEPRINT_S = 1.5   # a hotkey dictation this long teaches your voiceprint
 
 
 # ── Measuring ────────────────────────────────────────────────────────────────

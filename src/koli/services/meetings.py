@@ -28,6 +28,7 @@ from ..ui.tasks import get_task_manager
 logger = logging.getLogger(__name__)
 
 MIN_KEEP_CHUNKS = 3   # chunks a remote voice needs before it is saved when the meeting ends
+MY_VOICE_MIN = 3      # hotkey dictations on a microphone before auto-dictation checks your voice there
 
 LOOPBACK_HINT = ("Meetings need the loopback package to hear the call. Install it from the Meetings screen, "
                  "or: pip install koli[loopback]")
@@ -75,6 +76,7 @@ class MeetingService:
         self._mic_source = None           # the tap on the dictation microphone, or a stream of its own
         self._mic_chunker = None
         self.tracker = SpeakerTracker(embed=None, voices=self.voices)
+        self._meeting_mic = ''            # the meeting microphone's name, for your voice on it
         self._embedder_task = None
         self.session = SessionManager(self.store, start_capture=self._start_capture, stop_capture=self._stop_capture,
                                       publish=self._publish, settings=self._setting, on_speakers=self.tracker.load,
@@ -201,8 +203,6 @@ class MeetingService:
         meeting_id = meeting['id']
         self._ensure_embedder()
         self.tracker.load(meeting.get('speakers', []))
-        mine = self.voices.self_voice()
-        self.transcriber.set_you(mine[1] if mine else None)
         idle = None
         with self._lock:
             idle, self._idle_stream = self._idle_stream, None
@@ -226,6 +226,11 @@ class MeetingService:
         with self._lock:
             self._loop_chunkers, self._mic_chunker = loop_chunkers, mic_chunker
             self._loopbacks, self._mic_source = loopbacks, mic_source
+        # Your voice on this meeting's microphone (each mic hears you differently);
+        # its name is kept for when the meeting ends and the mic is closed.
+        self._meeting_mic = self._mic_name() or ''
+        mine = self.voices.self_voice(mic=self._meeting_mic)
+        self.transcriber.set_you(mine[1] if mine else None)
         for loopback in loopbacks:
             loopback.start()
 
@@ -464,7 +469,8 @@ class MeetingService:
             # meeting's "You" pointing to it.
             learned = self.transcriber.you_learned()
             if learned and learned[1] >= YOU_FIRM:
-                mine = self.voices.keep_self(learned[0], learned[1], meeting['id'])
+                mine = self.voices.keep_self(learned[0], learned[1], meeting['id'],
+                                             mic=getattr(self, '_meeting_mic', '') or '')
                 you = next((s for s in meeting['speakers'] if s['id'] == 'you'), None)
                 if you is not None and you.get('voice_id') != mine:
                     you['voice_id'] = mine
@@ -552,6 +558,42 @@ class MeetingService:
                         taken=[o.get('voice_id') for o in m['speakers'] if o.get('voice_id')])
                     self.voices.set_name(s['voice_id'], s['name'])
         self.store.save(m)
+
+    # ── Your voice in dictation ──────────────────────────────────────────────
+    # The same voiceprints, for auto-dictation: a hotkey dictation (you
+    # pressed the key, so it is you) teaches your voice on that microphone;
+    # an auto-dictation recording that doesn't sound like you there is not
+    # typed. Until a microphone has MY_VOICE_MIN samples nothing is blocked.
+
+    def _voiceprint(self, audio) -> Optional[np.ndarray]:
+        embed = self.tracker.embed
+        if embed is None:
+            self._ensure_embedder()       # loads in the background; ready for the next one
+            return None
+        try:
+            vec = embed(audio)
+        except Exception as e:
+            logger.debug(f"Voiceprint of a dictation failed: {e}")
+            return None
+        if vec is None:
+            return None
+        vec = np.asarray(vec, dtype=np.float32)
+        norm = float(np.linalg.norm(vec))
+        return vec / norm if norm > 0 else None
+
+    def learn_my_voice(self, audio, mic: str):
+        vec = self._voiceprint(audio)
+        if vec is not None:
+            self.voices.keep_self(vec, 1, mic=mic)
+
+    # How much `audio` sounds like you on `mic` (cosine), or None when your
+    # voice there isn't known well enough yet (or no voiceprint could be made).
+    def my_voice_similarity(self, audio, mic: str) -> Optional[float]:
+        mine = self.voices.self_voice(mic=mic)
+        if mine is None or mine[2] < MY_VOICE_MIN:
+            return None
+        vec = self._voiceprint(audio)
+        return None if vec is None else float(np.dot(vec, mine[1]))
 
     # Saved voices, for the Meetings screen: ids, names and where they were
     # heard; never the voiceprints.

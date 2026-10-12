@@ -6376,6 +6376,28 @@ class ConfidentSpeechTests(unittest.TestCase):
         longer = {'language_raw_probability': 0.9, 'audio_seconds': 4.0, 'segments': [self._seg(' Fine.', logprob=-0.85)]}
         self.assertEqual(confident_speech('Fine.', longer, False)[0], 'Fine.', 'only short clips need the closer bar')
 
+    # Only my voice, step 2: auto-dictation types only what sounds like you on
+    # this microphone; unknown (None) or switched off never blocks.
+    def test_auto_dictation_needs_your_voiceprint_once_it_is_known(self):
+        import types
+        import numpy as np
+        from koli.state_manager import StateManager
+        sm = StateManager.__new__(StateManager)
+        sm.logger = __import__('logging').getLogger('test')
+        sm.config_manager = types.SimpleNamespace(config={'audio': {'voice_filter': {'voiceprint': True}}})
+        sm.audio_recorder = types.SimpleNamespace(describe=lambda: {'name': 'Microphone (EMEET Piko+)'})
+        answers = {'sim': 0.15}
+        sm.meetings = types.SimpleNamespace(my_voice_similarity=lambda audio, mic: answers['sim'])
+        audio = np.zeros(16000, dtype=np.float32)
+        self.assertFalse(sm._sounds_like_me(audio), 'the TV, not you')
+        answers['sim'] = 0.72
+        self.assertTrue(sm._sounds_like_me(audio))
+        answers['sim'] = None
+        self.assertTrue(sm._sounds_like_me(audio), 'not learned yet: never blocks')
+        answers['sim'] = 0.15
+        sm.config_manager.config['audio']['voice_filter']['voiceprint'] = False
+        self.assertTrue(sm._sounds_like_me(audio), 'switched off')
+
     # whisper.cpp and older info carry no per-piece numbers: only the language check.
     def test_without_piece_numbers_the_text_stands(self):
         from koli.dictation_cleanup import confident_speech

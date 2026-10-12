@@ -175,6 +175,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
   off both still happen when recording starts.
 
 ### Fixed
+- **Auto-dictation typed words nobody said** ("Thank you."). With "Languages
+  I speak" its "is this even speech?" check read the language's share of
+  your list (always high) instead of how sure Whisper was, and very short
+  scraps had no extra bar. Both are fixed, and auto-dictation now also only
+  types what sounds like you: Koli learns your voice on each microphone from
+  your hotkey dictations (after 3), separately per microphone because each
+  hears you differently. Settings → Microphone & audio → Only my voice →
+  "Only voices that sound like me".
 - **Dictation stopped hearing you for the rest of the session.** While
   auto-dictation pasted a phrase mid-recording, the speech check and the live
   listening used the same speech detector at the same moment; it crashed, and

@@ -44,7 +44,8 @@ from .streaming_delivery import StreamingDelivery, decide_stream_delivery
 from .transforms import TransformsManager
 from .text_postprocess import postprocess
 from .dictation_cleanup import confident_speech, is_prompt_echo
-from .voice_filter import VoiceLevels, keep_my_voice, my_voice_pieces, speech_level_db
+from .voice_filter import (LEARN_VOICEPRINT_S, VOICEPRINT_MATCH, VoiceLevels, keep_my_voice, my_voice_pieces,
+                           speech_level_db)
 from .stats import record_transcription
 from .audit_log import record as audit_record
 from .terminal_title import TerminalTitle
@@ -528,6 +529,36 @@ class StateManager:
         if level is not None:
             levels.learn(self._mic_key(), level)
 
+    # ── Your voiceprint per microphone (Only my voice, step 2) ───────────────
+    # Kept by the meeting service's voice store, one per microphone name.
+
+    def _voiceprint_on(self) -> bool:
+        return getattr(self, 'meetings', None) is not None \
+            and self._voice_filter_config().get('voiceprint', True) is not False
+
+    def _learn_my_voiceprint(self, audio) -> None:
+        if not self._voiceprint_on() or audio is None or len(audio) / 16000 < LEARN_VOICEPRINT_S:
+            return
+        try:
+            self.meetings.learn_my_voice(audio, self._mic_key())   # one voiceprint per microphone
+        except Exception as e:
+            self.logger.debug(f"Voiceprint not learned: {e}")
+
+    # True unless your voice on this microphone is known and this recording
+    # clearly doesn't sound like it (another person, the TV, noise).
+    def _sounds_like_me(self, audio) -> bool:
+        if not self._voiceprint_on():
+            return True
+        try:
+            similarity = self.meetings.my_voice_similarity(audio, self._mic_key())
+        except Exception as e:
+            self.logger.debug(f"Voiceprint check skipped: {e}")
+            return True
+        if similarity is None or similarity >= VOICEPRINT_MATCH:
+            return True
+        self.logger.info(f"Auto-dictation: doesn't sound like you on this microphone ({similarity:.2f})")
+        return False
+
     # Drops the pieces of a recording much quieter than your learned level.
     # Returns the text left and the engine info with only the kept pieces, so
     # later checks don't bring a dropped piece back.
@@ -889,9 +920,11 @@ class StateManager:
                 self._emit_pipeline('empty', mode=mode, info=info)
                 return
 
-            # A hotkey dictation is you: it teaches Koli how loud you are.
+            # A hotkey dictation is you: it teaches Koli how loud you are and
+            # how you sound on this microphone.
             if not auto_session:
                 self._learn_my_level(audio_data)
+                self._learn_my_voiceprint(audio_data)
 
             # Only my voice: leave out speech much quieter than you (a TV across
             # the room, someone talking in your pauses).
@@ -909,6 +942,11 @@ class StateManager:
                     self.logger.info(f"Auto-dictation: {why}")
                 if not kept:
                     print(f"   ✗ Not sure that was speech ({why}) - nothing typed")
+                    self._emit_pipeline('empty', mode=mode, info=info)
+                    return
+                # Only my voice, step 2: it must sound like you on this microphone.
+                if not self._sounds_like_me(audio_data):
+                    print("   ✗ Doesn't sound like you on this microphone - nothing typed")
                     self._emit_pipeline('empty', mode=mode, info=info)
                     return
                 if why:

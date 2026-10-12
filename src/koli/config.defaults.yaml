@@ -359,6 +359,10 @@ audio: # Audio Recording Settings
         # How much quieter than you a voice must be to be left out (dB).
         # 6 dB is about half as loud; a TV across the room is often 15+.
         margin_db: 12
+        # Also by voiceprint: Koli learns how you sound on each microphone from
+        # your hotkey dictations (after 3), and auto-dictation only types what
+        # sounds like you there. Stays on this computer.
+        voiceprint: true
 
 clipboard: # Clipboard Behavior
     # Automatically paste after transcription
