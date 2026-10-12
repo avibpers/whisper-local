@@ -1531,5 +1531,264 @@ class MeetingMicTests(unittest.TestCase):
         self.assertIn('Invalid device', self.problems[0])
 
 
+# A 4-person Meet came out as "You" and "Speaker 1": each 15 s chunk got one
+# voiceprint, an average of everyone in it. The splitter finds the voices
+# inside a chunk; these are its pure parts, without the model.
+class SplitByVoiceTests(unittest.TestCase):
+    VOICES = [(0.0, 4.7, 1), (5.7, 10.8, 0), (11.9, 16.6, 1)]
+
+    @staticmethod
+    def piece(start, end, text):
+        return {'start': start, 'end': end, 'text': text}
+
+    def test_each_sentence_goes_to_the_voice_speaking_then(self):
+        from koli.meeting.diarize import parts_by_voice
+        parts = parts_by_voice([self.piece(0.0, 4.6, ' Move the release.'), self.piece(5.6, 10.9, ' I disagree.'),
+                                self.piece(11.8, 16.7, ' Fine, behind a flag.')], self.VOICES)
+        self.assertEqual([(p['voice'], p['text']) for p in parts],
+                         [(1, 'Move the release.'), (0, 'I disagree.'), (1, 'Fine, behind a flag.')])
+        self.assertEqual((parts[1]['start'], parts[1]['end']), (5.6, 10.9))
+
+    def test_sentences_of_one_voice_in_a_row_are_one_part(self):
+        from koli.meeting.diarize import parts_by_voice
+        parts = parts_by_voice([self.piece(0.0, 2.0, ' One.'), self.piece(2.0, 4.5, ' Two.'),
+                                self.piece(5.8, 10.0, ' Three.')], self.VOICES)
+        self.assertEqual([(p['voice'], p['text']) for p in parts], [(1, 'One. Two.'), (0, 'Three.')])
+
+    # A half-second "yes" isn't a turn of its own; it stays with its neighbour.
+    def test_a_very_short_part_joins_its_neighbour(self):
+        from koli.meeting.diarize import parts_by_voice
+        parts = parts_by_voice([self.piece(0.0, 4.6, ' Ready?'), self.piece(5.8, 6.3, ' Yes.'),
+                                self.piece(11.9, 16.5, ' Then go.')], self.VOICES)
+        self.assertEqual(len(parts), 1)
+        self.assertEqual(parts[0]['text'], 'Ready? Yes. Then go.')
+
+    def test_a_piece_in_a_gap_goes_to_the_nearest_voice(self):
+        from koli.meeting.diarize import voice_of
+        self.assertEqual(voice_of(self.piece(10.9, 11.5, 'hm'), self.VOICES), 0)
+        self.assertIsNone(voice_of(self.piece(1, 2, 'x'), []))
+
+    def test_a_voice_audio_is_all_its_stretches_joined(self):
+        from koli.meeting.diarize import voice_audio, voice_seconds
+        audio = np.arange(17 * 16000, dtype=np.float32)
+        got = voice_audio(audio, self.VOICES, 1)
+        self.assertEqual(len(got), int(4.7 * 16000) + int(16.6 * 16000) - int(11.9 * 16000))
+        self.assertAlmostEqual(voice_seconds(self.VOICES, 1), 4.7 + 4.7, places=5)
+
+
+# Whisper makes sentences out of noise. Numbers from a real Hebrew Meet.
+class BelievableTests(unittest.TestCase):
+    @staticmethod
+    def info(*pieces):
+        return {'segments': [{'text': t, 'start': 0.0, 'end': 1.0, 'no_speech_prob': 0.0, 'avg_logprob': lp,
+                              'compression_ratio': 1.2} for t, lp in pieces]}
+
+    def test_a_short_clip_whisper_wasnt_clearly_sure_of_is_dropped(self):
+        from koli.meeting.transcriber import believable_pieces
+        self.assertEqual(believable_pieces("We'll see you next time.", self.info(("We'll see you next time.", -1.10)), 1.0), [])
+        self.assertEqual(believable_pieces('PR in Chile.', self.info(('PR in Chile.', -0.45)), 1.2), [])
+
+    def test_real_short_speech_is_kept(self):
+        from koli.meeting.transcriber import believable_pieces
+        kept = believable_pieces('כל פעם לפני שעולה גרסה.', self.info(('כל פעם לפני שעולה גרסה.', -0.09)), 1.95)
+        self.assertEqual([p['text'] for p in kept], ['כל פעם לפני שעולה גרסה.'])
+
+    def test_a_long_clip_loses_only_its_unsure_pieces(self):
+        from koli.meeting.transcriber import believable_pieces
+        kept = believable_pieces('x', self.info(('אני באמצע פגישה', -0.28), (' Piano Intro Bye. Tracey', -2.48)), 15.0)
+        self.assertEqual([p['text'] for p in kept], ['אני באמצע פגישה'])
+
+    def test_without_piece_numbers_the_text_is_one_piece(self):
+        from koli.meeting.transcriber import believable_pieces
+        self.assertEqual(believable_pieces('hello', {}, 3.0), [{'text': 'hello', 'start': 0.0, 'end': 3.0}])
+
+
+class VoiceBookTests(unittest.TestCase):
+    def setUp(self):
+        from koli.meeting.voices import VoiceBook
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = Path(self.tmp.name) / 'voices.json'
+        self.book = VoiceBook(self.path)
+
+    def test_remembered_voice_matches_later_and_survives_a_restart(self):
+        from koli.meeting.voices import VoiceBook
+        self.book.remember('Eran', [1.0, 0.0, 0.0], 4)
+        again = VoiceBook(self.path)
+        self.assertEqual(again.names(), ['Eran'])
+        self.assertEqual(again.match([0.9, 0.2, 0.0]), 'Eran')
+        self.assertIsNone(again.match([0.0, 1.0, 0.0]), 'another voice gets no name')
+
+    def test_a_name_already_in_the_meeting_is_skipped(self):
+        self.book.remember('Eran', [1.0, 0.0], 1)
+        self.assertIsNone(self.book.match([1.0, 0.0], taken=['Eran']))
+
+    def test_naming_again_refines_the_same_voice(self):
+        self.book.remember('Eran', [1.0, 0.0], 3)
+        self.book.remember('eran', [0.0, 1.0], 1)
+        self.assertEqual(self.book.names(), ['eran'])
+        self.assertEqual(self.book.match([0.95, 0.3]), 'eran')
+
+    def test_koli_s_own_names_are_never_remembered(self):
+        self.book.remember('Speaker 3', [1.0, 0.0], 2)
+        self.book.remember('', [1.0, 0.0], 2)
+        self.assertEqual(self.book.names(), [])
+        self.assertFalse(self.path.exists())
+
+    def test_forget(self):
+        self.book.remember('Shachar', [1.0, 0.0], 1)
+        self.assertTrue(self.book.forget('shachar'))
+        self.assertFalse(self.book.forget('Shachar'))
+        self.assertIsNone(self.book.match([1.0, 0.0]))
+
+
+class TrackerVoicesTests(unittest.TestCase):
+    @staticmethod
+    def unit(*xs):
+        v = np.array(xs, dtype=np.float32)
+        return v / np.linalg.norm(v)
+
+    def book(self):
+        from koli.meeting.voices import VoiceBook
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        return VoiceBook(Path(tmp.name) / 'voices.json')
+
+    # Two voices the splitter heard in one chunk are two people, even when
+    # their voiceprints come out close.
+    def test_two_voices_of_one_chunk_are_never_one_speaker(self):
+        from koli.meeting.speakers import SpeakerTracker
+        vecs = {'a': self.unit(1, 0, 0), 'b': self.unit(0.8, 0.6, 0)}   # cosine 0.8: would join
+        t = SpeakerTracker(embed=lambda audio: vecs[audio], similarity=0.30)
+        first, _ = t.label('a', speech_s=4.0)
+        second, _ = t.label('b', speech_s=4.0, exclude=[first])
+        self.assertNotEqual(first, second)
+        without = SpeakerTracker(embed=lambda audio: vecs[audio], similarity=0.30)
+        without.label('a', speech_s=4.0)
+        self.assertEqual(without.label('b', speech_s=4.0)[0], 's1', 'without the rule it would have joined')
+
+    def test_a_new_voice_takes_its_remembered_name(self):
+        from koli.meeting.speakers import SpeakerTracker
+        book = self.book()
+        book.remember('Eran', self.unit(1, 0, 0), 5)
+        t = SpeakerTracker(embed=lambda audio: self.unit(0.95, 0.1, 0), voices=book)
+        sid, entry = t.label('x', speech_s=4.0)
+        self.assertEqual((sid, entry['name'], entry['voice']), ('s1', 'Eran', 'Eran'))
+
+    # The first chunk is often too short to tell; once the voiceprint firms
+    # up and matches, "Speaker 1" becomes the remembered name.
+    def test_speaker_n_takes_the_name_once_its_voice_matches(self):
+        from koli.meeting.speakers import SpeakerTracker
+        book = self.book()
+        book.remember('Shachar', self.unit(0, 1, 0), 5)
+        vecs = {'first': self.unit(0.6, 0.8, 0), 'more': self.unit(0, 1, 0)}
+        t = SpeakerTracker(embed=lambda audio: vecs[audio], voices=book, similarity=0.30)
+        t.voices = None
+        sid, entry = t.label('first', speech_s=4.0)
+        self.assertEqual(entry['name'], 'Speaker 1')
+        t.voices = book
+        _, entry = t.label('more', speech_s=4.0)
+        self.assertEqual((entry['name'], entry.get('voice')), ('Shachar', 'Shachar'))
+
+    def test_a_name_you_gave_is_never_replaced(self):
+        from koli.meeting.speakers import SpeakerTracker
+        book = self.book()
+        book.remember('Shachar', self.unit(0, 1, 0), 5)
+        t = SpeakerTracker(embed=lambda audio: self.unit(0, 1, 0), similarity=0.30)
+        t.label('x', speech_s=4.0)
+        t.rename('s1', 'Moshe')
+        t.voices = book
+        _, entry = t.label('x', speech_s=4.0)
+        self.assertEqual(entry['name'], 'Moshe')
+        self.assertNotIn('voice', entry)
+
+
+class SessionVoiceNameTests(unittest.TestCase):
+    def setUp(self):
+        from koli.meeting.session import SessionManager
+        from koli.meeting.store import MeetingStore
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.sm = SessionManager(MeetingStore(Path(self.tmp.name)), start_capture=lambda m: None,
+                                 stop_capture=lambda: None, publish=lambda t, p: None,
+                                 settings=lambda p, d=None: d)
+        self.sm.start()
+
+    def test_a_remembered_name_replaces_only_speaker_n(self):
+        self.sm.ensure_speaker({'id': 's1', 'name': 'Speaker 1', 'colour': 1, 'centroid': [1.0], 'count': 1})
+        self.sm.ensure_speaker({'id': 's2', 'name': 'Speaker 2', 'colour': 2, 'centroid': [0.0], 'count': 1})
+        self.sm.rename_speaker('s2', 'Moshe')
+        self.sm.ensure_speaker({'id': 's1', 'name': 'Eran', 'colour': 1, 'centroid': [1.0], 'count': 2, 'voice': 'Eran'})
+        self.sm.ensure_speaker({'id': 's2', 'name': 'Eran', 'colour': 2, 'centroid': [0.0], 'count': 2, 'voice': 'Eran'})
+        names = {s['id']: s['name'] for s in self.sm.meeting['speakers']}
+        self.assertEqual((names['s1'], names['s2']), ('Eran', 'Moshe'))
+        self.assertNotIn('voice', self.sm.meeting['speakers'][1], 'the marker is never stored')
+
+
+# One loopback chunk with two voices becomes two turns, two speakers.
+class TranscriberSplitTests(unittest.TestCase):
+    def test_a_chunk_with_two_voices_becomes_two_turns(self):
+        from koli.meeting.transcriber import MeetingTranscriber
+        from koli.meeting.speakers import SpeakerTracker
+        audio = np.zeros(16000 * 12, dtype=np.float32)
+        audio[16000 * 6:] = 1.0      # the second voice's stretch, so the embedder can tell them apart
+        engine = FakeEngine(['Move it. I disagree.'])
+        engine.transcribe_audio_info = None
+        original = engine.transcribe_audio
+
+        def transcribe(a, language=None, use_prompt=True):
+            text = original(a, language, use_prompt)
+            engine.last_info = {'language': 'en', 'segments': [
+                {'text': ' Move it.', 'start': 0.2, 'end': 5.5, 'no_speech_prob': 0.0, 'avg_logprob': -0.1, 'compression_ratio': 1.0},
+                {'text': ' I disagree.', 'start': 6.3, 'end': 11.5, 'no_speech_prob': 0.0, 'avg_logprob': -0.1, 'compression_ratio': 1.0}]}
+            return text
+        engine.transcribe_audio = transcribe
+        embed = lambda a: np.array([1.0, 0.0]) if float(np.mean(a)) < 0.5 else np.array([0.0, 1.0])
+        turns, speakers = [], []
+        t = MeetingTranscriber(engine_provider=lambda: engine, is_busy=lambda: False,
+                               tracker=SpeakerTracker(embed=embed), language_provider=lambda: 'auto',
+                               on_turn=turns.append, on_speaker=speakers.append, on_pending=lambda s: None,
+                               on_behind=lambda s: None, poll_s=0.01)
+        t.split = lambda a: [(0.0, 5.8, 0), (6.0, 12.0, 1)]
+        t.start()
+        t.submit({'audio': audio, 'stream': 'loopback', 't0': 100.0, 't1': 112.0, 'speech_s': 11.0})
+        deadline = time.time() + 3
+        while (t.queued_seconds() > 0 or t.working or len(turns) < 2) and time.time() < deadline:
+            time.sleep(0.01)
+        t.stop()
+        self.assertEqual([(x['speaker'], x['text']) for x in turns], [('s1', 'Move it.'), ('s2', 'I disagree.')])
+        self.assertEqual((turns[1]['t0'], turns[1]['t1']), (106.3, 111.5))
+
+
+class ServiceVoicesTests(unittest.TestCase):
+    def test_renaming_a_speaker_remembers_the_voice(self):
+        from koli.services.meetings import MeetingService
+        from koli.meeting.store import MeetingStore
+        from koli.meeting.voices import VoiceBook
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        ctx = type('Ctx', (), {})()
+        ctx.state_manager = FakeStateManager()
+        ctx.config_manager = FakeConfig({'meeting.enabled': False, 'meeting.include_me': True, 'meeting.language': 'auto',
+                                         'meeting.speaker_model': 'eres2net', 'meeting.segmentation_model': ''})
+        ctx.model_registry = None
+        book = VoiceBook(Path(tmp.name) / 'voices.json')
+        fake_loopback = type('L', (), {'start': lambda s: None, 'stop': lambda s: None})
+        svc = MeetingService(ctx, store=MeetingStore(Path(tmp.name) / 'meetings'), publish=lambda t, p: None,
+                             loopback_factory=lambda on_block, on_error, device=None: fake_loopback(),
+                             embedder_factory=lambda: None, loopback_available=lambda: True, sessions_fn=lambda: [],
+                             voices=book)
+        self.addCleanup(svc.shutdown)
+        svc.start()
+        svc.tracker.embed = lambda audio: np.array([1.0, 0.0, 0.0])
+        sid, entry = svc.tracker.label(np.zeros(16000 * 3), speech_s=3.0)
+        svc.session.ensure_speaker(entry)
+        svc.rename_speaker(sid, 'Eran')
+        self.assertEqual(svc.voices_list(), ['Eran'])
+        self.assertEqual(book.match([0.9, 0.1, 0.0]), 'Eran')
+        self.assertTrue(svc.forget_voice('Eran'))
+        self.assertEqual(svc.voices_list(), [])
+
+
 if __name__ == '__main__':
     unittest.main()

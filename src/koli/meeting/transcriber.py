@@ -2,19 +2,45 @@
 # Turns meeting chunks into transcript turns on one background worker. The
 # Whisper engine is shared with dictation, so the worker waits whenever a
 # dictation is being recorded or transcribed; the queue just grows and the
-# panel shows how far behind it is. Mic chunks are "You"; loopback chunks get
-# a speaker from the tracker.
+# panel shows how far behind it is. Sentences Whisper made up are dropped.
+# Mic chunks are "You"; a loopback chunk is split by voice (diarize.py) and
+# each voice gets a speaker from the tracker, one turn per voice.
 
 import logging
 import queue
 import threading
 import time
-from typing import Callable, Optional
+from typing import Callable, List, Optional
 
-from ..dictation_cleanup import is_prompt_echo
+import numpy as np
+
+from ..dictation_cleanup import is_prompt_echo, unsure_piece
+from .diarize import parts_by_voice, voice_audio, voice_seconds
 from .speakers import SpeakerTracker
 
 logger = logging.getLogger(__name__)
+
+RATE = 16000
+# A clip this short that Whisper wasn't clearly sure of is dropped whole.
+# From a real Hebrew Meet: made-up clips under 2 s ("Bet.", "PR in Chile.",
+# "We'll see you next time.") scored -0.45 to -1.12 log-prob per word, while
+# real short speech ("כל פעם לפני שעולה גרסה.", 1.95 s) scored -0.09.
+SHORT_CLIP_S = 2.0
+SHORT_CLIP_MIN_LOGPROB = -0.35
+
+
+# The pieces (Whisper segments) of one clip worth keeping. Each is checked
+# the way auto-dictation checks a clip nobody chose to record (silence,
+# word-by-word certainty, repetition; mic garbage scored -1.5 to -4.5), and
+# a short clip must be clearly sure. Without piece numbers (another
+# backend), the whole text is one piece.
+def believable_pieces(text: str, info: dict, seconds: float) -> List[dict]:
+    pieces = [p for p in (info or {}).get('segments') or [] if (p.get('text') or '').strip()]
+    if not pieces:
+        return [{'text': text, 'start': 0.0, 'end': seconds}]
+    if seconds < SHORT_CLIP_S and any(p.get('avg_logprob', 0) < SHORT_CLIP_MIN_LOGPROB for p in pieces):
+        return []
+    return [p for p in pieces if not unsure_piece(p)]
 
 
 class MeetingTranscriber:
@@ -31,6 +57,9 @@ class MeetingTranscriber:
         self.on_pending = on_pending
         self.on_behind = on_behind
         self.poll_s = poll_s
+        # Finds the voices in a chunk: audio -> [(start_s, end_s, voice)];
+        # set once its model is loaded, until then a chunk is one voice.
+        self.split: Optional[Callable[[np.ndarray], list]] = None
         self._queue = queue.Queue()
         self._queued_s = 0.0
         self._lock = threading.Lock()
@@ -106,12 +135,52 @@ class MeetingTranscriber:
         text = engine.transcribe_audio(chunk['audio'], language=self.language_provider() or 'auto', use_prompt=False)
         if not text or is_prompt_echo(text, getattr(engine, 'initial_prompt', None)):
             return
-        lang = (getattr(engine, 'last_info', None) or {}).get('language') or ''
+        info = getattr(engine, 'last_info', None) or {}
+        lang = info.get('language') or ''
+        seconds = len(chunk['audio']) / RATE
+        pieces = believable_pieces(text, info, seconds)
+        if not pieces:
+            logger.info(f"Dropped a {seconds:.1f} s {chunk['stream']} clip Whisper wasn't sure of")
+            return
+        base = {'stream': chunk['stream'], 'lang': lang, 'meeting_id': chunk.get('meeting_id')}
         if chunk['stream'] == 'mic':
-            speaker = 'you'
-        else:
-            speaker, entry = self.tracker.label(chunk['audio'], speech_s=chunk.get('speech_s'))
-            if entry is not None:
-                self.on_speaker(entry)
-        self.on_turn({'t0': chunk['t0'], 't1': chunk['t1'], 'stream': chunk['stream'],
-                      'speaker': speaker, 'text': text, 'lang': lang, 'meeting_id': chunk.get('meeting_id')})
+            self.on_turn({**base, 't0': chunk['t0'], 't1': chunk['t1'], 'speaker': 'you',
+                          'text': ''.join(p['text'] for p in pieces).strip()})
+            return
+        voices = self._voices_in(chunk['audio'])
+        if len({v for _, _, v in voices}) < 2:
+            speaker = self._label(chunk['audio'], chunk.get('speech_s'), ())
+            self.on_turn({**base, 't0': chunk['t0'], 't1': chunk['t1'], 'speaker': speaker,
+                          'text': ''.join(p['text'] for p in pieces).strip()})
+            return
+        # Several voices: one turn per run of one voice, each voice labelled
+        # once from all its audio here, and never as another voice of this chunk.
+        speakers, previous = {}, None
+        for part in parts_by_voice(pieces, voices):
+            voice = part['voice']
+            if voice not in speakers:
+                speaker = self._label(voice_audio(chunk['audio'], voices, voice), voice_seconds(voices, voice),
+                                      [s for s in speakers.values() if s != SpeakerTracker.UNKNOWN])
+                # Too little of this voice for a voiceprint: it stays with the voice before it.
+                if speaker == SpeakerTracker.UNKNOWN and self.tracker.embed is not None and previous:
+                    speaker = previous
+                speakers[voice] = speaker
+            previous = speakers[voice]
+            self.on_turn({**base, 't0': chunk['t0'] + part['start'], 't1': chunk['t0'] + part['end'],
+                          'speaker': speakers[voice], 'text': part['text']})
+
+    # The voices the splitter hears in a chunk; none when it isn't loaded or fails.
+    def _voices_in(self, audio) -> list:
+        if self.split is None:
+            return []
+        try:
+            return self.split(audio)
+        except Exception as e:
+            logger.debug(f"Splitting a chunk by voice failed: {e}")
+            return []
+
+    def _label(self, audio, speech_s, exclude) -> str:
+        speaker, entry = self.tracker.label(audio, speech_s=speech_s, exclude=exclude)
+        if entry is not None:
+            self.on_speaker(entry)
+        return speaker

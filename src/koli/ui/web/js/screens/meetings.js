@@ -79,6 +79,27 @@ function Transcript({ id, live, onDeleted }) {
   </section>`;
 }
 
+// Voices you named: renaming a speaker remembers the voice, and later
+// meetings call it by that name. Forgetting one stops that.
+function KnownVoices() {
+  const [names, setNames] = useState([]);
+  const load = () => call('meeting_voices').then(setNames).catch(() => {});
+  useEffect(() => { load(); }, []);
+  useEffect(() => on('meeting', load), []);
+  const forget = async (name) => {
+    if (await confirmModal({ title: `Forget ${name}'s voice?`, body: 'Later meetings will call this voice "Speaker N" again. Past meetings keep the name.', confirm: 'Forget', danger: true })) {
+      call('meeting_forget_voice', name).then(load).catch((e) => toast(e.message, { kind: 'err' }));
+    }
+  };
+  return html`<section class="card pad stack" aria-label="Known voices">
+    <span class="card-title">Known voices</span>
+    ${names.length === 0
+      ? html`<span class="small muted">Rename a speaker and Koli recognises that voice in later meetings.</span>`
+      : html`<div class="tags">${names.map((n) => html`<span class="tag" dir="auto">${n}
+          <button type="button" aria-label=${`Forget ${n}`} onClick=${() => forget(n)}>×</button></span>`)}</div>`}
+  </section>`;
+}
+
 export function MeetingsScreen() {
   const live = app.use((s) => s.meeting);
   const [list, setList] = useState([]);
@@ -95,12 +116,15 @@ export function MeetingsScreen() {
     <${ExtraInstall} name="loopback" />
     <${LiveCard} m=${live} />
     <div style="display:grid;grid-template-columns:minmax(260px,320px) minmax(0,1fr);gap:16px;align-items:start">
-      <section class="card" style="overflow:hidden" aria-label="Past meetings">
-        ${list.length === 0 && html`<div class="empty">No meetings yet.</div>`}
-        ${list.map((h) => html`<button type="button" class="menu-item" style=${`display:block;width:100%;text-align:start;padding:12px 16px;border-top:1px solid var(--line)${current === h.id ? ';background:var(--sunk)' : ''}`} onClick=${() => setSelected(h.id)}>
-          <div style="font-weight:600">${h.title}${liveId === h.id ? html` <span class="chip rec">Live</span>` : ''}</div>
-          <div class="small muted">${when(h.started_at)} · ${clock(h.duration_s)} · ${h.speakers.join(', ')}</div></button>`)}
-      </section>
+      <div class="stack">
+        <section class="card" style="overflow:hidden" aria-label="Past meetings">
+          ${list.length === 0 && html`<div class="empty">No meetings yet.</div>`}
+          ${list.map((h) => html`<button type="button" class="menu-item" style=${`display:block;width:100%;text-align:start;padding:12px 16px;border-top:1px solid var(--line)${current === h.id ? ';background:var(--sunk)' : ''}`} onClick=${() => setSelected(h.id)}>
+            <div style="font-weight:600">${h.title}${liveId === h.id ? html` <span class="chip rec">Live</span>` : ''}</div>
+            <div class="small muted">${when(h.started_at)} · ${clock(h.duration_s)} · ${h.speakers.join(', ')}</div></button>`)}
+        </section>
+        <${KnownVoices} />
+      </div>
       ${current ? html`<${Transcript} id=${current} live=${liveId === current} onDeleted=${() => { setSelected(null); reload(); }} />` : html`<div class="empty">Pick a meeting.</div>`}
     </div>
   </div>`;

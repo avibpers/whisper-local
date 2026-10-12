@@ -34,7 +34,9 @@ MIN_AVG_LOGPROB = -1.0           # a piece it was unsure of word by word
 MAX_COMPRESSION = 2.4            # a piece that repeats itself ("I'm sick, I'm sick")
 
 
-def _unsure_piece(piece: dict) -> bool:
+# A piece (Whisper segment) Whisper itself wasn't sure of. Also used by
+# meeting mode, whose chunks nobody chose to record either.
+def unsure_piece(piece: dict) -> bool:
     return (piece.get('no_speech_prob', 0) > MAX_NO_SPEECH or piece.get('avg_logprob', 0) < MIN_AVG_LOGPROB
             or piece.get('compression_ratio', 0) > MAX_COMPRESSION)
 
@@ -50,7 +52,7 @@ def confident_speech(text: str, info: dict, language_forced: bool) -> tuple:
     pieces = info.get('segments')
     if not pieces:
         return text, ''
-    kept = [p for p in pieces if not _unsure_piece(p)]
+    kept = [p for p in pieces if not unsure_piece(p)]
     if len(kept) == len(pieces):
         return text, ''
     dropped = len(pieces) - len(kept)

@@ -56,6 +56,7 @@ export function createMock(emit) {
   // A fake meeting: saved ones to list, and a live one (meeting_start, or
   // ?mock=1&meeting) that gains a turn every few seconds.
   const SPEAKERS = [{ id: 'you', name: 'You', colour: 0 }, { id: 's1', name: 'Speaker 1', colour: 1 }, { id: 's2', name: 'Ilona', colour: 2 }];
+  let voices = ['Ilona'];   // names remembered across meetings
   const LINES = [['s2', 'We fixed it, but if it breaks again, who knows.'], ['you', 'And the bridge is not working now?'],
     ['s1', 'On Friday they hit one or two bridges.'], ['you', 'שלום, אני אגיע מחר בבוקר.']];
   const emptyMeeting = () => ({ state: 'idle', id: null, title: '', source: {}, started_at: null, elapsed_s: 0, paused_by_user: false,
@@ -313,7 +314,9 @@ export function createMock(emit) {
     meeting_resume: () => { meeting = { ...meeting, state: 'live', paused_by_user: false, notice: 'resumed', can_split: true }; emitMeeting(); return ok(); },
     meeting_exclude: (on) => { meeting = { ...meeting, excluded: !!on }; emitMeeting(); return ok(); },
     meeting_offer: (accept) => { if (accept) startMeeting(); else { meeting = emptyMeeting(); emitMeeting(); } return ok(); },
-    meeting_rename: (sid, name) => { const sp = SPEAKERS.find((s) => s.id === sid); if (sp) sp.name = name; emitMeeting(); return ok(); },
+    meeting_rename: (sid, name) => { const sp = SPEAKERS.find((s) => s.id === sid); if (sp) { sp.name = name; if (!voices.includes(name)) voices.push(name); } emitMeeting(); return ok(); },
+    meeting_voices: () => ok(voices.slice()),
+    meeting_forget_voice: (name) => { const had = voices.includes(name); voices = voices.filter((v) => v !== name); return ok(had); },
     meeting_continue_previous: () => { meeting = { ...meeting, notice: 'resumed', can_continue: false }; emitMeeting(); return ok(); },
     meeting_split: () => { meeting = { ...meeting, notice: 'new', can_split: false }; emitMeeting(); return ok(); },
     meetings_list: () => ok(Object.values(saved).map((m) => ({ id: m.id, title: m.title, source: m.source, started_at: m.started_at,

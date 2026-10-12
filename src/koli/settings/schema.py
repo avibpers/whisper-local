@@ -358,6 +358,10 @@ SCHEMA = [
     _S('meeting.speaker_model', 'Voiceprint model', 'meetings', 'select', apply=BACKGROUND,
        choices=[['eres2net-en', '3D-Speaker ERes2Net VoxCeleb (26 MB)'], ['eres2net', '3D-Speaker ERes2Net Chinese (40 MB)']],
        help='Tells speakers apart. Downloaded at the first meeting.'),
+    _S('meeting.segmentation_model', 'Split by voice', 'meetings', 'select', apply=BACKGROUND,
+       choices=[['pyannote-segmentation', 'On (pyannote, 6 MB)'], ['', 'Off']],
+       help='Finds where the voice changes inside the call, so people who talk one after another '
+       'get their own turns. Downloaded at the first meeting.'),
     _S('meeting.speaker_models', 'Voiceprint models', 'meetings', 'readonly', help='Defined in user_settings.yaml.'),
     _S('meeting.panel.opacity', 'Panel opacity', 'meetings', 'range', min=40, max=100, step=5, unit='%', group='Panel'),
     _S('meeting.panel.position', 'Panel position', 'meetings', 'segmented', choices=POSITIONS, group='Panel',

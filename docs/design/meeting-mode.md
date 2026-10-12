@@ -40,9 +40,10 @@ chunks, so text appears a few seconds behind speech.
 | A dictation recording (hotkey or auto-dictation) runs during a meeting | Those microphone seconds go to the dictation only, never into the meeting. The loopback keeps going. |
 | A dictation is being transcribed | The meeting's chunks wait. Dictation keeps its latency. |
 | Transcription falls behind (slow machine, big model) | Nothing is dropped. The header shows "25 s behind". |
-| Loopback chunk transcribed | A voiceprint is taken; it joins the nearest known speaker or becomes "Speaker N". The turn shows with that speaker's colour. |
+| Loopback chunk transcribed | The chunk is split by voice; each voice's sentences become a turn of their own. Each voice gets a voiceprint; it joins the nearest known speaker, takes the name of a voice you named in an earlier meeting, or becomes "Speaker N". Two voices of one chunk are never the same speaker. |
 | Microphone chunk transcribed | Speaker "You", always the same colour. |
-| Click a speaker name (panel or Meetings screen) | Rename for this meeting. Stored in the meeting file. |
+| Whisper wasn't sure of a sentence | It is left out: the auto-dictation check per sentence, and a clip under 2 s must be clearly sure. |
+| Click a speaker name (panel or Meetings screen) | Rename for this meeting. Stored in the meeting file, and the voice is remembered: later meetings call it by that name. The Meetings screen lists known voices; forgetting one stops that. |
 | Screen sharing in the meeting app | The panel is hidden from capture when `hide_from_sharing` is on (default). The panel's header menu toggles it for this meeting. |
 | `soundcard` (the loopback extra) is missing | The first start reports a problem with an Install button through the extras installer. Meeting mode stays off until it is installed. |
 | Speaker-embedding model not downloaded | Downloaded on the first meeting as a background task with progress. Until it is ready, loopback turns are labelled "Speaker ?"; those earlier turns are not relabelled. |
@@ -148,6 +149,24 @@ file so a resumed meeting keeps its speakers. "You" is never computed: mic
 turns are labelled by the transcriber. Pure numpy apart from the extractor,
 so the clustering is unit-tested with synthetic vectors.
 
+**`meeting/diarize.py`: split by voice.** `make_splitter` wraps
+`sherpa_onnx.OfflineSpeakerDiarization` (pyannote segmentation 3.0, 6 MB,
+registered as `pyannote-segmentation` in `meeting.speaker_models`, plus the
+voiceprint model) and returns `[(start, end, voice)]` for one chunk. Pure
+helpers give each Whisper segment to the voice that overlaps it most
+(`parts_by_voice`; a part under 1 s joins its neighbour) and join one
+voice's audio for its voiceprint (`voice_audio`). The transcriber labels
+each voice once per chunk with `exclude=` the speakers already given to the
+chunk's other voices. `meeting.segmentation_model: ''` turns it off.
+
+**`meeting/voices.py`: remembered voices.** `VoiceBook` keeps
+`voices.json` beside the meetings folder: name, voiceprint, count. Renaming
+a speaker (live or saved) calls `remember`, which refines a known name.
+`SpeakerTracker` asks `match(vec, taken=names in this meeting)` (cosine 0.5,
+stricter than joining) for a new speaker and when a "Speaker N" firms up;
+the entry carries `voice`, and the session gives that name only to a
+"Speaker N", never over a name you typed.
+
 **`meeting/store.py`.** `<data>/meetings/<yyyy-mm-dd-hhmmss>.json`, one per
 meeting, written on every change but at most every 5 s (a dirty flag and a
 timer), and once more on end. `list()` reads only the header of each file.
@@ -242,6 +261,7 @@ New section `meeting:` in `config.defaults.yaml`, schema section
 | `meeting.language` | auto | select (auto, he, en, ...) | next chunk |
 | `meeting.model` | "" (dictation model) | select from models | background |
 | `meeting.speaker_model` | eres2net | select | background |
+| `meeting.segmentation_model` | pyannote-segmentation | select (on / off) | next meeting |
 | `meeting.speaker_models` | table | model_table | internal |
 | `meeting.panel.opacity` | 0.85 | range 0.4 to 1 | live |
 | `meeting.panel.position` | right-edge | select (bubble positions) | live |
@@ -265,8 +285,8 @@ to `meeting.detect`.
 
 ## Out of scope (later steps)
 
-LLM questions during a call, summaries and notes; learning voices across
-meetings; reading speaker names from the meeting app; per-app loopback
+LLM questions during a call, summaries and notes; reading speaker names
+from the meeting app; per-app loopback
 (capturing only the meeting app's audio); Firefox tab detection; macOS
 loopback (needs a virtual audio device); a slower second pass that
 re-clusters speakers and cleans text; search across meetings.
@@ -331,6 +351,19 @@ re-clusters speakers and cleans text; search across meetings.
   line. Turns of one or two words keep the strict one-turn match, so a
   quick "כן" is never dropped. Replayed on that meeting, "You" went from
   82 turns to 47, all of them really the user.
+- Fifth real test (a 4-person Meet): all three remote people became
+  "Speaker 1". A 15 s chunk held several voices but got one voiceprint, an
+  average of them, which matched the last speaker under the low threshold,
+  and each mixed join blurred that voiceprint further. Chunks are now split
+  by voice before labelling (diarize.py), so voiceprints only learn from
+  one voice. Checked with the real models on a two-voice text-to-speech
+  conversation in two chunks: the right voices at the right times, the same
+  labels across chunks, and a second meeting naming both from voices.json.
+- Same meeting: Whisper made up short English clips in a Hebrew call
+  ("Bet.", "PR in Chile.", "We'll see you next time.", log-prob -0.45 to
+  -1.12 on clips under 2 s) and garbage on the mic (-1.5 to -4.5), while
+  real short Hebrew scored -0.09. Meeting turns now pass the auto-dictation
+  check per sentence, and a clip under 2 s must score -0.35 or better.
 - Startup: pywebview gives the hidden main window 10 s to show before it
   creates the other windows, and under load (a Meet call already running,
   twelve Chrome windows to probe, a loopback opening, a model loading) it

@@ -11,12 +11,16 @@ import logging
 import threading
 from typing import Callable, Optional
 
+from pathlib import Path
+
 from ..meeting.capture import Chunker, LoopbackStream, MicStream, MicTap, speech_prob_function
 from ..meeting.detector import MeetingDetector
+from ..meeting.diarize import make_splitter
 from ..meeting.session import SessionManager
 from ..meeting.speakers import SpeakerTracker, make_embedder
 from ..meeting.store import MeetingStore
 from ..meeting.transcriber import MeetingTranscriber
+from ..meeting.voices import FILE as VOICES_FILE, VoiceBook
 from ..ui.events import publish as publish_event, report_problem
 from ..ui.tasks import get_task_manager
 
@@ -40,9 +44,14 @@ class MeetingService:
                  loopback_factory: Callable = None, embedder_factory: Callable = None,
                  speech_prob_factory: Callable = None, loopback_available: Callable[[], bool] = None,
                  report: Callable[[str], None] = None, sessions_fn: Callable[[], list] = None,
-                 autostart: bool = True, mic_stream_factory: Callable = None):
+                 autostart: bool = True, mic_stream_factory: Callable = None,
+                 splitter_factory: Callable = None, voices: Optional[VoiceBook] = None):
         self.ctx = ctx
         self.store = store or MeetingStore()
+        # Named voices live next to the meetings folder (beside it, so the
+        # meeting list never reads them as a meeting).
+        self.voices = voices if voices is not None else VoiceBook(Path(self.store.folder).parent / VOICES_FILE)
+        self._splitter_factory = splitter_factory or self._load_splitter
         self._publish = publish or publish_event
         self._loopback_factory = loopback_factory or (
             lambda on_block, on_error, device=None: LoopbackStream(on_block, on_error, device=device))
@@ -62,7 +71,7 @@ class MeetingService:
         self._loop_chunkers = []
         self._mic_source = None           # the tap on the dictation microphone, or a stream of its own
         self._mic_chunker = None
-        self.tracker = SpeakerTracker(embed=None)
+        self.tracker = SpeakerTracker(embed=None, voices=self.voices)
         self._embedder_task = None
         self.session = SessionManager(self.store, start_capture=self._start_capture, stop_capture=self._stop_capture,
                                       publish=self._publish, settings=self._setting, on_speakers=self.tracker.load)
@@ -89,13 +98,16 @@ class MeetingService:
         value = self.ctx.config_manager.get_path(path, default)
         return default if value is None else value
 
-    # Only the switch needs a hand; everything else is read when it is used.
+    # The switch needs a hand, and a new splitter choice drops the loaded one
+    # so the next meeting loads it; everything else is read when it is used.
     def apply_setting(self, path: str, value):
         if path == 'meeting.enabled':
             if value:
                 self.start_detector()
             else:
                 self.stop_detector()
+        elif path == 'meeting.segmentation_model':
+            self.transcriber.split = None
 
     # The loopback package was installed while the app runs: detection can
     # start now, without a restart.
@@ -278,18 +290,41 @@ class MeetingService:
         path = registry.get_speaker_model_path(key)
         return make_embedder(path) if path else None
 
-    # Loads the voiceprint model in the background the first time; turns
-    # transcribed before it is ready are "Speaker ?".
+    # The voice splitter: the segmentation model plus the voiceprint model,
+    # or None when it is turned off or can't be had.
+    def _load_splitter(self):
+        registry = self.ctx.model_registry
+        key = str(self._setting('meeting.segmentation_model', '') or '')
+        if registry is None or not key:
+            return None
+        segmentation = registry.get_speaker_model_path(key)
+        voiceprint = registry.get_speaker_model_path(
+            str(self._setting('meeting.speaker_model', 'eres2net') or 'eres2net'))
+        return make_splitter(segmentation, voiceprint) if segmentation and voiceprint else None
+
+    # Loads the voiceprint model (and the voice splitter) in the background
+    # the first time; turns transcribed before it is ready are "Speaker ?",
+    # and a chunk is one voice until the splitter is ready. A splitter that
+    # won't load only costs the splitting.
     def _ensure_embedder(self):
-        if self.tracker.embed is not None or self._embedder_task is not None:
+        want_split = bool(self._setting('meeting.segmentation_model', ''))
+        if (self.tracker.embed is not None and (self.transcriber.split is not None or not want_split)) \
+                or self._embedder_task is not None:
             return
 
         def job(reporter):
-            reporter.report(None, 'Downloading the voiceprint model')
-            embed = self._embedder_factory()
-            if embed is None:
-                raise RuntimeError("The voiceprint model could not be loaded; speakers stay unnamed")
-            self.tracker.embed = embed
+            if self.tracker.embed is None:
+                reporter.report(None, 'Downloading the voiceprint model')
+                embed = self._embedder_factory()
+                if embed is None:
+                    raise RuntimeError("The voiceprint model could not be loaded; speakers stay unnamed")
+                self.tracker.embed = embed
+            if want_split and self.transcriber.split is None:
+                reporter.report(None, 'Downloading the voice splitter')
+                try:
+                    self.transcriber.split = self._splitter_factory()
+                except Exception as e:
+                    logger.warning(f"Voice splitter unavailable, each chunk stays one voice: {e}")
             return 'ready'
 
         def done(task):
@@ -354,16 +389,30 @@ class MeetingService:
             self.session.offer_decline()
         self._sync_idle_listener()
 
+    # Naming a speaker also remembers the voice, so the next meeting knows it.
     def rename_speaker(self, speaker_id: str, name: str):
         if self.session.meeting:
             self.session.rename_speaker(speaker_id, name)
+            self.tracker.rename(speaker_id, str(name).strip()[:40])
+            voiceprint = self.tracker.voiceprint(speaker_id)
+            if voiceprint:
+                self.voices.remember(name, *voiceprint)
 
     def rename_saved_speaker(self, meeting_id: str, speaker_id: str, name: str):
         m = self.store.load(meeting_id)
         for s in m['speakers']:
             if s['id'] == speaker_id:
                 s['name'] = str(name).strip()[:40] or s['name']
+                if s.get('centroid'):
+                    self.voices.remember(s['name'], s['centroid'], s.get('count', 1))
         self.store.save(m)
+
+    # Remembered voices, for the Meetings screen: names only, never voiceprints.
+    def voices_list(self) -> list:
+        return self.voices.names()
+
+    def forget_voice(self, name: str) -> bool:
+        return self.voices.forget(name)
 
     def continue_previous(self):
         self.session.continue_previous()

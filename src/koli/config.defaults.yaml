@@ -573,8 +573,17 @@ meeting: # Meetings: calls in Discord, Zoom, Teams and the browser
     # (English, many languages in the data) tells voices apart better on
     # short chunks than the Chinese-trained one.
     speaker_model: eres2net-en
-    # Speaker-embedding models: one ONNX file each from a Hugging Face repo
+    # Finds where the voice changes inside a chunk of the call, so three
+    # people talking in 15 seconds become three turns, not one blended
+    # speaker. A key from speaker_models below; empty keeps a chunk as one voice.
+    segmentation_model: pyannote-segmentation
+    # Speaker models: one ONNX file each from a Hugging Face repo
     speaker_models:
+        pyannote-segmentation:
+            source: csukuangfj/sherpa-onnx-pyannote-segmentation-3-0
+            label: "pyannote segmentation 3.0 (6MB)"
+            files:
+                model: model.onnx
         eres2net-en:
             source: csukuangfj/speaker-embedding-models
             label: "3D-Speaker ERes2Net VoxCeleb (26MB)"

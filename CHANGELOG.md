@@ -5,6 +5,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 ## [Unreleased]
 
 ### Added
+- **Meetings tell people apart.** Each piece of the call is split where the
+  voice changes, so three people talking in a row get three turns and their
+  own labels, not one "Speaker 1" for everyone. Uses a small extra model
+  (6 MB), downloaded at the next meeting; Settings → Meetings → "Split by
+  voice" turns it off.
+- **Meetings remember voices.** Rename "Speaker 2" to "Eran" once, and later
+  meetings call him Eran from his first sentence. The Meetings screen lists
+  the known voices; forget one to stop it. Stored only on this computer.
+- **Meetings leave out what Whisper made up.** Short phantom phrases ("We'll
+  see you next time.") and garbled sentences it wasn't sure of no longer
+  appear in the transcript.
 - **Meeting mode.** When a call runs in Discord, Zoom, Teams, Slack or a
   browser tab (Google Meet and the web versions), Koli notices, listens to
   what you hear and to your microphone, and shows the conversation in a dark

@@ -15,6 +15,7 @@ import threading
 from typing import Callable, Optional
 
 from .store import MeetingStore, ThrottledSaver, duration_s, new_id, new_meeting, started_ts
+from .voices import is_default_name
 
 logger = logging.getLogger(__name__)
 
@@ -391,8 +392,12 @@ class SessionManager:
         self._publish('meeting_turn', {'id': meeting_id, 'turn': stored})
 
     # A speaker seen for the first time, or one whose voiceprint moved. The
-    # name is the user's to change, so an update never touches it.
+    # name is the user's to change, so an update never touches it, with one
+    # exception: `voice`, a name you gave this voice in an earlier meeting,
+    # replaces a "Speaker N" that Koli gave.
     def ensure_speaker(self, speaker: dict):
+        speaker = dict(speaker)
+        voice = speaker.pop('voice', None)
         with self._transition():
             m = self.meeting
             if not m:
@@ -400,9 +405,14 @@ class SessionManager:
             for i, s in enumerate(m['speakers']):
                 if s['id'] == speaker['id']:
                     m['speakers'][i] = {**s, **{k: v for k, v in speaker.items() if k != 'name'}}
+                    named = bool(voice) and is_default_name(s.get('name'))
+                    if named:
+                        m['speakers'][i]['name'] = voice
                     self.saver.mark(m)
+                    if named:
+                        self._emit()
                     return
-            m['speakers'].append(dict(speaker))
+            m['speakers'].append(speaker)
             self.saver.mark(m)
             self._emit()
 

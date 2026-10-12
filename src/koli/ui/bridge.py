@@ -560,6 +560,15 @@ class Bridge:
         else:
             svc.rename_speaker(speaker_id, name)
 
+    # Voices named in meetings and recognised in later ones (names only).
+    @_api
+    def meeting_voices(self):
+        return self._meetings.voices_list()
+
+    @_api
+    def meeting_forget_voice(self, name):
+        return self._meetings.forget_voice(str(name))
+
     @_api
     def meeting_continue_previous(self):
         self._meetings.continue_previous()
