@@ -499,6 +499,39 @@ class Bridge:
         from ..services import commands
         return commands.test_phrase(self._sm.voice_command_manager, text)
 
+    # ── Wake word (the Wake word card on the Commands screen) ──
+
+    @_api
+    def wake_word_status(self):
+        from ..services import commands
+        return commands.wake_status(self._sm)
+
+    @_api
+    def wake_word_prepare(self):
+        from ..services import commands
+        return commands.wake_prepare(self._sm)
+
+    # Blocks until you've said the word (or a few seconds of nothing).
+    @_api
+    def wake_word_record(self):
+        from ..services import commands
+        return commands.wake_record(self._sm)
+
+    @_api
+    def wake_word_save(self):
+        from ..services import commands
+        return commands.wake_save(self._sm, self._settings)
+
+    @_api
+    def wake_word_test(self):
+        from ..services import commands
+        return commands.wake_test(self._sm)
+
+    @_api
+    def wake_word_reset(self):
+        from ..services import commands
+        return commands.wake_reset(self._sm, self._settings)
+
     # The apps open right now, for a "Press keys" step's Send to picker.
     @_api
     def command_open_apps(self):

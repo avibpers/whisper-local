@@ -384,10 +384,16 @@ class WhisperEngine:
     # `use_prompt=False` leaves out the dictation prompt (meeting mode): it is
     # a style hint for the app in front ("Friendly tone."), which a meeting
     # never wants, and on a short or quiet clip Whisper writes it back as text.
+    # The wake word's checks pass `beam_size` (1, fast), `task` ("transcribe",
+    # even under the Translate profile) and `quiet`: nothing printed or logged
+    # about the text, and `last_info` left to the dictation it describes.
     def transcribe_audio(self,
                          audio_data: np.ndarray,
                          language: Optional[str] = None,
-                         use_prompt: bool = True) -> Optional[str]:
+                         use_prompt: bool = True,
+                         beam_size: Optional[int] = None,
+                         task: Optional[str] = None,
+                         quiet: bool = False) -> Optional[str]:
         if self.model is None:
             return None
         
@@ -401,7 +407,8 @@ class WhisperEngine:
                 speech_detected = self.vad_manager.check_audio_for_speech(audio_data)
             
             if not speech_detected:
-                print("   ✗ No speech detected, skipping transcription")
+                if not quiet:
+                    print("   ✗ No speech detected, skipping transcription")
                 return None
                        
             start_time = time.time() # Time transcription for user feedback
@@ -418,7 +425,7 @@ class WhisperEngine:
             # how sure it was, so auto-dictation can leave out what was noise.
             def decode():
                 model, key, lang, prompt, detected_probability = self._route(audio_data, language)
-                kwargs = dict(beam_size=self.beam_size, language=lang, task=self.task,
+                kwargs = dict(beam_size=beam_size or self.beam_size, language=lang, task=task or self.task,
                               condition_on_previous_text=False)
                 if prompt and use_prompt:
                     kwargs["initial_prompt"] = prompt
@@ -433,6 +440,9 @@ class WhisperEngine:
 
             pieces, info, used_key, detected_probability, raw_probability = ENGINE_THREAD.run(decode)
             transcribed_text = ''.join(p['text'] for p in pieces).strip()
+            if quiet:
+                self.logger.debug(f"Wake check: {time.time() - start_time:.2f}s, {len(transcribed_text)} chars")
+                return transcribed_text or None
 
             end_time = time.time()
             transcription_time = end_time - start_time
@@ -476,7 +486,8 @@ class WhisperEngine:
                 
         except Exception as e:
             self.logger.error(f"Transcription failed: {e}")
-            _report_problem(f"Transcription failed: {e}")
+            if not quiet:   # a failing wake check would otherwise pop a problem per burst
+                _report_problem(f"Transcription failed: {e}")
             return None
     
     

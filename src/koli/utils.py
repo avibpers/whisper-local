@@ -35,6 +35,14 @@ def parse_hotkey(hotkey_string: str) -> list:
         return []
     return hotkey_string.lower().split('+')
 
+
+# What spoken phrases are compared as: lowercase, punctuation dropped, so
+# "D-1." and "d1" read the same. `\w` is Unicode, so Hebrew letters stay.
+# Voice commands and the wake word both match on it.
+def normalize_spoken(text: str) -> str:
+    import re
+    return re.sub(r'[^\w\s]', '', (text or '').lower()).strip()
+
 def is_installed_package():
     # Check if running from an installed package
     return 'site-packages' in __file__

@@ -17,7 +17,7 @@ sys.path.insert(0, str(ROOT / "src"))
 # platform/macos/app.py redefines an Objective-C class, which pyobjc refuses.
 _PLATFORM_SUBMODULES = ('hotkeys', 'keyboard', 'foreground', 'app', 'console',
                         'permissions', 'icons', 'paths', 'instance_lock', 'gpu',
-                        'audio_sessions', 'browser_tabs', 'window_focus')
+                        'audio_sessions', 'browser_tabs', 'window_focus', 'session')
 
 
 # A module whose every attribute is a MagicMock unless set explicitly.
@@ -1595,6 +1595,99 @@ class CommandSaveTargetTests(unittest.TestCase):
     def test_n_can_appear_once_in_the_phrase(self):
         with self.assertRaisesRegex(ValueError, r'\{n\}'):
             self.commands.save_command({'trigger': 'd {n} {n}', 'hotkey': 'ctrl+{n}'})
+
+    def test_other_phrases_are_trimmed_and_repeats_dropped(self):
+        saved = self.commands.save_command({'trigger': 'play spotify', 'run': 'start spotify:',
+                                            'other_triggers': [' תפעיל ספוטיפיי ', '', 'Play Spotify!', 'תפעיל ספוטיפיי']})
+        self.assertEqual(saved['other_triggers'], ['תפעיל ספוטיפיי'])
+
+    def test_no_other_phrases_leaves_the_key_out(self):
+        saved = self.commands.save_command({'trigger': 'hi', 'type': 'hello', 'other_triggers': ['', ' ']})
+        self.assertNotIn('other_triggers', saved)
+
+    def test_every_phrase_needs_n_when_the_keys_use_it(self):
+        with self.assertRaisesRegex(ValueError, r'\{n\}'):
+            self.commands.save_command({'trigger': 'd {n}', 'other_triggers': ['desk'], 'hotkey': 'ctrl+{n}'})
+
+
+# Clearing every "Also say" phrase of a shipped command must stick: the
+# override in the user's file says so, so the shipped phrases don't return.
+class CommandOtherTriggersLayeringTests(unittest.TestCase):
+    def test_clearing_a_shipped_commands_phrases_sticks(self):
+        import tempfile
+        import unittest.mock as mock
+        reimport_under(self, fake_platform_modules())
+        try:
+            from koli.services import commands
+        except ImportError as e:
+            self.skipTest(f'services.commands needs deps the lean env lacks: {e}')
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(commands, '_commands_path', return_value=Path(tmp) / 'commands.yaml'):
+            shipped = next(c for c in commands.list_commands() if c['id'] == 'next song')
+            self.assertTrue(shipped['entry']['other_triggers'])
+            commands.save_command({'trigger': 'next song', 'hotkey': 'media_next'}, 'next song')
+            entry = next(c for c in commands.list_commands() if c['id'] == 'next song')['entry']
+            self.assertFalse(entry.get('other_triggers'))
+            self.assertEqual(commands.vc.command_phrases(entry), ['next song'])
+
+
+# More phrases per command (any language), and the media-only filter used by
+# wake-word follow-ups.
+class VoiceCommandPhrasesTests(unittest.TestCase):
+    def setUp(self):
+        reimport_under(self, fake_platform_modules())
+        try:
+            import koli.voice_commands as vc
+        except ImportError as e:
+            self.skipTest(f'voice_commands needs deps the lean env lacks: {e}')
+        self.vc = vc
+        self.manager = vc.VoiceCommandManager.__new__(vc.VoiceCommandManager)
+        self.manager.logger = __import__('logging').getLogger('test.voice_commands')
+        self.manager.commands = [
+            {'trigger': 'undo', 'hotkey': 'ctrl+z'},
+            {'trigger': 'next song', 'other_triggers': ['השיר הבא'], 'hotkey': 'media_next'},
+            {'trigger': 'open notepad', 'run': 'notepad.exe'},
+            {'trigger': 'notes', 'other_triggers': ['open notepad plus'], 'run': 'notepad++.exe'},
+            {'trigger': 'desk {n}', 'other_triggers': ['שולחן {n}'], 'hotkey': 'ctrl+{n}'},
+        ]
+
+    def test_a_hebrew_phrase_runs_its_command(self):
+        self.assertEqual(self.manager.match_command('השיר הבא.')['hotkey'], 'media_next')
+
+    def test_the_longest_phrase_wins_across_commands(self):
+        self.assertEqual(self.manager.match_command('Open Notepad plus, please')['run'], 'notepad++.exe')
+        self.assertEqual(self.manager.match_command('open notepad')['run'], 'notepad.exe')
+
+    def test_n_works_in_another_phrase(self):
+        self.assertEqual(self.manager.match_command('שולחן 3')['hotkey'], 'ctrl+3')
+
+    def test_only_media_blocks_everything_else(self):
+        only = self.vc.is_media_command
+        self.assertIsNone(self.manager.match_command('undo', only=only))
+        self.assertIsNone(self.manager.match_command('open notepad', only=only))
+        self.assertEqual(self.manager.match_command('next song', only=only)['hotkey'], 'media_next')
+
+    def test_what_counts_as_a_media_command(self):
+        media = self.vc.is_media_command
+        self.assertTrue(media({'hotkey': 'volume_up'}))
+        self.assertTrue(media({'hotkey': 'Media_Play_Pause'}))
+        self.assertFalse(media({'hotkey': 'ctrl+volume_up'}))
+        self.assertFalse(media({'hotkey': 'volume_up', 'then': [{'hotkey': 'ctrl+z'}]}))
+        self.assertFalse(media({'run': 'volume_up'}))
+
+    def test_the_phrase_heard_is_reported(self):
+        command = self.manager.commands[1]
+        self.assertEqual(self.vc.phrase_heard(command, 'השיר הבא'), 'השיר הבא')
+        self.assertEqual(self.vc.phrase_heard(command, 'next song please'), 'next song')
+
+    def test_shipped_media_commands_load_and_are_media(self):
+        import yaml
+        from pathlib import Path
+        shipped = yaml.safe_load((Path(self.vc.__file__).parent / self.vc.DEFAULTS_FILE).read_text(encoding='utf-8'))
+        triggers = {c['trigger']: c for c in shipped['commands']}
+        for trigger in ('pause music', 'next song', 'previous song', 'volume up', 'volume down', 'mute sound'):
+            self.assertTrue(self.vc.is_media_command(triggers[trigger]), trigger)
+            self.assertTrue(triggers[trigger].get('other_triggers'), trigger)
 
 
 class AutostartTests(unittest.TestCase):
@@ -6814,6 +6907,24 @@ class LanguageModelRoutingTests(unittest.TestCase):
             engine.transcribe_audio(np.zeros(16000, dtype=np.float32), language='auto', use_prompt=False)
         self.assertNotIn('initial_prompt', engine.model.calls[-1][1])
         self.assertEqual(engine.model.calls[-1][1].get('hotwords'), 'Koli', 'your words still help')
+
+    # A wake-word check: beam 1, always transcribe (even under Translate),
+    # nothing printed, and the last dictation's info left alone.
+    def test_a_quiet_check_is_fast_silent_and_keeps_last_info(self):
+        import unittest.mock as mock
+        import numpy as np
+        engine = self._engine(second=False)
+        engine.task = 'translate'
+        engine.log_transcriptions = True
+        engine.last_info = {'model': 'from the dictation'}
+        with mock.patch('builtins.print') as printed, self.assertNoLogs('test', level='INFO'):
+            text = engine.transcribe_audio(np.zeros(16000, dtype=np.float32), use_prompt=False,
+                                           beam_size=1, task='transcribe', quiet=True)
+        self.assertEqual(text, 'main text')
+        kwargs = engine.model.calls[-1][1]
+        self.assertEqual((kwargs['beam_size'], kwargs['task']), (1, 'transcribe'))
+        printed.assert_not_called()
+        self.assertEqual(engine.last_info, {'model': 'from the dictation'})
 
     # A list of one is a fixed language: no detection at all.
     def test_a_one_language_list_skips_detection(self):

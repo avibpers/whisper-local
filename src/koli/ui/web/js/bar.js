@@ -2,7 +2,8 @@
 // Koli's edge bubble: a slim turquoise tab while idle, and a short status
 // while something happens — talking (with your wave and live text), writing,
 // done, copy-only, nothing heard, command, rephrase, paused, background task,
-// no text field, the countdown before an auto-send presses Enter, and a
+// no text field, the countdown before an auto-send presses Enter, waiting for
+// a command after the wake word ("Hey Koli"), and a
 // detected meeting counting down (Stop, Start now). Hovering during a
 // meeting offers Stop. Click (or right-click) opens quick actions. After
 // every change the page reports its size so the window fits it exactly.
@@ -20,6 +21,7 @@ const bar = createStore({
   upright: true,   // the resting tab stands on a side or beside a field; flat at the top or bottom
   dragging: false,
   meeting: { state: 'idle' },   // the meeting's state, as the meeting panel gets it
+  wake: null,      // 'awake' after "Hey Koli", 'follow_up' after a command ran
 });
 
 const MEETING_ON = new Set(['live', 'paused']);
@@ -43,6 +45,7 @@ function wire() {
     bar.set({ levels });
   });
   on('streaming_text', (p) => bar.set({ streaming: p.text }));
+  on('wake', (w) => bar.set({ wake: w.phase === 'sleeping' ? null : w.phase }));
   on('bar', (b) => {
     if (b.cmd === 'failure') flash('fail', b.message || "Didn't work");
     if (b.cmd === 'shape') bar.set({ upright: b.upright });
@@ -77,7 +80,7 @@ function wire() {
   on('notify', (n) => {
     if (!n || n.kind === 'fallback') return;
     // A voice command that couldn't reach its app ("chrome.exe isn't open").
-    if (n.kind === 'command') flash('warn', n.message, {}, 4000);
+    if (n.kind === 'command' || n.kind === 'wake') flash('warn', n.message, {}, 4000);
     else if (/^(Profile|Language|Hotkeys)/.test(n.message || '')) flash('info', n.message, {}, 2000);
   });
   on('task', (t) => {
@@ -284,6 +287,7 @@ function Status() {
   const sending = bar.use((s) => s.sending);
   const upright = bar.use((s) => s.upright);
   const meeting = bar.use((s) => s.meeting);
+  const wake = bar.use((s) => s.wake);
   const openMenu = () => bar.set({ menu: true });
   if (!settings) return html`<div class="bub rest" aria-label="Koli is starting"></div>`;
   const keys = prettyKeys(settings.hotkey.recording_hotkey).join(' ');
@@ -333,6 +337,12 @@ function Status() {
       ${!fl.outcome && html`<span style="width:4px"></span>`}
     </div>`;
   }
+  // After the wake word: say the command. After one ran: another works
+  // without the wake word, until the window closes.
+  if (wake) {
+    return html`<div class="bub" style="padding-inline-end:16px" role="status"><${Badge} tone="purple" icon="command" />
+      <span>${wake === 'awake' ? 'Listening for a command' : 'Anything else?'}</span></div>`;
+  }
   if (st.paused) {
     return html`<div class="bub"><${Badge} tone="quiet" icon="pause" /><span>Koli is paused</span>
       <button type="button" class="btn" onClick=${() => call('dictation_pause', false)}>Resume</button></div>`;
@@ -356,7 +366,7 @@ function Status() {
 
 // True while the bubble is the slim resting tab (painted in its resting colour).
 function isResting(s) {
-  return !!s.settings && !s.menu && !s.hover && !s.flash && !s.task && !s.sending && s.state.state !== 'recording'
+  return !!s.settings && !s.menu && !s.hover && !s.flash && !s.task && !s.sending && !s.wake && s.state.state !== 'recording'
     && s.state.state !== 'processing' && !s.state.paused && s.meeting.state !== 'offered';
 }
 

@@ -456,6 +456,13 @@ class Appliers:
         if coordinator is not None and path == 'auto_dictation.enabled':
             coordinator.apply_settings()
 
+    # The switch starts or stops listening at once; the other wake-word
+    # settings are read at each check.
+    def wake_word(self, path, value, old):
+        listener = getattr(self.sm, '_wake_listener', None)
+        if listener is not None and path == 'wake_word.enabled':
+            listener.apply_settings()
+
     def update_check(self, path, value, old):
         if value:
             from ..update_check import maybe_check_for_update
@@ -518,5 +525,6 @@ _PREFIX_HANDLERS = [
     ('overlay.', Appliers.overlay),
     ('meeting.', Appliers.meeting),
     ('auto_dictation.', Appliers.auto_dictation),
+    ('wake_word.', Appliers.wake_word),
     ('server.', Appliers.server),
 ]

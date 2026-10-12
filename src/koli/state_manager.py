@@ -142,6 +142,7 @@ class StateManager:
         self._auto_pasted = False
         self._auto_pasted_words = 0
         self._auto_dictation = None
+        self._wake_listener = None   # wake_word.WakeListener, set by main
         # MeetingService, set by main when the app window runs (meeting mode).
         self.meetings = None
         # How loud you speak per microphone, learned from hotkey dictations
@@ -534,6 +535,67 @@ class StateManager:
         self._auto_pasted_words = 0
         self.cancel_active_recording(quiet=True)
         return True
+
+    # ── Wake word ("Hey Koli, next song") ────────────────────────────────────
+    # wake_word.py decides WHEN a command was asked for; this runs it through
+    # the same path as the command hotkey. Returns wake_word's RAN, MISSED,
+    # EMPTY (only the wake word was said) or BUSY.
+    def set_wake_listener(self, listener):
+        self._wake_listener = listener
+
+    # The language a wake check or command is heard in: the one in Settings,
+    # not the last dictation's app rule ("auto" detects within your list).
+    def wake_language(self) -> str:
+        try:
+            return (self.config_manager.get_whisper_config() or {}).get('language') or 'auto'
+        except Exception:
+            return 'auto'
+
+    # `audio` is transcribed (or `text` used as heard), the wake word at its
+    # start dropped, and the rest matched. `only_media`: a follow-up after
+    # "Hey Koli", where anything audible could be a command. `report_miss`:
+    # a first command says "Didn't catch that"; a follow-up misses quietly.
+    def run_wake_command(self, audio=None, text=None, only_media: bool = False, report_miss: bool = True) -> str:
+        from .voice_commands import is_media_command
+        from .wake_word import BUSY, EMPTY, MISSED, RAN, match_wake
+        from .utils import normalize_spoken
+        # Checked and claimed together, so a hotkey pressed in between can't
+        # start a dictation alongside the command.
+        with self._state_lock:
+            if self.is_processing or self.is_model_loading or self.is_paused \
+                    or self.audio_recorder.get_recording_status():
+                return BUSY
+            self.is_processing = True
+        try:
+            if text is None:
+                if report_miss:
+                    self._publish_state('processing')
+                text = self.whisper_engine.transcribe_audio(
+                    audio, language=self.wake_language(), use_prompt=False, task='transcribe',
+                    quiet=not report_miss) or ''
+            listener = self._wake_listener
+            if listener is not None:
+                rest = match_wake(text, listener.spellings(), listener.match_ratio())
+                if rest is not None:
+                    text = rest
+            if not normalize_spoken(text):
+                return EMPTY
+            matched = self._handle_command_transcription(
+                text, only=is_media_command if only_media else None, announce_miss=report_miss)
+            if matched or report_miss:
+                self._emit_pipeline('command', mode='wake', raw=text, matched=bool(matched))
+            if self.level_overlay:
+                if matched:
+                    self.level_overlay.flash_success()
+                elif report_miss:
+                    self.level_overlay.flash_failure("Didn't catch that")
+            return RAN if matched else MISSED
+        finally:
+            with self._state_lock:
+                self.is_processing = False
+            if report_miss:
+                self._publish_state(self.get_current_state())
+            self._run_idle_actions()
 
     # ── Only my voice ────────────────────────────────────────────────────────
 
@@ -1354,9 +1416,12 @@ class StateManager:
             self._run_idle_actions()
             self.logger.info("Ready for the next dictation")
 
-    def _handle_command_transcription(self, text: str, use_auto_enter: bool = False) -> bool:
+    # `only` limits which commands may run (wake-word follow-ups: media only);
+    # `announce_miss=False` keeps a miss out of the console (lyrics, talk).
+    def _handle_command_transcription(self, text: str, use_auto_enter: bool = False, only=None,
+                                      announce_miss: bool = True) -> bool:
         log_config = self.config_manager.get_logging_config()
-        if log_config.get('log_transcriptions', False):
+        if log_config.get('log_transcriptions', False) and announce_miss:
             self.logger.info(f"Command mode transcription: '{text}'")
         else:
             self.logger.info("Command mode transcription received")
@@ -1365,11 +1430,12 @@ class StateManager:
             self.logger.warning("Voice commands disabled")
             return False
 
-        matched = self.voice_command_manager.match_command(text)
+        matched = self.voice_command_manager.match_command(text, only=only)
         if matched:
             self.voice_command_manager.execute_command(matched, use_auto_enter)
             return True
-        print(f"   ✗ No matching command for: \"{text[:60]}\"")
+        if announce_miss:
+            print(f"   ✗ No matching command for: \"{text[:60]}\"")
         return False
 
     def get_application_state(self) -> dict:

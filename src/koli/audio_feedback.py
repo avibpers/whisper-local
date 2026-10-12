@@ -83,3 +83,9 @@ class AudioFeedback:
     def play_ready_sound(self):
         if self.enabled and self.ready_enabled:
             self._play_sound_file_async(self.ready_sound_path)
+
+    # The wake word was heard and Koli waits for a command. Uses the 'ready'
+    # chime (not the dictation start sound) until it gets one of its own.
+    def play_wake_sound(self):
+        if self.enabled and self.ready_sound_path:
+            self._play_sound_file_async(self.ready_sound_path)

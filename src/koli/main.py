@@ -467,6 +467,20 @@ def setup_auto_dictation(state_manager: StateManager, config_manager: ConfigMana
     return coordinator
 
 
+# Wake word ("Hey Koli, next song"). Off by default; the settings applier
+# starts or stops it later. Like auto-dictation, a failure here must never
+# take the hotkeys down with it. Design: docs/design/wake-word.md
+def setup_wake_word(state_manager: StateManager, config_manager: ConfigManager, logger: logging.Logger):
+    from .wake_word import WakeListener
+    listener = WakeListener(state_manager, config_manager)
+    state_manager.set_wake_listener(listener)
+    try:
+        listener.start()
+    except Exception as e:
+        logger.warning(f"Wake word not started: {e}")
+    return listener
+
+
 def shutdown_app(hotkey_listener: HotkeyListener, state_manager: StateManager, logger: logging.Logger):
     try:
         if hotkey_listener and hotkey_listener.is_active():
@@ -481,6 +495,13 @@ def shutdown_app(hotkey_listener: HotkeyListener, state_manager: StateManager, l
             coordinator.stop()
     except Exception as ex:
         logger.error(f"Error stopping auto-dictation: {ex}")
+
+    try:
+        listener = getattr(state_manager, '_wake_listener', None) if state_manager else None
+        if listener is not None:
+            listener.stop()
+    except Exception as ex:
+        logger.error(f"Error stopping the wake word: {ex}")
 
     meetings = getattr(state_manager, 'meetings', None) if state_manager else None
     if meetings is not None:
@@ -818,6 +839,7 @@ def main():
             hotkey_listener = setup_hotkey_listener(hotkey_config, state_manager, voice_commands_config['enabled'])
             state_manager.set_hotkey_listener(hotkey_listener)
             setup_auto_dictation(state_manager, config_manager, logger)
+            setup_wake_word(state_manager, config_manager, logger)
         except Exception as hotkey_error:
             logger.error(f"Hotkey registration failed: {hotkey_error}")
             print(f"\n❌ Could not register hotkeys ({hotkey_error}).")

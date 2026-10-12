@@ -6,7 +6,8 @@
 #   "run" (shell command), "hotkey" (keypress), or "type" (deliver pre-written text).
 #
 # Matching: triggers are case-insensitive substrings — saying "please open notepad"
-# matches the trigger "open notepad". Longer triggers are checked first.
+# matches the trigger "open notepad". Longer phrases are checked first.
+# `other_triggers` adds more phrases (any language) to one command.
 #
 # Full documentation: https://github.com/drajb/whisper-local/blob/master/docs/voice-commands.md
 
@@ -28,6 +29,28 @@ commands:
     hotkey: "win+down"
   - trigger: "show desktop"
     hotkey: "win+d"
+
+  # Media — the media keys, so any player follows (Spotify, YouTube, ...).
+  # `other_triggers` are more ways to say the same command, in any language.
+  # After "Hey Koli" these also work as follow-ups without the wake word.
+  - trigger: "pause music"
+    other_triggers: ["play music", "resume music", "עצור מוזיקה", "תנגן מוזיקה"]
+    hotkey: "media_play_pause"
+  - trigger: "next song"
+    other_triggers: ["next track", "skip song", "השיר הבא", "שיר הבא"]
+    hotkey: "media_next"
+  - trigger: "previous song"
+    other_triggers: ["previous track", "השיר הקודם", "שיר קודם"]
+    hotkey: "media_prev"
+  - trigger: "volume up"
+    other_triggers: ["louder", "תגביר"]
+    hotkey: "volume_up"
+  - trigger: "volume down"
+    other_triggers: ["quieter", "תנמיך"]
+    hotkey: "volume_down"
+  - trigger: "mute sound"
+    other_triggers: ["unmute sound", "השתק", "בטל השתקה"]
+    hotkey: "volume_mute"
 
   # Type commands — deliver pre-written text to the active window
   - trigger: "my email"

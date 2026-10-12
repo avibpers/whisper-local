@@ -8,6 +8,7 @@
 # A trigger may hold `{n}`, one spoken number 0-9 ("d {n}" hears "D 1" or "D
 # one"), which fills `{n}` in the keys and text. Keys go to the app in front
 # unless `send_to` names "windows" (no app gets them) or an app's .exe.
+# `other_triggers` lists more ways to say a command, in any language.
 
 import copy
 import functools
@@ -17,12 +18,12 @@ import re
 import shlex
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import pyperclip
 
 from .defaults_merge import load_layered
-from .utils import get_user_app_data_path
+from .utils import get_user_app_data_path, normalize_spoken
 from .platform import keyboard, window_focus
 from .ui.events import publish
 
@@ -52,6 +53,11 @@ USER_FILE_HEADER = """\
 #     - trigger: "show desktop"
 #       disabled: true
 #
+#     # more ways to say it, in any language
+#     - trigger: "play spotify"
+#       other_triggers: ["תפעיל ספוטיפיי"]
+#       run: "start spotify:"
+#
 #     # a spoken number: "D 1" presses Ctrl+Shift+1, "D two" Ctrl+Shift+2.
 #     # send_to: windows keeps the keys away from the app in front; an app's
 #     # .exe (chrome.exe) switches to it, presses them, and comes back.
@@ -78,24 +84,65 @@ NUMBER_WORDS = ('zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', '
 NUMBER_FIELDS = ('hotkey', 'type')
 
 
-# What the matcher compares against: lowercase, punctuation dropped, so
-# "D-1." and "d1" read the same.
-def _normalize_spoken(text: str) -> str:
-    return re.sub(r'[^\w\s]', '', text.lower()).strip()
-
-
 # "d {n}" -> a regex for the normalized text whose one group is the number.
 # Spaces around the number are optional because Whisper writes "D1" as often
 # as "D 1"; the lookarounds keep "and 1" and "D 12" from matching.
 @functools.lru_cache(maxsize=256)
 def _number_trigger_regex(trigger: str):
     number = r'\s*(\d|' + '|'.join(NUMBER_WORDS) + r')\s*'
-    pieces = [re.escape(_normalize_spoken(piece)) for piece in trigger.lower().split(NUMBER_PLACEHOLDER)]
+    pieces = [re.escape(normalize_spoken(piece)) for piece in trigger.lower().split(NUMBER_PLACEHOLDER)]
     return re.compile(r'(?<!\w)' + number.join(pieces) + r'(?!\w)')
 
 
 def _spoken_digit(word: str) -> str:
     return word if word.isdigit() else str(NUMBER_WORDS.index(word))
+
+
+# ── Phrases: the trigger plus other_triggers ─────────────────────────────────
+# `trigger` is the command's id (it layers shipped commands under yours), so
+# more ways to say it, in any language, go in `other_triggers`.
+
+def command_phrases(command: dict) -> list:
+    phrases = [command.get('trigger') or ''] + list(command.get('other_triggers') or [])
+    return [p for p in (str(x).strip() for x in phrases if isinstance(x, str)) if p]
+
+
+# (phrase, command, is_main) for every phrase of every command, longest first,
+# so "open notepad plus" wins over "open notepad" even across commands. A
+# pattern-only command keeps one entry with an empty phrase.
+def _phrases_longest_first(commands: list) -> list:
+    pairs = []
+    for command in commands:
+        phrases = command_phrases(command) or ['']
+        pairs.extend((phrase, command, index == 0) for index, phrase in enumerate(phrases))
+    pairs.sort(key=lambda pair: len(pair[0]), reverse=True)
+    return pairs
+
+
+# Which of a command's phrases is in `text` (the longest), or '' when only
+# its pattern matched. For "Test a phrase" on the Commands screen.
+def phrase_heard(command: dict, text: str) -> str:
+    normalized = normalize_spoken(text)
+    for phrase in sorted(command_phrases(command), key=len, reverse=True):
+        if NUMBER_PLACEHOLDER in phrase:
+            if _number_trigger_regex(phrase).search(normalized):
+                return phrase
+        elif normalize_spoken(phrase) in normalized:
+            return phrase
+    return ''
+
+
+# Keys that control what's playing. A command made only of these is safe to
+# run from anything the microphone hears, lyrics included.
+MEDIA_KEYS = frozenset({'media_play_pause', 'media_next', 'media_prev', 'media_stop',
+                        'volume_up', 'volume_down', 'volume_mute'})
+
+
+def is_media_command(command: dict) -> bool:
+    keys = command.get('hotkey')
+    if not isinstance(keys, str) or not keys.strip() or command.get('then'):
+        return False
+    return all(key.strip().lower() in MEDIA_KEYS for key in keys.split('+'))
 
 
 # A copy of the command with `{n}` replaced in its keys and text, then-steps
@@ -132,9 +179,7 @@ class VoiceCommandManager:
         merged, _ = load_layered(
             DEFAULTS_FILE, Path(self.commands_path), "commands",
             USER_FILE_HEADER, id_key="trigger")
-        commands = self._validate_commands(merged)
-        commands.sort(key=lambda cmd: len(cmd.get('trigger', '')), reverse=True)
-        return commands
+        return self._validate_commands(merged)
 
     def _validate_commands(self, raw_commands: list) -> list:
         valid = []
@@ -155,34 +200,42 @@ class VoiceCommandManager:
                 self.logger.warning(f"Command '{trigger}': needs exactly one of 'run', 'hotkey', 'type', or 'rephrase', skipping")
                 continue
 
+            others = cmd.get('other_triggers')
+            if others is not None and not isinstance(others, list):
+                self.logger.warning(f"Command '{trigger}': other_triggers must be a list of phrases, ignoring it")
+                cmd = {k: v for k, v in cmd.items() if k != 'other_triggers'}
+
             valid.append(cmd)
         return valid
 
-    # The command a phrase runs, or None. A `{n}` trigger returns a copy with
-    # the spoken number filled in.
-    def match_command(self, text: str) -> Optional[dict]:
+    # The command a phrase runs, or None. A `{n}` phrase returns a copy with
+    # the spoken number filled in. `only` limits which commands may match (a
+    # follow-up after "Hey Koli" runs media commands only).
+    def match_command(self, text: str, only: Optional[Callable[[dict], bool]] = None) -> Optional[dict]:
         self._reload_if_changed()
-        normalized = _normalize_spoken(text)
+        normalized = normalize_spoken(text)
 
-        for command in self.commands:
-            if NUMBER_PLACEHOLDER in command.get('trigger', ''):
-                found = _number_trigger_regex(command['trigger']).search(normalized)
-                if found:
-                    return _with_number(command, _spoken_digit(found.group(1)))
+        for phrase, command, is_main in _phrases_longest_first(self.commands):
+            if only is not None and not only(command):
                 continue
 
-            trigger = command.get('trigger', '').lower()
-            regex_pattern = command.get('match_regex')
-
+            # A pattern belongs to the command, not a phrase: checked once.
+            regex_pattern = command.get('match_regex') if is_main else None
             if regex_pattern:
                 try:
                     if re.search(regex_pattern, text, flags=re.IGNORECASE):
                         return command
                 except re.error as e:
-                    self.logger.warning(f"Invalid regex in command '{trigger}': {e}")
+                    self.logger.warning(f"Invalid regex in command '{command.get('trigger', '')}': {e}")
                     continue
 
-            if trigger and trigger in normalized:
+            if NUMBER_PLACEHOLDER in phrase:
+                found = _number_trigger_regex(phrase).search(normalized)
+                if found:
+                    return _with_number(command, _spoken_digit(found.group(1)))
+                continue
+
+            if phrase and normalize_spoken(phrase) in normalized:
                 return command
 
         return None

@@ -525,6 +525,29 @@ voice_commands: # Voice Command Settings
     # Define commands in commands.yaml (same folder as user_settings.yaml)
     enabled: true
 
+wake_word: # Say a word to run a voice command, no hotkey
+    # "Hey Koli, next song", or "Hey Koli" then the command after a pause.
+    # Listens on the dictation microphone while Koli runs; never while you
+    # dictate, during a meeting, while hotkeys are paused or the PC is locked.
+    # Needs voice commands on.
+    enabled: false
+    # How Whisper writes your own word, filled when you record it on the
+    # Commands screen. Empty = the built-in "Hey Koli", for any voice.
+    phrases: []
+    # Wake only when the word sounds like you (set by recording your word)
+    only_my_voice: false
+    # How close the heard words must be to the wake word: low, medium, high
+    # (high wakes more easily, and by mistake more often)
+    sensitivity: medium
+    # How much your recorded word must sound like you (0-1). Raise it if
+    # others wake Koli, lower it if it misses you; Test on the Commands
+    # screen shows the score.
+    voice_match: 0.45
+    # How long to wait for a command after the wake word alone (seconds)
+    command_timeout_seconds: 5
+    # How long to keep listening for another command after one runs (seconds)
+    follow_up_seconds: 5
+
 overlay: # Floating speech-level overlay (Wispr-style bottom-center bar)
     # Show Koli's bubble on the screen so you can see it listening and
     # reacting to your voice.

@@ -1,6 +1,7 @@
 # Wake word: "Hey Koli", or your own word in your own voice
 
-*Design spec, 2026-10-12. Approved in conversation; no implementation plan yet.*
+*Design spec, 2026-10-12. Approved in conversation; implementation plan in
+`docs/plans/2026-10-12-1747-wake-word-implementation.md`.*
 
 ## Goal
 
@@ -73,18 +74,29 @@ mic ──► TEN VAD ──► speech burst ──► [personal word: is it you
    compares the burst with your voiceprint on this microphone. Below the
    threshold, the burst is dropped before Whisper runs. That keeps the TV
    and other people cheap.
-4. **Whisper.** The burst head is transcribed with beam size 1 and no
-   initial prompt, so prompt words can't fake a match. The language follows
-   `whisper.languages`. If Whisper is busy, the burst is skipped, never
-   queued.
+4. **Whisper.** The burst head is transcribed with beam size 1, no
+   initial prompt (prompt words can't fake a match) and always as
+   "transcribe" (the Translate profile would turn a Hebrew word English).
+   The language is the one in Settings, not the last dictation's app rule,
+   so `whisper.languages` and the Hebrew model apply. Koli only checks when
+   it is idle, so a check never competes with a dictation.
 5. **Match.** The transcript is normalised the way commands are
-   (`_normalize_spoken`). Its first words are compared with each accepted
-   spelling by similarity ratio. `sensitivity` sets the threshold:
-   low = 0.9, medium = 0.8, high = 0.7.
-6. **Command.** Recording continues until silence. Koli transcribes the
-   whole recording, strips the matched wake word from the start, and sends
-   the rest through `VoiceCommandManager`, the same path as hotkey
-   commands. If nothing is left, Koli waits for the command (pause case).
+   (`normalize_spoken`). Its first words, with one word more or less and
+   the spaces taken out ("heykoli", "hey ko li"), are compared with each
+   accepted spelling by similarity ratio. The spelling list carries the
+   variants, so the margin is small: `sensitivity` low = 0.97, medium = 0.9,
+   high = 0.8. "hey cool" (0.86) only wakes at high; "hey kelly" never. A
+   personal word gets 0.15 more (it must sound like you too, and has only
+   three recordings' spellings), so "coli" for "koli" passes at medium.
+6. **Command.** When the whole burst was inside the head ("Hey Koli next"),
+   the head's text already holds the command: no second Whisper pass.
+   Otherwise recording continues until silence, Koli transcribes the whole
+   burst, strips the wake word from the start, and sends the rest through
+   `VoiceCommandManager`, the same path as hotkey commands. If nothing is
+   left, Koli waits for the command (pause case).
+7. **The chime.** For 0.6 s after the wake sound (0.45 s long) no new burst starts, so
+   the chime through the speakers can't become the command. A burst already
+   going (one breath) carries on.
 
 Non-wake bursts are never saved or logged, even with `log_transcriptions`
 on. Audio stays in memory and is dropped after the check.
@@ -105,12 +117,15 @@ In the app, under Commands → Wake word:
    spelling Whisper produced is saved as an accepted spelling, so you never
    type the word, and the spellings Whisper actually writes are the ones
    that match.
-3. The recordings give Koli your voice for the wake check. How they are
-   kept is decided by measurement (see open questions). A word is ~1 s, and
-   Koli never teaches your shared voiceprint from anything shorter than
-   1.5 s (`LEARN_VOICEPRINT_S`). Either setup asks for something longer (the
-   word twice in a row), or the wake clips are kept as a separate voiceprint
-   that leaves the one auto-dictation uses alone.
+3. The recordings give Koli your voice for the wake check: their average
+   voiceprint is kept per microphone in `wake_voice.json`, separate from the
+   voiceprint auto-dictation and meetings use (that one never learns from
+   anything under 1.5 s, `LEARN_VOICEPRINT_S`, and a word is ~1 s).
+   Comparing a word with recordings of the same word is also steadier than
+   comparing it with whole dictations. The same word recorded on another
+   microphone adds that microphone; a different word replaces everything.
+   How much a try must score is `wake_word.voice_match` (0.45 until real
+   measurements; **Test** shows your score next to it).
 4. **Test**: say it once more and see whether it wakes.
 5. **Reset to "Hey Koli"** clears the spellings and the voice requirement.
 
@@ -118,8 +133,9 @@ If the three recordings come back as very different text, Koli asks you to
 record again: Whisper isn't hearing the word reliably.
 
 The built-in "Hey Koli" ships with the spellings Whisper usually writes:
-`hey koli`, `hey coli`, `hey colly`, `hey kolly`, `hey cooley`, `היי קולי`.
-Real use will add more.
+`hey koli`, `hey coli`, `hey coley` (what Whisper wrote for a synthesised "Hey Koli"), `hey collie`, `hey cooley`, `hey kohli`, `היי קולי`,
+`היי כולי`, `הי קולי`. ("hey colly" and "hey kolly" were left out: they put
+"hey kelly" within one letter.) Real use will add more.
 
 ## Commands in any language
 
@@ -134,8 +150,10 @@ Real use will add more.
   Matching already keeps non-Latin letters (`\w` is Unicode), so Hebrew
   phrases match today.
 - **Media keys** for play/pause, next, previous, volume up/down/mute, as
-  `hotkey` values. Spotify and most players respond without any account
-  link. Check the key names the keyboard module accepts.
+  `hotkey` values (`media_play_pause`, `media_next`, ... already in the
+  Windows keyboard map). Spotify and most players respond without any
+  account link. Shipped as commands in English and Hebrew. A command made
+  only of media keys is what a "Hey Koli" follow-up may run.
 - **Spoken numbers** (`{n}`) understand English number words only. Hebrew
   number words are out of scope for the first version; digits from Whisper
   already work.
@@ -152,28 +170,33 @@ wake_word: # Say a word to run a voice command, no hotkey
     only_my_voice: false
     # How close the heard words must be to the wake word: low, medium, high
     sensitivity: medium
+    # How much your recorded word must sound like you (0-1)
+    voice_match: 0.45
     # How long to wait for a command after the wake word alone
     command_timeout_seconds: 5
     # How long to keep listening for another command after one runs
     follow_up_seconds: 5
 ```
 
-Settings schema: one switch in Simple mode ("Wake word"), the rest in
-Advanced. Recording and reset happen on the Commands screen, not as raw
-settings.
+The settings live on the Commands screen's Wake word card (the switch,
+sensitivity, voice match for a personal word, the two timeouts). `phrases`
+and `only_my_voice` are written by recording and reset, not edited.
 
 ## Pieces
 
 | Piece | Where | Does |
 |-------|-------|------|
-| Listener | new `wake_word.py` | Mic stream, TEN VAD bursts, voice check, Whisper check, the sleep/awake/follow-up state machine. Pure Python with a fake clock in tests, like `auto_dictation.py`. |
+| Listener | `wake_word.py` | Tap on the recorder, burst cutter (TEN VAD), voice check, check budget, Whisper check, the sleeping/awake/waiting/follow-up states. Fed one frame at a time with everything injected, tested with fake audio and a fake clock (`tests/test_wake_word.py`). |
 | Matcher | `wake_word.py` | Normalise + fuzzy-compare the start of a transcript with the spellings; strip the wake word. |
-| Lock and session state | `platform/*/` | "Is the PC locked" (Windows: session-lock notification; macOS: no-op stub that says unlocked). |
-| Coordination | `state_manager.py` | Pauses the listener around dictation, command mode and meetings; runs the command through the existing command path. |
-| Voice | `services/meetings.py` | Reuse `my_voice_similarity` and `learn_my_voice`. |
-| Commands | `voice_commands.py`, `services/commands.py`, Commands screen | `trigger` as a list; media-key actions. |
-| UI | `ui/bridge.py`, Commands screen, `bar.js` | Record / test / reset the word; "Listening for a command" and "Didn't catch that" in the bar. |
-| Sound | `audio_feedback.py` | A wake sound (distinct from the dictation start sound). |
+| Your wake voice | `wake_word.py` (`WakeVoices`) | The average voiceprint of your recordings, per microphone, in `wake_voice.json`. |
+| Locked PC | `platform/*/session.py` | Windows: the input desktop can't be opened or switched to on the lock screen; macOS: stub, unlocked. Polled every 2 s. |
+| Running the command | `state_manager.py` (`run_wake_command`) | Claims "processing" under the state lock, transcribes, strips the wake word, runs the command (media only for "Hey Koli" follow-ups), flashes the bubble. |
+| Voice | `services/meetings.py` | Lends its voiceprint model (`voiceprint_of`, `voiceprint_ready`). |
+| Commands | `voice_commands.py`, `services/commands.py`, Commands screen | `other_triggers` ("Also say"); media commands; `is_media_command`. |
+| Setup | `services/commands.py`, `ui/bridge.py` (`wake_word_*`), Commands screen | Record x3 / save / test / reset; the Wake word card. |
+| Bubble | `bar.js`, `ui/host.py` | "Listening for a command", then "Anything else?" during the follow-up; "Didn't catch that". |
+| Sound | `audio_feedback.py` | The wake sound (the 'ready' chime for now). |
+| Measuring | `tools/measure_wake_word.py` | Whisper time on your settings, voice scores of short clips (me / other / tv), tap cost. |
 
 ## Later
 
@@ -190,12 +213,16 @@ settings.
 - A personal word on a microphone with no voiceprint yet (new headset).
   The table says "doesn't wake, ask to record there". The other choice is to
   wake for anyone on that mic until you record. Confirm with real use.
-- Voiceprints of wake-word-length clips. `MATCH`, `FIRST_MATCH` and the
-  auto-dictation threshold were tuned on meeting chunks and whole
-  dictations. A wake word is 0.5–1 s. Measure how far your own clips and
-  other voices' clips score from your voiceprint before choosing the
-  threshold. If short clips are too noisy, check the voice on the whole
-  burst instead.
+- Voiceprints of wake-word-length clips: `voice_match` is 0.45 until
+  `tools/measure_wake_word.py` has scored your own tries against other
+  voices and the TV. If short clips are too noisy, check the voice on the
+  whole burst instead.
 - Real CPU cost of a Whisper check on CPU-only machines, and whether the
   check budget numbers (20 a minute, back off after 10) feel right. Measure
   before deciding whether "Later: match your recordings" moves up.
+- One breath in two languages ("Hey Koli תפעיל ספוטיפיי"): Whisper may take
+  the whole burst as English and mangle the Hebrew. The pause case is fine
+  (the command is a burst of its own). If it fails in testing, transcribe
+  only the audio after the wake word, by word timestamps.
+- Measured already: a tap costs the audio thread ~65 µs per 10 ms chunk
+  (0.65%) for resampling on WASAPI, so the tap takes the resampled audio.

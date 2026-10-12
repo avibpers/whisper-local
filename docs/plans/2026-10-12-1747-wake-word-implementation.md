@@ -57,7 +57,7 @@ Then audio is simply ignored: there's no stream to open or close.
 ## Implementation Plan
 
 1. Measure first (decides two numbers in the design)
-- [ ] `tools/measure_wake_word.py` (with a header comment): record clips
+- [x] `tools/measure_wake_word.py` (with a header comment): record clips
   from the current mic (or read `.wav` files) and print, for each one:
   - time of the **real path**: `transcribe_audio` with the user's config
     (`languages`, `language_model: he`), beam 1, on CPU-only and GPU. On a
@@ -74,7 +74,7 @@ Then audio is simply ignored: there's no stream to open or close.
 - [ ] Choose `WAKE_VOICE_MATCH`, and whether the voice check uses the head
   or the whole burst (`LEARN_VOICEPRINT_S` is 1.5 s for a reason: short clips
   may be too noisy)
-- [ ] Choose how setup keeps your voice (phase 9 depends on it):
+- [x] Choose how setup keeps your voice (phase 9 depends on it):
   - (a) setup records ≥ 1.5 s (the word twice in a row) so each sample may
     join the shared voiceprint, or
   - (b) a separate wake voiceprint per mic (`VoiceBook`, `kind: 'wake'`),
@@ -85,39 +85,39 @@ Then audio is simply ignored: there's no stream to open or close.
 - [ ] **Real test with the user:** run it on their mic, agree on the numbers
 
 2. Wake-word matching and the check budget (pure Python, `wake_word.py`)
-- [ ] Module header (also on `platform/*/session.py`;
+- [x] Module header (also on `platform/*/session.py`;
   `test_every_module_has_a_header_comment` fails without one);
   `DEFAULT_SPELLINGS` for "Hey Koli" (`hey koli`,
   `hey coli`, `hey colly`, `hey kolly`, `hey cooley`, `היי קולי`)
-- [ ] `match_wake(text, spellings, min_ratio) -> Optional[str]`: normalise
+- [x] `match_wake(text, spellings, min_ratio) -> Optional[str]`: normalise
   like commands (`_normalize_spoken`), compare the transcript's first N
   words (N = words in the spelling, ±1 so "heykoli" and "hey ko li" count)
   with `difflib.SequenceMatcher`. Return the rest of the text, or None
-- [ ] `SENSITIVITY_RATIO = {'low': 0.9, 'medium': 0.8, 'high': 0.7}`
-- [ ] `CheckBudget(clock)`: `allow()`, `missed()`, `woke()`; at most N
+- [x] `SENSITIVITY_RATIO = {'low': 0.9, 'medium': 0.8, 'high': 0.7}`
+- [x] `CheckBudget(clock)`: `allow()`, `missed()`, `woke()`; at most N
   checks a minute, slower after M misses in a row, reset on a wake
-- [ ] Tests: English and Hebrew spellings, a near miss ("hey kelly" at
+- [x] Tests: English and Hebrew spellings, a near miss ("hey kelly" at
   high but not low), punctuation ("Hey, Koli!"), the rest of the sentence
   kept, the wake word not at the start (no match), budget with a fake clock
 
 3. Commands: phrases in several languages, media-only follow-ups
-- [ ] `voice_commands.py`: optional `other_triggers: [..]` (strings). The
+- [x] `voice_commands.py`: optional `other_triggers: [..]` (strings). The
   `trigger` stays one string, because it is the id that layers shipped
   commands under yours (`id_key="trigger"`). Matching walks
   (phrase, command) pairs sorted by phrase length, longest first. `{n}`
   works in any of the phrases
-- [ ] `match_command(text, only=None)`: `only` filters which commands may
+- [x] `match_command(text, only=None)`: `only` filters which commands may
   match. `is_media_command(cmd)`: a `hotkey` made only of media keys, with
   no then-steps
-- [ ] `services/commands.py`: `save_command` cleans `other_triggers` (trim,
+- [x] `services/commands.py`: `save_command` cleans `other_triggers` (trim,
   drop empties and duplicates, check `{n}` per phrase); `test_phrase` says
   which phrase matched
-- [ ] Commands screen (`js/screens/commands.js`): "Also say" phrases under
+- [x] Commands screen (`js/screens/commands.js`): "Also say" phrases under
   the main phrase (add/remove), shown on the command's card; `mock-api.js`
-- [ ] `commands.defaults.yaml`: media commands with Hebrew phrases: play/pause
+- [x] `commands.defaults.yaml`: media commands with Hebrew phrases: play/pause
   music, next/previous song, louder/quieter, mute (`other_triggers` such as
   `שיר הבא`, `תגביר`, `תנמיך`, `השתק`)
-- [ ] Tests: Hebrew phrase matches; a longer phrase wins over a shorter one
+- [x] Tests: Hebrew phrase matches; a longer phrase wins over a shorter one
   across commands; `only=is_media_command` blocks "undo" and "lock screen";
   saving drops duplicate phrases; `{n}` in another phrase
 - [ ] **Test in the app:** add "play spotify" / "תפעיל ספוטיפיי" →
@@ -125,21 +125,21 @@ Then audio is simply ignored: there's no stream to open or close.
   hotkey, both languages
 
 4. Quiet short transcriptions (`whisper_engine.py`)
-- [ ] `transcribe_audio(..., beam_size=None, quiet=False)`: `beam_size`
+- [x] `transcribe_audio(..., beam_size=None, quiet=False)`: `beam_size`
   overrides for one call; `quiet` prints and logs no text (not even with
   `log_transcriptions`) and leaves `last_info` alone, so a wake check never
   overwrites a dictation's info
-- [ ] Same parameters on `whisper_engine_cpp.py` (mirrored API)
-- [ ] Test: a quiet call with a stub model logs no text and keeps `last_info`
+- [x] Same parameters on `whisper_engine_cpp.py` (mirrored API)
+- [x] Test: a quiet call with a stub model logs no text and keeps `last_info`
 
 5. The listener (`wake_word.py`, `WakeListener`)
-- [ ] Tap: copies the chunk into a bounded queue (drop the oldest when
+- [x] Tap: copies the chunk into a bounded queue (drop the oldest when
   full). The worker thread does everything else
-- [ ] Bursts: 16 ms TEN VAD frames from `speech_prob_function()`; a burst
+- [x] Bursts: 16 ms TEN VAD frames from `speech_prob_function()`; a burst
   starts on speech (≥ 0.5) and ends after 0.6 s of silence; a 0.3 s
   pre-roll so the first sound isn't clipped; head = the first 2 s; a burst
   is cut at 8 s
-- [ ] States: `sleeping → awake (in the wake burst) → waiting for command →
+- [x] States: `sleeping → awake (in the wake burst) → waiting for command →
   running → follow-up → sleeping`
   - **sleeping:** at the head (or at the burst's end if it's shorter):
     `may_listen()`, budget, voice check (personal word), quiet Whisper,
@@ -153,18 +153,18 @@ Then audio is simply ignored: there's no stream to open or close.
     → `run_wake_command(audio)`; nothing → sleep quietly
   - **follow-up:** the next burst within `follow_up_seconds`. Personal word:
     voice check first. "Hey Koli": `only_media=True`
-- [ ] `may_listen()`: enabled, not paused, `sm.is_idle()`, no model loading,
+- [x] `may_listen()`: enabled, not paused, `sm.is_idle()`, no model loading,
   no meeting running, not locked, not recording your word. When it turns
   false mid-wake (you pressed the hotkey), drop everything and sleep
-- [ ] Personal word without a usable voice check (`my_voice_similarity`
+- [x] Personal word without a usable voice check (`my_voice_similarity`
   returns None: unknown mic, model not loaded, no meeting service under
   `--legacy-ui`): don't wake; publish a `wake` notice once per mic
-- [ ] Events: `publish('wake', {'phase': 'awake' | 'follow_up' | 'sleeping'})`;
+- [x] Events: `publish('wake', {'phase': 'awake' | 'follow_up' | 'sleeping'})`;
   `AudioFeedback.play_wake_sound()` (uses `app_ready.wav` until a dedicated
   sound exists)
-- [ ] `start() / stop() / apply_settings()` like `AutoDictation`; registers
+- [x] `start() / stop() / apply_settings()` like `AutoDictation`; registers
   the tap on `sm.audio_recorder`
-- [ ] Tests with fakes (clock, transcribe, voice, state manager), fed frames
+- [x] Tests with fakes (clock, transcribe, voice, state manager), fed frames
   of fake speech/silence: wake + pause + command; one breath; wake alone
   then timeout; follow-up runs "next" but not "undo" in "Hey Koli" mode;
   personal word rejects another voice before Whisper runs; budget stops
@@ -172,7 +172,7 @@ Then audio is simply ignored: there's no stream to open or close.
   meeting runs or the PC is locked
 
 6. Running the command (`state_manager.py`, `main.py`)
-- [ ] `run_wake_command(audio=None, text=None, only_media=False) -> bool`:
+- [x] `run_wake_command(audio=None, text=None, only_media=False) -> bool`:
   refuses unless idle and not paused. The idle check and setting
   `is_processing` happen together under `_state_lock`, so a hotkey pressed
   in between can't start a dictation alongside the command;
@@ -180,43 +180,43 @@ Then audio is simply ignored: there's no stream to open or close.
   (`match_wake`, when present); `_handle_command_transcription(text, only=...)`;
   emits the `command` pipeline event with `mode='wake'`; bubble flash
   success / "Didn't catch that"
-- [ ] `_handle_command_transcription` gains `only`
-- [ ] `set_wake_listener()`; `main.setup_wake_word()` next to
+- [x] `_handle_command_transcription` gains `only`
+- [x] `set_wake_listener()`; `main.setup_wake_word()` next to
   `setup_auto_dictation()`, never fatal; `shutdown_app` stops it
-- [ ] Tests: a stub engine and command manager; no-match flashes failure and
+- [x] Tests: a stub engine and command manager; no-match flashes failure and
   types nothing; refuses while a dictation runs
 
 7. Locked PC (`platform/*/session.py`)
-- [ ] Windows `is_locked()`: `OpenInputDesktop` + `SwitchDesktop` fails
+- [x] Windows `is_locked()`: `OpenInputDesktop` + `SwitchDesktop` fails
   while the lock screen is up; the listener polls it every 2 s, not per frame
-- [ ] macOS stub returns False; import in `platform/__init__.py`
+- [x] macOS stub returns False; import in `platform/__init__.py`
 - [ ] **Manual test:** Win+L, say "Hey Koli", unlock → nothing ran
 
 8. Settings
-- [ ] `config.defaults.yaml`: the `wake_word:` block from the design
+- [x] `config.defaults.yaml`: the `wake_word:` block from the design
   (`enabled`, `phrases`, `only_my_voice`, `sensitivity`,
   `command_timeout_seconds`, `follow_up_seconds`)
-- [ ] `settings/schema.py`: `wake_word.enabled` toggle in the commands
+- [x] `settings/schema.py`: `wake_word.enabled` toggle in the commands
   section, Simple mode; `sensitivity` (low/medium/high) and the two
   timeouts in Advanced; `phrases` and `only_my_voice` internal and hidden
   (the setup screen writes them)
-- [ ] `settings/appliers.py`: `('wake_word.', Appliers.wake_word)` →
+- [x] `settings/appliers.py`: `('wake_word.', Appliers.wake_word)` →
   `listener.apply_settings()`, live
-- [ ] `tools/make_mock_data.py` → refresh `mock-data.json`
-- [ ] Test: turning it on and off in settings starts and stops the listener
+- [x] `tools/make_mock_data.py` → refresh `mock-data.json`
+- [x] Test: turning it on and off in settings starts and stops the listener
   (tap added/removed)
 
 9. Recording your word (setup screen)
-- [ ] `services/meetings.py`: `ensure_voiceprint_model()` (starts
+- [x] `services/meetings.py`: `ensure_voiceprint_model()` (starts
   `_ensure_embedder`, reports ready), `voiceprint_of(audio)` (public
   `_voiceprint`), and keeping the setup voiceprints the way phase 1 chose
   (shared with the length rule, or a separate wake entry)
-- [ ] `WakeListener.capture_word(timeout)`: pauses wake detection, waits
+- [x] `WakeListener.capture_word(timeout)`: pauses wake detection, waits
   for one burst (≤ 3 s, or longer if phase 1 chose "the word twice"),
   returns its audio. Setup works with the feature off: the setup calls
   register the tap for themselves and remove it when done (the listener's
   tap is tied to `enabled` otherwise)
-- [ ] `ui/bridge.py`, all `{ok, data}`:
+- [x] `ui/bridge.py`, all `{ok, data}`:
   - `wake_word_prepare()`: voiceprint model ready? (download progress
     through the existing task events)
   - `wake_word_record()`: one sample → `{heard, voiceprint: bool}`; a
@@ -228,27 +228,27 @@ Then audio is simply ignored: there's no stream to open or close.
     through the settings service; adds the voiceprints for this mic
   - `wake_word_test()`: one burst → `{woke, heard, similarity}`
   - `wake_word_reset()`: back to "Hey Koli" for anyone
-- [ ] Commands screen, "Wake word" card: on/off, what wakes it now
+- [x] Commands screen, "Wake word" card: on/off, what wakes it now
   ("Hey Koli, anyone" / "קולי, only your voice"), Record ×3 with what was
   heard, Save, Test (shows the similarity, which helps tune), Reset; a
   notice when your voice isn't known on this mic; the personal word is
   disabled with a reason under `--legacy-ui`. In-page popups only, no
   `alert()`
-- [ ] `bar.js`: `wake` event → "Listening for a command" pill while awake
+- [x] `bar.js`: `wake` event → "Listening for a command" pill while awake
   or in follow-up; the `command` pipeline event already flashes
   success/failure
-- [ ] `mock-api.js`: the five calls
+- [x] `mock-api.js`: the five calls
 - [ ] **Real test with the user:** record a Hebrew word, test it, have
   someone else say it, play a video saying it
 
 10. Docs
-- [ ] `docs/design/wake-word.md`: the microphone is a tap (no own stream);
+- [x] `docs/design/wake-word.md`: the microphone is a tap (no own stream);
   `other_triggers` instead of a list `trigger`; a short command is run from
   the head's text without a second pass; the numbers from phase 1
-- [ ] `docs/voice-commands.md`: wake word, `other_triggers`, media commands
-- [ ] `docs/project-index.md`: a **Wake Word** row (`wake_word.py`) and
+- [x] `docs/voice-commands.md`: wake word, `other_triggers`, media commands
+- [x] `docs/project-index.md`: a **Wake Word** row (`wake_word.py`) and
   `platform/*/session.py`
-- [ ] `CHANGELOG.md` → Unreleased / Added
+- [x] `CHANGELOG.md` → Unreleased / Added
 
 ## Implementation Details
 
@@ -304,6 +304,22 @@ known limit for v1.
 | `tests/test_smoke.py` | Matcher, budget, listener, commands, engine, state manager, settings |
 | Docs | Design doc, voice-commands, project index, changelog |
 
+## Status
+
+Built on `feat/wake-word` (2026-10-12); 756 tests pass. The real chain (TEN VAD, cutter, beam-1 Whisper on large-v3-turbo, matcher) wakes and runs on synthesised "Hey Koli, next song" in one breath and with a pause, ~0.3 s per check on the GPU, and stays asleep on other speech. Open: the real tests
+(marked above) and the two numbers phase 1 measures with you,
+`wake_word.voice_match` (0.45 for now) and the check budget (20 a minute, back
+off after 10). Decided while building:
+
+- Your wake voice is kept apart from the shared voiceprint, per microphone, in
+  `wake_voice.json` (option b): no `VoiceBook` change, and a word is compared
+  with recordings of the same word.
+- Matching margins: low 0.97 / medium 0.9 / high 0.8, plus 0.15 for a personal
+  word; the spelling list carries the variants.
+- A tap costs the audio thread 0.65% (measured), so no raw tap was needed.
+- The setup service lives in `services/commands.py` (the Commands screen's
+  service), not a new module.
+
 ## Success Criteria
 
 - [ ] "Hey Koli" then a pause then "next song": the next track plays
@@ -319,7 +335,7 @@ known limit for v1.
 - [ ] No wake while dictating, during a meeting, while paused, or while the PC is locked
 - [ ] Non-wake speech never appears in the console or the log
 - [ ] Turning it off removes the tap and stops the thread, live
-- [ ] All tests pass: `PYTHONUTF8=1 python -m pytest tests/`
+- [x] All tests pass: `PYTHONUTF8=1 python -m unittest discover -s tests`
 
 ## Risks
 

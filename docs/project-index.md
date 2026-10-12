@@ -22,7 +22,8 @@ Koli is a fork of `drajb/whisper-local` by Rohit Burani (repo `avibpers/whisper-
 | **Configuration** | `config_manager.py` | YAML settings management & validation | ruamel.yaml |
 | **System Integration** | `system_tray.py` | Tray icon; a short menu (Open, Pause, Profile, Recent, Quit) with the app window, the full menu with `--legacy-ui` | pystray, Pillow |
 | **Instance Management** | `instance_manager.py` | Single instance enforcement | win32event (Win), fcntl (Mac) |
-| **Voice Commands** | `voice_commands.py` | Trigger matching & command execution | subprocess |
+| **Voice Commands** | `voice_commands.py` | Trigger matching (with `other_triggers` in any language) & command execution | subprocess |
+| **Wake Word** | `wake_word.py` | "Hey Koli" or your own recorded word starts a voice command: a tap on the mic cuts speech into bursts, Whisper checks the start, your wake voiceprint per microphone (design: `docs/design/wake-word.md`) | ten-vad, faster-whisper |
 | **Platform Abstraction** | `platform/` | OS-specific implementations | pywin32 (Win), pyobjc (Mac) |
 | **GPU Onboarding** | `onboarding.py` | GPU setup prompt & package installation | subprocess |
 | **Hardware Detection** | `hardware_detection.py` | Platform GPU detection wrapper | - |
@@ -72,6 +73,7 @@ Koli is a fork of `drajb/whisper-local` by Rohit Burani (repo `avibpers/whisper-
 | **Foreground App** | `platform/*/foreground.py` | Detects the active window/app for per-app rules | pywin32 / pyobjc |
 | **Window Focus** | `platform/*/window_focus.py` | Presses a voice command's keys in a chosen app or an invisible "no app" window, then returns focus; lists open apps (Windows; macOS stub) | ctypes |
 | **Input Watch** | `platform/*/input_watch.py` | Focus-change and typing hooks plus the UI Automation "is this a text field" probe for auto-dictation (Windows; macOS stub) | ctypes, comtypes |
+| **Session Lock** | `platform/*/session.py` | Whether the PC is locked, so the wake word stops listening (Windows; macOS stub) | ctypes |
 | **Console Control** | `platform/windows/console.py` | Show/hide/own the console window (pyapp builds) | ctypes |
 | **Meeting Mode** | `meeting/` + `services/meetings.py` | Detects calls (`detector.py`), runs the session with resume-or-new (`session.py`), captures loopback and mic (`capture.py`), splits each chunk by voice (`diarize.py`), labels speakers (`speakers.py`), remembers named voices across meetings (`voices.py`), transcribes on a low-priority worker (`transcriber.py`), keeps meeting files (`store.py`) | soundcard, pycaw, ten-vad, sherpa-onnx |
 | **Audio Sessions / Browser Tabs** | `platform/*/audio_sessions.py`, `platform/*/browser_tabs.py` | Which apps have sound; which browser tabs are in a call (Windows; macOS stubs) | pycaw, comtypes |
@@ -147,6 +149,7 @@ koli/
 │       ├── utils.py                   # Common utility functions
 │       ├── voice_activity_detection.py # Voice activity detection
 │       ├── voice_commands.py          # Voice command matching & execution
+│       ├── wake_word.py               # Wake word: "Hey Koli" / your own word starts a command
 │       ├── hardware_detection.py       # Platform GPU detection wrapper
 │       ├── terminal_ui.py             # Interactive terminal prompts
 │       ├── whisper_engine.py          # Faster-whisper transcription

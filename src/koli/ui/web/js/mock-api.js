@@ -303,8 +303,30 @@ export function createMock(emit) {
 
     commands_list: () => ok(data.commands),
     command_test: (phrase) => {
-      const hit = data.commands.find((c) => c.id === String(phrase).trim().toLowerCase());
-      return ok(hit ? { matched: true, trigger: hit.id, action: hit.action } : { matched: false });
+      const said = String(phrase).trim().toLowerCase();
+      const hit = data.commands.find((c) => c.id === said || (c.entry.other_triggers || []).some((p) => p.toLowerCase() === said));
+      return ok(hit ? { matched: true, trigger: hit.id, phrase: said, action: hit.action } : { matched: false });
+    },
+    wake_word_status: () => {
+      const phrases = getPath(data.settings, 'wake_word.phrases') || [];
+      const personal = !!getPath(data.settings, 'wake_word.only_my_voice') && phrases.length > 0;
+      return ok({ personal, word: personal ? phrases[0] : 'Hey Koli', spellings: personal ? phrases : [], mic: 'Jabra Evolve2 65',
+        recorded_here: true, recordings: [], needed: 3, can_record: true });
+    },
+    wake_word_prepare: () => ok({ ready: true }),
+    wake_word_record: () => new Promise((resolve) => setTimeout(() => resolve(ok({ heard: 'קולי', count: 1, needed: 3 })), 900)),
+    wake_word_save: () => {
+      setPath(data.settings, 'wake_word.phrases', ['קולי']);
+      setPath(data.settings, 'wake_word.only_my_voice', true);
+      emit('settings', { path: 'wake_word.phrases', new: ['קולי'] });
+      return ok({ personal: true, word: 'קולי', spellings: ['קולי'], mic: 'Jabra Evolve2 65', recorded_here: true, recordings: [], needed: 3, can_record: true });
+    },
+    wake_word_test: () => new Promise((resolve) => setTimeout(() => resolve(ok({ heard: 'Hey Koli', word: true, woke: true })), 900)),
+    wake_word_reset: () => {
+      setPath(data.settings, 'wake_word.phrases', []);
+      setPath(data.settings, 'wake_word.only_my_voice', false);
+      emit('settings', { path: 'wake_word.phrases', new: [] });
+      return ok({ personal: false, word: 'Hey Koli', spellings: [], mic: 'Jabra Evolve2 65', recorded_here: false, recordings: [], needed: 3, can_record: true });
     },
     command_open_apps: () => ok([{ exe: 'chrome.exe', title: 'Inbox (3) - Gmail - Google Chrome' },
       { exe: 'code.exe', title: 'koli - Visual Studio Code' }, { exe: 'obs64.exe', title: 'OBS 30.2 - Profile: Untitled' }]),

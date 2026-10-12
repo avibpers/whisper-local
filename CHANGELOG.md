@@ -5,6 +5,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 ## [Unreleased]
 
 ### Added
+- **Wake word: "Hey Koli, next song".** Voice commands without a hotkey:
+  say "Hey Koli" and the command in one breath, or "Hey Koli", a pause, and
+  the command. For 5 seconds after, another one works without the wake word
+  ("louder"). Or record your own word, in any language, three times: from
+  then on only that word wakes Koli, and only in your voice. It never
+  listens while you dictate, during a meeting, while paused or with the PC
+  locked. Commands → Wake word; off by default.
+- **Commands in several phrases and languages.** A command can have more
+  phrases ("Also say"), in Hebrew or any other language: "play spotify" and
+  "תפעיל ספוטיפיי" run the same command. Media commands ship ready: play or
+  pause, next and previous song, louder, quieter, mute, in English and Hebrew.
 - **A detected meeting counts down before it starts.** When a call is found
   in auto mode, the bubble and the meeting panel show which one ("Google
   Meet · Chrome") and start transcribing after 3 seconds, with **Stop** and

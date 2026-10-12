@@ -80,10 +80,15 @@ class WhisperEngineCpp:
     # `language` overrides the engine's setting for one call (meeting mode):
     # None keeps the setting, 'auto' detects, anything else forces that one.
     # `use_prompt` mirrors WhisperEngine; this backend never sends a prompt.
+    # `beam_size` is accepted for the same API (whisper.cpp sets it at load);
+    # `task` and `quiet` work as in WhisperEngine (wake-word checks).
     def transcribe_audio(self,
                          audio_data: Optional[np.ndarray],
                          language: Optional[str] = None,
-                         use_prompt: bool = True) -> Optional[str]:
+                         use_prompt: bool = True,
+                         beam_size: Optional[int] = None,
+                         task: Optional[str] = None,
+                         quiet: bool = False) -> Optional[str]:
         if audio_data is None or len(audio_data) == 0:
             self.logger.warning("No audio data to transcribe")
             return None
@@ -91,7 +96,8 @@ class WhisperEngineCpp:
         try:
             if self.vad_manager and self.vad_manager.is_available():
                 if not self.vad_manager.check_audio_for_speech(audio_data):
-                    print("   ✗ No speech detected, skipping transcription")
+                    if not quiet:
+                        print("   ✗ No speech detected, skipping transcription")
                     return None
 
             if len(audio_data.shape) > 1:
@@ -102,7 +108,7 @@ class WhisperEngineCpp:
             kwargs = {}
             if forced:
                 kwargs['language'] = forced
-            if self.task == 'translate':
+            if (task or self.task) == 'translate':
                 kwargs['translate'] = True
 
             t0 = time.time()
@@ -113,6 +119,8 @@ class WhisperEngineCpp:
                 text_chunk = getattr(s, 'text', None) or (s if isinstance(s, str) else '')
                 parts.append(text_chunk)
             transcribed_text = ''.join(parts).strip()
+            if quiet:
+                return transcribed_text or None
 
             elapsed = time.time() - t0
             print(f"   ✓ Transcription completed in {elapsed:.1f} seconds")
@@ -131,8 +139,9 @@ class WhisperEngineCpp:
             return transcribed_text or None
 
         except Exception as e:
-            self.logger.error(f"Transcription failed: {e}", exc_info=True)
-            print(f"❌ Transcription failed: {e}")
+            self.logger.error(f"Transcription failed: {e}", exc_info=not quiet)
+            if not quiet:
+                print(f"❌ Transcription failed: {e}")
             return None
 
     def change_model(self,

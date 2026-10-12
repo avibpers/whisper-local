@@ -615,6 +615,20 @@ class MeetingService:
             score = None if vec is None else round(float(np.dot(vec, mine[1])), 2)
         return {'score': score, 'learned': learned, 'needed': MY_VOICE_MIN, 'ready': ready}
 
+    # ── Your voice for the wake word ─────────────────────────────────────────
+    # wake_word.py keeps its own voiceprint of your word; it borrows the model.
+
+    def voiceprint_of(self, audio) -> Optional[np.ndarray]:
+        return self._voiceprint(audio)
+
+    # Whether a voiceprint can be made now. If not, the model starts loading
+    # (a background task with progress), so ask again in a moment.
+    def voiceprint_ready(self) -> bool:
+        if self.tracker.embed is not None:
+            return True
+        self._ensure_embedder()
+        return False
+
     # Saved voices, for the Meetings screen: ids, names and where they were
     # heard; never the voiceprints.
     def voices_list(self) -> list:
