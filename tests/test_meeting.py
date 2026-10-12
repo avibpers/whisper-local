@@ -1885,6 +1885,80 @@ class LeakTests(unittest.TestCase):
         self.assertAlmostEqual(float(steps[0]), -20.0, places=1)
 
 
+# "So great, Ilona, please send" leaked into the headset mic and came out
+# "So we're going to be sending someone to DC": too garbled for the text
+# check, too short for the loudness one, but it sounds like Eran, not you.
+class YouVoiceTests(unittest.TestCase):
+    @staticmethod
+    def unit(*xs):
+        v = np.array(xs, dtype=np.float32)
+        return v / np.linalg.norm(v)
+
+    def test_unknown_you_drops_only_what_clearly_sounds_like_the_call(self):
+        from koli.meeting.transcriber import sounds_like_you
+        eran = self.unit(1, 0, 0)
+        self.assertFalse(sounds_like_you(self.unit(0.9, 0.3, 0.3), None, [eran]))
+        self.assertTrue(sounds_like_you(self.unit(0.2, 0.98, 0), None, [eran]))
+        self.assertTrue(sounds_like_you(self.unit(0.9, 0.3, 0), None, []), 'no call speakers yet: keep')
+
+    def test_known_you_keeps_what_sounds_more_like_you(self):
+        from koli.meeting.transcriber import sounds_like_you
+        eran, you = self.unit(1, 0, 0), self.unit(0, 1, 0)
+        self.assertTrue(sounds_like_you(self.unit(0.5, 0.86, 0), you, [eran]))
+        self.assertFalse(sounds_like_you(self.unit(0.86, 0.5, 0), you, [eran]))
+
+    def test_your_voice_is_kept_apart_from_remote_voices(self):
+        from koli.meeting.voices import VoiceBook
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        book = VoiceBook(Path(tmp.name) / 'voices.json')
+        mine = book.keep_self([0.0, 1.0], 4, 'm1')
+        self.assertIsNone(book.match([0.0, 1.0]), 'a remote speaker is never you')
+        vid, print_, count = book.self_voice()
+        self.assertEqual((vid, count), (mine, 4))
+        book.keep_self([0.0, 1.0], 4, 'm1')
+        self.assertEqual(book.self_voice()[2], 4, 'a meeting counts once')
+        self.assertTrue(next(v for v in book.all() if v['id'] == mine)['self'])
+
+    # The transcriber: a chunk over a silent call teaches your voice; one over
+    # a talking call that sounds like Eran is left out before Whisper runs.
+    def transcribe_chunks(self, chunks, call_loud, you=None):
+        from koli.meeting.transcriber import MeetingTranscriber
+        from koli.meeting.speakers import SpeakerTracker
+        vecs = {1.0: self.unit(0, 1, 0), 2.0: self.unit(0.95, 0.31, 0)}    # 1 = you, 2 = Eran leaking
+        tracker = SpeakerTracker(embed=lambda a: vecs[float(a[0])])
+        tracker.load([{'id': 's1', 'name': 'Eran', 'colour': 1, 'centroid': [1.0, 0.0, 0.0], 'count': 5}])
+        engine = FakeEngine(['text'] * len(chunks))
+        turns = []
+        t = MeetingTranscriber(engine_provider=lambda: engine, is_busy=lambda: False, tracker=tracker,
+                               language_provider=lambda: 'auto', on_turn=turns.append, on_speaker=lambda s: None,
+                               on_pending=lambda s: None, on_behind=lambda s: None, poll_s=0.01)
+        t.set_you(you)
+        level = 0.3 if call_loud else 0.0
+        t.note_call(np.full(16000 * 20, level, dtype=np.float32), 120.0)
+        t.start()
+        for marker, t0 in chunks:
+            t.submit({'audio': np.full(16000 * 3, marker, dtype=np.float32), 'stream': 'mic', 't0': t0, 't1': t0 + 3})
+        deadline = time.time() + 3
+        while (t.queued_seconds() > 0 or t.working) and time.time() < deadline:
+            time.sleep(0.01)
+        t.stop()
+        return t, turns, engine
+
+    def test_over_a_silent_call_your_voice_is_learned(self):
+        t, turns, _ = self.transcribe_chunks([(1.0, 101.0), (1.0, 105.0), (1.0, 109.0)], call_loud=False)
+        self.assertEqual(len(turns), 3)
+        print_, count = t.you_learned()
+        self.assertEqual(count, 3)
+        self.assertGreater(print_[1], 0.99)
+
+    def test_over_a_talking_call_a_leak_that_sounds_like_eran_is_left_out(self):
+        t, turns, engine = self.transcribe_chunks([(2.0, 101.0), (1.0, 105.0)], call_loud=True, you=self.unit(0, 1, 0))
+        self.assertEqual(len(turns), 1, 'only your own chunk')
+        self.assertEqual(len(engine.calls), 1, 'Whisper never ran on the leak')
+        self.assertIsNone(t.you_learned(), 'nothing is learned while the call talks')
+
+
 class MicMuteTests(unittest.TestCase):
     def make(self):
         from koli.services.meetings import MeetingService

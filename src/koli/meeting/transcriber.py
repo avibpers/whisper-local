@@ -55,6 +55,36 @@ LEAK_GAP_DB = 20.0        # the call is at least this much louder than the mic c
 LEAK_FOLLOW = 0.45        # and the mic's loudness follows the call's this closely
 CALL_HISTORY = 20 * 60 * 20   # 20 minutes of 50 ms steps
 
+# ── Is it you? ───────────────────────────────────────────────────────────────
+# A leak can be too garbled for the text check ("So great, Ilona, please
+# send" came out "So we're going to be sending someone to DC") and too short
+# for the loudness check, but it still sounds like the person on the call.
+# Your own voice is learned on the meeting microphone from what you said
+# while the call was silent (nothing can leak then); a "You" chunk spoken
+# over the call is kept only when it sounds about as much like you as like
+# anyone on the call. Until your voice is known, only a chunk that clearly
+# sounds like a call speaker is dropped.
+CALL_QUIET_DB = -45.0     # the call never got louder than this during the chunk: it was silent
+LEARN_MIN_S = 2.0         # a chunk this long, over a silent call, teaches your voice
+YOU_FIRM = 3              # chunks of your voice before it is trusted
+CALL_VOICE = 0.55         # your voice unknown: sounding this much like a call speaker drops the chunk
+YOU_MARGIN = 0.05         # your voice known: you may sound this much less like you than like the call
+
+
+# Whether a microphone chunk's voiceprint `vec` is you: `you` is your
+# voiceprint (None until known), `others` the call speakers' voiceprints.
+def sounds_like_you(vec, you, others: list) -> bool:
+    sim_call = max((float(np.dot(vec, c)) for c in others), default=-1.0)
+    if you is not None:
+        return float(np.dot(vec, you)) + YOU_MARGIN >= sim_call
+    return sim_call < CALL_VOICE
+
+
+def _unit(v) -> np.ndarray:
+    v = np.asarray(v, dtype=np.float32)
+    n = float(np.linalg.norm(v))
+    return v / n if n > 0 else v
+
 
 def loudness_steps(samples) -> np.ndarray:
     samples = np.asarray(samples, dtype=np.float32).reshape(-1)
@@ -108,6 +138,8 @@ class MeetingTranscriber:
         # set once its model is loaded, until then a chunk is one voice.
         self.split: Optional[Callable[[np.ndarray], list]] = None
         self._call = collections.deque(maxlen=CALL_HISTORY)   # (time, dB) of the call, 50 ms steps
+        self._you_saved = None            # your voiceprint from earlier meetings, or None
+        self._you_sum, self._you_n = None, 0   # your voice learned in this meeting
         self._queue = queue.Queue()
         self._queued_s = 0.0
         self._lock = threading.Lock()
@@ -130,6 +162,46 @@ class MeetingTranscriber:
     def _call_around(self, t0: float, t1: float) -> list:
         with self._lock:
             return [c for c in self._call if t0 - 1.0 <= c[0] <= t1 + 1.0]
+
+    # ── Your voice ───────────────────────────────────────────────────────────
+
+    # A meeting starts: your voice from earlier meetings (or None), and
+    # nothing learned in this one yet.
+    def set_you(self, voiceprint=None):
+        self._you_saved = _unit(voiceprint) if voiceprint is not None else None
+        self._you_sum, self._you_n = None, 0
+
+    # Your voice as learned in this meeting: (voiceprint, chunks), or None.
+    def you_learned(self) -> Optional[tuple]:
+        if self._you_n == 0:
+            return None
+        return [float(x) for x in _unit(self._you_sum)], self._you_n
+
+    def _you_now(self):
+        if self._you_n >= YOU_FIRM:
+            learned = _unit(self._you_sum)
+            return _unit(learned + self._you_saved) if self._you_saved is not None else learned
+        return self._you_saved
+
+    # (keep, voiceprint to learn from or None) for a microphone chunk.
+    def _check_you(self, chunk: dict) -> tuple:
+        embed = self.tracker.embed
+        if embed is None:
+            return True, None
+        try:
+            vec = embed(chunk['audio'])
+        except Exception as e:
+            logger.debug(f"Voiceprint of a microphone chunk failed: {e}")
+            vec = None
+        if vec is None:
+            return True, None
+        vec = _unit(vec)
+        call = [db for t, db in self._call_around(chunk['t0'], chunk['t1']) if chunk['t0'] <= t <= chunk['t1']]
+        if not call or max(call) <= CALL_QUIET_DB:
+            long_enough = len(chunk['audio']) / RATE >= LEARN_MIN_S
+            return True, (vec if long_enough else None)
+        others = [_unit(s['centroid']) for s in self.tracker.export() if s['count'] >= 2]
+        return sounds_like_you(vec, self._you_now(), others), None
 
     def submit(self, chunk: dict):
         with self._lock:
@@ -199,6 +271,12 @@ class MeetingTranscriber:
                                                 self._call_around(chunk['t0'], chunk['t1'])):
             logger.info("Left out a microphone chunk that was the call leaking in")
             return
+        learn = None
+        if chunk['stream'] == 'mic':
+            keep, learn = self._check_you(chunk)
+            if not keep:
+                logger.info("Left out a microphone chunk that sounds like the call, not you")
+                return
         # No dictation prompt: it's a style hint for the app in front, and on a
         # short or quiet clip Whisper wrote it back as the turn ("Friendly tone.").
         text = engine.transcribe_audio(chunk['audio'], language=self.language_provider() or 'auto', use_prompt=False)
@@ -213,6 +291,9 @@ class MeetingTranscriber:
             return
         base = {'stream': chunk['stream'], 'lang': lang, 'meeting_id': chunk.get('meeting_id')}
         if chunk['stream'] == 'mic':
+            if learn is not None:           # real speech over a silent call: this is your voice
+                self._you_sum = learn if self._you_sum is None else self._you_sum + learn
+                self._you_n += 1
             self.on_turn({**base, 't0': chunk['t0'], 't1': chunk['t1'], 'speaker': 'you',
                           'text': ''.join(p['text'] for p in pieces).strip()})
             return

@@ -20,7 +20,7 @@ from ..meeting.diarize import make_splitter
 from ..meeting.session import SessionManager, merge_speaker_into, same_name_as
 from ..meeting.speakers import SAME_VOICE, SpeakerTracker, make_embedder
 from ..meeting.store import MeetingStore
-from ..meeting.transcriber import MeetingTranscriber
+from ..meeting.transcriber import YOU_FIRM, MeetingTranscriber
 from ..meeting.voices import FILE as VOICES_FILE, VoiceBook
 from ..ui.events import publish as publish_event, report_problem
 from ..ui.tasks import get_task_manager
@@ -201,6 +201,8 @@ class MeetingService:
         meeting_id = meeting['id']
         self._ensure_embedder()
         self.tracker.load(meeting.get('speakers', []))
+        mine = self.voices.self_voice()
+        self.transcriber.set_you(mine[1] if mine else None)
         idle = None
         with self._lock:
             idle, self._idle_stream = self._idle_stream, None
@@ -457,6 +459,15 @@ class MeetingService:
                 taken.append(voice_id)
                 if s.get('voice_id') != voice_id:
                     s['voice_id'] = voice_id
+                    changed = True
+            # Your own voice, learned on the meeting microphone, and the
+            # meeting's "You" pointing to it.
+            learned = self.transcriber.you_learned()
+            if learned and learned[1] >= YOU_FIRM:
+                mine = self.voices.keep_self(learned[0], learned[1], meeting['id'])
+                you = next((s for s in meeting['speakers'] if s['id'] == 'you'), None)
+                if you is not None and you.get('voice_id') != mine:
+                    you['voice_id'] = mine
                     changed = True
             if changed:
                 self.store.save(meeting)

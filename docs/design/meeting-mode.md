@@ -393,6 +393,19 @@ re-clusters speakers and cleans text; search across meetings.
   it anyway. Renaming a speaker to another speaker's name in the same
   meeting merges them (turns relabelled, voiceprints combined by chunk
   count), live or saved.
+- Seventh real test (the user on the headset mic, by choice: the camera mic
+  is for dictation): the loudness check left out 13 leaked chunks, but
+  short garbled ones got through ("So great, Ilona, please send" came out
+  "So we're going to be sending someone to DC"; Whisper's sentence times
+  were seconds off, so the text check never saw them overlap). Now a "You"
+  chunk is also checked by voice: the user's voiceprint is learned on the
+  meeting mic from chunks of 2 s+ spoken while the call stayed under
+  -45 dB (nothing can leak then), kept in voices.json as the "self" voice
+  and pointed to by the meeting's "you" speaker. Over a talking call a
+  chunk is kept only if its voiceprint is at most 0.05 less like the user
+  than like the closest call speaker; before the user's voice is known
+  (3 chunks), only one 0.55+ like a call speaker is dropped. The check runs
+  before Whisper, so a leak costs no GPU time.
 - Same meeting: Whisper made up short English clips in a Hebrew call
   ("Bet.", "PR in Chile.", "We'll see you next time.", log-prob -0.45 to
   -1.12 on clips under 2 s) and garbage on the mic (-1.5 to -4.5), while

@@ -4,7 +4,10 @@
 # that meeting files point to, so one person can be followed through every
 # meeting (search, analysis, an LLM's notes) whether or not they have a name.
 # A meeting that ends refines the voices it heard and adds the new ones; a
-# name, when you give one, is just a label on the id. Local only.
+# name, when you give one, is just a label on the id. Your own voice on the
+# meeting microphone is one of them, marked as yours ("self"): "You" chunks
+# are checked against it so the call leaking into a headset isn't you.
+# Local only.
 
 import datetime
 import json
@@ -74,7 +77,7 @@ class VoiceBook:
                         'id': v.get('id') or new_voice_id(), 'name': v.get('name', ''),
                         'centroid': _unit(v['centroid']), 'count': int(v.get('count', 1)),
                         'first_seen': v.get('first_seen', ''), 'last_seen': v.get('last_seen', ''),
-                        'meetings': list(v.get('meetings', []))})
+                        'meetings': list(v.get('meetings', [])), 'self': bool(v.get('self'))})
             except FileNotFoundError:
                 pass
             except Exception as e:
@@ -82,7 +85,7 @@ class VoiceBook:
         return self._voices
 
     def _save(self):
-        data = {'voices': [{**{k: v[k] for k in ('id', 'name', 'count', 'first_seen', 'last_seen', 'meetings')},
+        data = {'voices': [{**{k: v[k] for k in ('id', 'name', 'count', 'first_seen', 'last_seen', 'meetings', 'self')},
                             'centroid': [round(float(x), 5) for x in v['centroid']]} for v in self._voices]}
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix('.json.tmp')
@@ -94,7 +97,7 @@ class VoiceBook:
 
     @staticmethod
     def _public(v: dict) -> dict:
-        return {k: v[k] for k in ('id', 'name', 'count', 'first_seen', 'last_seen', 'meetings')}
+        return {k: v[k] for k in ('id', 'name', 'count', 'first_seen', 'last_seen', 'meetings', 'self')}
 
     # ── What the rest of meeting mode calls ──────────────────────────────────
 
@@ -119,7 +122,7 @@ class VoiceBook:
         with self._lock:
             best, best_sim = None, FIRST_MATCH if first else MATCH
             for v in self._loaded():
-                if v['id'] in taken:
+                if v['id'] in taken or v['self']:
                     continue
                 sim = float(np.dot(v['centroid'], vec))
                 if sim >= best_sim:
@@ -141,7 +144,7 @@ class VoiceBook:
             v = self._find(voice_id) if voice_id else None
             if v is None:
                 v = {'id': voice_id or new_voice_id(), 'name': '', 'centroid': _unit(centroid), 'count': count,
-                     'first_seen': now, 'last_seen': now, 'meetings': []}
+                     'first_seen': now, 'last_seen': now, 'meetings': [], 'self': False}
                 self._voices.append(v)
             elif meeting_id and meeting_id in v['meetings']:
                 v['last_seen'] = now     # a resumed meeting ending again: its audio already counts
@@ -149,6 +152,37 @@ class VoiceBook:
                 v['centroid'] = _unit(v['centroid'] * v['count'] + _unit(centroid) * count)
                 v['count'] += count
                 v['last_seen'] = now
+            if meeting_id and meeting_id not in v['meetings']:
+                v['meetings'].append(meeting_id)
+            self._save()
+            return v['id']
+
+    # ── Your own voice ───────────────────────────────────────────────────────
+    # Learned on the meeting microphone from what you said while the call
+    # was silent (nothing could leak then); a "You" chunk is checked against
+    # it. Kept as a voice like the others, marked as yours, never matched to
+    # a remote speaker.
+
+    # (voice id, voiceprint, count) of your voice, or None.
+    def self_voice(self) -> Optional[tuple]:
+        with self._lock:
+            v = next((v for v in self._loaded() if v['self']), None)
+            return (v['id'], v['centroid'].copy(), v['count']) if v else None
+
+    # Add a meeting's worth of your voice (`centroid` from `count` chunks).
+    def keep_self(self, centroid, count: int, meeting_id: str) -> str:
+        count = max(1, int(count or 1))
+        now = _now()
+        with self._lock:
+            v = next((v for v in self._loaded() if v['self']), None)
+            if v is None:
+                v = {'id': new_voice_id(), 'name': 'You', 'centroid': _unit(centroid), 'count': count,
+                     'first_seen': now, 'last_seen': now, 'meetings': [], 'self': True}
+                self._voices.append(v)
+            elif meeting_id not in v['meetings']:
+                v['centroid'] = _unit(v['centroid'] * v['count'] + _unit(centroid) * count)
+                v['count'] += count
+            v['last_seen'] = now
             if meeting_id and meeting_id not in v['meetings']:
                 v['meetings'].append(meeting_id)
             self._save()

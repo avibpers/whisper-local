@@ -24,6 +24,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
   who never said a word. A part that clearly matches the voice it was cut
   from now stays with it. And renaming a speaker to the name of another
   speaker in the same meeting merges the two, in past meetings too.
+- **"You" must sound like you.** Koli learns your voice on the meeting
+  microphone from what you say while the call is quiet, keeps it with the
+  other voices (marked as yours), and while others talk keeps a "You" line
+  only when it sounds like you rather than like someone on the call. Leaks
+  too garbled for the other checks ("…sending someone to DC") are left out.
 - **"You" is only you.** Headphones leak a faint copy of the call into the
   headset's microphone, and Koli wrote it down as you speaking. A microphone
   chunk that is far quieter than the call and rises and falls with it is now
