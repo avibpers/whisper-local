@@ -8,7 +8,17 @@
 import logging
 import os
 import threading
-from typing import Optional
+from typing import Callable, Optional
+
+
+# Whether Koli itself is moving focus right now (a voice command pressing keys
+# in another window). Without the platform layer, it never is.
+def _platform_koli_moving_focus() -> bool:
+    try:
+        from .platform import window_focus
+        return window_focus.koli_moving_focus()
+    except Exception:
+        return False
 
 
 class AutoDictation:
@@ -16,13 +26,15 @@ class AutoDictation:
     # tabbing through a form does not start a recording per field.
     DEBOUNCE_SECONDS = 0.3
 
-    def __init__(self, state_manager, config_manager, app_rules, watcher=None, own_pid: Optional[int] = None):
+    def __init__(self, state_manager, config_manager, app_rules, watcher=None, own_pid: Optional[int] = None,
+                 koli_moving_focus: Optional[Callable[[], bool]] = None):
         self.sm = state_manager
         self.cm = config_manager
         self.app_rules = app_rules
         self._watcher = watcher
         self._watch_token = 0   # our listener on the shared watcher
         self._own_pid = os.getpid() if own_pid is None else own_pid
+        self._koli_moving_focus = koli_moving_focus or _platform_koli_moving_focus
         self._running = False
         self._last_focus: Optional[dict] = None
         self._pending: Optional[threading.Timer] = None
@@ -110,6 +122,11 @@ class AutoDictation:
     # app's window that was not the last thing focused may start a recording.
     def on_focus(self, info: dict) -> None:
         if not self._running:
+            return
+        # A hop Koli made (a voice command's keys sent to another window) is
+        # not the user moving: keep the last field, so returning to it is
+        # "the same field" and nothing is cancelled or started.
+        if self._koli_moving_focus():
             return
         info = info or {}
         if self._same_field(info, self._last_focus):

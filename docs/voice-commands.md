@@ -76,12 +76,12 @@ Send keyboard shortcuts to the active window. Use `+` to combine keys.
 
 By default the keys go to the app in front. When that app would catch them first, aim them elsewhere:
 
-- `send_to: windows`: Koli brings an invisible window of its own to the front, presses the keys there, and returns you to your window. No app gets them, so only Windows' shortcuts (like Alt+Shift+1 to switch language) and other programs' global shortcuts react. (The desktop isn't used: it reacts to keys like Ctrl+Shift+1, which changes its icon size.)
+- `send_to: windows`: Koli brings an invisible window of its own to the front, presses the keys there, and returns you to your window. No app gets them, so only Windows' shortcuts and other programs' global shortcuts (a Discord or OBS hotkey) react. For a keyboard-language shortcut, keep the app you're in: Windows switches the language of the window in front. (The desktop isn't used: it reacts to keys like Ctrl+Shift+1, which changes its icon size.)
 - `send_to: chrome.exe`: Koli switches to that app's most recently used window, presses the keys, and switches back. If the app isn't open, nothing is pressed and Koli says so.
 
 ```yaml
-  - trigger: "english"
-    hotkey: "alt+shift+1"
+  - trigger: "mute discord"
+    hotkey: "ctrl+shift+m"
     send_to: windows
   - trigger: "new tab"
     hotkey: "ctrl+t"

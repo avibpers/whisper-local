@@ -27,12 +27,15 @@ SEND_TO_WINDOWS = 'windows'
 FOCUS_SETTLE_SECONDS = 0.08    # the new window takes the keyboard
 KEYS_SETTLE_SECONDS = 0.15     # the target reads the keys before focus leaves
 FOREGROUND_WAIT_SECONDS = 0.3
+# How long after a round trip its focus reports may still arrive (they come
+# through the focus watcher's queue, a little late).
+FOCUS_REPORT_GRACE_SECONDS = 0.6
 
 GWL_EXSTYLE = -20
 GW_OWNER = 4
 SW_RESTORE = 9
+SW_SHOWNOACTIVATE = 4
 WS_POPUP = 0x80000000
-WS_VISIBLE = 0x10000000
 WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_LAYERED = 0x00080000
 WS_EX_TRANSPARENT = 0x00000020
@@ -173,10 +176,14 @@ def _run_sink(ready: threading.Event):
     instance = _kernel32.GetModuleHandleW(None)
     window_class = _WNDCLASSW(lpfnWndProc=_sink_proc_ref, hInstance=instance, lpszClassName='KoliKeySink')
     _user32.RegisterClassW(ctypes.byref(window_class))
-    hwnd = _user32.CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TRANSPARENT, 'KoliKeySink', 'Koli',
-                                   WS_POPUP | WS_VISIBLE, 0, 0, 1, 1, None, None, instance, None)
+    # No title: ui/win32.find_window looks Koli's windows up by title. Created
+    # hidden and shown without activating: a visible window made from scratch
+    # takes the foreground, and the user's typing with it.
+    hwnd = _user32.CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TRANSPARENT, 'KoliKeySink', '',
+                                   WS_POPUP, 0, 0, 1, 1, None, None, instance, None)
     if hwnd:
         _user32.SetLayeredWindowAttributes(hwnd, 0, 0, LWA_ALPHA)
+        _user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
     _sink['hwnd'] = hwnd
     ready.set()
     msg = wt.MSG()
@@ -242,12 +249,38 @@ def _bring_to_front(hwnd) -> bool:
     return _wait_foreground(hwnd)
 
 
+# ── Koli's own focus moves ───────────────────────────────────────────────────
+# Auto-dictation watches focus to start listening in a text field. The hops
+# of a round trip are Koli's, not the user's, so it asks here and ignores them.
+
+_moving = {'depth': 0, 'until': 0.0}
+_moving_lock = threading.Lock()
+
+
+def koli_moving_focus() -> bool:
+    with _moving_lock:
+        return _moving['depth'] > 0 or time.monotonic() < _moving['until']
+
+
+def _begin_move():
+    with _moving_lock:
+        _moving['depth'] += 1
+
+
+def _end_move():
+    with _moving_lock:
+        _moving['depth'] -= 1
+        _moving['until'] = time.monotonic() + FOCUS_REPORT_GRACE_SECONDS
+
+
 # Run `press` (the key presses) with `target` in front: "windows" or an app's
 # .exe ("chrome.exe", or "chrome"). Afterwards the window that was in front
 # gets focus back. Raises LookupError, with a message for the user, when the
 # app isn't open or Windows refuses the switch; nothing is pressed then.
 def run_focused(target: str, press):
     target = str(target or '').strip().lower()
+    # Read first: nothing below may change it before it is known.
+    previous = _user32.GetForegroundWindow()
     if target == SEND_TO_WINDOWS:
         hwnd = _sink_window()
         if not hwnd:
@@ -256,15 +289,21 @@ def run_focused(target: str, press):
         hwnd = _find_app(target)
         if not hwnd:
             raise LookupError(f"{target} isn't open")
-    previous = _user32.GetForegroundWindow()
-    switched = hwnd != previous
-    if switched and not _bring_to_front(hwnd):
-        raise LookupError(f"Windows didn't let Koli switch to {target}")
-    try:
+    if hwnd == previous:
         time.sleep(FOCUS_SETTLE_SECONDS)
         press()
+        return
+    _begin_move()
+    try:
+        if not _bring_to_front(hwnd):
+            raise LookupError(f"Windows didn't let Koli switch to {target}")
+        time.sleep(FOCUS_SETTLE_SECONDS)
+        try:
+            press()
+        finally:
+            if previous:
+                time.sleep(KEYS_SETTLE_SECONDS)
+                if not _bring_to_front(previous):
+                    logger.debug("Couldn't return focus to the previous window")
     finally:
-        if switched and previous:
-            time.sleep(KEYS_SETTLE_SECONDS)
-            if not _bring_to_front(previous):
-                logger.debug("Couldn't return focus to the previous window")
+        _end_move()

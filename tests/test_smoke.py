@@ -4902,9 +4902,29 @@ class AutoDictationCoordinatorTests(unittest.TestCase):
         self.sm = _AutoStateManager()
         self.watcher = _AutoWatcher()
         self.rules = _AutoRules(rule, elsewhere_on)
-        ad = AutoDictation(self.sm, _AutoCfg(enabled), self.rules, watcher=self.watcher, own_pid=4242)
+        self.koli_moving = False
+        ad = AutoDictation(self.sm, _AutoCfg(enabled), self.rules, watcher=self.watcher, own_pid=4242,
+                           koli_moving_focus=lambda: self.koli_moving)
         ad.start()
         return ad
+
+    # A voice command with send_to moves focus to another window and back.
+    # Neither hop is the user's: no recording is cancelled, and coming back to
+    # the field doesn't start a new one.
+    def test_focus_koli_moves_itself_is_ignored(self):
+        ad = self._make()
+        ad.on_focus(_auto_field(id=(7,)))
+        ad.flush_timer()
+        self.assertEqual(self.sm.starts, 1)
+        self.sm.auto = False                       # the dictation finished
+        self.koli_moving = True
+        ad.on_focus(_auto_field(id=(9,), hwnd=77, root_pid=4242, editable=False, exe='python.exe'))
+        ad.on_focus(_auto_field(id=(10,), hwnd=88, exe='chrome.exe'))   # a text field in the target app
+        self.koli_moving = False
+        ad.on_focus(_auto_field(id=(7,)))          # back where the user was
+        ad.flush_timer()
+        self.assertEqual(self.sm.starts, 1, 'the round trip must not start a recording')
+        self.assertEqual(self.sm.cancels, [])
 
     # An app rule set to On works with the Settings switch off: the watcher
     # runs, and only that app starts recordings.
