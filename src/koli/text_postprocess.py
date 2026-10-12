@@ -76,7 +76,7 @@ def postprocess(text: str, config: dict, trace: list = None) -> str:
     # so they run first — before any symbol/format rewriting.
     if _on(config.get('voice_editing')):
         _before = text
-        text = _apply_voice_editing(text)
+        text = _apply_voice_editing(text, config.get('voice_editing_phrases'))
         note('voice_editing', _before, text)
 
     # "at 2, actually 3" → "at 3". Same raw-flow reasoning as voice editing.
@@ -308,13 +308,31 @@ _VOICE_EDIT_CMD = re.compile(
 _CLAUSE_BOUNDARIES = ('.', '!', '?', '\n')
 
 
-def _apply_voice_editing(text: str) -> str:
+# The English commands plus your own phrases from `voice_editing_phrases`
+# ("מחק את זה"), as one pattern. Your phrases are matched literally and as whole
+# words, with any run of spaces between their words, since Whisper's spacing
+# isn't guaranteed. Cached so the compile happens once per list, not per
+# dictation.
+@functools.lru_cache(maxsize=8)
+def _compile_voice_edit_commands(phrases: tuple):
+    extra = [r'[ \t]+'.join(re.escape(word) for word in phrase.split()) for phrase in phrases if phrase.strip()]
+    if not extra:
+        return _VOICE_EDIT_CMD
+    pattern = r'\b(?:scratch\s+that|delete\s+that|strike\s+that|' + '|'.join(extra) + r')\b[ \t,.]*'
+    return re.compile(pattern, flags=re.IGNORECASE)
+
+
+def _apply_voice_editing(text: str, phrases=None) -> str:
+    if isinstance(phrases, str):
+        phrases = [phrases]  # a hand-edited single phrase must not become one phrase per letter
+    command = _compile_voice_edit_commands(
+        tuple(str(phrase) for phrase in (phrases or ()) if isinstance(phrase, str)))
     # For each command, erase back to the start of the clause it belongs to (just
     # after the previous terminator), never past the end of an earlier deletion.
     # Each backward search covers a disjoint span, so the whole pass is O(n).
     pieces = []
     cursor = 0
-    for match in _VOICE_EDIT_CMD.finditer(text):
+    for match in command.finditer(text):
         if match.start() < cursor:
             continue  # already inside a region an earlier command removed
         segment = text[cursor:match.start()]

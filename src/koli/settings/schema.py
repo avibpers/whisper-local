@@ -290,8 +290,8 @@ SCHEMA = [
     # ── Smart editing ────────────────────────────────────────────────────────
     _S('postprocess.voice_editing', '“Scratch that”', 'smart', 'toggle',
        help='Erases back to the start of the sentence.'),
-    _S('postprocess.voice_editing_phrases', 'Your “scratch that” phrases', 'smart', 'tags', optional=True,
-       help='Extra phrases in your language. The English ones always work.'),
+    _S('postprocess.voice_editing_phrases', 'Your “scratch that” phrases', 'smart', 'tags',
+       help='Extra phrases in your language, like “מחק את זה”. The English ones always work.'),
     _S('postprocess.backtrack.enabled', 'Backtrack', 'smart', 'toggle',
        help='“Meet at 2, actually 3” types “Meet at 3”. Only acts on numbers, times, days and months.'),
     _S('postprocess.backtrack.cues', 'Backtrack cue words', 'smart', 'tags'),

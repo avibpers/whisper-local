@@ -131,6 +131,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
   off both still happen when recording starts.
 
 ### Fixed
+- **"Your 'scratch that' phrases" did nothing.** The list in Settings → Smart
+  editing saved, but no dictation ever looked at it. Now a phrase you add
+  (say “מחק את זה”) erases back to the start of the sentence, just like the
+  English “scratch that”, “delete that” and “strike that”.
 - **Switching models leaked graphics memory.** The engine Koli started with
   was never freed, and a swapped-out engine kept its models until Python got
   around to it, so after a few switches a second model no longer fit (6.4 GB

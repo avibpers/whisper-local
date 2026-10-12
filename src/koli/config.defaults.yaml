@@ -642,6 +642,11 @@ postprocess: # Transcription post-processing pipeline
     # Deterministic and offline. Off by default.
     voice_editing: false
 
+    # Your own phrases that work like "scratch that", for dictating in another
+    # language. The English ones always work alongside them.
+    # Example: [מחק את זה, תמחק את זה]
+    voice_editing_phrases: []
+
     # Deterministic smart formatting — turns spoken forms into typed symbols,
     # offline, with no LLM. Each toggle is independent and OFF by default because
     # it rewrites text; turn on only what you want.

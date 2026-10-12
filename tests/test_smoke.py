@@ -420,6 +420,27 @@ class TextPostprocessTests(unittest.TestCase):
         self.assertEqual(postprocess("please scratch that itch", {'voice_editing': False}),
                          "please scratch that itch")
 
+    # Your own phrases, in your language, work next to the English ones.
+    def test_voice_editing_your_own_phrases(self):
+        from koli.text_postprocess import postprocess
+        cfg = {'voice_editing': True, 'voice_editing_phrases': ['מחק את זה']}
+        self.assertEqual(postprocess("נפגשים בשתיים. בשלוש מחק את זה בארבע", cfg), "נפגשים בשתיים. בארבע")
+        self.assertEqual(postprocess("first. junk scratch that second", cfg), "first. second")
+        # Whisper's spacing isn't guaranteed: a double space still matches.
+        self.assertEqual(postprocess("ok. טעות מחק  את זה", cfg), "ok.")
+
+    # Only whole words: a phrase inside a longer word is left alone.
+    def test_voice_editing_phrase_needs_whole_words(self):
+        from koli.text_postprocess import postprocess
+        cfg = {'voice_editing': True, 'voice_editing_phrases': ['undo']}
+        self.assertEqual(postprocess("undone work stays", cfg), "undone work stays")
+
+    # A hand-edited single phrase (a string, not a list) still works as one phrase.
+    def test_voice_editing_phrase_as_plain_string(self):
+        from koli.text_postprocess import postprocess
+        cfg = {'voice_editing': True, 'voice_editing_phrases': 'oops'}
+        self.assertEqual(postprocess("done. wrong part oops right part", cfg), "done. right part")
+
     def test_malformed_config_sections_do_not_crash(self):
         # A hand-edited user_settings.yaml can put a scalar where a mapping/list
         # belongs. That's a config mistake, but it must never take down the
