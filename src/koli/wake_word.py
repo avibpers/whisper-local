@@ -542,7 +542,7 @@ class WakeListener:
             try:
                 value = bool(self._is_locked())
             except Exception:
-                value = False
+                value = True      # can't tell: don't listen on what may be a lock screen
             self._locked_cache = (value, now)
         return value
 

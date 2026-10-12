@@ -559,6 +559,7 @@ class WakeCommandStateManagerTests(unittest.TestCase):
         listener = mock.Mock()
         listener.spellings.return_value = ['hey koli']
         listener.match_ratio.return_value = 0.9
+        listener.personal.return_value = False
         sm._wake_listener = listener
         return sm
 
@@ -605,6 +606,17 @@ class WakeCommandStateManagerTests(unittest.TestCase):
         sm.voice_command_manager.execute_command.assert_not_called()
         sm.level_overlay.flash_failure.assert_not_called()
         self.assertTrue(sm.whisper_engine.transcribe_audio.call_args.kwargs['quiet'])
+
+    # Anyone can say "Hey Koli" (a TV, a video): a command that runs a program
+    # must ask first. Your own word passed the voice check, so it doesn't.
+    def test_hey_koli_commands_confirm_their_runs_and_your_word_doesnt(self):
+        sm = self._sm()
+        self.run_(sm, text='next song')
+        self.assertTrue(sm.voice_command_manager.execute_command.call_args.kwargs.get('confirm_runs'))
+        sm = self._sm()
+        sm._wake_listener.personal.return_value = True
+        self.run_(sm, text='next song')
+        self.assertFalse(sm.voice_command_manager.execute_command.call_args.kwargs.get('confirm_runs', False))
 
     def test_refuses_while_a_dictation_runs(self):
         from koli.wake_word import BUSY
@@ -731,6 +743,87 @@ class WakeSetupTests(ListenerTestCase):
         status = self.commands.wake_reset(self.sm, self.settings)
         self.assertEqual((status['personal'], status['word']), (False, 'Hey Koli'))
         self.assertIsNone(listener.wake_voices.get('Jabra'))
+
+
+# ── Running programs from a wake word, and the locked check ──────────────────
+
+class WakeSafetyTests(unittest.TestCase):
+    def _manager(self):
+        import logging
+        import unittest.mock as mock
+        from koli.voice_commands import VoiceCommandManager
+        manager = VoiceCommandManager.__new__(VoiceCommandManager)
+        manager.logger = logging.getLogger('test')
+        manager._confirm_risky_command = mock.Mock(return_value=False)
+        return manager
+
+    def test_a_wake_run_command_asks_and_doesnt_run_when_declined(self):
+        import unittest.mock as mock
+        manager = self._manager()
+        with mock.patch('koli.voice_commands.subprocess.Popen') as popen, mock.patch('builtins.print'):
+            manager.execute_command({'trigger': 'open notes', 'run': 'notepad.exe', 'confirm': False}, confirm_runs=True)
+        manager._confirm_risky_command.assert_called_once()
+        self.assertTrue(manager._confirm_risky_command.call_args.kwargs['fail_closed'])
+        popen.assert_not_called()
+
+    def test_then_steps_ask_too(self):
+        import unittest.mock as mock
+        manager = self._manager()
+        manager._send_hotkey = mock.Mock()
+        with mock.patch('koli.voice_commands.subprocess.Popen') as popen, mock.patch('builtins.print'):
+            manager.execute_command({'trigger': 'go', 'hotkey': 'ctrl+s', 'then': [{'run': 'calc.exe'}]}, confirm_runs=True)
+        popen.assert_not_called()
+
+    def test_a_hotkey_command_runs_unasked(self):
+        import unittest.mock as mock
+        manager = self._manager()
+        with mock.patch('koli.voice_commands.subprocess.Popen') as popen, mock.patch('builtins.print'):
+            manager.execute_command({'trigger': 'open notes', 'run': 'notepad.exe'})
+        manager._confirm_risky_command.assert_not_called()
+        popen.assert_called_once()
+
+    def test_without_a_dialog_a_command_that_must_ask_doesnt_run(self):
+        import logging
+        import unittest.mock as mock
+        from koli.voice_commands import VoiceCommandManager
+        manager = VoiceCommandManager.__new__(VoiceCommandManager)
+        manager.logger = logging.getLogger('test')
+        with mock.patch('koli.voice_commands.os.name', 'posix'):
+            self.assertFalse(manager._confirm_risky_command('x', 'y', fail_closed=True))
+            self.assertTrue(manager._confirm_risky_command('x', 'y'))
+
+    def test_the_mac_lock_check_fails_closed(self):
+        if sys.platform == 'darwin':
+            self.skipTest('Quartz is here; this checks the fallback')
+        import importlib.util
+        # Just the file: the macOS package itself doesn't import elsewhere.
+        spec = importlib.util.spec_from_file_location(
+            'mac_session', ROOT / 'src' / 'koli' / 'platform' / 'macos' / 'session.py')
+        session = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(session)
+        self.assertTrue(session.is_locked(), "no Quartz: can't tell, so locked")
+
+    def test_the_windows_lock_check_fails_closed(self):
+        import unittest.mock as mock
+        if sys.platform != 'win32':
+            self.skipTest('Windows only')
+        from koli.platform.windows import session
+        self.assertFalse(session.is_locked(), 'this desktop is unlocked')
+        with mock.patch.object(session, '_user32', None):
+            self.assertTrue(session.is_locked())
+        broken = mock.Mock()
+        broken.OpenInputDesktop.side_effect = OSError('access denied')
+        with mock.patch.object(session, '_user32', broken):
+            self.assertTrue(session.is_locked())
+
+    def test_the_listener_treats_a_failing_lock_check_as_locked(self):
+        from koli.wake_word import WakeListener
+
+        def broken():
+            raise RuntimeError('no session')
+        listener = WakeListener(FakeStateManager(), Config(), is_locked=broken, transcribe=lambda a: None,
+                                speech_prob=lambda f: 0.0, publish=lambda *a: None, play_sound=lambda: None)
+        self.assertFalse(listener.may_listen())
 
 
 class WakeVoicesTests(unittest.TestCase):

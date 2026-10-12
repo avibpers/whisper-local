@@ -154,7 +154,7 @@ Say the wake word and a command, with no hotkey: **"Hey Koli, next song"** in on
 
 Turn it on in **Commands → Wake word**. It listens on your dictation microphone while Koli runs, and never while you dictate, during a meeting, while Koli is paused or while the PC is locked. It needs voice commands on.
 
-- **"Hey Koli"** works for any voice out of the box. Because anyone (or the TV) could say it, the 5 seconds after a command only run media commands, and Koli checks less often while it keeps hearing speech that isn't the wake word.
+- **"Hey Koli"** works for any voice out of the box. Because anyone (or the TV) could say it, a command that runs a program (`run`) always asks before it runs, the 5 seconds after a command only run media commands, and Koli checks less often while it keeps hearing speech that isn't the wake word.
 - **Your own word, in your voice:** press **Record your own word** and say it three times, in any language. Koli keeps what Whisper wrote each time and a voiceprint of you saying it, on this microphone. From then on only that word wakes Koli, only in your voice, and the 5 seconds after a command run any command. Record it again on another microphone to use it there. **Back to "Hey Koli"** removes it.
 - **Test** says whether one try would have woken Koli, what it heard and, for your own word, your voice score next to the one it needs.
 

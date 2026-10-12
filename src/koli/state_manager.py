@@ -580,8 +580,12 @@ class StateManager:
                     text = rest
             if not normalize_spoken(text):
                 return EMPTY
+            # "Hey Koli" is anyone's (a TV, a video): a command that runs a
+            # program asks first. Your own word was checked against your voice.
+            personal = bool(listener is not None and listener.personal())
             matched = self._handle_command_transcription(
-                text, only=is_media_command if only_media else None, announce_miss=report_miss)
+                text, only=is_media_command if only_media else None, announce_miss=report_miss,
+                confirm_runs=not personal)
             if matched or report_miss:
                 self._emit_pipeline('command', mode='wake', raw=text, matched=bool(matched))
             if self.level_overlay:
@@ -1417,9 +1421,10 @@ class StateManager:
             self.logger.info("Ready for the next dictation")
 
     # `only` limits which commands may run (wake-word follow-ups: media only);
-    # `announce_miss=False` keeps a miss out of the console (lyrics, talk).
+    # `announce_miss=False` keeps a miss out of the console (lyrics, talk);
+    # `confirm_runs`: anyone could have said it, so run steps ask first.
     def _handle_command_transcription(self, text: str, use_auto_enter: bool = False, only=None,
-                                      announce_miss: bool = True) -> bool:
+                                      announce_miss: bool = True, confirm_runs: bool = False) -> bool:
         log_config = self.config_manager.get_logging_config()
         if log_config.get('log_transcriptions', False) and announce_miss:
             self.logger.info(f"Command mode transcription: '{text}'")
@@ -1432,7 +1437,10 @@ class StateManager:
 
         matched = self.voice_command_manager.match_command(text, only=only)
         if matched:
-            self.voice_command_manager.execute_command(matched, use_auto_enter)
+            if confirm_runs:
+                self.voice_command_manager.execute_command(matched, use_auto_enter, confirm_runs=True)
+            else:
+                self.voice_command_manager.execute_command(matched, use_auto_enter)
             return True
         if announce_miss:
             print(f"   ✗ No matching command for: \"{text[:60]}\"")

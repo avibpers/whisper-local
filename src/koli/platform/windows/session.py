@@ -4,7 +4,11 @@
 # the input, the user's desktop can't be opened or switched to.
 
 import ctypes
+import logging
 from ctypes import wintypes
+
+logger = logging.getLogger(__name__)
+_warned = False
 
 DESKTOP_SWITCHDESKTOP = 0x0100
 
@@ -20,12 +24,14 @@ except (AttributeError, OSError):
     _user32 = None
 
 
-# True on the lock screen. Any failure to ask reads as unlocked: the wake
-# word listening a little too long is better than never listening.
+# True on the lock screen. When it can't be asked, the PC counts as locked:
+# the wake word must never run commands on a locked computer, so it stops
+# listening rather than guess (and says why once, in the log).
 def is_locked() -> bool:
-    if _user32 is None:
-        return False
+    global _warned
     try:
+        if _user32 is None:
+            raise OSError('user32 is not available')
         desktop = _user32.OpenInputDesktop(0, False, DESKTOP_SWITCHDESKTOP)
         if not desktop:
             return True
@@ -33,5 +39,8 @@ def is_locked() -> bool:
             return not _user32.SwitchDesktop(desktop)
         finally:
             _user32.CloseDesktop(desktop)
-    except Exception:
-        return False
+    except Exception as e:
+        if not _warned:
+            _warned = True
+            logger.warning(f"Can't tell whether the PC is locked ({e}); the wake word won't listen")
+        return True

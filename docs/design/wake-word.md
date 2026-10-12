@@ -25,7 +25,8 @@ your voice.
 | No command matches | The bar shows "Didn't catch that", then sleeps. Nothing is typed. |
 | Personal word, but your voice on this microphone isn't known (new headset, or the voiceprint model isn't loaded) | Doesn't wake. The Commands screen says to record the word on this microphone. See open questions. |
 | Dictation (hotkey or auto-dictation), meeting running, or command mode from the hotkey | Not listening. It resumes when that ends. |
-| PC locked | Not listening. |
+| PC locked | Not listening. If Koli can’t tell (the check fails), it counts as locked. |
+| "Hey Koli" command that runs a program (`run`, also in then-steps) | Always asks first (the confirm dialog), since anyone could have said it; where no dialog can ask, it doesn’t run. Your own word was checked against your voice, so it runs like a hotkey command. |
 | Hotkeys paused, or model loading | Not listening. |
 
 Default: **off**. Turning it on or off, or recording a new word, applies

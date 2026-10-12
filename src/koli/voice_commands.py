@@ -300,14 +300,17 @@ class VoiceCommandManager:
             self.logger.error(f"Failed to reload commands: {e}")
             print(f"   ⚠ Failed to reload commands.yaml: {e}")
 
-    def execute_command(self, command: dict, use_auto_enter: bool = False):
+    # `confirm_runs`: the command came from a voice anyone could have spoken
+    # ("Hey Koli" from a TV or a video), so its run steps always ask first,
+    # and don't run at all where no dialog can ask.
+    def execute_command(self, command: dict, use_auto_enter: bool = False, confirm_runs: bool = False):
         trigger = command.get('trigger', '')
-        self._execute_action(command, trigger, use_auto_enter)
+        self._execute_action(command, trigger, use_auto_enter, confirm_runs=confirm_runs)
         for step in command.get('then', []) or []:
             if isinstance(step, dict):
-                self._execute_action(step, trigger + " · then", use_auto_enter=False)
+                self._execute_action(step, trigger + " · then", use_auto_enter=False, confirm_runs=confirm_runs)
 
-    def _execute_action(self, command: dict, trigger: str, use_auto_enter: bool = False):
+    def _execute_action(self, command: dict, trigger: str, use_auto_enter: bool = False, confirm_runs: bool = False):
         # Tested by value, not key presence, to match _validate_commands: a
         # user override that clears an action writes `hotkey: null`, and the
         # key is still there.
@@ -319,7 +322,8 @@ class VoiceCommandManager:
             expanded = self._expand_template(command['run'], shell_safe=True)
             self._execute_shell(expanded, trigger,
                                  require_confirm=command.get('confirm', None),
-                                 force_confirm=had_untrusted)
+                                 force_confirm=had_untrusted or confirm_runs,
+                                 fail_closed=confirm_runs)
         elif command.get('hotkey') is not None:
             self._send_hotkey(command['hotkey'], trigger, command.get('send_to'))
         elif command.get('type') is not None:
@@ -389,8 +393,10 @@ class VoiceCommandManager:
         self.logger.info(f"Rephrased via '{trigger}': {len(selection)} → {len(polished)} chars")
         print(f"   ✓ Rephrased: {trigger}")
 
+    # `fail_closed`: when no dialog can ask (not Windows), a command that must
+    # be confirmed doesn't run, instead of running unasked.
     def _execute_shell(self, run_str: str, trigger: str, require_confirm: Optional[bool] = None,
-                       force_confirm: bool = False):
+                       force_confirm: bool = False, fail_closed: bool = False):
         is_risky = bool(RISKY_PATTERNS.search(run_str))
         # Explicit confirm: setting wins; otherwise confirm if risky OR if the
         # command was built from untrusted clipboard/selection content.
@@ -398,7 +404,7 @@ class VoiceCommandManager:
             needs_confirm = require_confirm or force_confirm
         else:
             needs_confirm = is_risky or force_confirm
-        if needs_confirm and not self._confirm_risky_command(trigger, run_str):
+        if needs_confirm and not self._confirm_risky_command(trigger, run_str, fail_closed=fail_closed):
             self.logger.info(f"User declined risky command '{trigger}'")
             print(f"   ✗ Cancelled: {trigger}")
             return
@@ -411,7 +417,7 @@ class VoiceCommandManager:
             self.logger.error(f"Failed to execute command '{trigger}': {e}")
             print(f"   Failed to execute command: {e}")
 
-    def _confirm_risky_command(self, trigger: str, run_str: str) -> bool:
+    def _confirm_risky_command(self, trigger: str, run_str: str, fail_closed: bool = False) -> bool:
         if os.name == 'nt':
             try:
                 import ctypes
@@ -429,6 +435,9 @@ class VoiceCommandManager:
             except Exception as e:
                 self.logger.error(f"Could not show confirm dialog: {e}")
                 return False
+        if fail_closed:
+            self.logger.warning(f"Command '{trigger}' needs confirming and no dialog can ask here; not run")
+            return False
         return True
 
     # Press the keys in the app in front, or with `send_to` inside another
