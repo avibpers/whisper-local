@@ -223,6 +223,9 @@ SCHEMA = [
     _S('hotkey.pause_hotkey', 'Pause all hotkeys', 'hotkeys', 'hotkey', nullable=True),
     _S('hotkey.paste_last_hotkey', 'Paste last dictation', 'hotkeys', 'hotkey', nullable=True),
     _S('hotkey.meeting_hotkey', 'Start or end a meeting', 'hotkeys', 'hotkey', nullable=True),
+    _S('hotkey.meeting_mute_hotkey', 'Mute my microphone everywhere', 'hotkeys', 'hotkey', nullable=True,
+       help="Mutes your microphone for every app, so the call hears nothing and the meeting leaves you out. "
+       "Press again to unmute. The meeting app's own mute keeps the microphone open, so Koli still hears it."),
     _S('hotkey.double_tap_to_lock', 'Double-tap for hands-free', 'hotkeys', 'toggle',
        help='Double-tap Record to keep recording without holding. Tap again to stop.'),
     _S('hotkey.double_tap_window_ms', 'Double-tap window', 'hotkeys', 'number', min=100, max=2000,

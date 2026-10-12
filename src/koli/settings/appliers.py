@@ -20,6 +20,7 @@ _LISTENER_KEYS = {
     'hotkey.command_hotkey': 'command_hotkey', 'hotkey.rephrase_hotkey': 'rephrase_hotkey',
     'hotkey.pause_hotkey': 'pause_hotkey', 'hotkey.paste_last_hotkey': 'paste_last_hotkey',
     'hotkey.recording_mode': 'recording_mode', 'hotkey.meeting_hotkey': 'meeting_hotkey',
+    'hotkey.meeting_mute_hotkey': 'meeting_mute_hotkey',
 }
 
 # Settings that are simply read from the config whenever they are used.

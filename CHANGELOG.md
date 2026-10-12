@@ -13,6 +13,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 - **Meetings remember voices.** Rename "Speaker 2" to "Eran" once, and later
   meetings call him Eran from his first sentence. The Meetings screen lists
   the known voices; forget one to stop it. Stored only on this computer.
+- **"You" is only you.** Headphones leak a faint copy of the call into the
+  headset's microphone, and Koli wrote it down as you speaking. A microphone
+  chunk that is far quieter than the call and rises and falls with it is now
+  left out; your own voice, even on a microphone set very low, is kept.
+- **Mute your microphone everywhere with one key.** Settings → Hotkeys →
+  "Mute my microphone everywhere": the call hears nothing (like the meeting
+  app's own mute) and the meeting leaves you out; press again to unmute. The
+  meeting app's mute alone keeps the microphone open, so Koli still heard it.
 - **Meetings leave out what Whisper made up.** Short phantom phrases ("We'll
   see you next time.") and garbled sentences it wasn't sure of no longer
   appear in the transcript.

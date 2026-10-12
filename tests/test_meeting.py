@@ -1760,6 +1760,86 @@ class TranscriberSplitTests(unittest.TestCase):
         self.assertEqual((turns[1]['t0'], turns[1]['t1']), (106.3, 111.5))
 
 
+# Headphones leak the call into the headset's microphone (38 dB under it in a
+# real Meet); Whisper turned that into "You" sentences nobody said. A leak is
+# far quieter than the call and rises and falls with it; your voice isn't.
+class LeakTests(unittest.TestCase):
+    @staticmethod
+    def call_and_steps(seconds=10.0, seed=1):
+        from koli.meeting.transcriber import STEP_S
+        rng = np.random.default_rng(seed)
+        n = int(seconds / STEP_S)
+        # Speech-like loudness: words and pauses, around -18 dB.
+        call_db = np.where(rng.random(n) < 0.6, -18 + rng.normal(0, 3, n), -55 + rng.normal(0, 2, n))
+        times = 1000.0 + np.arange(n) * STEP_S
+        return list(zip(times.tolist(), call_db.tolist())), call_db
+
+    def test_the_call_heard_faintly_by_the_mic_is_a_leak(self):
+        from koli.meeting.transcriber import is_leak, STEP_S
+        call, call_db = self.call_and_steps()
+        mic = (np.roll(call_db, 1) - 38).astype(np.float32)   # 38 dB under, 50 ms late
+        self.assertTrue(is_leak(mic, 1000.0, call))
+
+    def test_your_own_voice_is_not_a_leak_even_when_quiet(self):
+        from koli.meeting.transcriber import is_leak
+        call, _ = self.call_and_steps(seed=1)
+        _, own = self.call_and_steps(seed=2)          # speech of its own, not following the call
+        self.assertFalse(is_leak((own - 33).astype(np.float32), 1000.0, call), 'a very low mic, own words')
+        self.assertFalse(is_leak((own + 5).astype(np.float32), 1000.0, call), 'talking over the call')
+
+    def test_without_call_audio_nothing_is_a_leak(self):
+        from koli.meeting.transcriber import is_leak
+        _, own = self.call_and_steps()
+        self.assertFalse(is_leak(own.astype(np.float32), 1000.0, []))
+
+    def test_loudness_steps_are_50_ms(self):
+        from koli.meeting.transcriber import loudness_steps
+        steps = loudness_steps(np.full(16000, 0.1, dtype=np.float32))
+        self.assertEqual(len(steps), 20)
+        self.assertAlmostEqual(float(steps[0]), -20.0, places=1)
+
+
+class MicMuteTests(unittest.TestCase):
+    def make(self):
+        from koli.services.meetings import MeetingService
+        from koli.meeting.store import MeetingStore
+        from koli.meeting.voices import VoiceBook
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        ctx = type('Ctx', (), {})()
+        ctx.state_manager = FakeStateManager()
+        ctx.config_manager = FakeConfig({'meeting.enabled': False})
+        ctx.model_registry = None
+        svc = MeetingService(ctx, store=MeetingStore(Path(tmp.name) / 'meetings'), publish=lambda t, p: None,
+                             embedder_factory=lambda: None, loopback_available=lambda: True, sessions_fn=lambda: [],
+                             voices=VoiceBook(Path(tmp.name) / 'voices.json'))
+        self.addCleanup(svc.shutdown)
+        return svc
+
+    # One key mutes the microphone in Windows (for the meeting app too) and
+    # leaves you out of the meeting; again undoes both.
+    def test_mute_toggles_the_microphone_and_exclude_me_together(self):
+        import unittest.mock as mock
+        svc = self.make()
+        state = {'muted': False}
+        with mock.patch.object(svc, '_mic_name', return_value='Microphone (Logitech USB Headset)'), \
+                mock.patch('koli.platform.media.mic_muted', side_effect=lambda n: state['muted']), \
+                mock.patch('koli.platform.media.set_mic_muted',
+                           side_effect=lambda n, on: state.update(muted=on) or True):
+            self.assertTrue(svc.toggle_mic_mute())
+            self.assertTrue(state['muted'])
+            self.assertTrue(svc.session.excluded)
+            self.assertFalse(svc.toggle_mic_mute())
+            self.assertFalse(svc.session.excluded)
+
+    def test_an_unknown_microphone_changes_nothing(self):
+        import unittest.mock as mock
+        svc = self.make()
+        with mock.patch.object(svc, '_mic_name', return_value=None):
+            self.assertIsNone(svc.toggle_mic_mute())
+        self.assertFalse(svc.session.excluded)
+
+
 # meeting.keep_audio: off by default; on, each chunk is a WAV beside the
 # meeting, and deleting the meeting deletes it.
 class KeepAudioTests(unittest.TestCase):

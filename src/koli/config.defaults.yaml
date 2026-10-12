@@ -238,6 +238,12 @@ hotkey: # Hotkey Configuration
     # Start a meeting now, or end the one running. Leave empty to disable.
     meeting_hotkey: ""
 
+    # Mute your microphone for every app (the meeting app sends silence, and
+    # the meeting leaves you out); press again to unmute. Muting inside the
+    # meeting app alone keeps the microphone open, so Koli still hears it.
+    # Leave empty to disable.
+    meeting_mute_hotkey: ""
+
     # Hands-free: in push-to-talk mode, double-tap the record hotkey to keep
     # recording without holding it, then tap it once more to stop. A single
     # hold works exactly as before. Off by default.

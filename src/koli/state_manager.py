@@ -1197,6 +1197,19 @@ class StateManager:
         self.meetings.toggle()
         return True
 
+    # The mute hotkey: your microphone muted (or unmuted) for every app, and
+    # left out of the meeting while muted.
+    def toggle_meeting_mute(self) -> bool:
+        if self.meetings is None:
+            self.system_tray.notify("Meetings need the app window (not --legacy-ui)")
+            return False
+        muted = self.meetings.toggle_mic_mute()
+        if muted is None:
+            self.system_tray.notify("Couldn't mute the meeting microphone")
+            return False
+        self.system_tray.notify("Microphone muted for every app" if muted else "Microphone on")
+        return True
+
     def _emit_pipeline(self, stage: str, **data):
         data['stage'] = stage
         data['t'] = time.time()

@@ -18,7 +18,8 @@ logger = logging.getLogger(__name__)
 
 HOTKEY_PATHS = ('hotkey.recording_hotkey', 'hotkey.stop_key', 'hotkey.auto_send_key',
                 'hotkey.cancel_combination', 'hotkey.command_hotkey', 'hotkey.rephrase_hotkey',
-                'hotkey.pause_hotkey', 'hotkey.paste_last_hotkey')
+                'hotkey.pause_hotkey', 'hotkey.paste_last_hotkey', 'hotkey.meeting_hotkey',
+                'hotkey.meeting_mute_hotkey')
 
 # Chords Windows uses to switch keyboard language when a second layout is
 # installed (Hebrew, Arabic, Russian...). Assigning them breaks typing.

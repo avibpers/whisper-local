@@ -419,6 +419,7 @@ def setup_hotkey_listener(hotkey_config, state_manager, voice_commands_enabled=T
         recording_mode=hotkey_config.get('recording_mode', 'push_to_talk'),
         paste_last_hotkey=hotkey_config.get('paste_last_hotkey'),
         meeting_hotkey=hotkey_config.get('meeting_hotkey'),
+        meeting_mute_hotkey=hotkey_config.get('meeting_mute_hotkey'),
         double_tap_to_lock=bool(hotkey_config.get('double_tap_to_lock', False)),
         double_tap_window_ms=_int_setting(hotkey_config.get('double_tap_window_ms'), 400),
     )

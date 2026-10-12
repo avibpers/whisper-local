@@ -28,3 +28,13 @@ def get_master_volume():
 
 def set_master_volume(value: float):
     pass
+
+
+# Microphone mute isn't implemented on macOS yet: unknown, and never set.
+# Windows mirror mutes the device for every app.
+def mic_muted(name: str):
+    return None
+
+
+def set_mic_muted(name: str, muted: bool) -> bool:
+    return False

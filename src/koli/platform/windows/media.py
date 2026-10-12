@@ -93,3 +93,37 @@ def get_master_volume():
 
 def set_master_volume(value: float):
     _endpoint().SetMasterVolumeLevelScalar(max(0.0, min(1.0, float(value))), None)
+
+
+# ── Microphone mute (meeting mode) ───────────────────────────────────────────
+# Muting a microphone in Windows mutes it for every app at once: the meeting
+# app sends silence, exactly like its own mute button, and Koli hears none.
+# Found by the name sounddevice reports, which is the same friendly name.
+
+def _capture_endpoint(name: str):
+    import comtypes
+    from pycaw.pycaw import AudioUtilities, DEVICE_STATE, EDataFlow
+    comtypes.CoInitialize()
+    for device in AudioUtilities.GetAllDevices(EDataFlow.eCapture.value, DEVICE_STATE.ACTIVE.value):
+        if device.FriendlyName == name:
+            return device.EndpointVolume
+    return None
+
+
+# True or False, or None when the microphone isn't found.
+def mic_muted(name: str):
+    try:
+        endpoint = _capture_endpoint(name)
+        return None if endpoint is None else bool(endpoint.GetMute())
+    except Exception as e:
+        logger.debug(f"Microphone mute not readable for {name!r}: {e}")
+        return None
+
+
+# Mute or unmute; False when the microphone isn't found.
+def set_mic_muted(name: str, muted: bool) -> bool:
+    endpoint = _capture_endpoint(name)
+    if endpoint is None:
+        return False
+    endpoint.SetMute(1 if muted else 0, None)
+    return True

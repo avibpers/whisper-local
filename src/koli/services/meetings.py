@@ -209,7 +209,12 @@ class MeetingService:
         for device in self._output_devices(meeting):
             chunker = Chunker('loopback', self._speech_prob_factory(), submit)
             loop_chunkers.append(chunker)
-            loopbacks.append(self._loopback_factory(chunker.feed, self._loopback_failed, device=device))
+
+            # The call's loudness goes to the transcriber too, to spot it leaking into your microphone.
+            def on_block(block, when, feed=chunker.feed):
+                self.transcriber.note_call(block, when)
+                feed(block, when)
+            loopbacks.append(self._loopback_factory(on_block, self._loopback_failed, device=device))
         mic_chunker = Chunker('mic', self._speech_prob_factory(), submit)
         mic_source = self._open_mic(mic_chunker)
         with self._lock:
@@ -387,6 +392,37 @@ class MeetingService:
 
     def set_excluded(self, on: bool):
         self.session.set_excluded(bool(on))
+
+    # The microphone "You" comes from now: the meeting's own device, or the
+    # dictation microphone it taps. Its Windows name, or None.
+    def _mic_name(self) -> Optional[str]:
+        import sounddevice as sd
+        source = self._mic_source
+        device = getattr(source, 'device', None) if isinstance(source, MicStream) \
+            else getattr(self.ctx.state_manager.audio_recorder, 'device', None)
+        try:
+            info = sd.query_devices(device) if device is not None else sd.query_devices(kind='input')
+            return info['name']
+        except Exception as e:
+            logger.debug(f"Meeting microphone unknown: {e}")
+            return None
+
+    # One key mutes you everywhere: the microphone is muted in Windows, so
+    # the meeting app sends silence (like its own mute) and Koli leaves you
+    # out ("Exclude me"); again unmutes both. Muting inside the meeting app
+    # alone can't be seen from here: the app keeps the microphone open.
+    # Returns the new state, or None when the microphone can't be muted.
+    def toggle_mic_mute(self) -> Optional[bool]:
+        from ..platform import media
+        name = self._mic_name()
+        muted = media.mic_muted(name) if name else None
+        if muted is None:
+            return None
+        if not media.set_mic_muted(name, not muted):
+            return None
+        self.session.set_excluded(not muted)
+        logger.info(f"{name} {'muted' if not muted else 'unmuted'} for every app")
+        return not muted
 
     def offer(self, accept: bool):
         if accept:

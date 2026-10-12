@@ -359,6 +359,20 @@ re-clusters speakers and cleans text; search across meetings.
   one voice. Checked with the real models on a two-voice text-to-speech
   conversation in two chunks: the right voices at the right times, the same
   labels across chunks, and a second meeting naming both from voices.json.
+- Sixth real test (an English Meet, the user muted in Meet and silent):
+  "You" kept getting sentences. Windows showed the headset microphone open
+  by Chrome and by Koli: Meet's mute keeps it open. Recorded together, the
+  headset mic sat at -57.6 dB against the call's -19.6 dB and its loudness
+  followed the call's (0.63): the earcups leak, and Whisper boosts quiet
+  audio into sentences. The microphone's Windows level was 26%, so the
+  user's own voice reached it at about -51 dB as well, which rules out a
+  loudness bar alone. A mic chunk is now dropped when the call is 20 dB
+  louder at that moment AND the mic's loudness follows it (0.45 or more,
+  best of +/-0.3 s); the transcriber keeps the call's loudness in 50 ms
+  steps from every loopback block. Checked on 15 s of the real call: leak.
+  A mute hotkey (hotkey.meeting_mute_hotkey) mutes the meeting microphone
+  in Windows, so the meeting app sends silence and the meeting excludes
+  you; Meet's own mute can't be seen from outside the browser.
 - Same meeting: Whisper made up short English clips in a Hebrew call
   ("Bet.", "PR in Chile.", "We'll see you next time.", log-prob -0.45 to
   -1.12 on clips under 2 s) and garbage on the mic (-1.5 to -4.5), while

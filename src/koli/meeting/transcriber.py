@@ -6,6 +6,7 @@
 # Mic chunks are "You"; a loopback chunk is split by voice (diarize.py) and
 # each voice gets a speaker from the tracker, one turn per voice.
 
+import collections
 import logging
 import queue
 import threading
@@ -43,6 +44,50 @@ def believable_pieces(text: str, info: dict, seconds: float) -> List[dict]:
     return [p for p in pieces if not unsure_piece(p)]
 
 
+# ── Your microphone hearing the call ─────────────────────────────────────────
+# Headphones leak: a real call reached the headset's own microphone 38 dB
+# under the call, and Whisper turned that whisper into "You" sentences while
+# nobody was speaking. A leak is far quieter than the call at the same moment
+# AND rises and falls with it (0.63 measured); your own voice is neither, even
+# on a microphone set very low. Loudness is tracked in 50 ms steps.
+STEP_S = 0.05
+LEAK_GAP_DB = 20.0        # the call is at least this much louder than the mic chunk
+LEAK_FOLLOW = 0.45        # and the mic's loudness follows the call's this closely
+CALL_HISTORY = 20 * 60 * 20   # 20 minutes of 50 ms steps
+
+
+def loudness_steps(samples) -> np.ndarray:
+    samples = np.asarray(samples, dtype=np.float32).reshape(-1)
+    step = int(STEP_S * RATE)
+    n = len(samples) // step
+    if n == 0:
+        return np.zeros(0, dtype=np.float32)
+    rms = np.sqrt(np.mean(samples[:n * step].reshape(n, step) ** 2, axis=1))
+    return (20 * np.log10(rms + 1e-5)).astype(np.float32)
+
+
+# Is `mic` (loudness steps from wall-clock `t0`) the call leaking in? `call`
+# is [(time, dB)] of the call around that time. The streams' clocks differ by
+# a little, so the best of small time shifts counts.
+def is_leak(mic: np.ndarray, t0: float, call: list) -> bool:
+    if len(mic) < 20 or len(call) < 20:
+        return False
+    times = np.array([c[0] for c in call])
+    levels = np.array([c[1] for c in call], dtype=np.float32)
+    mic_times = t0 + np.arange(len(mic)) * STEP_S
+    best = -1.0
+    for shift in np.arange(-0.3, 0.301, STEP_S):
+        aligned = np.interp(mic_times + shift, times, levels, left=-100.0, right=-100.0)
+        if np.std(aligned) < 1e-3 or np.std(mic) < 1e-3:
+            continue
+        follow = float(np.corrcoef(mic, aligned)[0, 1])
+        if follow > best:
+            best, call_level = follow, float(np.percentile(aligned, 75))
+    if best < LEAK_FOLLOW:
+        return False
+    return call_level - float(np.percentile(mic, 75)) >= LEAK_GAP_DB
+
+
 class MeetingTranscriber:
     def __init__(self, engine_provider: Callable, is_busy: Callable[[], bool], tracker: SpeakerTracker,
                  language_provider: Callable[[], str], on_turn: Callable[[dict], None],
@@ -62,6 +107,7 @@ class MeetingTranscriber:
         # Finds the voices in a chunk: audio -> [(start_s, end_s, voice)];
         # set once its model is loaded, until then a chunk is one voice.
         self.split: Optional[Callable[[np.ndarray], list]] = None
+        self._call = collections.deque(maxlen=CALL_HISTORY)   # (time, dB) of the call, 50 ms steps
         self._queue = queue.Queue()
         self._queued_s = 0.0
         self._lock = threading.Lock()
@@ -72,6 +118,18 @@ class MeetingTranscriber:
     def queued_seconds(self) -> float:
         with self._lock:
             return self._queued_s
+
+    # Every block of call audio, as it arrives (ending at wall-clock `t_end`):
+    # its loudness is what a microphone chunk is compared with.
+    def note_call(self, samples, t_end: float):
+        levels = loudness_steps(samples)
+        start = t_end - len(levels) * STEP_S
+        with self._lock:
+            self._call.extend((start + i * STEP_S, float(db)) for i, db in enumerate(levels))
+
+    def _call_around(self, t0: float, t1: float) -> list:
+        with self._lock:
+            return [c for c in self._call if t0 - 1.0 <= c[0] <= t1 + 1.0]
 
     def submit(self, chunk: dict):
         with self._lock:
@@ -137,6 +195,10 @@ class MeetingTranscriber:
                 self.keep_audio(chunk)
             except Exception as e:
                 logger.warning(f"Meeting audio not kept: {e}")
+        if chunk['stream'] == 'mic' and is_leak(loudness_steps(chunk['audio']), chunk['t0'],
+                                                self._call_around(chunk['t0'], chunk['t1'])):
+            logger.info("Left out a microphone chunk that was the call leaking in")
+            return
         # No dictation prompt: it's a style hint for the app in front, and on a
         # short or quiet clip Whisper wrote it back as the turn ("Friendly tone.").
         text = engine.transcribe_audio(chunk['audio'], language=self.language_provider() or 'auto', use_prompt=False)
