@@ -4990,6 +4990,76 @@ class AutoDictationCoordinatorTests(unittest.TestCase):
         self.assertEqual(self.sm.starts, 1)
 
 
+# One TEN VAD shared by the live detector and the final check crashed
+# ("access violation reading 0xFFFFFFFFFFFFFFFF") when auto-dictation's phrase
+# delivery ran the check mid-recording; every later check said "silence".
+class VadSharingTests(unittest.TestCase):
+    def manager(self):
+        from koli.voice_activity_detection import VadManager, HAS_TEN_VAD
+        if not HAS_TEN_VAD:
+            self.skipTest('ten-vad not installed')
+        return VadManager(vad_precheck_enabled=True, vad_realtime_enabled=True)
+
+    def test_the_live_detector_and_each_check_have_their_own_instance(self):
+        import unittest.mock as mock
+        import numpy as np
+        from koli.voice_activity_detection import VadManager
+        vad = self.manager()
+        detector = vad.create_continuous_detector()
+        self.assertIsNot(detector.ten_vad, vad.ten_vad)
+        made = []
+        real = VadManager.new_ten_vad
+        with mock.patch.object(VadManager, 'new_ten_vad', side_effect=lambda: made.append(1) or real()):
+            vad.check_audio_for_speech(np.zeros(16000, dtype=np.float32))
+            vad.check_audio_for_speech(np.zeros(16000, dtype=np.float32))
+        self.assertEqual(len(made), 2, 'a fresh one per check')
+
+    def test_a_failed_live_detector_is_replaced(self):
+        import numpy as np
+        from koli.voice_activity_detection import ContinuousVoiceDetector, VadEvent
+
+        class Broken:
+            def process(self, audio):
+                raise OSError('exception: access violation reading 0xFFFFFFFFFFFFFFFF')
+        fresh = _AutoTenVad()
+        det = ContinuousVoiceDetector(Broken(), 0.7, 0.55, 1.0, 0.016, vad_factory=lambda: fresh)
+        self.assertEqual(det.process_chunk(np.zeros(256, dtype=np.float32)), VadEvent.NO_EVENT)
+        self.assertIs(det.ten_vad, fresh)
+        fresh.probability = 0.9
+        det.process_chunk(np.zeros(256, dtype=np.float32))
+        self.assertEqual(det.last_probability, 0.9, 'working again')
+
+    # The crash's situation, with the real library: a check while the live
+    # detector is busy on another thread. Nothing fails, and the check gives
+    # the same answer as on its own.
+    def test_a_check_during_live_detection_is_safe(self):
+        import threading
+        import numpy as np
+        vad = self.manager()
+        detector = vad.create_continuous_detector()
+        rng = np.random.default_rng(3)
+        audio = (rng.standard_normal(16000 * 3) * 0.1).astype(np.float32)
+        alone = vad.check_audio_for_speech(audio)
+        errors, stop = [], threading.Event()
+
+        def live():
+            chunk = (rng.standard_normal(256) * 0.1).astype(np.float32)
+            while not stop.is_set():
+                try:
+                    detector.ten_vad.process(np.clip(chunk * 32767, -32768, 32767).astype(np.int16))
+                except Exception as e:
+                    errors.append(e)
+        t = threading.Thread(target=live)
+        t.start()
+        try:
+            results = [vad.check_audio_for_speech(audio) for _ in range(5)]
+        finally:
+            stop.set()
+            t.join()
+        self.assertEqual(errors, [])
+        self.assertEqual(results, [alone] * 5)
+
+
 class AutoDictationVadTests(unittest.TestCase):
     def _detector(self, timeout=0.032):
         from koli.voice_activity_detection import ContinuousVoiceDetector

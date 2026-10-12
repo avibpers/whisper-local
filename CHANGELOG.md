@@ -175,6 +175,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
   off both still happen when recording starts.
 
 ### Fixed
+- **Dictation stopped hearing you for the rest of the session.** While
+  auto-dictation pasted a phrase mid-recording, the speech check and the live
+  listening used the same speech detector at the same moment; it crashed, and
+  from then on every dictation was judged silent even though the waveform
+  moved. Each now has its own detector, and one that fails is replaced.
 - **Koli recorded from the wrong microphone.** On Windows, the microphone you
   picked could never open from Koli's audio thread, so every launch quietly
   fell back to the Windows default, which can be another microphone (a

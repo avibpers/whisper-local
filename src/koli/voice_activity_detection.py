@@ -93,11 +93,26 @@ class VadManager:
         else:
             return None
 
+    # A TEN VAD of its own. The native library is not safe to share between
+    # threads: auto-dictation's phrase delivery ran this check while the live
+    # detector was processing the same recording, both hit one instance, it
+    # crashed ("access violation reading 0xFFFFFFFFFFFFFFFF") and every later
+    # check said "silence" for the rest of the session.
+    @staticmethod
+    def new_ten_vad():
+        return TenVad() if HAS_TEN_VAD else None
+
+    # Whether a finished recording holds speech. Each check gets a fresh
+    # detector: safe from any thread, and it starts clean instead of carrying
+    # the state of whatever it heard before.
     def check_audio_for_speech(self, audio_data: np.ndarray) -> bool:
         duration = len(audio_data) / SAMPLE_RATE
         vad_start_time = time.time()
 
         try:
+            ten_vad = self.new_ten_vad()
+            if ten_vad is None:
+                return True
             audio_int16 = convert_audio_for_ten_vad(audio_data)
             chunk_size = VAD_CHUNK_SIZE
 
@@ -109,7 +124,7 @@ class VadManager:
                 if len(chunk) < chunk_size:
                     chunk = np.pad(chunk, (0, chunk_size - len(chunk)), mode='constant', constant_values=0)
 
-                out_probability, _ = self.ten_vad.process(chunk)
+                out_probability, _ = ten_vad.process(chunk)
                 probabilities.append(out_probability)
 
             # Capture processing time for performance monitoring
@@ -139,13 +154,15 @@ class VadManager:
         if not self.vad_realtime_enabled or not self.ten_vad:
             return None
 
+        # Its own instance (never the one checks use), and a way to replace it.
         return ContinuousVoiceDetector(
-            ten_vad=self.ten_vad,
+            ten_vad=self.new_ten_vad(),
             vad_onset_threshold=self.vad_onset_threshold,
             vad_offset_threshold=self.vad_offset_threshold,
             vad_silence_timeout_seconds=self.vad_silence_timeout_seconds,
             frame_duration_sec=VAD_HOP_DURATION_SEC,
-            event_callback=event_callback
+            event_callback=event_callback,
+            vad_factory=self.new_ten_vad,
         )
 
     def is_available(self) -> bool:
@@ -186,8 +203,12 @@ class ContinuousVoiceDetector:
     def __init__(self, ten_vad, vad_onset_threshold, vad_offset_threshold,
                  vad_silence_timeout_seconds, frame_duration_sec,
                  event_callback: Optional[Callable[[VadEvent], None]] = None,
-                 speech_start_seconds: float = SPEECH_START_SECONDS):
+                 speech_start_seconds: float = SPEECH_START_SECONDS,
+                 vad_factory: Optional[Callable] = None):
         self.ten_vad = ten_vad
+        # Makes a new TEN VAD when this one fails: a native error leaves it
+        # broken, and every later frame would read as silence.
+        self._vad_factory = vad_factory
         self.hysteresis = Hysteresis(high_threshold=vad_onset_threshold,
                                    low_threshold=vad_offset_threshold,
                                    frame_duration_sec=frame_duration_sec)
@@ -272,7 +293,17 @@ class ContinuousVoiceDetector:
 
         except Exception as e:
             self.logger.error(f"Error processing VAD chunk: {e}")
+            self._replace_ten_vad()
             return VadEvent.NO_EVENT
+
+    def _replace_ten_vad(self):
+        if self._vad_factory is None:
+            return
+        try:
+            self.ten_vad = self._vad_factory()
+            self.logger.warning("Voice detector replaced after an error")
+        except Exception as e:
+            self.logger.error(f"Voice detector could not be replaced: {e}")
 
     def _update_state(self, speech_detected: bool, level_db: Optional[float] = None) -> VadEvent:
         with self._lock:
