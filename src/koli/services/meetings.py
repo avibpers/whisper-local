@@ -328,8 +328,12 @@ class MeetingService:
     def new(self):
         self.session.new()
 
+    # A meeting is on, recording or paused: the call is still in your ears.
+    def is_running(self) -> bool:
+        return self.session.state in ('live', 'paused')
+
     def toggle(self):
-        if self.session.state in ('live', 'paused'):
+        if self.is_running():
             self.end()
         else:
             self.start()

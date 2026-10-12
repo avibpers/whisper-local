@@ -4901,6 +4901,21 @@ class AutoDictationCoordinatorTests(unittest.TestCase):
         ad.flush_timer()
         self.assertEqual(self.sm.starts, 0)
 
+    # During a meeting the microphone hears the call, so a click into a text
+    # field must not start a recording, live or paused. After it ends, it does.
+    def test_a_running_meeting_keeps_auto_dictation_off(self):
+        import types
+        ad = self._make()
+        meeting = {'running': True}
+        self.sm.meetings = types.SimpleNamespace(is_running=lambda: meeting['running'])
+        ad.on_focus(_auto_field(id=(1,)))
+        ad.flush_timer()
+        self.assertEqual(self.sm.starts, 0)
+        meeting['running'] = False
+        ad.on_focus(_auto_field(id=(2,), hwnd=43))  # another field, as a real click would be
+        ad.flush_timer()
+        self.assertEqual(self.sm.starts, 1)
+
     def test_typing_cancels_an_auto_recording_only(self):
         ad = self._make()
         ad.on_focus(_auto_field())

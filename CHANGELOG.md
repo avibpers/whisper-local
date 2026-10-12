@@ -131,6 +131,22 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
   off both still happen when recording starts.
 
 ### Fixed
+- **Koli recorded from the wrong microphone.** On Windows, the microphone you
+  picked could never open from Koli's audio thread, so every launch quietly
+  fell back to the Windows default, which can be another microphone (a
+  headset instead of your desk mic). It now opens the one you picked, and if
+  it ever has to fall back, a notice says which microphone is recording.
+- **Meetings: the call's words no longer show up as yours.** When your
+  microphone hears the call, its copy of what others said was often kept as
+  "You", because it is cut at other seconds and read differently. Copies are
+  now caught across the call's turns: in a 24-minute meeting, 35 of 82 "You"
+  turns were copies.
+- **Meetings: no more "Friendly tone." turns.** Meeting transcription used the
+  dictation style hint of whatever app was in front, and Whisper sometimes
+  wrote it back as a turn. Meetings no longer use it.
+- **Auto-dictation stays off during a meeting.** Clicking into a text field
+  during a call recorded the call and typed pieces of it into the app. The
+  record hotkey still works when you mean it.
 - **"Your 'scratch that' phrases" did nothing.** The list in Settings → Smart
   editing saved, but no dictation ever looked at it. Now a phrase you add
   (say “מחק את זה”) erases back to the start of the sentence, just like the

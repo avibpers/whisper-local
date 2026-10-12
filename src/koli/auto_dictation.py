@@ -199,6 +199,12 @@ class AutoDictation:
             return 'off here (on only in apps whose rule turns it on)'
         if getattr(self.sm, 'is_paused', False):
             return 'hotkeys paused'
+        # During a meeting the microphone hears the call: every click into a
+        # text field recorded it, and pieces of the call were typed into
+        # Discord and Cursor. The record hotkey still works when you mean it.
+        meetings = getattr(self.sm, 'meetings', None)
+        if meetings is not None and meetings.is_running():
+            return 'a meeting is on'
         if not self.sm.can_start_recording():
             return 'busy'
         return ''
