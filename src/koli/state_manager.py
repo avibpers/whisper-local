@@ -550,13 +550,6 @@ class StateManager:
             name = None
         return name if isinstance(name, str) and name else 'default'
 
-    def _audio_gain(self, audio) -> float:
-        try:
-            gain = self.audio_recorder.gain_for(audio)
-        except Exception:
-            gain = 1.0
-        return float(gain) if isinstance(gain, (int, float)) and gain > 0 else 1.0
-
     # How much quieter than you a voice may be and still count as yours (dB).
     def _voice_margin_db(self) -> float:
         try:
@@ -572,11 +565,13 @@ class StateManager:
         mine = levels.my_level(self._mic_key()) if levels is not None else None
         return None if mine is None else mine - self._voice_margin_db()
 
+    # Learned on the raw microphone, like the meter under How much quieter and
+    # the detector's live level: noise reduction doesn't move your level.
     def _learn_my_level(self, audio) -> None:
         levels = getattr(self, 'voice_levels', None)
         if levels is None:
             return
-        level = speech_level_db(audio, gain=self._audio_gain(audio))
+        level = speech_level_db(self._raw_audio(audio))
         if level is not None:
             levels.learn(self._mic_key(), level)
 
@@ -587,28 +582,118 @@ class StateManager:
         return getattr(self, 'meetings', None) is not None \
             and self._voice_filter_config().get('voiceprint', True) is not False
 
+    # The microphone as it was for `audio`: noise reduction and the Whisper-mode
+    # boost make any voice (a TV) score like yours, so voiceprints use this.
+    def _raw_audio(self, audio):
+        try:
+            raw = self.audio_recorder.raw_for(audio)
+        except Exception:
+            return audio
+        return raw if raw is not None else audio
+
     def _learn_my_voiceprint(self, audio) -> None:
         if not self._voiceprint_on() or audio is None or len(audio) / 16000 < LEARN_VOICEPRINT_S:
             return
         try:
-            self.meetings.learn_my_voice(audio, self._mic_key())   # one voiceprint per microphone
+            self.meetings.learn_my_voice(self._raw_audio(audio), self._mic_key())   # one voiceprint per microphone
         except Exception as e:
             self.logger.debug(f"Voiceprint not learned: {e}")
 
     # True unless your voice on this microphone is known and this recording
-    # clearly doesn't sound like it (another person, the TV, noise).
+    # clearly doesn't sound like it (another person, the TV, noise). Every
+    # result is logged: a check that silently passed is how a TV got through.
     def _sounds_like_me(self, audio) -> bool:
         if not self._voiceprint_on():
             return True
         try:
-            similarity = self.meetings.my_voice_similarity(audio, self._mic_key())
+            similarity = self.meetings.my_voice_similarity(self._raw_audio(audio), self._mic_key())
         except Exception as e:
-            self.logger.debug(f"Voiceprint check skipped: {e}")
+            self.logger.info(f"Auto-dictation: voiceprint not checked ({e})")
             return True
-        if similarity is None or similarity >= VOICEPRINT_MATCH:
+        if similarity is None:
+            self.logger.info("Auto-dictation: voiceprint not checked (your voice on this microphone isn't learned "
+                             "yet - 3 hotkey dictations - or the voice model is still loading)")
             return True
-        self.logger.info(f"Auto-dictation: doesn't sound like you on this microphone ({similarity:.2f})")
+        if similarity >= VOICEPRINT_MATCH:
+            self.logger.info(f"Auto-dictation: sounds like you ({similarity:.2f}, needs {VOICEPRINT_MATCH})")
+            return True
+        self.logger.info(f"Auto-dictation: doesn't sound like you on this microphone ({similarity:.2f}, "
+                         f"needs {VOICEPRINT_MATCH})")
         return False
+
+    # ── Settings: "Does Koli recognize you?" ─────────────────────────────────
+    # `seconds` from the open microphone (nothing is recorded or typed), judged
+    # the way auto-dictation judges a phrase: is it speech, is it about as loud
+    # as you, does it sound like you. The verdict is 'type', 'leave_out' or
+    # 'no_speech', with a sentence saying why.
+    def check_my_voice(self, seconds: float = 5) -> dict:
+        if self.audio_recorder.get_recording_status():
+            raise ValueError("A recording is running: finish it, then check again")
+        raw = self.audio_recorder.capture_raw(seconds)
+        if raw is None or not len(raw):
+            raise ValueError("The microphone sent nothing. Is it muted?")
+        mic = self._mic_key()
+        speech = bool(self.vad_manager.check_audio_for_speech(raw))
+        loudness = self._loudness_check(raw, mic)
+        voiceprint = self._voiceprint_check(raw, mic)
+        if not speech:
+            verdict, reason = 'no_speech', "No speech heard: auto-dictation would stay quiet"
+        elif voiceprint['status'] == 'no_match':
+            verdict, reason = 'leave_out', "It doesn't sound like you on this microphone: auto-dictation leaves it out"
+        elif loudness['status'] == 'quieter':
+            verdict, reason = 'leave_out', "It's much quieter than you: auto-dictation leaves it out"
+        else:
+            verdict, reason = 'type', "Auto-dictation would type this"
+            if voiceprint['status'] in ('not_learned', 'loading'):
+                reason += ", without checking your voice yet"
+        self.logger.info(f"Voice check on {mic}: {verdict} (voiceprint {voiceprint['status']} "
+                         f"{voiceprint.get('score')}, level {loudness.get('level_db')} dB vs yours "
+                         f"{loudness.get('mine_db')} dB)")
+        return {'verdict': verdict, 'reason': reason, 'speech': speech, 'mic': mic,
+                'loudness': loudness, 'voiceprint': voiceprint}
+
+    # Your learned speaking level on the microphone in use (None until 3
+    # hotkey dictations), for the "Set it by ear" meter in Settings.
+    def my_voice_level(self) -> dict:
+        mic = self._mic_key()
+        levels = getattr(self, 'voice_levels', None)
+        mine = levels.my_level(mic) if levels is not None else None
+        return {'mic': mic, 'mine_db': None if mine is None else round(mine, 1)}
+
+    # Is `audio` about as loud as you on `mic`: 'mine', 'quieter', or why it
+    # can't be told ('off', 'not_learned', 'silent').
+    def _loudness_check(self, audio, mic: str) -> dict:
+        levels = getattr(self, 'voice_levels', None)
+        mine = levels.my_level(mic) if levels is not None else None
+        margin = self._voice_margin_db()
+        level = speech_level_db(audio)
+        if not self._voice_filter_config().get('quieter_than_me', True):
+            status = 'off'
+        elif mine is None:
+            status = 'not_learned'
+        elif level is None:
+            status = 'silent'
+        else:
+            status = 'mine' if level >= mine - margin else 'quieter'
+        return {'status': status, 'margin_db': margin,
+                'level_db': None if level is None else round(level, 1),
+                'mine_db': None if mine is None else round(mine, 1)}
+
+    # Does `audio` sound like you on `mic`: 'match', 'no_match', or why it
+    # can't be told ('off', 'not_learned', 'loading').
+    def _voiceprint_check(self, audio, mic: str) -> dict:
+        if not self._voiceprint_on():
+            return {'status': 'off', 'needs': VOICEPRINT_MATCH}
+        status = self.meetings.my_voice_status(audio, mic)
+        if not status.get('ready'):
+            kind = 'loading'
+        elif status.get('learned', 0) < status.get('needed', 0):
+            kind = 'not_learned'
+        elif status.get('score') is None:
+            kind = 'loading'
+        else:
+            kind = 'match' if status['score'] >= VOICEPRINT_MATCH else 'no_match'
+        return {**status, 'status': kind, 'needs': VOICEPRINT_MATCH}
 
     # Drops the pieces of a recording much quieter than your learned level.
     # Returns the text left and the engine info with only the kept pieces, so
@@ -624,15 +709,17 @@ class StateManager:
         if mine is None:
             return text, info   # not enough hotkey dictations yet to know your level
         margin = self._voice_margin_db()
-        gain = self._audio_gain(audio)
+        # The raw clip is cut where this one is, so Whisper's piece times fit
+        # it; it has no Whisper-mode boost to take back out.
+        raw = self._raw_audio(audio)
         pieces = info.get('segments')
         if pieces:
-            pieces, why = my_voice_pieces(audio, pieces, mine, margin, gain)
+            pieces, why = my_voice_pieces(raw, pieces, mine, margin, 1.0)
             if why:
                 text = ''.join(p.get('text', '') for p in pieces).strip()
                 info = {**info, 'segments': pieces}
         else:
-            text, why = keep_my_voice(text, audio, None, mine, margin, gain)
+            text, why = keep_my_voice(text, raw, None, mine, margin, 1.0)
         if why:
             self.logger.info(f"Only my voice: {why} (your level {mine:.0f} dB)")
             print(f"   ✗ Not your voice: {why}" if not text else f"   ✓ Kept your voice ({why})")
@@ -827,7 +914,10 @@ class StateManager:
         detector = getattr(self.audio_recorder, 'continuous_vad', None)
         try:
             if detector is not None:
-                detector.set_voice_start_level(self._my_voice_floor_db())
+                # Your level less the margin: quieter speech is silence to the
+                # detector. "Ignore voices quieter than mine" off: any speech.
+                gate = self._my_voice_floor_db() if self._voice_filter_config().get('quieter_than_me', True) else None
+                detector.set_voice_start_level(gate)
             self.media_control.on_recording_start(audio_cfg, hears_voice=detector is not None)
         except Exception as e:
             self.logger.warning(f"Media control skipped: {e}")

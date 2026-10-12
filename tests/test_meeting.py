@@ -1749,6 +1749,26 @@ class TrackerVoicesTests(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         return VoiceBook(Path(tmp.name) / 'voices.json')
 
+    # A voiceprint of you learned before 2026-10-12 came from noise-reduced,
+    # boosted dictations, and any processed voice (a TV) matched it. It is
+    # forgotten once, so your voice is learned again from the raw microphone;
+    # other people's voices are kept.
+    def test_a_voiceprint_of_you_from_processed_audio_is_forgotten(self):
+        import json
+        from koli.meeting.voices import VoiceBook
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / 'voices.json'
+        path.write_text(json.dumps({'voices': [
+            {'id': 'v-you', 'name': 'You', 'count': 45, 'self': True, 'mic': 'EMEET', 'centroid': [1.0, 0.0, 0.0]},
+            {'id': 'v-eran', 'name': 'Eran', 'count': 9, 'self': False, 'mic': '', 'centroid': [0.0, 1.0, 0.0]},
+        ]}), encoding='utf-8')
+        book = VoiceBook(path)
+        self.assertIsNone(book.self_voice(mic='EMEET'))
+        self.assertEqual([v['name'] for v in book.all()], ['Eran'])
+        book.keep_self(self.unit(0, 0, 1), 1, mic='EMEET')
+        self.assertEqual(VoiceBook(path).self_voice(mic='EMEET')[2], 1, 'the new one, learned raw, is kept')
+
     # Two voices the splitter heard in one chunk are two people, even when
     # their voiceprints come out close.
     def test_two_voices_of_one_chunk_are_never_one_speaker(self):
@@ -2035,6 +2055,35 @@ class YouVoiceTests(unittest.TestCase):
         self.assertGreater(svc.my_voice_similarity(mine, mic), 0.9)
         self.assertLess(svc.my_voice_similarity(other, mic), 0.2)
         self.assertIsNone(svc.my_voice_similarity(other, 'Microphone (Logitech USB Headset)'), 'another mic is unknown')
+
+    # The Settings voice check reports more than a score: how many dictations
+    # taught your voice there, and whether the voice model is ready.
+    def test_my_voice_status_says_why_there_is_no_score(self):
+        from koli.services.meetings import MY_VOICE_MIN, MeetingService
+        from koli.meeting.store import MeetingStore
+        from koli.meeting.voices import VoiceBook
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        ctx = type('Ctx', (), {})()
+        ctx.state_manager = FakeStateManager()
+        ctx.config_manager = FakeConfig({'meeting.enabled': False})
+        ctx.model_registry = None
+        svc = MeetingService(ctx, store=MeetingStore(Path(tmp.name) / 'meetings'), publish=lambda t, p: None,
+                             embedder_factory=lambda: None, loopback_available=lambda: True, sessions_fn=lambda: [],
+                             voices=VoiceBook(Path(tmp.name) / 'voices.json'))
+        self.addCleanup(svc.shutdown)
+        mic, clip = 'Microphone (EMEET Piko+)', np.ones(16000 * 2, dtype=np.float32)
+        status = svc.my_voice_status(clip, mic, wait_s=0)
+        self.assertEqual((status['ready'], status['score']), (False, None), 'no voice model yet')
+        svc.tracker.embed = lambda audio: self.unit(1, 0, 0)
+        status = svc.my_voice_status(clip, mic, wait_s=0)
+        self.assertEqual((status['ready'], status['learned'], status['needed'], status['score']),
+                         (True, 0, MY_VOICE_MIN, None))
+        for _ in range(3):
+            svc.learn_my_voice(clip, mic)
+        status = svc.my_voice_status(clip, mic, wait_s=0)
+        self.assertEqual(status['learned'], 3)
+        self.assertGreater(status['score'], 0.9)
 
     # The transcriber: a chunk over a silent call teaches your voice; one over
     # a talking call that sounds like Eran is left out before Whisper runs.

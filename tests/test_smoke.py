@@ -655,6 +655,21 @@ class NoiseSuppresionTests(unittest.TestCase):
             ns_mod.warm_up_in_background()
         self.assertEqual(len(started), 1)
         run.assert_called_once()
+        # Exact silence makes noisereduce divide 0 by 0 (a RuntimeWarning in
+        # the console at startup): the warm-up uses faint noise instead.
+        self.assertTrue(run.call_args.args[0].any())
+
+    # A muted microphone records exact zeros; noisereduce then returns NaN for
+    # the whole clip, which must never reach Whisper.
+    def test_exact_silence_comes_back_as_it_was(self):
+        import warnings
+        import numpy as np
+        import koli.noise_suppression as ns_mod
+        silent = np.zeros(8000, dtype=np.float32)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            out = ns_mod.apply_noise_reduction(silent, 16000, 0.75)
+        self.assertTrue(np.isfinite(out).all())
 
     def test_the_recorder_warms_it_up_when_turned_on(self):
         import unittest.mock as mock
@@ -1504,6 +1519,47 @@ class VoiceCommandNumberAndTargetTests(unittest.TestCase):
         self.vc.keyboard.send_hotkey.assert_not_called()
         publish.assert_called_once()
         self.assertIn("chrome.exe isn't open", publish.call_args[0][1]['message'])
+
+
+# Sending keys to another window and coming back (Windows). The user's
+# "Desk{n}" command pressed Ctrl+Alt+N for a desktop switcher: coming back to
+# the window you started in dragged you back to its desktop.
+class WindowFocusRoundTripTests(unittest.TestCase):
+    def setUp(self):
+        import unittest.mock as mock
+        if sys.platform != 'win32':
+            self.skipTest('Windows only')
+        import koli.platform.windows.window_focus as wf
+        self.wf = wf
+        self.front = [100]                      # the window in front, as a stack
+        self.desktop_of = {100: 'A', 200: 'A', 300: 'B'}
+        self.current = ['A']
+        user32 = mock.Mock()
+        user32.GetForegroundWindow.side_effect = lambda: self.front[-1]
+        for name, value in (('_user32', user32), ('_sink_window', lambda: 200),
+                            ('_bring_to_front', self._bring), ('FOCUS_SETTLE_SECONDS', 0),
+                            ('KEYS_SETTLE_SECONDS', 0), ('DESKTOP_SWITCH_WAIT_SECONDS', 0.05),
+                            ('_on_current_desktop', lambda h: self.desktop_of.get(h, self.current[0]) == self.current[0]),
+                            ('_top_app_window_here', lambda: 300 if self.current[0] == 'B' else 100)):
+            patcher = mock.patch.object(wf, name, value, create=True)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _bring(self, hwnd):
+        self.front.append(hwnd)
+        return True
+
+    def test_keys_that_switch_desktops_leave_you_on_the_new_one(self):
+        def switch_desktop():
+            self.current[0] = 'B'
+            self.desktop_of[200] = 'B'          # Koli's key window is on every desktop
+        self.wf.run_focused('windows', switch_desktop)
+        self.assertEqual(self.front[-1], 300, 'the top app of the new desktop, not the old window')
+        self.assertNotIn(100, self.front[1:], 'never dragged back to the old desktop')
+
+    def test_other_keys_bring_you_back_to_your_window(self):
+        self.wf.run_focused('windows', lambda: None)
+        self.assertEqual(self.front[-1], 100)
 
 
 # Saving a command keeps where its keys go and checks the {n} placeholder.
@@ -3437,7 +3493,7 @@ class ReleaseReviewFixTests(unittest.TestCase):
     def test_whisper_mode_boosts_after_silence_trimming(self):
         source = (ROOT / 'src' / 'koli' / 'audio_recorder.py').read_text(encoding='utf-8')
         body = source[source.index('def _build_audio_array'):source.index('def _parse_whisper_mode')]
-        self.assertLess(body.index('_trim_trailing_silence(audio_array)'), body.index('boost_gain('),
+        self.assertLess(body.index('_trim_trailing_silence(kept'), body.index('boost_gain('),
                         'a boosted noise floor would defeat the anti-hallucination trims')
 
     def test_settings_window_tolerates_non_mapping_sections(self):
@@ -5257,6 +5313,49 @@ class AutoDictationVadTests(unittest.TestCase):
         self.assertNotIn(VadEvent.PHRASE_PAUSE, more)
         self.assertEqual(det.snapshot()['phrase_pause_s'], 0.032)
 
+    # A TV behind you is speech to TEN VAD: with your level known, speech
+    # quieter than you counts as silence, so the phrase pause and the end of
+    # the recording come when you stop, not when the TV does.
+    def test_speech_quieter_than_you_counts_as_silence(self):
+        import numpy as np
+        from koli.voice_activity_detection import VadEvent
+        det = self._detector(timeout=0.16)        # ten frames
+        det.set_phrase_pause(0.032)               # two frames
+        det.set_voice_start_level(-20.0)
+        you = np.full(256, 0.3, dtype=np.float32)      # about -10 dBFS
+        tv = np.full(256, 0.01, dtype=np.float32)      # -40 dBFS
+        self.vad.probability = 0.9                      # both are speech to TEN VAD
+        [det.process_chunk(you) for _ in range(10)]     # a short word
+        events = [det.process_chunk(tv) for _ in range(40)]
+        self.assertEqual(events.count(VadEvent.PHRASE_PAUSE), 1, 'you stopped: your phrase is delivered')
+        self.assertIn(VadEvent.SILENCE_TIMEOUT, events, 'the TV alone ends the recording')
+        det.reset()
+        det.set_voice_start_level(-20.0)
+        [det.process_chunk(tv) for _ in range(12)]
+        self.assertFalse(det.had_speech, 'the TV alone never counts as speech')
+
+    # Measured 2026-10-12: a TV's short loud bursts (up to -11 dB in 16 ms)
+    # crossed the line every few seconds, so 5 s of "silence" never came. The
+    # line is judged on about 0.3 s of sound, where they average out.
+    def test_short_tv_bursts_dont_count_as_you(self):
+        import numpy as np
+        from koli.voice_activity_detection import VadEvent
+        det = self._detector(timeout=0.16)        # ten frames
+        det.set_voice_start_level(-20.0)
+        tv, burst = np.full(256, 0.01, dtype=np.float32), np.full(256, 0.12, dtype=np.float32)   # -40 / -18 dBFS
+        self.vad.probability = 0.9
+        events = [det.process_chunk(burst if i % 6 == 0 else tv) for i in range(40)]
+        self.assertIn(VadEvent.SILENCE_TIMEOUT, events)
+        self.assertFalse(det.had_speech)
+
+    def test_without_your_level_any_speech_keeps_the_recording_going(self):
+        import numpy as np
+        from koli.voice_activity_detection import VadEvent
+        det = self._detector(timeout=0.16)
+        self.vad.probability = 0.9
+        tv = np.full(256, 0.01, dtype=np.float32)
+        self.assertNotIn(VadEvent.SILENCE_TIMEOUT, [det.process_chunk(tv) for _ in range(12)])
+
     # SPEECH_START (it quiets the music) needs enough speech in total, fires
     # once per recording, and again after a reset.
     def test_speech_start_fires_once_after_real_speech(self):
@@ -5289,7 +5388,9 @@ class AutoDictationVadTests(unittest.TestCase):
         self.vad.probability = 0.9
         far_off = [det.process_chunk(quiet) for _ in range(10)]
         self.assertNotIn(VadEvent.SPEECH_START, far_off, 'speech, but much quieter than you')
-        you = [det.process_chunk(loud) for _ in range(3)]
+        # Loudness is judged on the last 0.3 s, so your first words count a
+        # few frames (tens of milliseconds) after they start.
+        you = [det.process_chunk(loud) for _ in range(8)]
         self.assertEqual(you.count(VadEvent.SPEECH_START), 1)
         det.reset()
         self.assertEqual(det.voice_start_db, -20.0)
@@ -5409,6 +5510,28 @@ class AutoDictationStateManagerTests(unittest.TestCase):
         sm.voice_levels.my_level.return_value = -18.0
         sm._maybe_pause_media()
         detector.set_voice_start_level.assert_called_with(-28.0)
+        # "Ignore voices quieter than mine" off: any speech counts again.
+        sm.config_manager.config['audio']['voice_filter']['quieter_than_me'] = False
+        sm._maybe_pause_media()
+        detector.set_voice_start_level.assert_called_with(None)
+
+    # Your level is learned and checked on the raw microphone, like the meter
+    # under How much quieter shows it: noise reduction doesn't move the line.
+    def test_your_level_is_learned_and_checked_on_the_raw_microphone(self):
+        import unittest.mock as mock
+        import numpy as np
+        sm, processed, raw = self._voiceprint_sm(None)
+        sm.voice_levels = mock.Mock()
+        with mock.patch('koli.state_manager.speech_level_db', return_value=-21.0) as level:
+            sm._learn_my_level(processed)
+        self.assertIs(level.call_args.args[0], raw)
+        self.assertEqual(level.call_args.kwargs.get('gain', 1.0), 1.0)
+        sm.voice_levels = mock.Mock(my_level=mock.Mock(return_value=-21.0))
+        pieces = [{'text': ' hi', 'start': 0.0, 'end': 1.0}]
+        with mock.patch('koli.state_manager.my_voice_pieces', return_value=(pieces, '')) as check:
+            sm._keep_my_voice('hi', processed, {'segments': pieces}, True)
+        self.assertIs(check.call_args.args[0], raw)
+        self.assertEqual(check.call_args.args[4], 1.0, 'no Whisper-mode boost to undo on raw audio')
 
     def test_typing_cancel_only_touches_auto_recordings(self):
         import unittest.mock as mock
@@ -5482,7 +5605,7 @@ class AutoDictationStateManagerTests(unittest.TestCase):
         self.last_sm = sm
         del sm._transcription_pipeline
         sm.audio_recorder.get_audio_duration.return_value = 1.5
-        sm.audio_recorder.gain_for.return_value = 1.0
+        sm.audio_recorder.raw_for.side_effect = lambda a: a   # no processing in these tests
         if levels is not None:
             sm.voice_levels = levels
         sm.whisper_engine = mock.Mock(last_info=info or {}, initial_prompt=prompt, language=None)
@@ -5719,6 +5842,106 @@ class AutoDictationStateManagerTests(unittest.TestCase):
         config = {'audio': {'voice_filter': {'quieter_than_me': False}}}
         cb = self._run_auto_pipeline('both', None, True, info=info, audio=audio, levels=levels, config=config)
         self.assertEqual(cb.deliver_transcription.call_args.args[0], 'both ')
+
+    # ── Only my voice (voiceprint) ──
+    # Measured 2026-10-12: a TV scored 0.11 against the user's voiceprint from
+    # the raw microphone, but 0.45 (over the 0.43 "you" line) after noise
+    # reduction and the Whisper-mode boost, the audio Koli scored. Your
+    # voiceprint is learned and checked on the raw microphone.
+
+    def _voiceprint_sm(self, similarity):
+        import unittest.mock as mock
+        import numpy as np
+        sm = self._sm(had_speech=True)
+        sm.config_manager = mock.Mock(config={})
+        sm.meetings = mock.Mock()
+        sm.meetings.my_voice_similarity.return_value = similarity
+        processed, raw = np.zeros(32000, dtype=np.float32), np.ones(32000, dtype=np.float32)
+        sm.audio_recorder.raw_for.side_effect = lambda a: raw if a is processed else a
+        return sm, processed, raw
+
+    def test_the_voiceprint_is_checked_on_the_raw_microphone(self):
+        sm, processed, raw = self._voiceprint_sm(0.11)
+        with self.assertLogs('test', level='INFO') as logs:
+            self.assertFalse(sm._sounds_like_me(processed))
+        self.assertIs(sm.meetings.my_voice_similarity.call_args.args[0], raw)
+        self.assertIn('0.11', '\n'.join(logs.output))
+
+    def test_the_voiceprint_is_learned_from_the_raw_microphone(self):
+        sm, processed, raw = self._voiceprint_sm(None)
+        sm._learn_my_voiceprint(processed)
+        self.assertIs(sm.meetings.learn_my_voice.call_args.args[0], raw)
+
+    # Settings → "Does Koli recognize you?": 5 seconds from the microphone,
+    # judged the way auto-dictation judges a phrase.
+    def _voice_check(self, score=0.72, level=-22.0, speech=True, learned=45, ready=True, config=None):
+        import unittest.mock as mock
+        import numpy as np
+        sm = self._sm(had_speech=True)
+        sm.audio_recorder.get_recording_status.return_value = False
+        sm.audio_recorder.capture_raw.return_value = np.full(16000 * 3, 0.05, dtype=np.float32)
+        sm.vad_manager.check_audio_for_speech.return_value = speech
+        sm.config_manager = mock.Mock(config=config or {})
+        sm.voice_levels = mock.Mock(my_level=mock.Mock(return_value=-21.0))
+        sm.meetings = mock.Mock()
+        sm.meetings.my_voice_status.return_value = {'score': score, 'learned': learned, 'needed': 3, 'ready': ready}
+        with mock.patch('koli.state_manager.speech_level_db', return_value=level):
+            return sm.check_my_voice(5)
+
+    def test_the_voice_check_recognizes_you(self):
+        r = self._voice_check()
+        self.assertEqual(r['verdict'], 'type')
+        self.assertEqual((r['voiceprint']['status'], r['loudness']['status']), ('match', 'mine'))
+        self.assertEqual((r['voiceprint']['score'], r['voiceprint']['needs']), (0.72, 0.43))
+
+    def test_the_voice_check_leaves_out_the_tv(self):
+        r = self._voice_check(score=0.11, level=-30.0)
+        self.assertEqual(r['verdict'], 'leave_out')
+        self.assertEqual(r['voiceprint']['status'], 'no_match')
+        self.assertIn("doesn't sound like you", r['reason'])
+
+    def test_the_voice_check_leaves_out_a_much_quieter_voice(self):
+        r = self._voice_check(level=-40.0)
+        self.assertEqual((r['verdict'], r['loudness']['status']), ('leave_out', 'quieter'))
+
+    def test_the_voice_check_says_when_your_voice_isnt_learned_yet(self):
+        r = self._voice_check(score=None, learned=1)
+        self.assertEqual(r['voiceprint']['status'], 'not_learned')
+        self.assertEqual((r['voiceprint']['learned'], r['voiceprint']['needed']), (1, 3))
+
+    def test_the_voice_check_with_nobody_talking(self):
+        self.assertEqual(self._voice_check(speech=False)['verdict'], 'no_speech')
+
+    # "Set it by ear" on How much quieter: your learned level on the microphone
+    # in use, to draw the cutoff (your level less the margin) on the meter.
+    def test_my_voice_level_is_your_learned_level_on_this_mic(self):
+        import unittest.mock as mock
+        sm = self._sm(had_speech=True)
+        sm.audio_recorder.describe.return_value = {'name': 'Microphone (EMEET Piko+)'}
+        sm.voice_levels = mock.Mock(my_level=mock.Mock(return_value=-20.64))
+        self.assertEqual(sm.my_voice_level(), {'mic': 'Microphone (EMEET Piko+)', 'mine_db': -20.6})
+        sm.voice_levels.my_level.assert_called_with('Microphone (EMEET Piko+)')
+        sm.voice_levels.my_level.return_value = None      # fewer than 3 hotkey dictations
+        self.assertIsNone(sm.my_voice_level()['mine_db'])
+
+    def test_the_voice_check_waits_for_a_recording_to_finish(self):
+        import unittest.mock as mock
+        sm = self._sm(had_speech=True)
+        sm.audio_recorder.get_recording_status.return_value = True
+        with self.assertRaises(ValueError):
+            sm.check_my_voice(5)
+
+    # Every phrase says how it scored, kept or not, and a check that couldn't
+    # run says so: a silent pass is how the TV got through unnoticed.
+    def test_every_voiceprint_result_is_logged(self):
+        sm, processed, _ = self._voiceprint_sm(0.71)
+        with self.assertLogs('test', level='INFO') as logs:
+            self.assertTrue(sm._sounds_like_me(processed))
+        self.assertIn('0.71', '\n'.join(logs.output))
+        sm, processed, _ = self._voiceprint_sm(None)
+        with self.assertLogs('test', level='INFO') as logs:
+            self.assertTrue(sm._sounds_like_me(processed))
+        self.assertIn('not checked', '\n'.join(logs.output))
 
     # Auto-dictation hears whatever is around, so a paste never carries its own
     # Enter: not after each pause, and not with the final words.
@@ -6000,6 +6223,84 @@ class AutoDictationShapeTests(unittest.TestCase):
                 continue
             with mod.audio_thread():
                 pass
+
+    # The voiceprint needs the microphone as it was: noise reduction and the
+    # Whisper-mode boost make any voice (a TV) score like yours.
+    def test_raw_for_gives_the_clip_before_noise_reduction_and_boost(self):
+        import unittest.mock as mock
+        import numpy as np
+        from koli.audio_recorder import AudioRecorder
+        rec = AudioRecorder.__new__(AudioRecorder)
+        rec.logger = __import__('logging').getLogger('test')
+        rec.sample_rate = 16000
+        rec._needs_resampling_cached = False
+        rec._noise_suppression_config = {'enabled': True, 'strength': 1.0}
+        rec._whisper_mode_gain = 8.0
+        rec._recent_clips = __import__('collections').deque(maxlen=4)
+        chunk = np.full((16000, 1), 0.01, dtype=np.float32)
+        # The pauses go from the raw clip too: in a room with a TV they are
+        # the TV, and the voiceprint must not learn it.
+        with mock.patch.object(rec, '_trim_long_pauses', side_effect=lambda a, decide_on=None: a[:len(a) // 2]), \
+             mock.patch.object(rec, '_trim_trailing_silence', side_effect=lambda a, decide_on=None: a), \
+             mock.patch('koli.noise_suppression.apply_noise_reduction', side_effect=lambda a, sr, s: a * 0.5):
+            out = rec._build_audio_array([chunk])
+        np.testing.assert_allclose(rec.raw_for(out), chunk[:8000])
+        self.assertGreater(float(abs(out).max()), float(abs(rec.raw_for(out)).max()), 'Whisper still gets the boost')
+        other = np.zeros(10, dtype=np.float32)
+        self.assertIs(rec.raw_for(other), other, 'unknown audio is its own raw')
+
+    # Whisper's piece times are on the trimmed clip, so the raw clip is cut at
+    # exactly the same places, decided on the noise-reduced one (where the room
+    # doesn't read as sound).
+    def test_the_raw_clip_is_cut_where_the_processed_one_is(self):
+        import unittest.mock as mock
+        import numpy as np
+        from koli.audio_recorder import AudioRecorder
+        rec = AudioRecorder.__new__(AudioRecorder)
+        rec.logger = __import__('logging').getLogger('test')
+        rec.sample_rate = 16000
+        rec._needs_resampling_cached = False
+        rec._noise_suppression_config = {'enabled': True, 'strength': 0.75}
+        rec._whisper_mode_gain = None
+        rec._recent_clips = __import__('collections').deque(maxlen=4)
+        sr = 16000
+        talk, room = np.full(sr, 0.2, dtype=np.float32), np.full(sr * 4, 0.02, dtype=np.float32)
+        raw = np.concatenate([talk, room, talk]).reshape(-1, 1)          # a TV hums through the pause
+
+        def reduce(a, _sr, _s):                                           # noise reduction removes it
+            out = a.copy()
+            out[sr:sr * 5] = 0.0
+            return out
+        with mock.patch('koli.noise_suppression.apply_noise_reduction', side_effect=reduce):
+            out = rec._build_audio_array([raw])
+        kept_raw = rec.raw_for(out)
+        self.assertLess(len(out), len(raw), 'the long pause was shortened')
+        self.assertEqual(len(kept_raw), len(out), 'cut at the same places')
+        np.testing.assert_allclose(kept_raw[-sr:], talk.reshape(-1, 1)[-sr:])
+
+    # The Settings voice check listens through a tap on the open microphone:
+    # no recording starts, and the clip is trimmed like a dictation's raw clip.
+    def test_capture_raw_listens_through_a_tap(self):
+        import unittest.mock as mock
+        import numpy as np
+        from koli.audio_recorder import AudioRecorder
+        rec = AudioRecorder.__new__(AudioRecorder)
+        rec.logger = __import__('logging').getLogger('test')
+        rec._taps = []
+        rec.is_recording = False
+
+        def while_listening(seconds):
+            self.assertEqual(seconds, 5)
+            for tap in list(rec._taps):
+                tap(np.full(800, 0.1, dtype=np.float32), 0.0)
+                tap(np.full(800, 0.2, dtype=np.float32), 0.1)
+        with mock.patch('koli.audio_recorder.time.sleep', side_effect=while_listening), \
+             mock.patch.object(rec, '_trim_long_pauses', side_effect=lambda a: a), \
+             mock.patch.object(rec, '_trim_trailing_silence', side_effect=lambda a: a[:1000]):
+            clip = rec.capture_raw(5)
+        self.assertEqual(len(clip), 1000)
+        self.assertEqual(rec._taps, [], 'the tap is removed afterwards')
+        self.assertFalse(rec.is_recording)
 
     def test_taking_recorded_audio_keeps_the_recording_going(self):
         import unittest.mock as mock
@@ -6488,10 +6789,21 @@ class LanguageModelRoutingTests(unittest.TestCase):
                                msg="Whisper's own score for Hebrew, for the guards")
         self.assertEqual(engine.last_info['audio_seconds'], 1.0)
 
-    def test_a_listed_language_still_reaches_the_second_model(self):
-        engine = self._engine(detected=self._ICELANDIC_FIRST, allowed=['en', 'he'])
+    # The second model only gets speech that is clearly its language: told
+    # "Hebrew", it translates whatever else it hears. On 2026-10-12 a 47 s
+    # English dictation scored Hebrew 0.45 and half of it came out translated.
+    # Real Hebrew dictations scored 0.8-1.0.
+    def test_a_clearly_hebrew_clip_reaches_the_second_model(self):
+        engine = self._engine(detected=('he', 0.86, [('he', 0.86), ('en', 0.1)]), allowed=['en', 'he'])
         self.assertEqual(self._run(engine), 'hebrew text')
         self.assertNotIn('initial_prompt', engine.language_model.calls[-1][1])
+
+    def test_an_unsure_hebrew_guess_stays_on_the_main_model_undecided(self):
+        for detected in (('he', 0.45, [('he', 0.45), ('en', 0.25)]), self._ICELANDIC_FIRST):
+            engine = self._engine(detected=detected, allowed=['en', 'he'])
+            self.assertEqual(self._run(engine), 'main text', detected[:2])
+            self.assertIsNone(engine.model.calls[-1][1]['language'], 'not told Hebrew: it would translate')
+            self.assertEqual(engine.language_model.calls, [])
 
     # Meeting mode asks for no prompt: the app's style hint stays out.
     def test_use_prompt_false_leaves_the_prompt_out(self):
@@ -6618,6 +6930,23 @@ class VoiceLevelTests(unittest.TestCase):
         for _ in range(40):
             levels.learn('Headset', -18.0)
         self.assertEqual(VoiceLevels(path).my_level('Headset'), -18.0, 'kept on disk, recent ones count')
+
+    # Levels learned before 2026-10-12 were measured after noise reduction,
+    # while the meter and the checks now use the raw microphone: they are
+    # forgotten once and learned again from the next 3 hotkey dictations.
+    def test_levels_from_processed_audio_are_forgotten(self):
+        import json
+        import tempfile
+        from koli.voice_filter import VoiceLevels
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / 'voice_levels.json'
+        path.write_text(json.dumps({'Microphone (EMEET Piko+)': [-21.0, -20.0, -22.0]}), encoding='utf-8')
+        levels = VoiceLevels(path)
+        self.assertIsNone(levels.my_level('Microphone (EMEET Piko+)'))
+        for level in (-21.0, -20.0, -22.0):
+            levels.learn('Microphone (EMEET Piko+)', level)
+        self.assertEqual(VoiceLevels(path).my_level('Microphone (EMEET Piko+)'), -21.0)
 
     def test_pieces_much_quieter_than_me_are_left_out(self):
         import numpy as np

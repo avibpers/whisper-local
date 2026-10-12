@@ -232,6 +232,12 @@ class WhisperEngine:
     # Returns (model, key, language, prompt, detection probability or None).
     # `language` overrides the engine's setting for one call (meeting mode):
     # None keeps the setting, 'auto' detects, anything else forces that one.
+    # A detected language goes to the second model only when Whisper is this
+    # sure of it: told "Hebrew", that model translates whatever else it hears.
+    # On 2026-10-12 a 47 s English dictation scored Hebrew 0.45 and half of it
+    # came out in Hebrew; real Hebrew dictations scored 0.8-1.0.
+    SECOND_MODEL_MIN_CONFIDENCE = 0.6
+
     def _route(self, audio: np.ndarray, language: Optional[str] = None) -> tuple:
         self._raw_language_probability = None
         second = getattr(self, 'language_model', None)
@@ -240,10 +246,18 @@ class WhisperEngine:
         language, probability = forced, None
         if not language and len(allowed) == 1:
             language = allowed[0]
+        detected = False
         if not language and (allowed or second is not None):
             language, probability = self._detect_language(audio, allowed)
+            detected = True
         if second is not None and language == self.language_model_lang:
-            return second, self.language_model_key, language, None, probability
+            sure = getattr(self, '_raw_language_probability', None)
+            if not detected or (sure is not None and sure >= self.SECOND_MODEL_MIN_CONFIDENCE):
+                return second, self.language_model_key, language, None, probability
+            # Unsure: the main model, not told a language, writes each one as spoken.
+            self.logger.info(f"Only {sure or 0:.2f} sure it's {language}: the main model writes it as spoken "
+                             f"(the {language} model would translate other speech)")
+            return self.model, self.model_key, None, self.initial_prompt, probability
         return self.model, self.model_key, language, self.initial_prompt, probability
 
     # The clip's language and how sure the main model is. Without a list, an

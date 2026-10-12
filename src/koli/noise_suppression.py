@@ -18,15 +18,17 @@ _warmed = threading.Event()
 
 # The first run loads the library and its dependencies, which took 4.8 s on
 # 2026-10-12: an auto-dictation phrase prepared that slowly can outlive its
-# session. Running it once on half a second of silence, in the background, as
-# soon as noise suppression is on keeps the first real recording fast.
+# session. Running it once on half a second of faint noise, in the background,
+# as soon as noise suppression is on keeps the first real recording fast.
+# Not exact silence: the library divides 0 by 0 on it and warns.
 def warm_up_in_background(sample_rate: int = 16000) -> None:
     if _warmed.is_set():
         return
     _warmed.set()
 
     def run():
-        apply_noise_reduction(np.zeros(sample_rate // 2, dtype=np.float32), sample_rate)
+        faint = np.random.default_rng(0).standard_normal(sample_rate // 2) * 1e-4
+        apply_noise_reduction(faint.astype(np.float32), sample_rate)
         logger.debug("Noise suppression warmed up")
     threading.Thread(target=run, name='noise-warm-up', daemon=True).start()
 
@@ -38,7 +40,14 @@ def apply_noise_reduction(audio: np.ndarray, sample_rate: int, strength: float =
     try:
         import noisereduce as nr
         flat = audio.flatten()
+        # Exact silence (a muted microphone) makes the library divide 0 by 0:
+        # there is nothing to reduce, and its NaN output must not reach Whisper.
+        if not flat.any():
+            return audio
         reduced = nr.reduce_noise(y=flat, sr=sample_rate, prop_decrease=float(strength))
+        if not np.isfinite(reduced).all():
+            logger.warning("Noise reduction gave invalid samples; using the recording as it was")
+            return audio
         return reduced.reshape(audio.shape).astype(np.float32)
     except ImportError:
         logger.debug("noisereduce not installed; skipping. Install: pip install 'koli[noise]'")

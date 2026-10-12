@@ -200,6 +200,8 @@ class Hysteresis:
         return False
 
 class ContinuousVoiceDetector:
+    LEVEL_WINDOW_SECONDS = 0.3   # how much sound the "as loud as you" line is judged on
+
     def __init__(self, ten_vad, vad_onset_threshold, vad_offset_threshold,
                  vad_silence_timeout_seconds, frame_duration_sec,
                  event_callback: Optional[Callable[[VadEvent], None]] = None,
@@ -227,6 +229,11 @@ class ContinuousVoiceDetector:
         # isn't learned yet). The level is set per recording and survives reset().
         self.frames_for_speech_start = max(1, int(round(speech_start_seconds / frame_duration_sec)))
         self.voice_start_db = None
+        # The loudness that line is compared with: the sound energy of about
+        # the last LEVEL_WINDOW_SECONDS. Per frame, a TV's short loud bursts
+        # crossed it every few seconds and 5 s of "silence" never came; on
+        # average they don't, and a word of yours still lifts it at once.
+        self._recent_power = deque(maxlen=max(1, int(round(self.LEVEL_WINDOW_SECONDS / frame_duration_sec))))
         self._voice_frames = 0
         self._speech_announced = False
         # Phrase delivery: after `phrase_pause_sec` of silence following speech,
@@ -259,8 +266,9 @@ class ContinuousVoiceDetector:
             self.phrase_pause_sec = max(0.0, float(seconds or 0))
             self.frames_for_phrase = int(self.phrase_pause_sec / self.frame_duration_sec) if self.phrase_pause_sec else 0
 
-    # The loudness (dBFS) speech must reach to count toward SPEECH_START, or
-    # None for any speech.
+    # The loudness (dBFS) speech must reach to count as speech at all (your
+    # level less the margin), or None for any speech. Quieter speech is
+    # silence to SPEECH_START, the phrase pause and the silence timeout.
     def set_voice_start_level(self, min_db: Optional[float]):
         with self._lock:
             self.voice_start_db = None if min_db is None else float(min_db)
@@ -289,12 +297,23 @@ class ContinuousVoiceDetector:
             self.last_probability = float(probability)
             speech_detected = self.hysteresis.detect_speech(probability)
             self.probability_buffer.append(probability)
-            return self._update_state(speech_detected, chunk_level_db(audio_chunk))
+            return self._update_state(speech_detected, self._recent_level_db(audio_chunk))
 
         except Exception as e:
             self.logger.error(f"Error processing VAD chunk: {e}")
             self._replace_ten_vad()
             return VadEvent.NO_EVENT
+
+    # The level (dBFS) of the last LEVEL_WINDOW_SECONDS, this chunk included:
+    # the mean of the sound energy, with the time before the recording counted
+    # as silent. A word of yours lifts it within a few frames; a TV's short
+    # bursts average out, even one in the very first frame.
+    def _recent_level_db(self, audio_chunk: np.ndarray) -> float:
+        rms = 10 ** (chunk_level_db(audio_chunk) / 20)
+        with self._lock:
+            self._recent_power.append(rms * rms)
+            power = sum(self._recent_power) / self._recent_power.maxlen
+        return 10 * np.log10(max(power, 1e-20))
 
     def _replace_ten_vad(self):
         if self._vad_factory is None:
@@ -310,12 +329,18 @@ class ContinuousVoiceDetector:
             current_state = self.state
             event = VadEvent.NO_EVENT
 
+            # With your level known, speech quieter than you (a TV behind you)
+            # is silence: it neither starts anything nor keeps a recording
+            # going, so the phrase pause and the end come when you stop.
+            if speech_detected and self.voice_start_db is not None \
+                    and (level_db is None or level_db < self.voice_start_db):
+                speech_detected = False
+
             if speech_detected:
                 self.had_speech = True
                 self.speech_since_phrase = True
                 self._phrase_fired = False
-                loud_enough = self.voice_start_db is None or (level_db is not None and level_db >= self.voice_start_db)
-                if loud_enough and not self._speech_announced:
+                if not self._speech_announced:
                     self._voice_frames += 1
                     if self._voice_frames >= self.frames_for_speech_start:
                         self._speech_announced = True
@@ -361,6 +386,7 @@ class ContinuousVoiceDetector:
             self.speech_since_phrase = False
             self._phrase_fired = False
             self.probability_buffer.clear()
+            self._recent_power.clear()
             self.hysteresis.speech_detected = False
 
     def get_state(self) -> VadState:

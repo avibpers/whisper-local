@@ -76,8 +76,8 @@ class AudioRecorder:
         self.logger = logging.getLogger(__name__)
         self._set_noise_suppression(noise_suppression_config or {})
         self._whisper_mode_gain = self._parse_whisper_mode(whisper_mode_config)
-        # (audio array, Whisper-mode boost) for the last few handed out.
-        self._recent_gains = collections.deque(maxlen=4)
+        # (audio array, raw array) for the last few handed out; see raw_for.
+        self._recent_clips = collections.deque(maxlen=4)
 
         self.vad_manager = vad_manager
         self.on_vad_event = on_vad_event
@@ -227,6 +227,23 @@ class AudioRecorder:
     def remove_tap(self, fn):
         if fn in self._taps:
             self._taps.remove(fn)
+
+    # `seconds` of the open microphone as it is, through a tap: no recording
+    # starts, so nothing is transcribed or pasted. Trimmed like a dictation's
+    # raw clip (see raw_for), for the Settings voice check.
+    def capture_raw(self, seconds: float) -> Optional[np.ndarray]:
+        chunks = []
+
+        def keep(mono, _when):
+            chunks.append(mono.copy())
+        self.add_tap(keep)
+        try:
+            time.sleep(seconds)
+        finally:
+            self.remove_tap(keep)
+        if not chunks:
+            return None
+        return self._trim_trailing_silence(self._trim_long_pauses(np.concatenate(chunks)))
 
     # Each chunk to every tap, at Whisper's rate. A tap that raises is logged,
     # never allowed to break the audio callback.
@@ -407,6 +424,8 @@ class AudioRecorder:
         if self._needs_resampling_cached:
             self.logger.info(f"Resampling from {self._recording_rate} Hz to {self.WHISPER_SAMPLE_RATE} Hz")
             audio_array = self._resample_audio(audio_array, self._recording_rate, self.WHISPER_SAMPLE_RATE)
+        # The microphone as it was, for the voiceprint (see raw_for).
+        raw_array = audio_array
 
         if self._noise_suppression_config.get('enabled'):
             from .noise_suppression import apply_noise_reduction
@@ -414,8 +433,13 @@ class AudioRecorder:
             audio_array = apply_noise_reduction(audio_array, self.WHISPER_SAMPLE_RATE, strength)
 
 
-        audio_array = self._trim_long_pauses(audio_array)
-        audio_array = self._trim_trailing_silence(audio_array)
+        # The cuts are decided on the noise-reduced clip (the room doesn't read
+        # as sound there) and made at the same samples in the raw clip, so
+        # Whisper's piece times fit both. The raw clip losing its pauses also
+        # keeps a TV in them out of your voiceprint.
+        kept = self._trim_long_pauses(np.arange(len(audio_array)), decide_on=audio_array)
+        kept = self._trim_trailing_silence(kept, decide_on=audio_array[kept])
+        audio_array, raw_array = audio_array[kept], raw_array[kept]
 
         # Whisper mode boosts last: the trims above judge silence against an
         # absolute level, and a boosted noise floor would read as speech,
@@ -426,19 +450,23 @@ class AudioRecorder:
             gain = boost_gain(audio_array, self._whisper_mode_gain)
             if gain > 1.0:
                 audio_array = np.clip(audio_array * gain, -1.0, 1.0).astype(audio_array.dtype, copy=False)
-        self._recent_gains.append((audio_array, gain))
+        self._recent_clips.append((audio_array, raw_array))
 
         duration = self.get_audio_duration(audio_array)
         self.logger.info(f"Recorded {duration:.2f}s (incl. preroll, mid-pauses + trailing silence trimmed)")
         return audio_array
 
-    # The Whisper-mode boost given to an array this recorder handed out (1.0 if
-    # none), so "Only my voice" can measure your real level.
-    def gain_for(self, audio: np.ndarray) -> float:
-        for array, gain in reversed(self._recent_gains):
+    # The same clip before noise reduction and the Whisper-mode boost, cut at
+    # the same places (the array itself if this recorder didn't hand it out).
+    # "Only my voice" judges this: on a processed clip a TV scored 0.45 against
+    # your voiceprint, over the 0.43 "that's you" line, and 0.11 on the raw
+    # microphone; and noise reduction would move your measured level.
+    def raw_for(self, audio: np.ndarray) -> np.ndarray:
+        for array, raw in reversed(self._recent_clips):
             if array is audio:
-                return gain
-        return 1.0
+                return raw
+        self.logger.debug("Raw clip not kept (more than 4 clips since); the processed one is judged")
+        return audio
 
     # The whisper-mode max gain, or None when it's off. Validated once here: a
     # hand-edited `whisper_mode: true` or `max_gain: 8x` must not break every
@@ -453,11 +481,11 @@ class AudioRecorder:
             gain = 8.0
         return gain if gain > 1.0 else None
 
-    def _trim_long_pauses(self, audio: np.ndarray) -> np.ndarray:
-        if audio.ndim > 1:
-            mono = audio.mean(axis=1)
-        else:
-            mono = audio
+    # `decide_on`: judge the pauses on this array and cut `audio` (the same
+    # length, e.g. its sample indices) at the same places.
+    def _trim_long_pauses(self, audio: np.ndarray, decide_on: Optional[np.ndarray] = None) -> np.ndarray:
+        judged = audio if decide_on is None else decide_on
+        mono = judged.mean(axis=1) if judged.ndim > 1 else judged
         win = int(0.05 * self.WHISPER_SAMPLE_RATE)
         if win < 1:
             return audio
@@ -500,11 +528,9 @@ class AudioRecorder:
             pieces.append(audio[n * win:])
         return np.concatenate(pieces, axis=0) if pieces else audio
 
-    def _trim_trailing_silence(self, audio: np.ndarray) -> np.ndarray:
-        if audio.ndim > 1:
-            mono = audio.mean(axis=1)
-        else:
-            mono = audio
+    def _trim_trailing_silence(self, audio: np.ndarray, decide_on: Optional[np.ndarray] = None) -> np.ndarray:
+        judged = audio if decide_on is None else decide_on
+        mono = judged.mean(axis=1) if judged.ndim > 1 else judged
         window = int(0.02 * self.WHISPER_SAMPLE_RATE)
         if window < 1 or len(mono) < window * 4:
             return audio

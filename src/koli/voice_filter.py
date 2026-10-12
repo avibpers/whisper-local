@@ -59,6 +59,9 @@ def speech_level_db(audio: np.ndarray, sample_rate: int = SAMPLE_RATE, gain: flo
 
 # Your speaking level per microphone, from your recent hotkey dictations, kept
 # in a small JSON file next to the settings. A new microphone starts unknown.
+# Levels are measured on the raw microphone ({"raw": true, "levels": ...});
+# a file without that mark (before 2026-10-12) was measured after noise
+# reduction, so it is forgotten and your level learned again.
 class VoiceLevels:
     def __init__(self, path: Path):
         self.path = Path(path)
@@ -68,12 +71,17 @@ class VoiceLevels:
     def _read(self) -> dict:
         try:
             data = json.loads(self.path.read_text(encoding='utf-8'))
-            return {str(k): [float(x) for x in v][-LEARN_KEEP:] for k, v in data.items() if isinstance(v, list)}
         except FileNotFoundError:
             return {}
         except Exception as e:
             logger.warning(f"Could not read {self.path}: {e}")
             return {}
+        if not isinstance(data, dict) or data.get('raw') is not True:
+            logger.info("Forgot your learned speaking levels: they were measured after noise reduction, "
+                        "so they are learned again")
+            return {}
+        levels = data.get('levels') if isinstance(data.get('levels'), dict) else {}
+        return {str(k): [float(x) for x in v][-LEARN_KEEP:] for k, v in levels.items() if isinstance(v, list)}
 
     def learn(self, device: str, level_db: float) -> None:
         with self._lock:
@@ -81,7 +89,7 @@ class VoiceLevels:
             recent.append(round(float(level_db), 1))
             del recent[:-LEARN_KEEP]
             try:
-                self.path.write_text(json.dumps(self._levels, indent=1), encoding='utf-8')
+                self.path.write_text(json.dumps({'raw': True, 'levels': self._levels}, indent=1), encoding='utf-8')
             except Exception as e:
                 logger.warning(f"Could not save {self.path}: {e}")
 

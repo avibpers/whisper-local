@@ -30,6 +30,9 @@ FOREGROUND_WAIT_SECONDS = 0.3
 # How long after a round trip its focus reports may still arrive (they come
 # through the focus watcher's queue, a little late).
 FOCUS_REPORT_GRACE_SECONDS = 0.6
+# How long a desktop switcher (Ctrl+Win+Right, or a tool's own keys) may take
+# to move to another virtual desktop after its keys are pressed.
+DESKTOP_SWITCH_WAIT_SECONDS = 0.4
 
 GWL_EXSTYLE = -20
 GW_OWNER = 4
@@ -249,6 +252,62 @@ def _bring_to_front(hwnd) -> bool:
     return _wait_foreground(hwnd)
 
 
+# ── Virtual desktops ─────────────────────────────────────────────────────────
+# Keys sent to Windows can switch the virtual desktop (Ctrl+Win+Right, or a
+# switcher's own shortcut). Going back to the window you started in would
+# then drag you back to its desktop, so after such keys you stay where they
+# took you. The key window itself belongs to no desktop (Windows doesn't track
+# tool windows), so bringing it up never moves you.
+
+_VIRTUAL_DESKTOP_MANAGER = '{aa509086-5ca9-4c25-8f95-589d3c07b48a}'
+_com_ready = threading.local()
+
+
+def _desktop_manager():
+    import comtypes
+    import comtypes.client
+    from comtypes import COMMETHOD, GUID, HRESULT, IUnknown
+
+    class IVirtualDesktopManager(IUnknown):
+        _iid_ = GUID('{a5cd92ff-29be-454c-8d04-d82879fb3f1b}')
+        _methods_ = [COMMETHOD([], HRESULT, 'IsWindowOnCurrentVirtualDesktop',
+                               (['in'], wt.HWND, 'hwnd'), (['out', 'retval'], ctypes.POINTER(wt.BOOL), 'on'))]
+    if not getattr(_com_ready, 'done', False):
+        try:
+            comtypes.CoInitializeEx(comtypes.COINIT_MULTITHREADED)
+        except OSError:
+            pass
+        _com_ready.done = True
+    return comtypes.client.CreateObject(GUID(_VIRTUAL_DESKTOP_MANAGER), interface=IVirtualDesktopManager)
+
+
+# Whether a window is on the virtual desktop you're looking at. When Windows
+# can't say (no such window, the API missing), it counts as here: the old
+# behaviour, going back to it.
+def _on_current_desktop(hwnd) -> bool:
+    try:
+        return bool(_desktop_manager().IsWindowOnCurrentVirtualDesktop(hwnd))
+    except Exception:
+        return True
+
+
+# Waits briefly for keys that switch desktops to do so: True when the window
+# you started in is no longer on the desktop you're looking at.
+def _desktop_switched_away_from(hwnd) -> bool:
+    deadline = time.monotonic() + DESKTOP_SWITCH_WAIT_SECONDS
+    while True:
+        if not _on_current_desktop(hwnd):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+
+
+# The most recently used app on the desktop you're looking at, or None.
+def _top_app_window_here():
+    return next((hwnd for hwnd, _, _ in _app_windows() if _on_current_desktop(hwnd)), None)
+
+
 # ── Koli's own focus moves ───────────────────────────────────────────────────
 # Auto-dictation watches focus to start listening in a text field. The hops
 # of a round trip are Koli's, not the user's, so it asks here and ignores them.
@@ -273,10 +332,25 @@ def _end_move():
         _moving['until'] = time.monotonic() + FOCUS_REPORT_GRACE_SECONDS
 
 
+# Back to the window you were in, or, when the keys moved you to another
+# virtual desktop, to the top app there (never the invisible key window,
+# where your typing would vanish).
+def _return_focus(previous):
+    if _desktop_switched_away_from(previous):
+        here = _top_app_window_here()
+        logger.info("The keys moved to another virtual desktop; staying there")
+        if here is not None:
+            _bring_to_front(here)
+        return
+    if not _bring_to_front(previous):
+        logger.debug("Couldn't return focus to the previous window")
+
+
 # Run `press` (the key presses) with `target` in front: "windows" or an app's
 # .exe ("chrome.exe", or "chrome"). Afterwards the window that was in front
-# gets focus back. Raises LookupError, with a message for the user, when the
-# app isn't open or Windows refuses the switch; nothing is pressed then.
+# gets focus back, unless the keys moved you to another virtual desktop: then
+# the top app there gets it. Raises LookupError, with a message for the user,
+# when the app isn't open or Windows refuses the switch; nothing is pressed then.
 def run_focused(target: str, press):
     target = str(target or '').strip().lower()
     # Read first: nothing below may change it before it is known.
@@ -303,7 +377,6 @@ def run_focused(target: str, press):
         finally:
             if previous:
                 time.sleep(KEYS_SETTLE_SECONDS)
-                if not _bring_to_front(previous):
-                    logger.debug("Couldn't return focus to the previous window")
+                _return_focus(previous)
     finally:
         _end_move()

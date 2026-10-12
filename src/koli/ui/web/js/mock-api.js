@@ -170,7 +170,10 @@ export function createMock(emit) {
     emit('foreground', { exe: APPS[i], title: APP_TITLES[i], rule: null });
   }, 2500);
   setInterval(fakeDictation, 12000);
-  setInterval(() => { if (state.state === 'idle') emit('level', { level: Math.random() * 0.004, peak: 0 }); }, 200);
+  setInterval(() => { if (state.state === 'idle' && !micTesting) emit('level', { level: Math.random() * 0.004, peak: 0 }); }, 200);
+  // The microphone test hears a room with a TV on: about -30 to -26 dB.
+  let micTesting = false;
+  setInterval(() => { if (micTesting) emit('level', { level: 0.02 + Math.random() * 0.03, peak: 0 }); }, 50);
 
   const api = {
     async app_bootstrap(which) {
@@ -235,7 +238,8 @@ export function createMock(emit) {
       devices: [{ id: 1, name: 'Microphone (Realtek Audio)', default: true }, { id: 4, name: 'Headset (Jabra Evolve2)', default: false }],
       current: { device_id: null, name: 'Microphone (Realtek Audio)', host: 'Windows WASAPI', native_rate: 48000, recording_rate: 16000,
         channels: 1, dtype: 'float32', preroll_s: 0.3, max_duration: 900, noise_suppression: false, whisper_mode: false } }),
-    mic_test: (on) => ok(!!on),
+    mic_test: (on) => { micTesting = !!on; return ok(!!on); },
+    my_voice_level: () => ok({ mic: 'Microphone (EMEET Piko+)', mine_db: -21.0 }),
     sound_preview: () => ok(),
 
     models_list: () => ok({
@@ -264,6 +268,12 @@ export function createMock(emit) {
     dictation_stop: () => ok(),
     dictation_cancel: () => { setState({ state: 'idle' }); return ok(); },
     dictation_pause: (p) => { setState({ paused: !!p }); return ok(!!p); },
+    voice_check: (seconds) => new Promise((resolve) => setTimeout(() => resolve(ok({
+      verdict: 'leave_out', reason: "It doesn't sound like you on this microphone: auto-dictation leaves it out", speech: true,
+      mic: 'Microphone (EMEET Piko+)',
+      voiceprint: { status: 'no_match', score: 0.11, needs: 0.43, learned: 5, needed: 3, ready: true },
+      loudness: { status: 'mine', level_db: -29.6, mine_db: -21.0, margin_db: 12 },
+    })), (seconds || 5) * 1000)),
     hotkeys_reserved: () => ok([{ hotkey: 'alt+shift', label: 'switch the keyboard language' },
       { hotkey: 'alt+shift+1', label: 'switch to English (United States)' }]),
     log_tail: () => ok([]),

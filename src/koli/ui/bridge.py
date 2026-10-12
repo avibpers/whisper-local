@@ -280,6 +280,17 @@ class Bridge:
         self._host.mic_testing = bool(on)
         return bool(on)
 
+    # Settings → "Does Koli recognize you?": listens for `seconds` (nothing is
+    # recorded or typed) and says what auto-dictation would do with it.
+    @_api
+    def voice_check(self, seconds=5):
+        return self._sm.check_my_voice(max(2.0, min(15.0, float(seconds))))
+
+    # Your learned speaking level on this microphone, for "Set it by ear".
+    @_api
+    def my_voice_level(self):
+        return self._sm.my_voice_level()
+
     @_api
     def sound_preview(self, path_setting):
         from ..utils import resolve_asset_path

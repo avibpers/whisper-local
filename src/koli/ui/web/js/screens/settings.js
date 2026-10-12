@@ -10,7 +10,7 @@
 import { html, useEffect, useRef, useState } from '../../vendor/preact-htm.module.js';
 import { call } from '../api.js';
 import { matchesTerms, searchTerms, settingHaystack } from '../search.js';
-import { app, confirmModal, fmtBytes, navigate, openModal, closeModal, promptModal, saveSetting, toast, undo, useSetting } from '../store.js';
+import { app, confirmModal, fmtBytes, live, navigate, openModal, closeModal, promptModal, saveSetting, toast, undo, useSetting } from '../store.js';
 import { Icon, Select, Toggle } from '../ui.js';
 import { BgBadge, MicTest, SettingRow, settingsBySection, TaskProgress, useRunningTasks } from './shared.js';
 
@@ -226,6 +226,139 @@ function SystemExtras() {
       <div class="sctl"><button type="button" class="btn danger" onClick=${uninstall}>Uninstall…</button></div></div>`;
 }
 
+// ── Only my voice: "Does Koli recognize you?" ─────────────────────────────
+// Listens for a few seconds (nothing is recorded or typed) and shows what
+// auto-dictation would do with it: the voiceprint score against the "that's
+// you" line, the loudness against yours, and the verdict. Each line is
+// [chip tone, short label, detail].
+
+const VOICE_CHECK_SECONDS = 5;
+const VOICE_GROUP = 'Only my voice';   // the settings group the check sits under
+
+function verdictLine(r) {
+  return { type: ['ok', 'Would type it'], leave_out: ['rec', 'Would leave it out'], no_speech: ['', 'No speech'] }[r.verdict]
+    .concat(r.reason);
+}
+
+function voiceprintLine(v) {
+  const score = v.score == null ? '' : `${v.score.toFixed(2)} (needs ${v.needs})`;
+  return {
+    match: ['ok', 'Sounds like you', score],
+    no_match: ['rec', 'Doesn’t sound like you', score],
+    not_learned: ['warn', 'Not learned yet', `${v.learned} of ${v.needed} hotkey dictations on this microphone`],
+    loading: ['warn', 'Not ready', 'The voice model is loading. Try again in a moment.'],
+  }[v.status] || ['', 'Off', 'Turned off above'];
+}
+
+function loudnessLine(l) {
+  const levels = `${l.level_db} dB; you speak at ${l.mine_db} dB`;
+  return {
+    mine: ['ok', 'Loud enough', levels],
+    quieter: ['rec', 'Much quieter than you', `${levels} (up to ${l.margin_db} dB quieter counts as you)`],
+    not_learned: ['warn', 'Not learned yet', 'Your level is learned from 3 hotkey dictations'],
+    silent: ['', 'Too quiet', 'Nothing loud enough to measure'],
+  }[l.status] || ['', 'Off', 'Turned off above'];
+}
+
+function VoiceCheck() {
+  const [left, setLeft] = useState(0);
+  const [result, setResult] = useState(null);
+  const run = async () => {
+    setResult(null);
+    setLeft(VOICE_CHECK_SECONDS);
+    const timer = setInterval(() => setLeft((s) => Math.max(1, s - 1)), 1000);
+    try {
+      setResult(await call('voice_check', VOICE_CHECK_SECONDS));
+    } catch (e) {
+      toast(e.message, { kind: 'err' });
+    } finally {
+      clearInterval(timer);
+      setLeft(0);
+    }
+  };
+  const row = (label, [tone, short, detail]) => html`<div class="row-flex">
+    <span class="muted small" style="min-width:76px">${label}</span><span class=${'chip sm ' + tone}>${short}</span>
+    ${detail && html`<span class="small muted">${detail}</span>`}</div>`;
+  return html`<div class="srow"><div class="slabel"><b>Does Koli recognize you?</b>
+      <small>Listens for ${VOICE_CHECK_SECONDS} seconds and shows what auto-dictation would do. Talk normally, or stay quiet to test what’s around you, like a TV. Nothing is recorded or typed.</small></div>
+    <div class="sctl"><div class="stack" style="gap:8px">
+      <button type="button" class="btn" style="align-self:flex-start" disabled=${left > 0} onClick=${run}>
+        <${Icon} name="mic" />${left > 0 ? `Listening… ${left}` : `Check for ${VOICE_CHECK_SECONDS} seconds`}</button>
+      ${result && html`<div class="stack" style="gap:6px" role="status">
+        ${row('Result', verdictLine(result))}
+        ${row('Voiceprint', voiceprintLine(result.voiceprint))}
+        ${row('Loudness', loudnessLine(result.loudness))}
+      </div>`}
+    </div></div></div>`;
+}
+
+// ── Only my voice: "Set it by ear" ────────────────────────────────────────
+// A live meter under How much quieter. What the microphone hears now, the
+// loudest moment of the last 2 seconds, your learned level, and the cutoff
+// (your level less the margin) that moves as the slider does. Stay quiet with
+// the TV on and drag until the loudest moment stays under the cutoff.
+
+const METER_FLOOR_DB = -60;
+const PEAK_SAMPLES = 40;   // levels arrive 20 times a second: 2 seconds
+const AVERAGE_SAMPLES = 6; // 0.3 s, the window the detector judges loudness on
+
+const meterPct = (db) => Math.max(0, Math.min(100, ((db - METER_FLOOR_DB) / -METER_FLOOR_DB) * 100));
+
+// The level (dB) of the 0.3 s ending at sample `end`, as the detector sees
+// it: the mean of the sound energy, so a TV's short bursts average out.
+function averagedDb(levels, end) {
+  const window = levels.slice(Math.max(0, end - AVERAGE_SAMPLES), end);
+  const power = window.reduce((sum, rms) => sum + (rms || 0) ** 2, 0) / AVERAGE_SAMPLES;
+  return 10 * Math.log10(Math.max(power, 1e-12));
+}
+
+function LoudnessTuner() {
+  const [open, setOpen] = useState(false);
+  const [mine, setMine] = useState(null);
+  const margin = Number(useSetting('audio.voice_filter.margin_db') ?? 12);
+  const levels = live.use((s) => s.levels);
+  useEffect(() => {
+    if (!open) return undefined;
+    call('my_voice_level').then((r) => setMine(r.mine_db)).catch(() => setMine(null));
+    call('mic_test', true).catch(() => {});
+    return () => { call('mic_test', false).catch(() => {}); };
+  }, [open]);
+  if (!open) {
+    return html`<button type="button" class="btn sm" style="margin-top:8px" onClick=${() => setOpen(true)}>
+      <${Icon} name="mic" />Set it by ear</button>`;
+  }
+  const now = averagedDb(levels, levels.length);
+  const peak = Math.max(...Array.from({ length: PEAK_SAMPLES }, (_, i) => averagedDb(levels, levels.length - i)));
+  const cutoff = mine == null ? null : mine - margin;
+  const heard = cutoff != null && peak >= cutoff;
+  // transform:none: .bar-meter squeezes every span in it, like its fill.
+  const marker = (db, color, width = 2) => html`<span style=${`position:absolute;top:0;bottom:0;width:${width}px;left:${meterPct(db)}%;`
+    + `background:${color};transform:none;border-radius:0`}></span>`;
+  // The cutoff's label ends at its line and yours starts at it: the two are
+  // often only a few dB apart.
+  const label = (db, text, side) => html`<span class="small muted" style=${`position:absolute;left:${meterPct(db)}%;`
+    + `transform:translateX(${side === 'left' ? 'calc(-100% - 4px)' : '4px'});white-space:nowrap`}>${text}</span>`;
+  return html`<div class="stack" style="gap:6px;margin-top:8px;min-width:280px">
+    <div class="bar-meter" style="height:14px" aria-label=${`Microphone now ${Math.round(now)} dB`}>
+      <span style=${`transform:scaleX(${meterPct(now) / 100});background:var(--${heard ? 'rec' : 'ok'})`}></span>
+      ${marker(peak, 'var(--mute)')}
+      ${cutoff != null && marker(cutoff, 'var(--ink)', 3)}
+      ${mine != null && marker(mine, 'var(--acc)')}
+    </div>
+    <div style="position:relative;height:16px">
+      ${cutoff != null && label(cutoff, `cutoff ${Math.round(cutoff)} dB`, 'left')}
+      ${mine != null && label(mine, `you ${Math.round(mine)} dB`, 'right')}
+    </div>
+    <span class="small" role="status">${mine == null
+      ? 'Your level on this microphone isn’t learned yet: make 3 hotkey dictations (at least 1.5 seconds each), then come back.'
+      : heard
+        ? html`<b style="color:var(--rec)">Right now: would count as you.</b> The loudest moment (${Math.round(peak)} dB) is above the cutoff: move the slider left.`
+        : html`<b style="color:var(--ok)">Right now: ignored.</b> Everything in the last 2 seconds (up to ${Math.round(peak)} dB) is under the cutoff.`}</span>
+    <span class="small muted">Stay quiet with the TV on and drag the slider until it says ignored. Then say a few words: you should count as you.</span>
+    <button type="button" class="btn ghost sm" style="align-self:flex-start" onClick=${() => setOpen(false)}>Done</button>
+  </div>`;
+}
+
 // ── Sections ──────────────────────────────────────────────────────────────
 
 // ── Search ───────────────────────────────────────────────────────────────
@@ -233,7 +366,8 @@ function SystemExtras() {
 // found by. Keyed by section, in the order the section shows them.
 const SECTION_EXTRAS = {
   general: { autostart: 'Start on login autostart startup Windows' },
-  audio: { mic: 'Check your microphone level test mic' },
+  audio: { mic: 'Check your microphone level test mic',
+    voicecheck: 'Does Koli recognize you voice check voiceprint only my voice TV test' },
   hotkeys: { transforms: 'Transform shortcuts polish prompt engineer keys' },
   privacy: { privacy: 'Transcript history delete clear export privacy' },
   system: { system: 'Local API address server settings backup export import model offline computer reset all uninstall' },
@@ -270,6 +404,7 @@ function SectionCard({ section, schema, highlight, terms }) {
     if (s.control === 'cue_table') return html`<${CueTable} />`;
     if (s.control === 'styles') return html`<div class="srow"><div class="slabel"><b>${s.label}</b><small>${s.help}</small></div><div class="sctl"><${StylesEditor} /></div></div>`;
     if (s.path === 'postprocess.ollama.enabled') return html`<${SettingRow} s=${s} highlight=${highlight === s.path} extra=${html`<${OllamaStatus} />`} />`;
+    if (s.path === 'audio.voice_filter.margin_db') return html`<${SettingRow} s=${s} highlight=${highlight === s.path} extra=${html`<${LoudnessTuner} />`} />`;
     if (s.path === 'whisper.device') return html`<${SettingRow} s=${s} highlight=${highlight === s.path} /><${GpuRow} />`;
     return html`<${SettingRow} s=${s} highlight=${highlight === s.path} />`;
   };
@@ -278,7 +413,9 @@ function SectionCard({ section, schema, highlight, terms }) {
       ${!filtering && html`<button type="button" class="btn ghost sm" onClick=${resetSection}>Reset section</button>`}</div>
     ${extras.has('autostart') && html`<${Autostart} />`}
     ${extras.has('mic') && html`<div class="srow"><div class="slabel"><b>Check your microphone</b><small>Shows the level while you talk.</small></div><div class="sctl"><${MicTest} /></div></div>`}
-    ${groups.map((g) => html`${g.name && html`<div class="subhead"><div class="eyebrow">${g.name}</div></div>`}${g.items.map(renderRow)}`)}
+    ${groups.map((g) => html`${g.name && html`<div class="subhead"><div class="eyebrow">${g.name}</div></div>`}${g.items.map(renderRow)}
+      ${g.name === VOICE_GROUP && extras.has('voicecheck') && html`<${VoiceCheck} />`}`)}
+    ${extras.has('voicecheck') && !groups.some((g) => g.name === VOICE_GROUP) && html`<${VoiceCheck} />`}
     ${extras.has('transforms') && html`<div class="srow"><div class="slabel"><b>Transform shortcuts</b><small>Polish, Prompt engineer and the rest have their own keys.</small></div>
       <div class="sctl"><a class="btn" href="#/commands">Edit in Commands & AI</a></div></div>`}
     ${extras.has('privacy') && html`<${PrivacyExtras} />`}

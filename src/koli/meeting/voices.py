@@ -66,12 +66,20 @@ class VoiceBook:
 
     # ── File ─────────────────────────────────────────────────────────────────
 
+    # Your voice is saved with `raw: true`: learned from the microphone as it
+    # was. One without it (before 2026-10-12) came from noise-reduced, boosted
+    # dictations that any processed voice matched (a TV scored as you), so it
+    # is forgotten and learned again.
     def _loaded(self) -> list:
         if self._voices is None:
             self._voices = []
             try:
                 for v in json.loads(self.path.read_text(encoding='utf-8')).get('voices', []):
                     if not v.get('centroid'):
+                        continue
+                    if v.get('self') and not v.get('raw'):
+                        logger.info(f"Forgot your voiceprint on {v.get('mic') or 'the meeting microphone'}: "
+                                    "it was learned from processed audio, so it is learned again")
                         continue
                     self._voices.append({
                         'id': v.get('id') or new_voice_id(), 'name': v.get('name', ''),
@@ -87,6 +95,7 @@ class VoiceBook:
 
     def _save(self):
         data = {'voices': [{**{k: v[k] for k in ('id', 'name', 'count', 'first_seen', 'last_seen', 'meetings', 'self', 'mic')},
+                            **({'raw': True} if v['self'] else {}),
                             'centroid': [round(float(x), 5) for x in v['centroid']]} for v in self._voices]}
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix('.json.tmp')

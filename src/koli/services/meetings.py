@@ -9,6 +9,7 @@
 import importlib.util
 import logging
 import threading
+import time
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -594,6 +595,25 @@ class MeetingService:
             return None
         vec = self._voiceprint(audio)
         return None if vec is None else float(np.dot(vec, mine[1]))
+
+    # For the Settings voice check: the score, plus why there may be none -
+    # how many hotkey dictations taught your voice on `mic` (MY_VOICE_MIN
+    # needed) and whether the voice model is loaded. Waits up to `wait_s` for
+    # the model, which loads on first use.
+    def my_voice_status(self, audio, mic: str, wait_s: float = 15.0) -> dict:
+        mine = self.voices.self_voice(mic=mic)
+        learned = mine[2] if mine else 0
+        deadline = time.monotonic() + wait_s
+        if self.tracker.embed is None:
+            self._ensure_embedder()
+            while self.tracker.embed is None and time.monotonic() < deadline:
+                time.sleep(0.2)
+        ready = self.tracker.embed is not None
+        score = None
+        if ready and learned >= MY_VOICE_MIN:
+            vec = self._voiceprint(audio)
+            score = None if vec is None else round(float(np.dot(vec, mine[1])), 2)
+        return {'score': score, 'learned': learned, 'needed': MY_VOICE_MIN, 'ready': ready}
 
     # Saved voices, for the Meetings screen: ids, names and where they were
     # heard; never the voiceprints.

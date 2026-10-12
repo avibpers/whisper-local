@@ -147,8 +147,9 @@ SCHEMA = [
        group='Only my voice', help='A TV across the room or someone talking in your pauses is left out. '
                                    'Koli learns how loud you are from your hotkey dictations (after 3).'),
     _S('audio.voice_filter.margin_db', 'How much quieter', 'audio', 'range', group='Only my voice',
-       min=6, max=30, step=1, unit='dB', help='6 dB is about half as loud. Raise it if your own words get dropped, or the music '
-                                         "doesn't pause when you talk."),
+       min=2, max=30, step=1, unit='dB', help='6 dB is about half as loud. Raise it if your own words get dropped, or the music '
+                                         "doesn't pause when you talk; lower it if a TV still counts as you "
+                                         '(Set it by ear shows where the line is).'),
     _S('audio.voice_filter.voiceprint', 'Only voices that sound like me', 'audio', 'toggle', group='Only my voice',
        help='Koli learns how you sound on each microphone from your hotkey dictations (after 3), and '
        'auto-dictation only types what sounds like you there. Stored only on this computer.'),
