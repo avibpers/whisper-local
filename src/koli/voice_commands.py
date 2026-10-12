@@ -4,7 +4,13 @@
 # (hot-reloaded on change). Security matters here — this is the one path that can
 # execute arbitrary commands, so placeholders are expanded FIRST and the result
 # is shlex-quoted and risk-checked before anything runs.
+#
+# A trigger may hold `{n}`, one spoken number 0-9 ("d {n}" hears "D 1" or "D
+# one"), which fills `{n}` in the keys and text. Keys go to the app in front
+# unless `send_to` names "windows" (no app gets them) or an app's .exe.
 
+import copy
+import functools
 import logging
 import os
 import re
@@ -17,7 +23,8 @@ import pyperclip
 
 from .defaults_merge import load_layered
 from .utils import get_user_app_data_path
-from .platform import keyboard
+from .platform import keyboard, window_focus
+from .ui.events import publish
 
 DEFAULTS_FILE = "commands.defaults.yaml"
 
@@ -45,6 +52,13 @@ USER_FILE_HEADER = """\
 #     - trigger: "show desktop"
 #       disabled: true
 #
+#     # a spoken number: "D 1" presses Ctrl+Shift+1, "D two" Ctrl+Shift+2.
+#     # send_to: windows keeps the keys away from the app in front; an app's
+#     # .exe (chrome.exe) switches to it, presses them, and comes back.
+#     - trigger: "d {n}"
+#       hotkey: "ctrl+shift+{n}"
+#       send_to: windows
+#
 # Full documentation: https://github.com/drajb/whisper-local/blob/master/docs/voice-commands.md
 
 """
@@ -54,6 +68,45 @@ RISKY_PATTERNS = re.compile(
     r'|>(?!\s*null)|\|\s*(out-file|tee)\b',
     flags=re.IGNORECASE,
 )
+
+# ── Spoken numbers: "d {n}" ──────────────────────────────────────────────────
+
+NUMBER_PLACEHOLDER = '{n}'
+NUMBER_WORDS = ('zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine')
+# The action values a spoken number is put into. `run` is left out on purpose:
+# a number from speech has no business inside a shell command.
+NUMBER_FIELDS = ('hotkey', 'type')
+
+
+# What the matcher compares against: lowercase, punctuation dropped, so
+# "D-1." and "d1" read the same.
+def _normalize_spoken(text: str) -> str:
+    return re.sub(r'[^\w\s]', '', text.lower()).strip()
+
+
+# "d {n}" -> a regex for the normalized text whose one group is the number.
+# Spaces around the number are optional because Whisper writes "D1" as often
+# as "D 1"; the lookarounds keep "and 1" and "D 12" from matching.
+@functools.lru_cache(maxsize=256)
+def _number_trigger_regex(trigger: str):
+    number = r'\s*(\d|' + '|'.join(NUMBER_WORDS) + r')\s*'
+    pieces = [re.escape(_normalize_spoken(piece)) for piece in trigger.lower().split(NUMBER_PLACEHOLDER)]
+    return re.compile(r'(?<!\w)' + number.join(pieces) + r'(?!\w)')
+
+
+def _spoken_digit(word: str) -> str:
+    return word if word.isdigit() else str(NUMBER_WORDS.index(word))
+
+
+# A copy of the command with `{n}` replaced in its keys and text, then-steps
+# included. The loaded command keeps its placeholder for the next match.
+def _with_number(command: dict, digit: str) -> dict:
+    filled = copy.deepcopy(command)
+    for action in [filled] + [s for s in filled.get('then') or [] if isinstance(s, dict)]:
+        for field in NUMBER_FIELDS:
+            if isinstance(action.get(field), str):
+                action[field] = action[field].replace(NUMBER_PLACEHOLDER, digit)
+    return filled
 
 
 class VoiceCommandManager:
@@ -105,11 +158,19 @@ class VoiceCommandManager:
             valid.append(cmd)
         return valid
 
+    # The command a phrase runs, or None. A `{n}` trigger returns a copy with
+    # the spoken number filled in.
     def match_command(self, text: str) -> Optional[dict]:
         self._reload_if_changed()
-        normalized = re.sub(r'[^\w\s]', '', text.lower()).strip()
+        normalized = _normalize_spoken(text)
 
         for command in self.commands:
+            if NUMBER_PLACEHOLDER in command.get('trigger', ''):
+                found = _number_trigger_regex(command['trigger']).search(normalized)
+                if found:
+                    return _with_number(command, _spoken_digit(found.group(1)))
+                continue
+
             trigger = command.get('trigger', '').lower()
             regex_pattern = command.get('match_regex')
 
@@ -207,7 +268,7 @@ class VoiceCommandManager:
                                  require_confirm=command.get('confirm', None),
                                  force_confirm=had_untrusted)
         elif command.get('hotkey') is not None:
-            self._send_hotkey(command['hotkey'], trigger)
+            self._send_hotkey(command['hotkey'], trigger, command.get('send_to'))
         elif command.get('type') is not None:
             self._deliver_text(self._expand_template(command['type']), trigger, use_auto_enter)
         elif command.get('rephrase') is not None:
@@ -317,12 +378,24 @@ class VoiceCommandManager:
                 return False
         return True
 
-    def _send_hotkey(self, hotkey_str: str, trigger: str):
+    # Press the keys in the app in front, or with `send_to` inside another
+    # window: "windows" (an invisible Koli window, so only Windows and other
+    # programs' global shortcuts react) or an app's .exe. Focus returns to
+    # where the user was. A closed target app presses nothing and says so.
+    def _send_hotkey(self, hotkey_str: str, trigger: str, send_to: Optional[str] = None):
         keys = [k.strip() for k in hotkey_str.lower().split('+')]
         try:
-            keyboard.send_hotkey(*keys)
-            self.logger.info(f"Sent hotkey '{trigger}': {hotkey_str}")
-            print(f"   ✓ Sent hotkey: {trigger} [{hotkey_str}]")
+            if send_to:
+                window_focus.run_focused(send_to, lambda: keyboard.send_hotkey(*keys))
+            else:
+                keyboard.send_hotkey(*keys)
+            where = f" to {send_to}" if send_to else ''
+            self.logger.info(f"Sent hotkey '{trigger}'{where}: {hotkey_str}")
+            print(f"   ✓ Sent hotkey{where}: {trigger} [{hotkey_str}]")
+        except LookupError as e:
+            self.logger.warning(f"Hotkey '{trigger}' not sent: {e}")
+            publish('notify', {'kind': 'command', 'message': f"“{trigger}” didn't run: {e}"})
+            print(f"   ✗ Not sent: {e}")
         except Exception as e:
             self.logger.error(f"Failed to send hotkey '{trigger}': {e}")
             print(f"   Failed to send hotkey: {e}")

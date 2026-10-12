@@ -171,7 +171,7 @@ export function prettyKeys(hotkey) {
   return String(hotkey).split('+').map((k) => k.trim()).filter(Boolean).map((k) => ({
     ctrl: 'Ctrl', control: 'Ctrl', alt: 'Alt', shift: 'Shift', win: 'Win', windows: 'Win', cmd: 'Cmd',
     command: 'Cmd', option: 'Option', fn: 'Fn', esc: 'Esc', escape: 'Esc', space: 'Space', enter: 'Enter',
-    tab: 'Tab', up: '↑', down: '↓', left: '←', right: '→',
+    tab: 'Tab', up: '↑', down: '↓', left: '←', right: '→', '{n}': 'number',
   }[k.toLowerCase()] || (k.length === 1 ? k.toUpperCase() : k.charAt(0).toUpperCase() + k.slice(1))));
 }
 

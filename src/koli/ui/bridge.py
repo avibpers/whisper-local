@@ -488,6 +488,12 @@ class Bridge:
         from ..services import commands
         return commands.test_phrase(self._sm.voice_command_manager, text)
 
+    # The apps open right now, for a "Press keys" step's Send to picker.
+    @_api
+    def command_open_apps(self):
+        from ..platform import window_focus
+        return window_focus.open_apps()
+
     @_api
     def transforms_list(self):
         from ..services import commands

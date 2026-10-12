@@ -30,6 +30,27 @@ def _action_of(entry: dict) -> str:
     return ''
 
 
+# One action as saved: the action itself, plus where its keys go when it
+# presses keys and isn't aimed at the app in front ("windows" or an .exe).
+def _clean_action(source: dict, action: str) -> dict:
+    clean = {action: source[action]}
+    send_to = str(source.get('send_to') or '').strip().lower()
+    if action == 'hotkey' and send_to:
+        clean['send_to'] = send_to
+    return clean
+
+
+# `{n}` (a spoken number) appears at most once in the phrase, and keys or text
+# can only use it when the phrase has it.
+def _check_number_placeholder(trigger: str, actions: list):
+    count = trigger.count(vc.NUMBER_PLACEHOLDER)
+    if count > 1:
+        raise ValueError("Use {n} only once in the phrase")
+    uses = any(vc.NUMBER_PLACEHOLDER in str(a.get(f) or '') for a in actions for f in vc.NUMBER_FIELDS)
+    if uses and not count:
+        raise ValueError("The keys use the number you say, so add {n} to the phrase, like “d {n}”")
+
+
 def list_commands() -> list:
     view = dm.layered_view(vc.DEFAULTS_FILE, _commands_path(), 'commands', vc.USER_FILE_HEADER,
                            id_key='trigger')
@@ -39,7 +60,7 @@ def list_commands() -> list:
 
 
 # Validate and save one command. `entry` holds trigger (or match_regex), one
-# action and optional then-steps / confirm.
+# action (keys may carry send_to) and optional then-steps / confirm.
 def save_command(entry: dict, original_id: str = None) -> str:
     entry = {k: v for k, v in dict(entry).items() if v not in (None, '') or k in ACTION_KEYS}
     trigger = str(entry.get('trigger', '')).strip()
@@ -57,7 +78,7 @@ def save_command(entry: dict, original_id: str = None) -> str:
     clean = {'trigger': trigger} if trigger else {}
     if entry.get('match_regex'):
         clean['match_regex'] = entry['match_regex']
-    clean[actions[0]] = entry[actions[0]]
+    clean.update(_clean_action(entry, actions[0]))
     steps = []
     for step in entry.get('then') or []:
         if not isinstance(step, dict):
@@ -67,7 +88,8 @@ def save_command(entry: dict, original_id: str = None) -> str:
             continue
         step_actions = [k for k in ACTION_KEYS if step.get(k) not in (None, '')]
         if len(step_actions) == 1:
-            steps.append({step_actions[0]: step[step_actions[0]]})
+            steps.append(_clean_action(step, step_actions[0]))
+    _check_number_placeholder(trigger, [clean] + steps)
     if steps:
         clean['then'] = steps
     if entry.get('confirm') is True:

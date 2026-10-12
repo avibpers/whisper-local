@@ -34,6 +34,7 @@ commands:
 | **trigger** | Phrase to match (case-insensitive, punctuation ignored) |
 | **run** | Shell command (`cmd.exe` on Windows, `/bin/sh` on macOS) |
 | **hotkey** | Keyboard shortcut to send (e.g. `ctrl+z`, `win+left`) |
+| **send_to** | Where a `hotkey` goes: left out for the active window, `windows` for no app, or an app's `.exe` |
 | **type** | Pre-written text to deliver to the active window |
 
 ## Matching
@@ -41,6 +42,18 @@ commands:
 - Triggers are matched as substrings — saying "please open notepad" matches `"open notepad"`
 - Longer triggers are checked first, so `"open notepad plus plus"` won't accidentally match `"open notepad"`
 - First match wins
+
+### Spoken numbers: `{n}`
+
+Put `{n}` in a trigger where you say one number from 0 to 9, as a digit or a word. The same `{n}` in the `hotkey` or `type` is replaced by that number, so one command covers ten:
+
+```yaml
+  # "D 1" presses Ctrl+Shift+1, "D two" presses Ctrl+Shift+2
+  - trigger: "d {n}"
+    hotkey: "ctrl+shift+{n}"
+```
+
+"D 1", "D1", "D-1" and "D one" all match; "D 12" does not. `{n}` appears once per trigger and is never put into a `run` command. In the app, record the keys with any number and switch on **Last key = the number you said**.
 
 ## Command Types
 
@@ -58,6 +71,24 @@ Send keyboard shortcuts to the active window. Use `+` to combine keys.
   - trigger: "show desktop"
     hotkey: "win+d"
 ```
+
+#### Where the keys go: `send_to`
+
+By default the keys go to the app in front. When that app would catch them first, aim them elsewhere:
+
+- `send_to: windows`: Koli brings an invisible window of its own to the front, presses the keys there, and returns you to your window. No app gets them, so only Windows' shortcuts (like Alt+Shift+1 to switch language) and other programs' global shortcuts react. (The desktop isn't used: it reacts to keys like Ctrl+Shift+1, which changes its icon size.)
+- `send_to: chrome.exe`: Koli switches to that app's most recently used window, presses the keys, and switches back. If the app isn't open, nothing is pressed and Koli says so.
+
+```yaml
+  - trigger: "english"
+    hotkey: "alt+shift+1"
+    send_to: windows
+  - trigger: "new tab"
+    hotkey: "ctrl+t"
+    send_to: chrome.exe
+```
+
+In the app, pick **Send to** next to the keys. "A specific app…" lists the apps open right now. Windows only; on macOS a command with `send_to` doesn't run and says why.
 
 ### Type commands
 

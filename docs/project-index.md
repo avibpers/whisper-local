@@ -70,6 +70,7 @@ Koli is a fork of `drajb/whisper-local` by Rohit Burani (repo `avibpers/whisper-
 | **Console Welcome (legacy)** | `onboarding_tutorial.py` | First-launch console banner, skipped when the app window runs | - |
 | **Whisper.cpp Backend** | `whisper_engine_cpp.py` | Opt-in `whisper_cpp` backend mirroring WhisperEngine's API | pywhispercpp |
 | **Foreground App** | `platform/*/foreground.py` | Detects the active window/app for per-app rules | pywin32 / pyobjc |
+| **Window Focus** | `platform/*/window_focus.py` | Presses a voice command's keys in a chosen app or an invisible "no app" window, then returns focus; lists open apps (Windows; macOS stub) | ctypes |
 | **Input Watch** | `platform/*/input_watch.py` | Focus-change and typing hooks plus the UI Automation "is this a text field" probe for auto-dictation (Windows; macOS stub) | ctypes, comtypes |
 | **Console Control** | `platform/windows/console.py` | Show/hide/own the console window (pyapp builds) | ctypes |
 | **Meeting Mode** | `meeting/` + `services/meetings.py` | Detects calls (`detector.py`), runs the session with resume-or-new (`session.py`), captures loopback and mic (`capture.py`), splits each chunk by voice (`diarize.py`), labels speakers (`speakers.py`), remembers named voices across meetings (`voices.py`), transcribes on a low-priority worker (`transcriber.py`), keeps meeting files (`store.py`) | soundcard, pycaw, ten-vad, sherpa-onnx |

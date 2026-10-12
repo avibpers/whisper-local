@@ -76,7 +76,9 @@ function wire() {
   });
   on('notify', (n) => {
     if (!n || n.kind === 'fallback') return;
-    if (/^(Profile|Language|Hotkeys)/.test(n.message || '')) flash('info', n.message, {}, 2000);
+    // A voice command that couldn't reach its app ("chrome.exe isn't open").
+    if (n.kind === 'command') flash('warn', n.message, {}, 4000);
+    else if (/^(Profile|Language|Hotkeys)/.test(n.message || '')) flash('info', n.message, {}, 2000);
   });
   on('task', (t) => {
     const cur = bar.get().task;

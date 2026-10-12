@@ -17,7 +17,7 @@ sys.path.insert(0, str(ROOT / "src"))
 # platform/macos/app.py redefines an Objective-C class, which pyobjc refuses.
 _PLATFORM_SUBMODULES = ('hotkeys', 'keyboard', 'foreground', 'app', 'console',
                         'permissions', 'icons', 'paths', 'instance_lock', 'gpu',
-                        'audio_sessions', 'browser_tabs')
+                        'audio_sessions', 'browser_tabs', 'window_focus')
 
 
 # A module whose every attribute is a MagicMock unless set explicitly.
@@ -1409,6 +1409,100 @@ class VoiceCommandQuotingTests(unittest.TestCase):
             raw = vc._expand_template('echo ${clipboard}', shell_safe=False)
         self.assertEqual(safe, 'echo ' + shlex.quote('; rm -rf ~'))
         self.assertEqual(raw, 'echo ; rm -rf ~')
+
+
+# "d {n}" matches a spoken number and puts it in the keys; `send_to` decides
+# which window gets them.
+class VoiceCommandNumberAndTargetTests(unittest.TestCase):
+    def setUp(self):
+        reimport_under(self, fake_platform_modules())
+        try:
+            import koli.voice_commands as vc
+        except ImportError as e:
+            self.skipTest(f'voice_commands needs deps the lean env lacks: {e}')
+        self.vc = vc
+        self.manager = vc.VoiceCommandManager.__new__(vc.VoiceCommandManager)
+        self.manager.logger = __import__('logging').getLogger('test.voice_commands')
+        self.manager.commands = [
+            {'trigger': 'd {n}', 'hotkey': 'ctrl+shift+{n}', 'send_to': 'windows',
+             'then': [{'type': 'desk {n}'}]},
+            {'trigger': 'open notepad', 'run': 'notepad.exe'},
+        ]
+
+    def test_a_number_matches_as_a_digit_or_a_word(self):
+        for said, number in (('D 1', '1'), ('D1.', '1'), ('D-2', '2'), ('d one', '1'),
+                             ('Please D nine', '9'), ('D 0', '0')):
+            matched = self.manager.match_command(said)
+            self.assertIsNotNone(matched, said)
+            self.assertEqual(matched['hotkey'], f'ctrl+shift+{number}', said)
+
+    def test_other_phrases_do_not_match_a_number_trigger(self):
+        for said in ('D 12', 'dog 1', 'and 1', 'D', 'D something'):
+            self.assertIsNone(self.manager.match_command(said), said)
+
+    def test_the_number_fills_every_step_and_leaves_the_command_alone(self):
+        matched = self.manager.match_command('D 3')
+        self.assertEqual(matched['then'][0]['type'], 'desk 3')
+        self.assertEqual(self.manager.commands[0]['hotkey'], 'ctrl+shift+{n}')
+        self.assertEqual(self.manager.commands[0]['then'][0]['type'], 'desk {n}')
+
+    def test_keys_without_send_to_go_to_the_app_in_front(self):
+        self.manager._execute_action({'hotkey': 'ctrl+c'}, 'copy')
+        self.vc.keyboard.send_hotkey.assert_called_once_with('ctrl', 'c')
+        self.vc.window_focus.run_focused.assert_not_called()
+
+    def test_send_to_presses_the_keys_inside_the_target_window(self):
+        def run_focused(target, press):
+            self.assertEqual(target, 'windows')
+            self.vc.keyboard.send_hotkey.assert_not_called()  # not before the switch
+            press()
+        self.vc.window_focus.run_focused.side_effect = run_focused
+        self.manager._execute_action({'hotkey': 'ctrl+shift+1', 'send_to': 'windows'}, 'd 1')
+        self.vc.keyboard.send_hotkey.assert_called_once_with('ctrl', 'shift', '1')
+
+    def test_a_closed_target_app_presses_nothing_and_says_so(self):
+        import unittest.mock as mock
+        self.vc.window_focus.run_focused.side_effect = LookupError("chrome.exe isn't open")
+        with mock.patch.object(self.vc, 'publish') as publish:
+            self.manager._execute_action({'hotkey': 'ctrl+t', 'send_to': 'chrome.exe'}, 'new tab')
+        self.vc.keyboard.send_hotkey.assert_not_called()
+        publish.assert_called_once()
+        self.assertIn("chrome.exe isn't open", publish.call_args[0][1]['message'])
+
+
+# Saving a command keeps where its keys go and checks the {n} placeholder.
+class CommandSaveTargetTests(unittest.TestCase):
+    def setUp(self):
+        import unittest.mock as mock
+        reimport_under(self, fake_platform_modules())
+        try:
+            from koli.services import commands
+        except ImportError as e:
+            self.skipTest(f'services.commands needs deps the lean env lacks: {e}')
+        self.commands = commands
+        patcher = mock.patch.object(commands.dm, 'save_entry', side_effect=lambda *a, **k: a[4])
+        self.save_entry = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_send_to_is_kept_on_the_command_and_its_steps(self):
+        saved = self.commands.save_command({
+            'trigger': 'd {n}', 'hotkey': 'ctrl+shift+{n}', 'send_to': 'windows',
+            'then': [{'hotkey': 'enter', 'send_to': 'Chrome.EXE'}, {'hotkey': 'esc', 'send_to': ''}]})
+        self.assertEqual(saved['send_to'], 'windows')
+        self.assertEqual(saved['then'][0], {'hotkey': 'enter', 'send_to': 'chrome.exe'})
+        self.assertEqual(saved['then'][1], {'hotkey': 'esc'})
+
+    def test_send_to_only_belongs_on_keys(self):
+        saved = self.commands.save_command({'trigger': 'hi', 'type': 'hello', 'send_to': 'windows'})
+        self.assertNotIn('send_to', saved)
+
+    def test_n_in_the_keys_needs_n_in_the_phrase(self):
+        with self.assertRaisesRegex(ValueError, r'\{n\}'):
+            self.commands.save_command({'trigger': 'desk', 'hotkey': 'ctrl+{n}'})
+
+    def test_n_can_appear_once_in_the_phrase(self):
+        with self.assertRaisesRegex(ValueError, r'\{n\}'):
+            self.commands.save_command({'trigger': 'd {n} {n}', 'hotkey': 'ctrl+{n}'})
 
 
 class AutostartTests(unittest.TestCase):

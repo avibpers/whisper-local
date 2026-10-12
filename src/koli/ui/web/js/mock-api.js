@@ -296,6 +296,8 @@ export function createMock(emit) {
       const hit = data.commands.find((c) => c.id === String(phrase).trim().toLowerCase());
       return ok(hit ? { matched: true, trigger: hit.id, action: hit.action } : { matched: false });
     },
+    command_open_apps: () => ok([{ exe: 'chrome.exe', title: 'Inbox (3) - Gmail - Google Chrome' },
+      { exe: 'code.exe', title: 'koli - Visual Studio Code' }, { exe: 'obs64.exe', title: 'OBS 30.2 - Profile: Untitled' }]),
     transforms_list: () => ok(data.transforms),
     transform_apply: () => ok(false),
     rules_list: () => ok({ rules: data.rules, foreground: { exe: 'chrome.exe', title: 'Inbox (3) - Gmail - Google Chrome' }, matching: null }),

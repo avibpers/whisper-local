@@ -20,15 +20,69 @@ function TypeTag({ action }) {
   return html`<span class="typ" style=${style}>${a.tag}</span>`;
 }
 
-function StepEditor({ step, onChange, onRemove, first }) {
+// ── Spoken numbers in keys ────────────────────────────────────────────────
+// "d {n}" hears a number 0-9; keys ending in {n} press that number.
+
+const NUMBER = '{n}';
+const MODIFIER_KEYS = ['ctrl', 'alt', 'shift', 'win'];
+const lastKey = (hotkey) => String(hotkey || '').split('+').pop();
+
+// Keys with their last key swapped for the spoken number, or back to "1".
+function withNumberKey(hotkey, on) {
+  const parts = String(hotkey || '').split('+').filter(Boolean);
+  if (!on) return parts.map((k) => (k === NUMBER ? '1' : k)).join('+');
+  if (parts.length && !MODIFIER_KEYS.includes(parts[parts.length - 1])) parts.pop();
+  return [...parts, NUMBER].join('+');
+}
+
+// ── Where the keys go ─────────────────────────────────────────────────────
+
+const SEND_TO_HELP = {
+  windows: 'No app gets the keys, so only Windows and other programs’ shortcuts react. You stay where you are.',
+  app: 'Koli switches to the app, presses the keys, and brings you back. Nothing is pressed if it isn’t open.',
+};
+
+// The "Send to" choice for keys: the app in front (send_to left out),
+// "windows", or an app's .exe picked from the apps open now or typed.
+function SendToPicker({ step, onChange }) {
+  const target = step.send_to || '';
+  const [pickingApp, setPickingApp] = useState(!!target && target !== 'windows');
+  const [apps, setApps] = useState([]);
+  const [listId] = useState(() => `open-apps-${Math.random().toString(36).slice(2)}`);
+  const mode = target === 'windows' ? 'windows' : pickingApp ? 'app' : '';
+  useEffect(() => { if (mode === 'app') call('command_open_apps').then(setApps).catch(() => setApps([])); }, [mode]);
+  const choose = (next) => {
+    setPickingApp(next === 'app');
+    const send_to = next === 'windows' ? 'windows' : next === 'app' && target !== 'windows' ? target : undefined;
+    onChange({ ...step, send_to });
+  };
+  return html`<label class="row-flex"><span class="muted">Send to</span>
+      <select class="sel" aria-label="Send the keys to" onChange=${(e) => choose(e.currentTarget.value)}>
+        <option value="" selected=${mode === ''}>The app you’re in</option>
+        <option value="windows" selected=${mode === 'windows'}>Windows (no app)</option>
+        <option value="app" selected=${mode === 'app'}>A specific app…</option>
+      </select></label>
+    ${mode === 'app' && html`<input class="inp mono" style="width:180px" list=${listId} placeholder="chrome.exe" value=${target}
+      aria-label="App to send the keys to" onChange=${(e) => onChange({ ...step, send_to: e.currentTarget.value.trim().toLowerCase() || undefined })} />
+      <datalist id=${listId}>${apps.map((a) => html`<option value=${a.exe}>${a.title}</option>`)}</datalist>`}
+    ${mode && html`<span class="small muted" style="flex-basis:100%">${SEND_TO_HELP[mode]}</span>`}`;
+}
+
+function StepEditor({ step, onChange, onRemove, first, phrase }) {
   const kind = step.delay != null ? 'delay' : ACTIONS.map(([k]) => k).find((k) => step[k] != null) || 'hotkey';
   const setKind = (k) => onChange(k === 'delay' ? { delay: 0.2 } : { [k]: '' });
   const value = kind === 'delay' ? step.delay : step[kind];
+  const usesNumber = kind === 'hotkey' && lastKey(value) === NUMBER;
+  // A new recording keeps "last key = the number" when it ends in a digit.
+  const commitKeys = (keys) => onChange({ ...step, hotkey: usesNumber && /^\d$/.test(lastKey(keys)) ? withNumberKey(keys, true) : keys });
   return html`<div class="row-flex" style="padding:10px 12px;border:1px solid var(--line);border-radius:10px">
     <select class="sel" aria-label="Step type" onChange=${(e) => setKind(e.currentTarget.value)}>
       ${[...ACTIONS.map(([k, l]) => [k, l]), ...(first ? [] : [['delay', 'Wait']])].map(([k, l]) => html`<option value=${k} selected=${k === kind}>${l}</option>`)}
     </select>
-    ${kind === 'hotkey' && html`<${HotkeyCapture} value=${value} label="Keys" sendsKeys=${true} onCommit=${(v) => onChange({ hotkey: v })} />`}
+    ${kind === 'hotkey' && html`<${HotkeyCapture} value=${value} label="Keys" sendsKeys=${true} onCommit=${commitKeys} />
+      ${(usesNumber || (phrase || '').includes(NUMBER)) && html`<label class="row-flex small">Last key = the number you said
+        <${Toggle} checked=${usesNumber} label="Last key is the number you said" onChange=${(on) => onChange({ ...step, hotkey: withNumberKey(value, on) })} /></label>`}
+      <${SendToPicker} step=${step} onChange=${onChange} />`}
     ${kind === 'delay' && html`<input class="inp num mono" value=${value} aria-label="Seconds" onBlur=${(e) => onChange({ delay: Number(e.currentTarget.value) || 0 })} /><span class="muted">seconds (max 60)</span>`}
     ${(kind === 'type' || kind === 'run' || kind === 'rephrase') && html`<input class=${'inp' + (kind === 'run' ? ' mono' : '')} style="flex:1;min-width:200px" dir="auto"
       aria-label=${ACTION[kind].label} value=${value || ''} placeholder=${kind === 'run' ? 'notepad.exe' : kind === 'rephrase' ? 'Rewrite this to be more concise' : 'Text to type'}
@@ -53,13 +107,14 @@ function openCommandEditor(item, reload) {
       <div class="modal-body">
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px">
           <label class="stack" style="gap:6px"><span class="eyebrow">Say</span><input class="inp" dir="auto" value=${trigger} aria-label="Trigger phrase"
-            onInput=${(e) => { trigger = e.currentTarget.value; }} placeholder="open downloads" /></label>
+            onInput=${(e) => { trigger = e.currentTarget.value; rerender(); }} placeholder="open downloads" />
+            <span class="small muted">Put {n} where you say a number 0–9: “d {n}” hears “D 1” and “D two”.</span></label>
           <label class="stack" style="gap:6px"><span class="eyebrow">Or match a pattern (advanced)</span><input class="inp mono" value=${pattern} aria-label="Pattern"
             onInput=${(e) => { pattern = e.currentTarget.value; }} placeholder="regular expression" /></label>
         </div>
         <span class="eyebrow">Does</span>
-        <${StepEditor} first=${true} step=${main} onChange=${(s) => { main = s; rerender(); }} />
-        ${steps.map((s, i) => html`<${StepEditor} step=${s} onChange=${(n) => { steps[i] = n; rerender(); }} onRemove=${() => { steps.splice(i, 1); rerender(); }} />`)}
+        <${StepEditor} first=${true} phrase=${trigger} step=${main} onChange=${(s) => { main = s; rerender(); }} />
+        ${steps.map((s, i) => html`<${StepEditor} phrase=${trigger} step=${s} onChange=${(n) => { steps[i] = n; rerender(); }} onRemove=${() => { steps.splice(i, 1); rerender(); }} />`)}
         <button type="button" class="btn ghost" style="align-self:flex-start" onClick=${() => { steps.push({ delay: 0.2 }); rerender(); }}><${Icon} name="plus" />Add a step</button>
         ${hasRun && html`<div class="notice warn" style="align-items:center"><span class="grow">Run steps execute with your user rights. A run step that uses ${'${clipboard}'} or ${'${selection}'} always asks first.</span>
           <label class="row-flex" style="color:var(--ink)">Always ask<${Toggle} checked=${confirmRun} label="Always ask before running" onChange=${(v) => { confirmRun = v; rerender(); }} /></label></div>`}
@@ -105,7 +160,7 @@ function VoiceCommands() {
           ${rows.map((it) => html`<tr class=${it.disabled ? 'off' : ''}>
             <td dir="auto">${it.entry.trigger || html`<span class="mono">${it.entry.match_regex}</span>`} ${ORIGIN[it.origin] && html`<span class="chip sm">${ORIGIN[it.origin]}</span>`}</td>
             <td><${TypeTag} action=${it.action} />${it.entry.then && html` <span class="small muted">+${it.entry.then.length} steps</span>`}</td>
-            <td>${k === 'hotkey' ? html`<${Keys} hotkey=${it.entry.hotkey} />` : html`<span class=${k === 'run' ? 'mono small' : 'small'} style="color:var(--ink2)" dir="auto">${String(it.entry[k]).slice(0, 80)}</span>`}</td>
+            <td>${k === 'hotkey' ? html`<${Keys} hotkey=${it.entry.hotkey} />${it.entry.send_to && html` <span class="small muted">to ${it.entry.send_to === 'windows' ? 'Windows' : it.entry.send_to}</span>`}` : html`<span class=${k === 'run' ? 'mono small' : 'small'} style="color:var(--ink2)" dir="auto">${String(it.entry[k]).slice(0, 80)}</span>`}</td>
             <td><${Toggle} checked=${!it.disabled} label=${`Enable ${it.id}`} onChange=${(v) => call('command_enable', it.id, v).then(reload)} /></td>
             <td class="end"><button type="button" class="btn ghost sm" onClick=${() => openCommandEditor(it, reload)}>Edit</button>
               ${it.origin !== 'shipped' && html`<button type="button" class="btn ghost sm" onClick=${() => remove(it)}>${it.origin === 'yours' ? 'Delete' : 'Reset'}</button>`}</td></tr>`)}`;
