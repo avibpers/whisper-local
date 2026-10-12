@@ -80,7 +80,7 @@ class MeetingService:
             is_busy=lambda: not self.ctx.state_manager.is_idle(), tracker=self.tracker,
             language_provider=lambda: str(self._setting('meeting.language', 'auto') or 'auto'),
             on_turn=self.session.add_turn, on_speaker=self.session.ensure_speaker,
-            on_pending=self._on_pending, on_behind=self.session.set_behind)
+            on_pending=self._on_pending, on_behind=self.session.set_behind, keep_audio=self._keep_audio)
         self.transcriber.start()
         if autostart and self._setting('meeting.enabled', True):
             self.start_detector()
@@ -273,6 +273,12 @@ class MeetingService:
             self._report(LOOPBACK_HINT)
         else:
             self._report(message)
+
+    # With meeting.keep_audio on, each chunk's audio is saved beside its
+    # meeting (for tuning how speakers are told apart); off by default.
+    def _keep_audio(self, chunk: dict):
+        if chunk.get('meeting_id') and self._setting('meeting.keep_audio', False):
+            self.store.save_audio(chunk['meeting_id'], chunk)
 
     # The chunk being transcribed, so the panel can show a placeholder.
     def _on_pending(self, stream):

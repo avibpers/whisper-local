@@ -1760,6 +1760,49 @@ class TranscriberSplitTests(unittest.TestCase):
         self.assertEqual((turns[1]['t0'], turns[1]['t1']), (106.3, 111.5))
 
 
+# meeting.keep_audio: off by default; on, each chunk is a WAV beside the
+# meeting, and deleting the meeting deletes it.
+class KeepAudioTests(unittest.TestCase):
+    def test_kept_audio_is_a_wav_per_chunk_and_goes_with_the_meeting(self):
+        import wave
+        from koli.meeting.store import MeetingStore, new_meeting
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        store = MeetingStore(Path(tmp.name))
+        store.save(new_meeting('m1', 'Meeting', {'key': 'manual', 'app': '', 'kind': 'manual'}, at(0)))
+        path = store.save_audio('m1', {'t0': 1700000000.5, 'stream': 'loopback',
+                                       'audio': np.full(16000, 0.25, dtype=np.float32)})
+        self.assertEqual(path.name, '1700000000.50-loopback.wav')
+        with wave.open(str(path)) as w:
+            self.assertEqual((w.getframerate(), w.getnchannels(), w.getnframes()), (16000, 1, 16000))
+        self.assertEqual([h['id'] for h in store.list()], ['m1'], 'the audio folder is not a meeting')
+        self.assertTrue(store.delete('m1'))
+        self.assertFalse(store.audio_dir('m1').exists())
+
+    def test_the_service_keeps_audio_only_when_asked(self):
+        from koli.services.meetings import MeetingService
+        from koli.meeting.store import MeetingStore
+        from koli.meeting.voices import VoiceBook
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        values = {'meeting.enabled': False, 'meeting.keep_audio': False}
+        ctx = type('Ctx', (), {})()
+        ctx.state_manager = FakeStateManager()
+        ctx.config_manager = FakeConfig(values)
+        ctx.model_registry = None
+        store = MeetingStore(Path(tmp.name) / 'meetings')
+        svc = MeetingService(ctx, store=store, publish=lambda t, p: None, embedder_factory=lambda: None,
+                             loopback_available=lambda: True, sessions_fn=lambda: [],
+                             voices=VoiceBook(Path(tmp.name) / 'voices.json'))
+        self.addCleanup(svc.shutdown)
+        chunk = {'meeting_id': 'm1', 't0': 5.0, 'stream': 'mic', 'audio': np.zeros(1600, dtype=np.float32)}
+        svc._keep_audio(chunk)
+        self.assertFalse(store.audio_dir('m1').exists())
+        values['meeting.keep_audio'] = True
+        svc._keep_audio(chunk)
+        self.assertEqual([p.name for p in store.audio_dir('m1').iterdir()], ['5.00-mic.wav'])
+
+
 class ServiceVoicesTests(unittest.TestCase):
     def test_renaming_a_speaker_remembers_the_voice(self):
         from koli.services.meetings import MeetingService

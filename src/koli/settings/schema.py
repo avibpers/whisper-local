@@ -345,6 +345,9 @@ SCHEMA = [
        help='Each app can override this on the Apps screen.'),
     _S('meeting.include_me', 'Include my side', 'meetings', 'toggle',
        help="Your microphone becomes \"You\" in the transcript. The panel's Exclude me button pauses it."),
+    _S('meeting.keep_audio', 'Keep the audio', 'meetings', 'toggle',
+       help="Saves the call's audio with the transcript, to improve telling speakers apart. Everyone's voice "
+       'is stored on this computer, so turn it on only with their consent. Deleting the meeting deletes it.'),
     _S('meeting.input_device', 'Microphone for meetings', 'meetings', 'microphone', apply=NEXT_RECORDING,
        help='Same as dictation, or another input. Applies to the next meeting; one that won\'t open falls back to the dictation microphone.'),
     _S('meeting.gap_minutes', 'Resume within', 'meetings', 'number', min=1, max=60, unit='min',

@@ -47,7 +47,8 @@ class MeetingTranscriber:
     def __init__(self, engine_provider: Callable, is_busy: Callable[[], bool], tracker: SpeakerTracker,
                  language_provider: Callable[[], str], on_turn: Callable[[dict], None],
                  on_speaker: Callable[[dict], None], on_pending: Callable[[Optional[str]], None],
-                 on_behind: Callable[[float], None], poll_s: float = 0.1):
+                 on_behind: Callable[[float], None], poll_s: float = 0.1,
+                 keep_audio: Optional[Callable[[dict], None]] = None):
         self.engine_provider = engine_provider
         self.is_busy = is_busy
         self.tracker = tracker
@@ -57,6 +58,7 @@ class MeetingTranscriber:
         self.on_pending = on_pending
         self.on_behind = on_behind
         self.poll_s = poll_s
+        self.keep_audio = keep_audio      # saves a chunk's audio when meeting.keep_audio is on
         # Finds the voices in a chunk: audio -> [(start_s, end_s, voice)];
         # set once its model is loaded, until then a chunk is one voice.
         self.split: Optional[Callable[[np.ndarray], list]] = None
@@ -130,6 +132,11 @@ class MeetingTranscriber:
         if engine is None:
             return
         self.on_pending(chunk['stream'])
+        if self.keep_audio is not None:
+            try:
+                self.keep_audio(chunk)
+            except Exception as e:
+                logger.warning(f"Meeting audio not kept: {e}")
         # No dictation prompt: it's a style hint for the app in front, and on a
         # short or quiet clip Whisper wrote it back as the turn ("Friendly tone.").
         text = engine.transcribe_audio(chunk['audio'], language=self.language_provider() or 'auto', use_prompt=False)

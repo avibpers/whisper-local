@@ -552,6 +552,10 @@ meeting: # Meetings: calls in Discord, Zoom, Teams and the browser
     # Your own side, from the microphone, as "You". The panel's Exclude me
     # button turns it off for a while.
     include_me: true
+    # Keep each meeting's audio beside its transcript, in "<id>.audio", to
+    # tune how speakers are told apart. Everyone's voice is stored on this
+    # computer, so only with their consent. Deleting the meeting deletes it.
+    keep_audio: false
     # Which microphone hears you in meetings: '' for the dictation microphone
     # (audio.input_device), "default" for the computer's default input, or a
     # device id number. A device that won't open falls back to the dictation

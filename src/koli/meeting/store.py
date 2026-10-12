@@ -2,16 +2,21 @@
 # One JSON file per meeting under <data>/meetings/: who spoke, what they said
 # and when, plus the voiceprints that keep speaker labels stable when a
 # meeting resumes. Written throttled while a meeting runs, so a crash loses
-# seconds, not the meeting.
+# seconds, not the meeting. With meeting.keep_audio on, the call's audio is
+# kept beside it in "<id>.audio/".
 
 import datetime
 import json
 import logging
 import os
+import shutil
 import threading
 import time
+import wave
 from pathlib import Path
 from typing import Optional
+
+import numpy as np
 
 from ..utils import get_user_app_data_path
 
@@ -129,13 +134,35 @@ class MeetingStore:
                     logger.warning(f"Skipping unreadable meeting {path.name}: {e}")
         return out
 
+    # Deleting a meeting deletes its kept audio too.
     def delete(self, meeting_id: str) -> bool:
         with self._lock:
+            shutil.rmtree(self.audio_dir(meeting_id), ignore_errors=True)
             try:
                 self.path(meeting_id).unlink()
                 return True
             except FileNotFoundError:
                 return False
+
+    # ── Kept audio (meeting.keep_audio, off by default) ──────────────────────
+    # Each chunk as a 16 kHz WAV in "<id>.audio/", named by its wall-clock
+    # start and stream, so a meeting can be replayed to tune how speakers are
+    # told apart. Everyone's voice is in it; only kept when you turn it on.
+
+    def audio_dir(self, meeting_id: str) -> Path:
+        return self.folder / f"{meeting_id}.audio"
+
+    def save_audio(self, meeting_id: str, chunk: dict) -> Path:
+        folder = self.audio_dir(meeting_id)
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f"{float(chunk['t0']):.2f}-{chunk['stream']}.wav"
+        samples = np.clip(np.asarray(chunk['audio'], dtype=np.float32).reshape(-1), -1.0, 1.0)
+        with wave.open(str(path), 'wb') as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(16000)
+            w.writeframes((samples * 32767).astype(np.int16).tobytes())
+        return path
 
     def export(self, meeting_id: str, fmt: str) -> str:
         return export_text(self.load(meeting_id), fmt)
