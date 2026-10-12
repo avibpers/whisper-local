@@ -264,6 +264,8 @@ export function createMock(emit) {
     dictation_stop: () => ok(),
     dictation_cancel: () => { setState({ state: 'idle' }); return ok(); },
     dictation_pause: (p) => { setState({ paused: !!p }); return ok(!!p); },
+    hotkeys_reserved: () => ok([{ hotkey: 'alt+shift', label: 'switch the keyboard language' },
+      { hotkey: 'alt+shift+1', label: 'switch to English (United States)' }]),
     log_tail: () => ok([]),
     log_clear: () => ok(),
 

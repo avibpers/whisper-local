@@ -28,7 +28,7 @@ function StepEditor({ step, onChange, onRemove, first }) {
     <select class="sel" aria-label="Step type" onChange=${(e) => setKind(e.currentTarget.value)}>
       ${[...ACTIONS.map(([k, l]) => [k, l]), ...(first ? [] : [['delay', 'Wait']])].map(([k, l]) => html`<option value=${k} selected=${k === kind}>${l}</option>`)}
     </select>
-    ${kind === 'hotkey' && html`<${HotkeyCapture} value=${value} label="Keys" onCommit=${(v) => onChange({ hotkey: v })} />`}
+    ${kind === 'hotkey' && html`<${HotkeyCapture} value=${value} label="Keys" sendsKeys=${true} onCommit=${(v) => onChange({ hotkey: v })} />`}
     ${kind === 'delay' && html`<input class="inp num mono" value=${value} aria-label="Seconds" onBlur=${(e) => onChange({ delay: Number(e.currentTarget.value) || 0 })} /><span class="muted">seconds (max 60)</span>`}
     ${(kind === 'type' || kind === 'run' || kind === 'rephrase') && html`<input class=${'inp' + (kind === 'run' ? ' mono' : '')} style="flex:1;min-width:200px" dir="auto"
       aria-label=${ACTION[kind].label} value=${value || ''} placeholder=${kind === 'run' ? 'notepad.exe' : kind === 'rephrase' ? 'Rewrite this to be more concise' : 'Text to type'}

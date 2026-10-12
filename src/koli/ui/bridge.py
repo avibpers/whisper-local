@@ -203,6 +203,14 @@ class Bridge:
             self._sm.set_paused(bool(paused))
         return bool(self._sm.is_paused)
 
+    # Shortcuts the OS grabs before any app sees them, so the shortcut
+    # recorder can say why a key went missing (Windows' Alt+Shift+1 "Switch
+    # to English" leaves only Alt+Shift).
+    @_api
+    def hotkeys_reserved(self):
+        from ..platform import hotkeys
+        return hotkeys.os_reserved_hotkeys()
+
     @_api
     def paste_last(self):
         return self._host.paste_last()

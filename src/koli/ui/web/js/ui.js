@@ -192,11 +192,82 @@ function keyName(e) {
   return map[c] || (e.key && e.key.length === 1 ? e.key.toLowerCase() : null);
 }
 
-export function HotkeyCapture({ value, onCommit, label, nullable = false }) {
+// Shortcuts the OS keeps for itself ([{hotkey, label}]), shared by every
+// recorder. Fetched again each time a recording starts, so a change in the
+// Windows settings shows up without restarting the app.
+let osReservedRequest = null;
+function loadOsReserved(fresh = false) {
+  if (!osReservedRequest || fresh) osReservedRequest = call('hotkeys_reserved').catch(() => []);
+  return osReservedRequest;
+}
+
+const hotkeyParts = (hotkey) => String(hotkey || '').toLowerCase().split('+').map((k) => k.trim()).filter(Boolean);
+const sameKeys = (a, b) => a.length === b.length && a.every((k) => b.includes(k));
+const isModifier = (key) => ORDER.includes(key);
+const prettyHotkey = (hotkey) => prettyKeys(hotkey).join('+');
+
+// How a shortcut clashes with the OS ones: `exact` are the same keys,
+// `swallowed` are OS shortcuts that start with exactly these modifiers. A
+// modifier-only recording with a swallowed match means the OS grabbed the last
+// key (Alt+Shift+1 records as Alt+Shift).
+function osClashes(value, reserved) {
+  const keys = hotkeyParts(value);
+  if (!keys.length) return { exact: [], swallowed: [] };
+  const modifierOnly = keys.every(isModifier);
+  const exact = [];
+  const swallowed = [];
+  for (const entry of reserved) {
+    const parts = hotkeyParts(entry.hotkey);
+    if (sameKeys(parts, keys)) exact.push(entry);
+    else if (modifierOnly && parts.some((k) => !isModifier(k)) && sameKeys(parts.filter(isModifier), keys)) swallowed.push(entry);
+  }
+  return { exact, swallowed };
+}
+
+// "Alt+Shift to switch the keyboard language and Alt+Shift+1 to switch to …"
+function describeOsShortcuts(entries) {
+  const uses = entries.map((e) => `${prettyHotkey(e.hotkey)} to ${e.label}`);
+  return uses.length > 1 ? `${uses.slice(0, -1).join(', ')} and ${uses[uses.length - 1]}` : uses[0];
+}
+
+const OS_HOTKEY_SETTINGS = 'Windows Settings → Time & language → Typing → Advanced keyboard settings → Input language hot keys';
+
+// The note under a recorder whose keys clash with the OS. For a shortcut Koli
+// listens for, any clash is a problem. For keys a command presses, the OS
+// action may be the point (press Alt+Shift+1 to switch to English), so only a
+// swallowed key matters, and each candidate is offered as a one-click fix.
+function OsClashHint({ value, reserved, sendsKeys, onPick }) {
+  const { exact, swallowed } = osClashes(value, reserved);
+  const style = 'flex-basis:100%;margin-top:0';
+  if (sendsKeys) {
+    if (!swallowed.length) return null;
+    return html`<span class="field-warn row-flex" role="note" style=${style}>
+      <span>Windows caught the last key: it uses ${describeOsShortcuts(swallowed)}.</span>
+      ${swallowed.map((e) => html`<button type="button" class="btn sm" onClick=${() => onPick(e.hotkey)}>Use ${prettyHotkey(e.hotkey)}</button>`)}
+    </span>`;
+  }
+  const taken = [...exact, ...swallowed];
+  if (!taken.length) return null;
+  return html`<span class="field-warn" role="note" style=${style}>
+    Taken by Windows: it uses ${describeOsShortcuts(taken)}, so this shortcut won't work as expected.
+    Pick other keys, or change them in ${OS_HOTKEY_SETTINGS}.
+  </span>`;
+}
+
+// `sendsKeys`: the keys are pressed by Koli (a command step), not a shortcut
+// Koli listens for. It changes what the clash hint says.
+export function HotkeyCapture({ value, onCommit, label, nullable = false, sendsKeys = false }) {
   const [listening, setListening] = useState(false);
+  const [osReserved, setOsReserved] = useState([]);
   const pressed = useRef(new Set());
   const mods = useRef(new Set());
   const ref = useRef(null);
+
+  useEffect(() => {
+    let alive = true;
+    loadOsReserved().then((list) => alive && setOsReserved(list || []));
+    return () => { alive = false; };
+  }, []);
 
   const stop = (result) => {
     setListening(false);
@@ -208,6 +279,7 @@ export function HotkeyCapture({ value, onCommit, label, nullable = false }) {
     mods.current = new Set();
     setListening(true);
     call('dictation_pause', true).catch(() => {});
+    loadOsReserved(true).then((list) => setOsReserved(list || []));
     setTimeout(() => ref.current && ref.current.focus(), 0);
   };
   const combo = (key) => [...ORDER.filter((m) => mods.current.has(m)), ...(key ? [key] : [])].join('+');
@@ -237,6 +309,7 @@ export function HotkeyCapture({ value, onCommit, label, nullable = false }) {
       ${listening ? html`<span class="muted">Press the new keys…</span>` : html`<${Keys} hotkey=${value} />`}
     </button>
     ${nullable && value && !listening && html`<button type="button" class="btn ghost sm" onClick=${() => onCommit(null)}>Clear</button>`}
+    ${!listening && html`<${OsClashHint} value=${value} reserved=${osReserved} sendsKeys=${sendsKeys} onPick=${onCommit} />`}
   </span>`;
 }
 

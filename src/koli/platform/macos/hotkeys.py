@@ -130,6 +130,12 @@ def unsupported_keys(hotkey_str: str) -> list:
     return [p for p in parts if not p or (p not in known and p not in MODIFIER_FLAGS and p not in KEY_CODES)]
 
 
+# Shortcuts the OS keeps for itself. Windows reads its input-language
+# shortcuts; macOS input-source shortcuts (Ctrl+Space) aren't checked yet.
+def os_reserved_hotkeys() -> list:
+    return []
+
+
 def _parse_binding(binding: list) -> ParsedBinding:
     hotkey_str = binding[0]
     press_cb = binding[1]

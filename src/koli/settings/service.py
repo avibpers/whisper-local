@@ -21,10 +21,6 @@ HOTKEY_PATHS = ('hotkey.recording_hotkey', 'hotkey.stop_key', 'hotkey.auto_send_
                 'hotkey.pause_hotkey', 'hotkey.paste_last_hotkey', 'hotkey.meeting_hotkey',
                 'hotkey.meeting_mute_hotkey')
 
-# Chords Windows uses to switch keyboard language when a second layout is
-# installed (Hebrew, Arabic, Russian...). Assigning them breaks typing.
-LAYOUT_SWITCH_CHORDS = ({'alt', 'shift'}, {'ctrl', 'shift'})
-
 
 class SettingsError(ValueError):
     pass
@@ -200,9 +196,6 @@ class SettingsService:
                         if {path, other} == {'hotkey.stop_key', 'hotkey.auto_send_key'}:
                             raise SettingsError(f"Already used by “{other_label}”. Stop and send-with-Enter need different keys.")
                         raise SettingsError(f"Already used by “{other_label}”.")
-                if any(chord <= keys for chord in LAYOUT_SWITCH_CHORDS):
-                    warnings.append("This chord also switches the keyboard language on Windows "
-                                    "when you have a second layout (Hebrew, Arabic, Russian…).")
             elif path == 'hotkey.recording_hotkey':
                 raise SettingsError("The record shortcut can't be empty.")
         if path == 'vad.vad_offset_threshold' and value > (self.cm.get_path('vad.vad_onset_threshold') or 1):
