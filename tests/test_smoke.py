@@ -633,6 +633,42 @@ class NoiseSuppresionTests(unittest.TestCase):
             result = ns_mod.apply_noise_reduction(audio, 16000, 0.75)
             np.testing.assert_array_equal(result, audio)
 
+    # The first run loads the library: 4.8 s on 2026-10-12, long enough for an
+    # auto-dictation phrase to outlive its session. It is warmed up once, in
+    # the background, as soon as noise suppression is on.
+    def test_warm_up_runs_once_in_the_background(self):
+        import unittest.mock as mock
+        import koli.noise_suppression as ns_mod
+        ns_mod._warmed.clear()
+        started = []
+
+        class InlineThread:
+            def __init__(self, target, **_):
+                self.target = target
+
+            def start(self):
+                started.append(1)
+                self.target()
+        with mock.patch.object(ns_mod.threading, 'Thread', InlineThread), \
+             mock.patch.object(ns_mod, 'apply_noise_reduction') as run:
+            ns_mod.warm_up_in_background()
+            ns_mod.warm_up_in_background()
+        self.assertEqual(len(started), 1)
+        run.assert_called_once()
+
+    def test_the_recorder_warms_it_up_when_turned_on(self):
+        import unittest.mock as mock
+        try:
+            from koli.audio_recorder import AudioRecorder
+        except ImportError as e:
+            self.skipTest(f'audio_recorder needs deps the lean env lacks: {e}')
+        recorder = AudioRecorder.__new__(AudioRecorder)
+        with mock.patch('koli.noise_suppression.warm_up_in_background') as warm:
+            recorder.apply_live_config(noise_suppression={'enabled': False})
+            warm.assert_not_called()
+            recorder.apply_live_config(noise_suppression={'enabled': True})
+            warm.assert_called_once()
+
     def test_config_in_defaults(self):
         from ruamel.yaml import YAML
         path = ROOT / "src" / "koli" / "config.defaults.yaml"
@@ -5423,7 +5459,8 @@ class AutoDictationStateManagerTests(unittest.TestCase):
              mock.patch('koli.state_manager.record_transcription'), mock.patch('koli.state_manager.record_transcript'), \
              mock.patch('koli.state_manager.foreground') as fg:
             fg.get_foreground_app.return_value = {'exe': 'discord.exe'}
-            sm._transcription_pipeline(np.zeros(16000, dtype=np.float32), phrase=True)
+            sm._auto_session = sm._live_session = 1
+            sm._transcription_pipeline(np.zeros(16000, dtype=np.float32), phrase=True, phrase_session=1)
         sm.clipboard_manager.deliver_transcription.assert_called_once_with('hello there ', False, allow_delay=False,
                                                                            send_delay=None)
         sm.audio_feedback.play_stop_sound.assert_not_called()
@@ -5435,11 +5472,13 @@ class AutoDictationStateManagerTests(unittest.TestCase):
     # Runs the real pipeline on an auto-started session with this transcript
     # and app rule; returns the clipboard mock.
     def _run_auto_pipeline(self, text, rule, phrase, prompt=None, main_wait=0, info=None, auto=True,
-                           audio=None, levels=None, config=None):
+                           audio=None, levels=None, config=None, prepare=None, phrase_session=None, run=None):
         import unittest.mock as mock
         import numpy as np
         sm = self._sm(had_speech=True)
         sm._auto_started = auto
+        if phrase and phrase_session is None:
+            sm._auto_session = sm._live_session = phrase_session = 1   # the session still running
         self.last_sm = sm
         del sm._transcription_pipeline
         sm.audio_recorder.get_audio_duration.return_value = 1.5
@@ -5459,13 +5498,178 @@ class AutoDictationStateManagerTests(unittest.TestCase):
         sm._pending_model_change = sm._pending_device_change = None
         sm._idle_actions = []
         sm._update_ui_state = mock.Mock()
+        if prepare:
+            prepare(sm)
+        clip = np.zeros(16000, dtype=np.float32) if audio is None else audio
         with mock.patch('builtins.print'), mock.patch('koli.state_manager.publish'), \
              mock.patch('koli.state_manager.postprocess', side_effect=lambda t, cfg, trace=None: t), \
              mock.patch('koli.state_manager.record_transcription'), mock.patch('koli.state_manager.record_transcript'), \
              mock.patch('koli.state_manager.foreground') as fg:
             fg.get_foreground_app.return_value = {'exe': 'whatsapp.root.exe'}
-            sm._transcription_pipeline(np.zeros(16000, dtype=np.float32) if audio is None else audio, phrase=phrase)
+            if run:
+                run(sm, clip)
+            else:
+                sm._transcription_pipeline(clip, phrase=phrase, phrase_session=phrase_session)
         return sm.clipboard_manager
+
+    # ── Recordings nobody started on purpose (app.log, 2026-10-12) ──
+    # 16:43 "I'm sorry, I'm so sorry": a phrase took 4.8 s to prepare, the
+    # silence timeout ended its session meanwhile, and the phrase then ran as a
+    # hotkey dictation. 17:31 "I'm sorry" x4: a continuous-mode restart heard
+    # typing. Both skipped the auto-dictation guards and taught Koli "your" voice.
+
+    def _unsure_info(self):
+        # The 16:43 clip's own numbers.
+        return {'language_probability': 0.47, 'audio_seconds': 2.74, 'segments': [
+            {'text': " I'm sorry, I'm so sorry.", 'start': 0.0, 'end': 2.7, 'no_speech_prob': 0.35,
+             'avg_logprob': -1.31, 'compression_ratio': 1.0}]}
+
+    def _sure_info(self):
+        return {'language_probability': 0.95, 'audio_seconds': 3.0, 'segments': [
+            {'text': ' Merge it into master.', 'start': 0.0, 'end': 3.0, 'no_speech_prob': 0.02,
+             'avg_logprob': -0.2, 'compression_ratio': 1.1}]}
+
+    def test_a_phrase_that_outlives_its_session_keeps_the_auto_guards(self):
+        import unittest.mock as mock
+        levels = mock.Mock(my_level=mock.Mock(return_value=None))
+        # The session ended quietly (timeout after the last phrase): its flag is
+        # gone, but the phrase is still wanted.
+        cb = self._run_auto_pipeline("I'm sorry, I'm so sorry.", None, True, auto=False, phrase_session=4,
+                                     info=self._unsure_info(), levels=levels,
+                                     prepare=lambda sm: setattr(sm, '_live_session', 4))
+        cb.deliver_transcription.assert_not_called()
+        levels.learn.assert_not_called()
+
+    def test_a_wanted_late_phrase_is_still_pasted(self):
+        cb = self._run_auto_pipeline('Merge it into master.', None, True, auto=False, phrase_session=4,
+                                     info=self._sure_info(), prepare=lambda sm: setattr(sm, '_live_session', 4))
+        self.assertEqual(cb.deliver_transcription.call_args.args[0], 'Merge it into master. ')
+
+    def test_a_phrase_from_a_cancelled_session_is_dropped(self):
+        # Typing, leaving the field or Esc cancelled the session while the
+        # phrase was being prepared: pasting it now would land somewhere else.
+        cb = self._run_auto_pipeline('Merge it into master.', None, True, auto=False, phrase_session=4,
+                                     info=self._sure_info(), prepare=lambda sm: setattr(sm, '_live_session', None))
+        cb.deliver_transcription.assert_not_called()
+
+    # 16:43 again: the session ended quietly, then you clicked the terminal
+    # before the phrase was ready. No cancel reaches a session that already
+    # ended, so the phrase checks the window itself.
+    def test_a_late_phrase_is_dropped_when_another_window_is_in_front(self):
+        def ended_elsewhere(sm):
+            sm._live_session = 4
+            sm._live_window = ('hwnd', 1234)          # where the session listened
+        cb = self._run_auto_pipeline('Merge it into master.', None, True, auto=False, phrase_session=4,
+                                     info=self._sure_info(), prepare=ended_elsewhere)
+        cb.deliver_transcription.assert_not_called()
+
+    def test_a_late_phrase_in_the_same_window_is_pasted(self):
+        def ended_here(sm):
+            sm._live_session = 4
+            sm._live_window = ('app', 'whatsapp.root.exe', None)   # the window still in front
+        cb = self._run_auto_pipeline('Merge it into master.', None, True, auto=False, phrase_session=4,
+                                     info=self._sure_info(), prepare=ended_here)
+        self.assertEqual(cb.deliver_transcription.call_args.args[0], 'Merge it into master. ')
+
+    # The whole 16:43 sequence on the real handlers: the timeout fires while the
+    # phrase's audio is being prepared. Your words are kept, the session ends as
+    # "done", and it is sent once, after the paste.
+    def test_the_timeout_during_a_slow_phrase_ends_the_session_after_it(self):
+        import unittest.mock as mock
+        from koli.voice_activity_detection import VadEvent
+        order = []
+
+        def race(sm):
+            sm._auto_session = sm._live_session = 4
+            sm.audio_recorder.continuous_vad.phrase_pause_sec = 1.0
+            sm.audio_recorder.continuous_vad.speech_since_phrase = False   # the pause just took it
+            sm._finish_auto_session = mock.Mock(side_effect=lambda: order.append('finish'))
+            sm.clipboard_manager.deliver_transcription.side_effect = lambda *a, **k: order.append('paste') or True
+
+            def slow_take():
+                sm.handle_vad_event(VadEvent.SILENCE_TIMEOUT)
+                return __import__('numpy').zeros(16000, dtype='float32')
+            sm.audio_recorder.take_recorded_audio.side_effect = slow_take
+
+        with self.assertLogs('test', level='INFO') as logs:
+            cb = self._run_auto_pipeline('Merge it into master.', None, True, info=self._sure_info(), prepare=race,
+                                         run=lambda sm, clip: sm.handle_vad_event(VadEvent.PHRASE_PAUSE))
+        said = '\n'.join(logs.output)
+        self.assertIn('session done', said)
+        self.assertNotIn('no speech heard', said)
+        self.assertEqual(cb.deliver_transcription.call_args.args[0], 'Merge it into master. ')
+        self.assertEqual(order, ['paste', 'finish'])
+
+    def test_a_continuous_restart_gets_the_guards_and_teaches_nothing(self):
+        import unittest.mock as mock
+        levels = mock.Mock(my_level=mock.Mock(return_value=None))
+        cb = self._run_auto_pipeline("I'm sorry. I'm sorry.", None, False, auto=False, info=self._unsure_info(),
+                                     levels=levels, prepare=lambda sm: setattr(sm, '_hands_free', True))
+        cb.deliver_transcription.assert_not_called()
+        levels.learn.assert_not_called()
+        self.assertFalse(self.last_sm._hands_free, 'the flag belongs to that one recording')
+        levels = mock.Mock(my_level=mock.Mock(return_value=None))
+        cb = self._run_auto_pipeline('Merge it into master.', None, False, auto=False, info=self._sure_info(),
+                                     levels=levels, prepare=lambda sm: setattr(sm, '_hands_free', True))
+        self.assertEqual(cb.deliver_transcription.call_args.args[0], 'Merge it into master.')
+        levels.learn.assert_not_called()
+
+    def test_a_phrase_carries_the_session_it_was_spoken_in(self):
+        import numpy as np
+        from koli.voice_activity_detection import VadEvent
+        sm = self._sm(had_speech=True)
+        sm._auto_session = sm._live_session = 7
+
+        def slow_take():   # the silence timeout ends the session meanwhile
+            sm._auto_started = False
+            sm._live_session = None
+            return np.zeros(16000, dtype=np.float32)
+        sm.audio_recorder.take_recorded_audio.side_effect = slow_take
+        sm.handle_vad_event(VadEvent.PHRASE_PAUSE)
+        self.assertEqual(sm._transcription_pipeline.call_args.kwargs.get('phrase_session'), 7)
+        self.assertEqual(sm._phrases_in_flight, 0)
+
+    def test_the_timeout_waits_for_a_phrase_still_being_prepared(self):
+        import unittest.mock as mock
+        from koli.voice_activity_detection import VadEvent
+        sm = self._sm(had_speech=False)          # nothing new since the phrase pause
+        sm._auto_session = sm._live_session = 7
+        sm._phrases_in_flight = 1
+        sm._finish_auto_session = mock.Mock()
+        with mock.patch('builtins.print') as out:
+            sm.handle_vad_event(VadEvent.SILENCE_TIMEOUT)
+        said = ' '.join(str(c.args[0]) for c in out.call_args_list)
+        self.assertNotIn('nothing heard', said)
+        sm.audio_recorder.cancel_recording.assert_called_once()
+        self.assertEqual(sm._live_session, 7, 'the phrase being prepared is still wanted')
+        sm._finish_auto_session.assert_not_called()   # not before that phrase is pasted
+        sm._phrase_finished()
+        sm._finish_auto_session.assert_called_once()
+
+    def test_cancelling_drops_the_session_phrases(self):
+        import unittest.mock as mock
+        sm = self._sm(had_speech=True)
+        sm._auto_session = sm._live_session = 7
+        with mock.patch('builtins.print'):
+            sm.cancel_auto_recording('you started typing')
+        self.assertIsNone(sm._live_session)
+
+    def test_a_continuous_restart_is_marked_hands_free(self):
+        import unittest.mock as mock
+        sm = self._sm(had_speech=False)
+        sm.config_manager = mock.Mock(config={'audio': {'continuous_mode': True}})
+        sm.audio_recorder.get_recording_status.return_value = False
+        sm._begin_recording = mock.Mock()
+
+        class InlineThread:
+            def __init__(self, target, **_):
+                self.target = target
+
+            def start(self):
+                self.target()
+        with mock.patch('threading.Thread', InlineThread), mock.patch('time.sleep'):
+            sm._maybe_restart_continuous()
+        sm._begin_recording.assert_called_once_with(hands_free=True)
 
     # ── Only my voice (loudness) ──
 

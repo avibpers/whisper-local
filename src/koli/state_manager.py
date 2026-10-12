@@ -31,7 +31,7 @@ import sounddevice as sd
 from .audio_recorder import AudioRecorder
 from .whisper_engine import WhisperEngine
 from .clipboard_manager import ClipboardManager
-from .delayed_send import count_words, wait_seconds
+from .delayed_send import count_words, wait_seconds, window_identity
 from .system_tray import SystemTray
 from .config_manager import ConfigManager
 from .audio_feedback import AudioFeedback
@@ -87,6 +87,22 @@ def _rule_label(rule) -> Optional[str]:
 
 
 class StateManager:
+    # ── Recordings nobody started with a key ─────────────────────────────────
+    # Auto-dictation sessions are numbered, and each phrase is tied to the
+    # session it was spoken in. Phrases are prepared on their own thread, so
+    # one can finish after its session ended: `_live_session` is the session
+    # whose phrases may still be pasted (None once it is cancelled), and
+    # `_phrases_in_flight` counts the ones being prepared. `_live_window` is the
+    # window that session listened in: once a session has ended, no cancel
+    # reaches it, so a late phrase checks the window itself. `_hands_free` marks
+    # a continuous-mode restart. Class defaults keep bare instances valid.
+    _auto_session = 0
+    _live_session = None
+    _live_window = None
+    _phrases_in_flight = 0
+    _finish_after_phrases = False
+    _hands_free = False
+
     def __init__(self,
                  audio_recorder: AudioRecorder,
                  whisper_engine: WhisperEngine,
@@ -201,22 +217,39 @@ class StateManager:
             return
         if event == VadEvent.PHRASE_PAUSE:
             # A short pause while auto-dictation listens: paste the words so
-            # far and keep the microphone open for the next phrase.
-            if self._auto_started and self.audio_recorder.get_recording_status():
+            # far and keep the microphone open for the next phrase. The phrase
+            # carries its session, read now: the session may end while the
+            # audio is still being prepared (each VAD event has its own thread).
+            with self._state_lock:
+                session = self._auto_session if self._auto_started else None
+            if session is None or not self.audio_recorder.get_recording_status():
+                return
+            self._phrase_started()
+            try:
                 audio_data = self.audio_recorder.take_recorded_audio()
                 self.logger.info("Auto-dictation: phrase pause - delivering what was said so far")
-                self._transcription_pipeline(audio_data, use_auto_enter=False, phrase=True)
+                self._transcription_pipeline(audio_data, use_auto_enter=False, phrase=True, phrase_session=session)
+            finally:
+                self._phrase_finished()
             return
         if event == VadEvent.SILENCE_TIMEOUT:
             # An auto-started recording in which nobody spoke is not a dictation:
             # drop it without a sound, so a field you merely clicked stays quiet.
             if self._auto_started and not self._detector_heard_speech():
-                if self._auto_pasted:
-                    # Every word was already pasted: the session is done.
-                    self.logger.info("Auto-dictation: quiet after the last phrase - session done")
+                # A phrase still being prepared is speech too: the session ends
+                # after it, as one whose words were all delivered.
+                with self._state_lock:
+                    waiting = self._phrases_in_flight > 0
+                    if waiting:
+                        self._finish_after_phrases = True
+                if self._auto_pasted or waiting:
+                    # Every word was pasted, or is about to be: the session is done.
+                    self.logger.info("Auto-dictation: quiet after the last phrase - session done"
+                                     + (" (that phrase is still being prepared)" if waiting else ''))
                     print(f"   ✓ Done listening: quiet for {self._active_silence_timeout():g}s")
-                    self.cancel_active_recording(quiet=True)
-                    self._finish_auto_session()
+                    self.cancel_active_recording(quiet=True, keep_phrases=True)
+                    if not waiting:
+                        self._finish_auto_session()
                     return
                 self.logger.info("Auto-dictation: no speech heard - cancelling quietly")
                 print(f"   ✗ Listening cancelled: nothing heard for {self._active_silence_timeout():g}s")
@@ -266,7 +299,10 @@ class StateManager:
     
     # `quiet` skips the cancel sound: auto-dictation cancels often (you typed,
     # or never spoke) and a chime each time would be noise.
-    def cancel_active_recording(self, quiet: bool = False):
+    # `keep_phrases`: the session ended normally (quiet after its last phrase),
+    # so a phrase still being prepared may be pasted. Any other cancel (typing,
+    # leaving the field, Esc, nothing heard) drops it: it has nowhere safe to go.
+    def cancel_active_recording(self, quiet: bool = False, keep_phrases: bool = False):
         self._clear_streaming_display()
         # Tear down the streaming-delivery worker (already-typed text stays — you
         # can't un-type live output, same as Wispr).
@@ -283,6 +319,11 @@ class StateManager:
             self._rephrase_selection = ''
         self._continuous_aborted = True
         self._auto_started = False
+        self._hands_free = False
+        if not keep_phrases:
+            with self._state_lock:
+                self._live_session = None
+                self._live_window = None
         self.audio_recorder.cancel_recording()
         if not quiet:
             self.audio_feedback.play_cancel_sound()
@@ -420,7 +461,9 @@ class StateManager:
             if self.level_overlay:
                 self.level_overlay.show_recording()
 
-    def _begin_recording(self, auto_started: bool = False):
+    # `hands_free`: a continuous-mode restart, not a key you pressed (see
+    # _hands_free above).
+    def _begin_recording(self, auto_started: bool = False, hands_free: bool = False):
         self._apply_recording_context()
         self._maybe_pause_media()
         silence_timeout = self._auto_silence_timeout() if auto_started else None
@@ -429,8 +472,16 @@ class StateManager:
 
         if success:
             self._auto_started = auto_started
+            self._hands_free = hands_free and not auto_started
             self._auto_pasted = False
             self._auto_pasted_words = 0
+            if auto_started:
+                window = window_identity(foreground.get_foreground_app() or {})
+                with self._state_lock:
+                    self._auto_session += 1
+                    self._live_session = self._auto_session
+                    self._live_window = window
+                    self._finish_after_phrases = False
             # Only spin up the streaming-delivery worker once recording is
             # confirmed — otherwise a failed start would leak the worker thread.
             self._setup_streaming_delivery()
@@ -587,6 +638,35 @@ class StateManager:
             print(f"   ✗ Not your voice: {why}" if not text else f"   ✓ Kept your voice ({why})")
         return text, info
 
+    def _phrase_started(self) -> None:
+        with self._state_lock:
+            self._phrases_in_flight += 1
+
+    # A phrase is done (pasted or dropped). If its session already ended
+    # quietly, waiting for it, the session as a whole may now be sent.
+    def _phrase_finished(self) -> None:
+        with self._state_lock:
+            self._phrases_in_flight = max(0, self._phrases_in_flight - 1)
+            finish = self._finish_after_phrases and self._phrases_in_flight == 0
+            if finish:
+                self._finish_after_phrases = False
+        if finish:
+            self._finish_auto_session()
+
+    # Why a phrase may not be pasted any more, or '' when it may: its session
+    # was cancelled while it was being prepared, or it ended and you have
+    # since moved to another window.
+    def _phrase_drop_reason(self, phrase_session) -> str:
+        with self._state_lock:
+            live, window = self._live_session, self._live_window
+        if phrase_session is None or phrase_session != live:
+            return 'its session was cancelled before it was ready'
+        if window is not None:
+            now = window_identity(foreground.get_foreground_app() or {})
+            if now is not None and now != window:
+                return 'you moved to another window before it was ready'
+        return ''
+
     # A finished auto-dictation session that pasted something is sent once,
     # by the app rule's auto-send, after its wait (or the main one) so a stray
     # message can still be stopped. An "Auto" wait counts every word the
@@ -734,7 +814,7 @@ class StateManager:
                 return
             if not self.audio_recorder.get_recording_status():
                 self.logger.info("Continuous mode: auto-restarting recording")
-                self._begin_recording()
+                self._begin_recording(hands_free=True)
         threading.Thread(target=restart, daemon=True, name='continuous-restart').start()
 
     # Pause the music and/or lower the volume, as the audio settings say
@@ -837,25 +917,44 @@ class StateManager:
     # the finally block.
     # `phrase` is a mid-recording run (auto-dictation phrase delivery): the
     # chunk is transcribed and pasted with a trailing space, silently, and the
-    # recording state, sounds and idle hand-off are left alone.
-    def _transcription_pipeline(self, audio_data, use_auto_enter: bool = False, phrase: bool = False):
+    # recording state, sounds and idle hand-off are left alone. `phrase_session`
+    # is the auto-dictation session it was spoken in.
+    def _transcription_pipeline(self, audio_data, use_auto_enter: bool = False, phrase: bool = False,
+                                phrase_session=None):
         with self._pipeline_lock:
             with self._state_lock:
                 ends_auto_session = not phrase and bool(self._auto_started)
-            self._transcription_pipeline_locked(audio_data, use_auto_enter, phrase)
+            self._transcription_pipeline_locked(audio_data, use_auto_enter, phrase, phrase_session)
             # The last words of an auto-dictation session (or none, after an
             # echo was dropped): the session as a whole may now be sent.
             if ends_auto_session:
                 self._finish_auto_session()
 
-    def _transcription_pipeline_locked(self, audio_data, use_auto_enter: bool = False, phrase: bool = False):
+    # Says so and returns True when a phrase may no longer be pasted (see
+    # _phrase_drop_reason): it would land somewhere you didn't dictate into.
+    def _drop_stale_phrase(self, phrase: bool, phrase_session, mode: str) -> bool:
+        why = self._phrase_drop_reason(phrase_session) if phrase else ''
+        if not why:
+            return False
+        self.logger.info(f"Auto-dictation: a phrase was dropped - {why}")
+        print(f"   ✗ Phrase not typed: {why}")
+        self._emit_pipeline('empty', mode=mode)
+        return True
+
+    def _transcription_pipeline_locked(self, audio_data, use_auto_enter: bool = False, phrase: bool = False,
+                                       phrase_session=None):
         mode = 'dictate'
         try:
             with self._state_lock:
                 self.is_processing = True
-                auto_session = bool(self._auto_started)   # read before the final run clears it
+                # A phrase always comes from an auto-dictation session, even when
+                # that session ended while the phrase was being prepared.
+                auto_session = phrase or bool(self._auto_started)   # read before the final run clears it
+                hands_free = False
                 if not phrase:
+                    hands_free = self._hands_free
                     self._auto_started = False
+                    self._hands_free = False
                 command_mode = self._command_mode
                 self._command_mode = False
                 rephrase_mode = self._rephrase_mode
@@ -875,6 +974,8 @@ class StateManager:
                 # Flash the overlay too — tray balloons are often suppressed by Windows.
                 if self.level_overlay:
                     self.level_overlay.flash_failure("No audio — mic muted?")
+                return
+            if self._drop_stale_phrase(phrase, phrase_session, mode):
                 return
 
             duration = self.audio_recorder.get_audio_duration(audio_data)
@@ -920,26 +1021,30 @@ class StateManager:
                 self._emit_pipeline('empty', mode=mode, info=info)
                 return
 
+            # Nobody pressed a key for this one: auto-dictation, or a
+            # continuous-mode restart. It hears whatever is around.
+            unprompted = auto_session or hands_free
+
             # A hotkey dictation is you: it teaches Koli how loud you are and
             # how you sound on this microphone.
-            if not auto_session:
+            if not unprompted:
                 self._learn_my_level(audio_data)
                 self._learn_my_voiceprint(audio_data)
 
             # Only my voice: leave out speech much quieter than you (a TV across
             # the room, someone talking in your pauses).
-            transcribed_text, info = self._keep_my_voice(transcribed_text, audio_data, info, auto_session)
+            transcribed_text, info = self._keep_my_voice(transcribed_text, audio_data, info, unprompted)
             if not transcribed_text:
                 self._emit_pipeline('empty', mode=mode, info=info)
                 return
 
-            # Auto-dictation picks up whatever is around: keep only what Whisper
-            # is sure is speech. A hotkey recording is not second-guessed.
-            if auto_session:
+            # A recording nobody started on purpose: keep only what Whisper is
+            # sure is speech. A hotkey recording is not second-guessed.
+            if unprompted:
                 forced = bool(getattr(self.whisper_engine, 'language', None))
                 kept, why = confident_speech(transcribed_text, info, language_forced=forced)
                 if why:
-                    self.logger.info(f"Auto-dictation: {why}")
+                    self.logger.info(f"{'Auto-dictation' if auto_session else 'Continuous dictation'}: {why}")
                 if not kept:
                     print(f"   ✗ Not sure that was speech ({why}) - nothing typed")
                     self._emit_pipeline('empty', mode=mode, info=info)
@@ -966,6 +1071,10 @@ class StateManager:
             if rephrase_mode and rephrase_selection:
                 self._handle_rephrase(rephrase_selection, transcribed_text)
                 self._emit_pipeline('rephrased', mode=mode, raw=transcribed_text)
+                return
+
+            # Transcribing took a moment: the session may have been cancelled since.
+            if self._drop_stale_phrase(phrase, phrase_session, mode):
                 return
 
             # Match the foreground app once, before post-processing, so a rule can

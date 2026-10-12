@@ -74,7 +74,7 @@ class AudioRecorder:
         self.recording_start_time = None
         self.level_preview = False
         self.logger = logging.getLogger(__name__)
-        self._noise_suppression_config = noise_suppression_config or {}
+        self._set_noise_suppression(noise_suppression_config or {})
         self._whisper_mode_gain = self._parse_whisper_mode(whisper_mode_config)
         # (audio array, Whisper-mode boost) for the last few handed out.
         self._recent_gains = collections.deque(maxlen=4)
@@ -531,9 +531,17 @@ class AudioRecorder:
         if max_duration is not None:
             self.max_duration = max_duration
         if noise_suppression is not None:
-            self._noise_suppression_config = dict(noise_suppression)
+            self._set_noise_suppression(dict(noise_suppression))
         if whisper_mode is not None:
             self._whisper_mode_gain = self._parse_whisper_mode(whisper_mode)
+
+    # Turned on, it is loaded now in the background: its first run is seconds
+    # slow, and a phrase prepared that slowly can outlive its session.
+    def _set_noise_suppression(self, config: dict):
+        self._noise_suppression_config = config
+        if config.get('enabled'):
+            from . import noise_suppression
+            noise_suppression.warm_up_in_background(self.WHISPER_SAMPLE_RATE)
 
     # Rebuild the realtime voice detector after its thresholds change.
     def refresh_vad(self):

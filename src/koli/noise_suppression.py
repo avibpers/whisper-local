@@ -6,10 +6,29 @@
 # Falls back to passthrough silently when the library isn't installed.
 
 import logging
+import threading
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+# Set once the library has been loaded and run, so it is warmed up only once.
+_warmed = threading.Event()
+
+
+# The first run loads the library and its dependencies, which took 4.8 s on
+# 2026-10-12: an auto-dictation phrase prepared that slowly can outlive its
+# session. Running it once on half a second of silence, in the background, as
+# soon as noise suppression is on keeps the first real recording fast.
+def warm_up_in_background(sample_rate: int = 16000) -> None:
+    if _warmed.is_set():
+        return
+    _warmed.set()
+
+    def run():
+        apply_noise_reduction(np.zeros(sample_rate // 2, dtype=np.float32), sample_rate)
+        logger.debug("Noise suppression warmed up")
+    threading.Thread(target=run, name='noise-warm-up', daemon=True).start()
 
 
 # Returns the noise-reduced array on success, the original array on any failure
