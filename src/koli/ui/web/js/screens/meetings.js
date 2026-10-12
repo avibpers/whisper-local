@@ -79,24 +79,27 @@ function Transcript({ id, live, onDeleted }) {
   </section>`;
 }
 
-// Voices you named: renaming a speaker remembers the voice, and later
-// meetings call it by that name. Forgetting one stops that.
+// Every voice heard on a call is saved with its own id when the meeting ends,
+// so later meetings recognise it, named or not. Renaming a speaker names its
+// voice. Forgetting one deletes its voiceprint.
 function KnownVoices() {
-  const [names, setNames] = useState([]);
-  const load = () => call('meeting_voices').then(setNames).catch(() => {});
+  const [voices, setVoices] = useState([]);
+  const load = () => call('meeting_voices').then(setVoices).catch(() => {});
   useEffect(() => { load(); }, []);
   useEffect(() => on('meeting', load), []);
-  const forget = async (name) => {
-    if (await confirmModal({ title: `Forget ${name}'s voice?`, body: 'Later meetings will call this voice "Speaker N" again. Past meetings keep the name.', confirm: 'Forget', danger: true })) {
-      call('meeting_forget_voice', name).then(load).catch((e) => toast(e.message, { kind: 'err' }));
+  const label = (v) => v.name || `Voice ${v.id.slice(2, 6)}`;
+  const forget = async (v) => {
+    if (await confirmModal({ title: `Forget ${label(v)}?`, body: 'Its voiceprint is deleted; later meetings no longer recognise it. Past meetings keep their labels.', confirm: 'Forget', danger: true })) {
+      call('meeting_forget_voice', v.id).then(load).catch((e) => toast(e.message, { kind: 'err' }));
     }
   };
   return html`<section class="card pad stack" aria-label="Known voices">
     <span class="card-title">Known voices</span>
-    ${names.length === 0
-      ? html`<span class="small muted">Rename a speaker and Koli recognises that voice in later meetings.</span>`
-      : html`<div class="tags">${names.map((n) => html`<span class="tag" dir="auto">${n}
-          <button type="button" aria-label=${`Forget ${n}`} onClick=${() => forget(n)}>×</button></span>`)}</div>`}
+    ${voices.length === 0
+      ? html`<span class="small muted">Voices from your calls are saved when a meeting ends, so later meetings recognise them.</span>`
+      : html`<div class="tags">${voices.map((v) => html`<span class="tag" dir="auto"
+          title=${`${v.id} · ${v.meetings.length} meeting${v.meetings.length === 1 ? '' : 's'} · last heard ${when(v.last_seen)}`}>${label(v)}
+          <button type="button" aria-label=${`Forget ${label(v)}`} onClick=${() => forget(v)}>×</button></span>`)}</div>`}
   </section>`;
 }
 

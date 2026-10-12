@@ -10,9 +10,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
   own labels, not one "Speaker 1" for everyone. Uses a small extra model
   (6 MB), downloaded at the next meeting; Settings → Meetings → "Split by
   voice" turns it off.
-- **Meetings remember voices.** Rename "Speaker 2" to "Eran" once, and later
-  meetings call him Eran from his first sentence. The Meetings screen lists
-  the known voices; forget one to stop it. Stored only on this computer.
+- **Meetings remember every voice.** When a meeting ends, each voice heard
+  on the call is saved with its own permanent id, named or not, and the
+  meeting file points to it, so the same person can be followed through every
+  meeting (for search, analysis and AI notes later). The next meeting
+  recognises the voice; once you name it ("Eran"), every meeting calls him
+  that. Two labels that turn out to be one voice are merged when the meeting
+  ends. Settings → Meetings → "Remember voices" turns it off; the Meetings
+  screen lists the known voices, and forgetting one deletes its voiceprint.
+  Stored only on this computer.
 - **No more speakers who never spoke, and merging by name.** When the voice
   splitter cut one person in two, the second half became a new "Speaker N"
   who never said a word. A part that clearly matches the voice it was cut

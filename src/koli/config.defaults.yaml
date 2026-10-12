@@ -562,6 +562,11 @@ meeting: # Meetings: calls in Discord, Zoom, Teams and the browser
     # tune how speakers are told apart. Everyone's voice is stored on this
     # computer, so only with their consent. Deleting the meeting deletes it.
     keep_audio: false
+    # Save every voice heard on a call (its voiceprint, never the audio)
+    # with a permanent id in voices.json beside the meetings folder, so
+    # later meetings recognise the same person, named or not. Stays on this
+    # computer.
+    remember_voices: true
     # Which microphone hears you in meetings: '' for the dictation microphone
     # (audio.input_device), "default" for the computer's default input, or a
     # device id number. A device that won't open falls back to the dictation

@@ -128,7 +128,8 @@ class SessionManager:
     def __init__(self, store: MeetingStore, *, start_capture: Callable[[dict], None], stop_capture: Callable[[], None],
                  publish: Callable[[str, dict], None], settings: Callable, now: Callable = None,
                  schedule: Callable = None, save_interval: float = 5.0,
-                 on_speakers: Optional[Callable[[list], None]] = None):
+                 on_speakers: Optional[Callable[[list], None]] = None,
+                 on_ended: Optional[Callable[[dict], None]] = None):
         self.store = store
         self.saver = ThrottledSaver(store, save_interval)
         self._start_capture = start_capture
@@ -138,6 +139,7 @@ class SessionManager:
         self._now = now or _now
         self._schedule = schedule or _default_schedule
         self._on_speakers = on_speakers   # the speaker list to work with changed (resume, continue, split)
+        self._on_ended = on_ended         # a meeting ended and is saved (its voices are kept from it)
         self._lock = threading.RLock()
         self._effects = []               # callbacks to run once the lock is released
         self.state = 'idle'
@@ -606,6 +608,8 @@ class SessionManager:
         m['ended_at'] = ended.isoformat(timespec='seconds')
         self.saver.flush()
         self.store.save(m)
+        if self._on_ended:
+            self._after(lambda ended_meeting=m: self._on_ended(ended_meeting))
         if remember:
             gap_s = float(self._settings('meeting.gap_minutes', 10) or 10) * 60
             self._previous = m

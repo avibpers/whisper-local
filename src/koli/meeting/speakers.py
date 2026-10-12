@@ -2,8 +2,9 @@
 # Who is talking, from the voice alone. Each voice in a loopback chunk (see
 # diarize.py) becomes a voiceprint (a sherpa-onnx speaker embedding);
 # voiceprints close to a known speaker's average join that speaker, the
-# others start "Speaker N", or the name of a voice you named in an earlier
-# meeting (voices.py). The averages live in the meeting file, so a resumed
+# others start "Speaker N". A speaker whose voice was heard in an earlier
+# meeting is linked to that saved voice's id, and takes its name when it
+# has one (voices.py). The averages live in the meeting file, so a resumed
 # meeting keeps its labels. Pure numpy apart from the embedding model, so
 # the clustering is testable.
 
@@ -31,6 +32,7 @@ MIN_NEW_SPEECH_S = 2.0   # speech needed in a chunk before it may open a new spe
 # out of Speaker 1 (their voiceprints 0.86 alike), while the three real
 # people stayed 0.12-0.30 apart. At this similarity the split is ignored.
 SAME_VOICE = 0.7
+FIRM_COUNT = 3            # chunks before a speaker's voiceprint is checked against saved voices again
 COLOURS = 7              # colours 1..7 for the others; 0 is "You"
 RATE = 16000
 
@@ -42,9 +44,10 @@ class SpeakerTracker:
                  similarity: float = SIMILARITY, voices=None):
         self.embed = embed
         self.similarity = similarity
-        self.voices = voices      # a VoiceBook of named voices, or None
+        self.voices = voices      # the VoiceBook of saved voices, or None
         self._lock = threading.Lock()
-        self._speakers = []       # [{'id','name','colour','centroid': np.ndarray,'count'}]
+        # [{'id','name','colour','centroid': np.ndarray,'count','voice_id' (when known)}]
+        self._speakers = []
         self._last = None         # the speaker of the previous loopback chunk
 
     # Speakers from a meeting file (the "you" entry is ignored).
@@ -57,17 +60,19 @@ class SpeakerTracker:
                     continue
                 self._speakers.append({'id': s['id'], 'name': s.get('name', s['id']), 'colour': int(s.get('colour', 1)),
                                        'centroid': self._unit(np.asarray(s['centroid'], dtype=np.float32)),
-                                       'count': int(s.get('count', 1))})
+                                       'count': int(s.get('count', 1)), 'voice_id': s.get('voice_id')})
 
     @staticmethod
     def _unit(v: np.ndarray) -> np.ndarray:
         n = float(np.linalg.norm(v))
         return v / n if n > 0 else v
 
-    # `voice`, when given, tells the session a remembered name was matched.
+    # `voice`, when given, tells the session a saved voice's name was matched.
     def _to_dict(self, s: dict, voice: Optional[str] = None) -> dict:
         entry = {'id': s['id'], 'name': s['name'], 'colour': s['colour'],
                  'centroid': [round(float(x), 5) for x in s['centroid']], 'count': s['count']}
+        if s.get('voice_id'):
+            entry['voice_id'] = s['voice_id']
         if voice:
             entry['voice'] = voice
         return entry
@@ -122,35 +127,51 @@ class SpeakerTracker:
                     return self._keep(best)
                 return self._keep(last or best)
             n = self._next_number()
-            remembered = self._remembered_name(vec)
-            s = {'id': f's{n}', 'name': remembered or f'Speaker {n}', 'colour': 1 + (n - 1) % COLOURS,
-                 'centroid': vec, 'count': 1}
+            s = {'id': f's{n}', 'name': f'Speaker {n}', 'colour': 1 + (n - 1) % COLOURS,
+                 'centroid': vec, 'count': 1, 'voice_id': None}
+            named = self._link_saved_voice(s, vec, first=True)
             self._speakers.append(s)
             self._last = s
-            return s['id'], self._to_dict(s, voice=remembered)
+            return s['id'], self._to_dict(s, voice=named)
 
     # A similarity join: the voiceprint moves toward the new sample. A
-    # "Speaker N" whose voiceprint now matches a voice you named takes that
-    # name: the first chunks of a voice are often too short to tell.
+    # speaker not yet linked to a saved voice is checked again once its
+    # voiceprint is firm: the first chunks of a voice are often too short.
     def _join(self, speaker: dict, vec: np.ndarray) -> tuple:
         speaker['centroid'] = self._unit(speaker['centroid'] * speaker['count'] + vec)
         speaker['count'] += 1
         self._last = speaker
-        remembered = self._remembered_name(speaker['centroid']) if is_default_name(speaker['name']) else None
-        if remembered:
-            speaker['name'] = remembered
-        return speaker['id'], self._to_dict(speaker, voice=remembered)
+        named = None
+        if not speaker.get('voice_id') and speaker['count'] >= FIRM_COUNT:
+            named = self._link_saved_voice(speaker, speaker['centroid'])
+        return speaker['id'], self._to_dict(speaker, voice=named)
 
-    # A remembered voice's name for `vec`, skipping names already in this
-    # meeting. Called under the lock.
-    def _remembered_name(self, vec: np.ndarray) -> Optional[str]:
+    # Link `speaker` to the saved voice its voiceprint matches (skipping
+    # voices already given to others in this meeting). A "Speaker N" takes
+    # that voice's name; returns the name taken, if any. Under the lock.
+    def _link_saved_voice(self, speaker: dict, vec: np.ndarray, first: bool = False) -> Optional[str]:
         if self.voices is None:
             return None
         try:
-            return self.voices.match(vec, taken=[s['name'] for s in self._speakers])
+            found = self.voices.match(vec, taken=[s['voice_id'] for s in self._speakers if s.get('voice_id')],
+                                      first=first)
         except Exception as e:
-            logger.debug(f"Remembered voices unavailable: {e}")
+            logger.debug(f"Saved voices unavailable: {e}")
             return None
+        if not found:
+            return None
+        speaker['voice_id'] = found['id']
+        if found['name'] and is_default_name(speaker['name']):
+            speaker['name'] = found['name']
+            return found['name']
+        return None
+
+    # The saved voice a speaker was kept as when the meeting ended.
+    def set_voice_id(self, speaker_id: str, voice_id: str):
+        with self._lock:
+            for s in self._speakers:
+                if s['id'] == speaker_id:
+                    s['voice_id'] = voice_id
 
     # You renamed a speaker: later matches against remembered voices must
     # skip that name, and a new speaker can't take it.
@@ -170,6 +191,7 @@ class SpeakerTracker:
                 return
             target['centroid'] = self._unit(target['centroid'] * target['count'] + source['centroid'] * source['count'])
             target['count'] += source['count']
+            target['voice_id'] = target.get('voice_id') or source.get('voice_id')
             self._speakers.remove(source)
             if self._last is source:
                 self._last = target

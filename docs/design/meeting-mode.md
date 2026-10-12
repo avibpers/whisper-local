@@ -159,13 +159,22 @@ voice's audio for its voiceprint (`voice_audio`). The transcriber labels
 each voice once per chunk with `exclude=` the speakers already given to the
 chunk's other voices. `meeting.segmentation_model: ''` turns it off.
 
-**`meeting/voices.py`: remembered voices.** `VoiceBook` keeps
-`voices.json` beside the meetings folder: name, voiceprint, count. Renaming
-a speaker (live or saved) calls `remember`, which refines a known name.
-`SpeakerTracker` asks `match(vec, taken=names in this meeting)` (cosine 0.5,
-stricter than joining) for a new speaker and when a "Speaker N" firms up;
-the entry carries `voice`, and the session gives that name only to a
-"Speaker N", never over a name you typed.
+**`meeting/voices.py`: saved voices.** `VoiceBook` keeps `voices.json`
+beside the meetings folder: one entry per voice, `{id: "v-<12 hex>", name
+('' until named), centroid, count, first_seen, last_seen, meetings: [ids]}`.
+The id is permanent and is what a meeting speaker's `voice_id` points to, so
+one person can be followed across meetings (search, analysis, LLM work)
+named or not. `SpeakerTracker` links a speaker to a saved voice with
+`match(vec, taken=voice ids in this meeting)`: a new speaker's first chunk
+needs FIRST_MATCH 0.65, a firm voiceprint (3+ chunks) MATCH 0.5; a linked
+"Speaker N" takes the voice's name, never over a name you typed. When a
+meeting ends (`SessionManager(on_ended=)`), the service merges labels that
+are clearly one voice (SAME_VOICE 0.7), then `keep()`s every remote speaker
+with 3+ chunks (refining its linked voice, the one it matches, or a new one;
+a meeting counts once per voice even if resumed) and writes the ids into
+the meeting file. Renaming a speaker names its voice (saving it first if
+needed); renaming to another speaker's name merges both labels and both
+saved voices. `meeting.remember_voices` turns it off.
 
 **`meeting/store.py`.** `<data>/meetings/<yyyy-mm-dd-hhmmss>.json`, one per
 meeting, written on every change but at most every 5 s (a dirty flag and a
@@ -262,6 +271,8 @@ New section `meeting:` in `config.defaults.yaml`, schema section
 | `meeting.model` | "" (dictation model) | select from models | background |
 | `meeting.speaker_model` | eres2net | select | background |
 | `meeting.segmentation_model` | pyannote-segmentation | select (on / off) | next meeting |
+| `meeting.remember_voices` | true | toggle | meeting end |
+| `meeting.keep_audio` | false | toggle | next chunk |
 | `meeting.speaker_models` | table | model_table | internal |
 | `meeting.panel.opacity` | 0.85 | range 0.4 to 1 | live |
 | `meeting.panel.position` | right-edge | select (bubble positions) | live |

@@ -348,6 +348,10 @@ SCHEMA = [
        help='Each app can override this on the Apps screen.'),
     _S('meeting.include_me', 'Include my side', 'meetings', 'toggle',
        help="Your microphone becomes \"You\" in the transcript. The panel's Exclude me button pauses it."),
+    _S('meeting.remember_voices', 'Remember voices', 'meetings', 'toggle',
+       help="Saves each voice heard on a call (a voiceprint, not the audio) with its own id, so later meetings "
+       'recognise the same person, named or not. Stored only on this computer; Known voices on the Meetings '
+       'screen lists them.'),
     _S('meeting.keep_audio', 'Keep the audio', 'meetings', 'toggle',
        help="Saves the call's audio with the transcript, to improve telling speakers apart. Everyone's voice "
        'is stored on this computer, so turn it on only with their consent. Deleting the meeting deletes it.'),

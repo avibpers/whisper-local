@@ -1603,6 +1603,8 @@ class BelievableTests(unittest.TestCase):
         self.assertEqual(believable_pieces('hello', {}, 3.0), [{'text': 'hello', 'start': 0.0, 'end': 3.0}])
 
 
+# Every voice heard on a call is saved with a permanent id; meetings point to
+# it, so one person can be followed through every meeting, named or not.
 class VoiceBookTests(unittest.TestCase):
     def setUp(self):
         from koli.meeting.voices import VoiceBook
@@ -1611,35 +1613,54 @@ class VoiceBookTests(unittest.TestCase):
         self.path = Path(self.tmp.name) / 'voices.json'
         self.book = VoiceBook(self.path)
 
-    def test_remembered_voice_matches_later_and_survives_a_restart(self):
+    def test_a_kept_voice_has_an_id_and_is_found_after_a_restart(self):
         from koli.meeting.voices import VoiceBook
-        self.book.remember('Eran', [1.0, 0.0, 0.0], 4)
+        vid = self.book.keep([1.0, 0.0, 0.0], 4, 'm1')
+        self.assertRegex(vid, r'^v-[0-9a-f]{12}$')
         again = VoiceBook(self.path)
-        self.assertEqual(again.names(), ['Eran'])
-        self.assertEqual(again.match([0.9, 0.2, 0.0]), 'Eran')
-        self.assertIsNone(again.match([0.0, 1.0, 0.0]), 'another voice gets no name')
+        self.assertEqual(again.match([0.9, 0.2, 0.0]), {'id': vid, 'name': ''})
+        self.assertIsNone(again.match([0.0, 1.0, 0.0]), 'another voice is not this one')
+        self.assertEqual(again.get(vid)['meetings'], ['m1'])
 
-    def test_a_name_already_in_the_meeting_is_skipped(self):
-        self.book.remember('Eran', [1.0, 0.0], 1)
-        self.assertIsNone(self.book.match([1.0, 0.0], taken=['Eran']))
+    def test_keeping_the_same_voice_again_refines_it(self):
+        vid = self.book.keep([1.0, 0.0], 3, 'm1')
+        self.assertEqual(self.book.keep([0.95, 0.31], 2, 'm2'), vid, 'it matches, so it is the same voice')
+        v = self.book.get(vid)
+        self.assertEqual((v['count'], v['meetings']), (5, ['m1', 'm2']))
 
-    def test_naming_again_refines_the_same_voice(self):
-        self.book.remember('Eran', [1.0, 0.0], 3)
-        self.book.remember('eran', [0.0, 1.0], 1)
-        self.assertEqual(self.book.names(), ['eran'])
-        self.assertEqual(self.book.match([0.95, 0.3]), 'eran')
+    # A meeting resumed and ended again must not count its audio twice.
+    def test_the_same_meeting_counts_once(self):
+        vid = self.book.keep([1.0, 0.0], 3, 'm1')
+        self.book.keep([1.0, 0.0], 3, 'm1', voice_id=vid)
+        self.assertEqual(self.book.get(vid)['count'], 3)
 
-    def test_koli_s_own_names_are_never_remembered(self):
-        self.book.remember('Speaker 3', [1.0, 0.0], 2)
-        self.book.remember('', [1.0, 0.0], 2)
-        self.assertEqual(self.book.names(), [])
-        self.assertFalse(self.path.exists())
+    def test_a_voice_already_in_the_meeting_is_skipped(self):
+        vid = self.book.keep([1.0, 0.0], 1, 'm1')
+        self.assertIsNone(self.book.match([1.0, 0.0], taken=[vid]))
 
-    def test_forget(self):
-        self.book.remember('Shachar', [1.0, 0.0], 1)
-        self.assertTrue(self.book.forget('shachar'))
-        self.assertFalse(self.book.forget('Shachar'))
-        self.assertIsNone(self.book.match([1.0, 0.0]))
+    # A speaker's first chunk is a noisy sample: it needs a closer match.
+    def test_a_first_chunk_needs_a_closer_match(self):
+        vid = self.book.keep([1.0, 0.0], 5, 'm1')
+        near = [0.55, 0.835]                                      # cosine 0.55
+        self.assertEqual(self.book.match(near)['id'], vid)
+        self.assertIsNone(self.book.match(near, first=True))
+
+    def test_a_name_is_a_label_on_the_id(self):
+        vid = self.book.keep([1.0, 0.0], 2, 'm1')
+        self.book.set_name(vid, 'Eran')
+        self.assertEqual(self.book.match([1.0, 0.0]), {'id': vid, 'name': 'Eran'})
+        self.book.set_name(vid, 'Speaker 3')
+        self.assertEqual(self.book.get(vid)['name'], '', "Koli's own names are never kept")
+
+    def test_merge_and_forget(self):
+        a = self.book.keep([1.0, 0.0], 3, 'm1')
+        b = self.book.keep([0.0, 1.0], 1, 'm2')
+        self.book.merge(b, a)
+        self.assertEqual([v['id'] for v in self.book.all()], [a])
+        self.assertEqual(self.book.get(a)['meetings'], ['m1', 'm2'])
+        self.assertTrue(self.book.forget(a))
+        self.assertFalse(self.book.forget(a))
+        self.assertEqual(self.book.all(), [])
 
 
 class TrackerVoicesTests(unittest.TestCase):
@@ -1667,40 +1688,48 @@ class TrackerVoicesTests(unittest.TestCase):
         without.label('a', speech_s=4.0)
         self.assertEqual(without.label('b', speech_s=4.0)[0], 's1', 'without the rule it would have joined')
 
-    def test_a_new_voice_takes_its_remembered_name(self):
+    def test_a_known_voice_is_linked_by_id_and_named_when_it_has_a_name(self):
         from koli.meeting.speakers import SpeakerTracker
         book = self.book()
-        book.remember('Eran', self.unit(1, 0, 0), 5)
-        t = SpeakerTracker(embed=lambda audio: self.unit(0.95, 0.1, 0), voices=book)
-        sid, entry = t.label('x', speech_s=4.0)
-        self.assertEqual((sid, entry['name'], entry['voice']), ('s1', 'Eran', 'Eran'))
+        eran = book.keep(self.unit(1, 0, 0), 5, 'm0')
+        book.set_name(eran, 'Eran')
+        unnamed = book.keep(self.unit(0, 0, 1), 5, 'm0')
+        vecs = {'eran': self.unit(0.95, 0.1, 0), 'other': self.unit(0, 0.1, 0.95)}
+        t = SpeakerTracker(embed=lambda audio: vecs[audio], voices=book)
+        sid, entry = t.label('eran', speech_s=4.0)
+        self.assertEqual((entry['name'], entry['voice'], entry['voice_id']), ('Eran', 'Eran', eran))
+        _, entry = t.label('other', speech_s=4.0)
+        self.assertEqual((entry['name'], entry['voice_id']), ('Speaker 2', unnamed))
+        self.assertNotIn('voice', entry, 'no name to take')
 
     # The first chunk is often too short to tell; once the voiceprint firms
-    # up and matches, "Speaker 1" becomes the remembered name.
-    def test_speaker_n_takes_the_name_once_its_voice_matches(self):
+    # up and matches, the speaker is linked (and named).
+    def test_a_speaker_is_linked_once_its_voice_is_firm(self):
         from koli.meeting.speakers import SpeakerTracker
         book = self.book()
-        book.remember('Shachar', self.unit(0, 1, 0), 5)
-        vecs = {'first': self.unit(0.6, 0.8, 0), 'more': self.unit(0, 1, 0)}
+        shachar = book.keep(self.unit(0, 1, 0), 5, 'm0')
+        book.set_name(shachar, 'Shachar')
+        vecs = {'first': self.unit(0.8, 0.6, 0), 'more': self.unit(0, 1, 0)}
         t = SpeakerTracker(embed=lambda audio: vecs[audio], voices=book, similarity=0.30)
-        t.voices = None
-        sid, entry = t.label('first', speech_s=4.0)
-        self.assertEqual(entry['name'], 'Speaker 1')
-        t.voices = book
+        _, entry = t.label('first', speech_s=4.0)
+        self.assertEqual(entry['name'], 'Speaker 1', '0.6 is not enough for a first chunk')
+        self.assertNotIn('voice_id', entry)
+        t.label('more', speech_s=4.0)
         _, entry = t.label('more', speech_s=4.0)
-        self.assertEqual((entry['name'], entry.get('voice')), ('Shachar', 'Shachar'))
+        self.assertEqual((entry['name'], entry['voice_id']), ('Shachar', shachar))
 
     def test_a_name_you_gave_is_never_replaced(self):
         from koli.meeting.speakers import SpeakerTracker
         book = self.book()
-        book.remember('Shachar', self.unit(0, 1, 0), 5)
+        vid = book.keep(self.unit(0, 1, 0), 5, 'm0')
+        book.set_name(vid, 'Shachar')
         t = SpeakerTracker(embed=lambda audio: self.unit(0, 1, 0), similarity=0.30)
         t.label('x', speech_s=4.0)
         t.rename('s1', 'Moshe')
         t.voices = book
-        _, entry = t.label('x', speech_s=4.0)
-        self.assertEqual(entry['name'], 'Moshe')
-        self.assertNotIn('voice', entry)
+        for _ in range(3):
+            _, entry = t.label('x', speech_s=4.0)
+        self.assertEqual((entry['name'], entry['voice_id']), ('Moshe', vid))
 
 
 # A real Meet: the splitter cut Speaker 1 in two inside a chunk, and "two
@@ -1941,7 +1970,7 @@ class KeepAudioTests(unittest.TestCase):
 
 
 class ServiceVoicesTests(unittest.TestCase):
-    def test_renaming_a_speaker_remembers_the_voice(self):
+    def make(self):
         from koli.services.meetings import MeetingService
         from koli.meeting.store import MeetingStore
         from koli.meeting.voices import VoiceBook
@@ -1952,21 +1981,76 @@ class ServiceVoicesTests(unittest.TestCase):
         ctx.config_manager = FakeConfig({'meeting.enabled': False, 'meeting.include_me': True, 'meeting.language': 'auto',
                                          'meeting.speaker_model': 'eres2net', 'meeting.segmentation_model': ''})
         ctx.model_registry = None
-        book = VoiceBook(Path(tmp.name) / 'voices.json')
+        self.book = VoiceBook(Path(tmp.name) / 'voices.json')
+        self.store = MeetingStore(Path(tmp.name) / 'meetings')
         fake_loopback = type('L', (), {'start': lambda s: None, 'stop': lambda s: None})
-        svc = MeetingService(ctx, store=MeetingStore(Path(tmp.name) / 'meetings'), publish=lambda t, p: None,
+        svc = MeetingService(ctx, store=self.store, publish=lambda t, p: None,
                              loopback_factory=lambda on_block, on_error, device=None: fake_loopback(),
                              embedder_factory=lambda: None, loopback_available=lambda: True, sessions_fn=lambda: [],
-                             voices=book)
+                             voices=self.book)
         self.addCleanup(svc.shutdown)
+        return svc
+
+    # Three chunks of one voice, one of another (too thin to keep).
+    def speak(self, svc, vec, times):
+        svc.tracker.embed = lambda audio: np.asarray(vec, dtype=np.float32)
+        for _ in range(times):
+            sid, entry = svc.tracker.label(np.zeros(16000 * 4), speech_s=4.0)
+            if entry:
+                svc.session.ensure_speaker(entry)
+        return sid
+
+    # When a meeting ends every voice in it is saved with an id, the meeting
+    # file points to it, and the next meeting links the same voice to it.
+    def test_ending_a_meeting_saves_its_voices_for_the_next_one(self):
+        svc = self.make()
         svc.start()
-        svc.tracker.embed = lambda audio: np.array([1.0, 0.0, 0.0])
-        sid, entry = svc.tracker.label(np.zeros(16000 * 3), speech_s=3.0)
-        svc.session.ensure_speaker(entry)
+        meeting_id = svc.session.meeting['id']
+        self.speak(svc, [1.0, 0.0, 0.0], 3)
+        self.speak(svc, [0.0, 1.0, 0.0], 1)
+        svc.end()
+        saved = [s for s in self.store.load(meeting_id)['speakers'] if s['id'] != 'you']
+        self.assertRegex(saved[0]['voice_id'], r'^v-[0-9a-f]{12}$')
+        self.assertNotIn('voice_id', saved[1], 'one chunk is too thin to keep')
+        self.assertEqual([v['id'] for v in svc.voices_list()], [saved[0]['voice_id']])
+        svc.start()
+        sid = self.speak(svc, [0.97, 0.2, 0.0], 1)
+        linked = next(s for s in svc.session.meeting['speakers'] if s['id'] == sid)
+        self.assertEqual(linked['voice_id'], saved[0]['voice_id'])
+
+    # Two labels that are one voice (the splitter cut a person in two) are
+    # merged before the voices are saved.
+    def test_labels_that_are_one_voice_merge_when_the_meeting_ends(self):
+        svc = self.make()
+        svc.start()
+        meeting_id = svc.session.meeting['id']
+        m = svc.session.meeting
+        m['speakers'] += [{'id': 's1', 'name': 'Speaker 1', 'colour': 1, 'centroid': [1.0, 0.0], 'count': 9},
+                          {'id': 's3', 'name': 'Speaker 3', 'colour': 3, 'centroid': [0.86, 0.51], 'count': 3}]
+        m['turns'] = [{'start': 0, 'end': 1, 'stream': 'loopback', 'speaker': 's3', 'text': 'x', 'lang': 'en'}]
+        svc.end()
+        saved = self.store.load(meeting_id)
+        self.assertEqual([s['id'] for s in saved['speakers'] if s['id'] != 'you'], ['s1'])
+        self.assertEqual(saved['turns'][0]['speaker'], 's1')
+        self.assertEqual(len(svc.voices_list()), 1)
+
+    def test_naming_a_speaker_names_its_voice(self):
+        svc = self.make()
+        svc.start()
+        sid = self.speak(svc, [1.0, 0.0, 0.0], 2)
         svc.rename_speaker(sid, 'Eran')
-        self.assertEqual(svc.voices_list(), ['Eran'])
-        self.assertEqual(book.match([0.9, 0.1, 0.0]), 'Eran')
-        self.assertTrue(svc.forget_voice('Eran'))
+        voices = svc.voices_list()
+        self.assertEqual([v['name'] for v in voices], ['Eran'])
+        self.assertEqual(self.book.match([0.9, 0.1, 0.0])['name'], 'Eran')
+        self.assertTrue(svc.forget_voice(voices[0]['id']))
+        self.assertEqual(svc.voices_list(), [])
+
+    def test_voices_are_not_saved_when_turned_off(self):
+        svc = self.make()
+        svc.ctx.config_manager.values['meeting.remember_voices'] = False
+        svc.start()
+        self.speak(svc, [1.0, 0.0, 0.0], 3)
+        svc.end()
         self.assertEqual(svc.voices_list(), [])
 
 

@@ -9,15 +9,16 @@
 import importlib.util
 import logging
 import threading
+from pathlib import Path
 from typing import Callable, Optional
 
-from pathlib import Path
+import numpy as np
 
 from ..meeting.capture import Chunker, LoopbackStream, MicStream, MicTap, speech_prob_function
 from ..meeting.detector import MeetingDetector
 from ..meeting.diarize import make_splitter
 from ..meeting.session import SessionManager, merge_speaker_into, same_name_as
-from ..meeting.speakers import SpeakerTracker, make_embedder
+from ..meeting.speakers import SAME_VOICE, SpeakerTracker, make_embedder
 from ..meeting.store import MeetingStore
 from ..meeting.transcriber import MeetingTranscriber
 from ..meeting.voices import FILE as VOICES_FILE, VoiceBook
@@ -25,6 +26,8 @@ from ..ui.events import publish as publish_event, report_problem
 from ..ui.tasks import get_task_manager
 
 logger = logging.getLogger(__name__)
+
+MIN_KEEP_CHUNKS = 3   # chunks a remote voice needs before it is saved when the meeting ends
 
 LOOPBACK_HINT = ("Meetings need the loopback package to hear the call. Install it from the Meetings screen, "
                  "or: pip install koli[loopback]")
@@ -48,7 +51,7 @@ class MeetingService:
                  splitter_factory: Callable = None, voices: Optional[VoiceBook] = None):
         self.ctx = ctx
         self.store = store or MeetingStore()
-        # Named voices live next to the meetings folder (beside it, so the
+        # Saved voices live next to the meetings folder (beside it, so the
         # meeting list never reads them as a meeting).
         self.voices = voices if voices is not None else VoiceBook(Path(self.store.folder).parent / VOICES_FILE)
         self._splitter_factory = splitter_factory or self._load_splitter
@@ -74,7 +77,8 @@ class MeetingService:
         self.tracker = SpeakerTracker(embed=None, voices=self.voices)
         self._embedder_task = None
         self.session = SessionManager(self.store, start_capture=self._start_capture, stop_capture=self._stop_capture,
-                                      publish=self._publish, settings=self._setting, on_speakers=self.tracker.load)
+                                      publish=self._publish, settings=self._setting, on_speakers=self.tracker.load,
+                                      on_ended=self._keep_voices)
         self.transcriber = MeetingTranscriber(
             engine_provider=lambda: self.ctx.state_manager.whisper_engine,
             is_busy=lambda: not self.ctx.state_manager.is_idle(), tracker=self.tracker,
@@ -431,44 +435,120 @@ class MeetingService:
             self.session.offer_decline()
         self._sync_idle_listener()
 
-    # Naming a speaker also remembers the voice, so the next meeting knows it.
-    # The name of another speaker in the same meeting merges the two: they
-    # were one person the splitter cut in two.
+    # ── Saved voices ─────────────────────────────────────────────────────────
+
+    # When a meeting ends, every remote voice in it is saved with a permanent
+    # id (refining the saved voice it was linked to, or the one it matches,
+    # or as a new voice), and the meeting file records each speaker's id.
+    # Labels that are clearly one voice are merged first (the splitter cut
+    # one person in two). A speaker heard in fewer than MIN_KEEP_CHUNKS
+    # chunks is too thin a sample to save.
+    def _keep_voices(self, meeting: dict):
+        if not self._setting('meeting.remember_voices', True):
+            return
+        try:
+            changed = self._merge_twins(meeting)
+            taken = []
+            for s in meeting['speakers']:
+                if s['id'] == 'you' or not s.get('centroid') or int(s.get('count', 0)) < MIN_KEEP_CHUNKS:
+                    continue
+                voice_id = self.voices.keep(s['centroid'], s['count'], meeting['id'], voice_id=s.get('voice_id'),
+                                            taken=taken)
+                taken.append(voice_id)
+                if s.get('voice_id') != voice_id:
+                    s['voice_id'] = voice_id
+                    changed = True
+            if changed:
+                self.store.save(meeting)
+            logger.info(f"Saved {len(taken)} voice(s) from meeting {meeting['id']}")
+        except Exception as e:
+            logger.warning(f"Voices of meeting {meeting.get('id')} not saved: {e}")
+
+    # Merge speakers of one meeting whose voiceprints are clearly one voice;
+    # the one heard less joins the other. Returns whether anything changed.
+    def _merge_twins(self, meeting: dict) -> bool:
+        changed = True
+        merged_any = False
+        while changed:
+            changed = False
+            remote = [s for s in meeting['speakers'] if s['id'] != 'you' and s.get('centroid')]
+            for i, a in enumerate(remote):
+                for b in remote[i + 1:]:
+                    va, vb = np.asarray(a['centroid']), np.asarray(b['centroid'])
+                    sim = float(np.dot(va, vb) / ((np.linalg.norm(va) * np.linalg.norm(vb)) or 1.0))
+                    if sim >= SAME_VOICE:
+                        keep, drop = (a, b) if a.get('count', 0) >= b.get('count', 0) else (b, a)
+                        self._merge_voice_ids(drop.get('voice_id'), keep)
+                        merge_speaker_into(meeting, drop['id'], keep['id'])
+                        logger.info(f"Merged {drop['name']} into {keep['name']}: one voice ({sim:.2f})")
+                        changed = merged_any = True
+                        break
+                if changed:
+                    break
+        return merged_any
+
+    # A speaker merged into `keep` brings its saved voice along.
+    def _merge_voice_ids(self, from_voice: Optional[str], keep: dict):
+        if from_voice and keep.get('voice_id') and from_voice != keep['voice_id']:
+            self.voices.merge(from_voice, keep['voice_id'])
+        elif from_voice and not keep.get('voice_id'):
+            keep['voice_id'] = from_voice
+
+    # A name is a label on the speaker's saved voice, so later meetings use
+    # it too; a speaker not saved yet is saved now. The name of another
+    # speaker in the same meeting merges the two: one person, cut in two.
     def rename_speaker(self, speaker_id: str, name: str):
         m = self.session.meeting
         if not m:
             return
         twin = same_name_as(m, speaker_id, name)
         if twin:
+            source = next((s for s in m['speakers'] if s['id'] == speaker_id), {})
+            target = next((s for s in m['speakers'] if s['id'] == twin), {})
+            self._merge_voice_ids(source.get('voice_id'), target)
             self.session.merge_speakers(speaker_id, twin)
             self.tracker.merge(speaker_id, twin)
             speaker_id = twin
         else:
             self.session.rename_speaker(speaker_id, name)
             self.tracker.rename(speaker_id, str(name).strip()[:40])
+        speaker = next((s for s in m['speakers'] if s['id'] == speaker_id), None)
         voiceprint = self.tracker.voiceprint(speaker_id)
-        if voiceprint:
-            self.voices.remember(name, *voiceprint)
+        if speaker is None or not voiceprint:
+            return
+        voice_id = speaker.get('voice_id') or self.voices.keep(
+            voiceprint[0], voiceprint[1], m['id'], taken=[s.get('voice_id') for s in m['speakers'] if s.get('voice_id')])
+        self.voices.set_name(voice_id, name)
+        if speaker.get('voice_id') != voice_id:
+            self.session.ensure_speaker({'id': speaker_id, 'voice_id': voice_id})
+            self.tracker.set_voice_id(speaker_id, voice_id)
 
     def rename_saved_speaker(self, meeting_id: str, speaker_id: str, name: str):
         m = self.store.load(meeting_id)
         twin = same_name_as(m, speaker_id, name)
         if twin:
+            source = next((s for s in m['speakers'] if s['id'] == speaker_id), {})
+            target = next((s for s in m['speakers'] if s['id'] == twin), {})
+            self._merge_voice_ids(source.get('voice_id'), target)
             merge_speaker_into(m, speaker_id, twin)
             speaker_id = twin
         for s in m['speakers']:
             if s['id'] == speaker_id:
                 s['name'] = str(name).strip()[:40] or s['name']
                 if s.get('centroid'):
-                    self.voices.remember(s['name'], s['centroid'], s.get('count', 1))
+                    s['voice_id'] = s.get('voice_id') or self.voices.keep(
+                        s['centroid'], s.get('count', 1), meeting_id,
+                        taken=[o.get('voice_id') for o in m['speakers'] if o.get('voice_id')])
+                    self.voices.set_name(s['voice_id'], s['name'])
         self.store.save(m)
 
-    # Remembered voices, for the Meetings screen: names only, never voiceprints.
+    # Saved voices, for the Meetings screen: ids, names and where they were
+    # heard; never the voiceprints.
     def voices_list(self) -> list:
-        return self.voices.names()
+        return self.voices.all()
 
-    def forget_voice(self, name: str) -> bool:
-        return self.voices.forget(name)
+    def forget_voice(self, voice_id: str) -> bool:
+        return self.voices.forget(voice_id)
 
     def continue_previous(self):
         self.session.continue_previous()
