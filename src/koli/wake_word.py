@@ -337,6 +337,7 @@ class WakeListener:
     LEVEL_WINDOW_S = 0.3
     FLOOR_CACHE_S = 5.0
     GATE_MARGIN_DB = 15.0
+    GATED_LOG_S = 30.0        # at most one "taken as background" line this often
     DEFAULT_VOICE_MATCH = 0.45
 
     def __init__(self, state_manager, config_manager, *,
@@ -366,6 +367,7 @@ class WakeListener:
         self._recent_power = collections.deque(maxlen=max(1, int(round(self.LEVEL_WINDOW_S / FRAME_S))))
         self._window_db = -200.0
         self._gated_frames, self._gated_peak = 0, -200.0
+        self._gated_summary = (0, 0.0, -200.0, -1e9)   # (stretches, seconds, peak dB, last logged)
         self._floor_cache = (None, None, -1e9)     # (mic, floor dB, when)
         self._clock = clock
         self.budget = CheckBudget(clock)
@@ -587,12 +589,25 @@ class WakeListener:
 
     # A stretch of speech the gate took for background, said once it ends:
     # if it was you, the floor is too high for how you speak now.
+    # Summed over GATED_LOG_S: with music playing a stretch ends every second
+    # or two, and a line each (135 in ten minutes) re-rendered the app window
+    # on every one, which threw away what you were typing in Snippets.
     def _log_gated(self) -> None:
         seconds = self._gated_frames * FRAME_S
-        if seconds >= self.MIN_SPEECH_S:
-            self.logger.info(f"Wake word: {seconds:.1f} s of speech taken as background "
-                             f"(up to {self._gated_peak:.0f} dB, needs {self.voice_floor_db():.0f} dB)")
-        self._gated_frames, self._gated_peak = 0, -200.0
+        self._gated_frames = 0
+        if seconds < self.MIN_SPEECH_S:
+            return
+        count, total, peak, since = self._gated_summary
+        count, total, peak = count + 1, total + seconds, max(peak, self._gated_peak)
+        self._gated_peak = -200.0
+        now = self._clock()
+        if now - since < self.GATED_LOG_S:
+            self._gated_summary = (count, total, peak, since)
+            return
+        floor = self.voice_floor_db()
+        self.logger.info(f"Wake word: {total:.1f} s of speech in {count} stretch(es) taken as background "
+                         f"(up to {peak:.0f} dB, needs {floor if floor is not None else 0:.0f} dB)")
+        self._gated_summary = (0, 0.0, -200.0, now)
 
     # Your level on this microphone less the margin (dBFS), or None. Your
     # recorded wake word sets the level; otherwise the one learned from hotkey

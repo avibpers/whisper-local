@@ -80,11 +80,13 @@ export function Select({ value, options, onChange, label, style = '' }) {
 
 // A text field that saves when you press Enter or leave the field, not on
 // every keystroke (saves are instant, but half-typed values shouldn't be).
+// The draft is its own state: the app window re-renders on every log line
+// and event, and a field showing the saved value would lose what you type.
 export function TextField({ value, onCommit, label, placeholder = '', mono = false, width = '', type = 'text' }) {
   const [draft, setDraft] = useState(value ?? '');
   useEffect(() => setDraft(value ?? ''), [value]);
   const commit = () => { if ((draft ?? '') !== (value ?? '')) onCommit(draft); };
-  return html`<input class=${'inp' + (mono ? ' mono' : '')} type=${type} aria-label=${label}
+  return html`<input class=${'inp' + (mono ? ' mono' : '')} type=${type} aria-label=${label} dir="auto"
     placeholder=${placeholder} value=${draft} style=${width ? `width:${width}` : ''}
     onInput=${(e) => setDraft(e.currentTarget.value)} onBlur=${commit}
     onKeyDown=${(e) => { if (e.key === 'Enter') { e.currentTarget.blur(); } if (e.key === 'Escape') setDraft(value ?? ''); }} />`;
@@ -93,7 +95,7 @@ export function TextField({ value, onCommit, label, placeholder = '', mono = fal
 export function TextArea({ value, onCommit, label, rows = 3, mono = false, placeholder = '' }) {
   const [draft, setDraft] = useState(value ?? '');
   useEffect(() => setDraft(value ?? ''), [value]);
-  return html`<textarea class=${'inp' + (mono ? ' mono' : '')} rows=${rows} aria-label=${label}
+  return html`<textarea class=${'inp' + (mono ? ' mono' : '')} rows=${rows} aria-label=${label} dir="auto"
     placeholder=${placeholder} value=${draft} onInput=${(e) => setDraft(e.currentTarget.value)}
     onBlur=${() => { if (draft !== (value ?? '')) onCommit(draft); }}></textarea>`;
 }

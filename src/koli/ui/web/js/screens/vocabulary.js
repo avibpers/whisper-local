@@ -8,7 +8,7 @@
 import { html, useEffect, useState } from '../../vendor/preact-htm.module.js';
 import { call } from '../api.js';
 import { app, closeModal, openModal, toast, useSetting } from '../store.js';
-import { Icon, TagInput, Toggle } from '../ui.js';
+import { Icon, TagInput, TextArea, TextField, Toggle } from '../ui.js';
 
 function Words() {
   const words = useSetting('whisper.hotwords') || [];
@@ -71,8 +71,8 @@ function Replacements() {
       <tbody>
         ${items.length === 0 && html`<tr><td colspan="6" class="muted">None yet.</td></tr>`}
         ${items.map((it, i) => html`<tr>
-          <td><input class=${'inp' + (it.regex ? ' mono' : '')} dir="auto" value=${it.from} aria-label="Find" style="width:100%" onBlur=${(e) => e.currentTarget.value !== it.from && update(i, { from: e.currentTarget.value })} /></td>
-          <td><input class=${'inp' + (it.regex ? ' mono' : '')} dir="auto" value=${it.to} aria-label="Replace with" style="width:100%" onBlur=${(e) => e.currentTarget.value !== it.to && update(i, { to: e.currentTarget.value })} /></td>
+          <td><${TextField} value=${it.from} label="Find" mono=${!!it.regex} width="100%" onCommit=${(v) => update(i, { from: v })} /></td>
+          <td><${TextField} value=${it.to} label="Replace with" mono=${!!it.regex} width="100%" onCommit=${(v) => update(i, { to: v })} /></td>
           <td><${Toggle} checked=${it.whole_word !== false} label="Whole word" onChange=${(v) => update(i, { whole_word: v })} /></td>
           <td><${Toggle} checked=${!!it.case_sensitive} label="Match case" onChange=${(v) => update(i, { case_sensitive: v })} /></td>
           <td><${Toggle} checked=${!!it.regex} label="Regular expression" onChange=${(v) => update(i, { regex: v })} /></td>
@@ -93,8 +93,8 @@ function Snippets() {
       <tbody>
         ${items.length === 0 && html`<tr><td colspan="4" class="muted">None yet.</td></tr>`}
         ${items.map((it, i) => html`<tr>
-          <td><input class="inp" dir="auto" value=${it.trigger} aria-label="Trigger" onBlur=${(e) => e.currentTarget.value !== it.trigger && update(i, { trigger: e.currentTarget.value })} /></td>
-          <td><textarea class="inp" rows="2" dir="auto" aria-label="Expansion" value=${it.expansion} onBlur=${(e) => e.currentTarget.value !== it.expansion && update(i, { expansion: e.currentTarget.value })}></textarea></td>
+          <td><${TextField} value=${it.trigger} label="Trigger" onCommit=${(v) => update(i, { trigger: v })} /></td>
+          <td><${TextArea} value=${it.expansion} label="Expansion" rows=${2} onCommit=${(v) => update(i, { expansion: v })} /></td>
           <td><div class="seg" role="radiogroup" aria-label="When it works">${[['anywhere', 'Anywhere'], ['alone', 'Alone']].map(([v, t]) => html`<button type="button" role="radio"
             aria-checked=${(it.mode || 'anywhere') === v} class=${(it.mode || 'anywhere') === v ? 'on' : ''} onClick=${() => update(i, { mode: v })}>${t}</button>`)}</div></td>
           <td class="end"><button type="button" class="btn ghost icon" aria-label="Delete" onClick=${() => save(items.filter((_, n) => n !== i))}><${Icon} name="x" /></button></td></tr>`)}

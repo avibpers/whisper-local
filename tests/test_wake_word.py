@@ -424,6 +424,19 @@ class BackgroundSoundTests(ListenerTestCase):
         self.say(8, seconds=2)                 # speaker music, 30 dB under you, still isn't speech
         self.assertEqual(len(self.transcribed), 1)
 
+    # Every log line re-renders the app window; one per gated stretch under
+    # music (135 in ten minutes) kept wiping what was typed in Snippets.
+    def test_background_is_logged_as_one_summary_per_half_minute(self):
+        listener = self.make(learned_level=MY_LEVEL)
+        with self.assertLogs('koli.wake_word', level='INFO') as logs:
+            for _ in range(40):                # a minute of music: a stretch, a gap
+                self.say(8, seconds=0.8)
+                self.quiet(0.7)
+            listener.logger.info('end')
+        gated = [line for line in logs.output if 'taken as background' in line]
+        self.assertLessEqual(len(gated), 3)
+        self.assertIn('stretch(es)', gated[0])
+
     def test_without_a_level_the_command_is_cut_soon_after_the_wake(self):
         self.make()
         start = self.clock.now
