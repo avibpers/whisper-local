@@ -1,14 +1,17 @@
 # platform/windows/input_watch.py
-# Reports two things to its listeners (auto_dictation.py, delayed_send.py): "a
-# text field got focus" and "the user is typing". A hook thread pumps Windows
-# messages for a focus WinEvent hook and a low-level keyboard hook; a worker
-# thread asks UI Automation what the focused element is (never from inside the
-# hook callback, which Windows forbids) and calls back. One set of hooks serves
-# every listener. Nothing here knows about Koli state.
+# Reports three things to its listeners (auto_dictation.py, delayed_send.py):
+# "a text field got focus", "the user is typing" and "the user clicked" (not
+# on Koli's own windows). A hook thread pumps Windows messages for a focus
+# WinEvent hook and low-level keyboard and mouse hooks; a worker thread asks
+# UI Automation what the focused element is, and which window a click landed
+# on (never from inside a hook callback, which Windows forbids), and calls
+# back. One set of hooks serves every listener. Nothing here knows about Koli
+# state.
 # macOS mirror: platform/macos/input_watch.py (no-op for now).
 import ctypes
 import ctypes.wintypes as wt
 import logging
+import os
 import queue
 import threading
 import time
@@ -20,6 +23,9 @@ logger = logging.getLogger(__name__)
 EVENT_OBJECT_FOCUS = 0x8005
 WINEVENT_OUTOFCONTEXT = 0x0000
 WH_KEYBOARD_LL = 13
+WH_MOUSE_LL = 14
+WM_LBUTTONDOWN, WM_RBUTTONDOWN, WM_MBUTTONDOWN = 0x0201, 0x0204, 0x0207
+LLMHF_INJECTED = 0x01
 WM_KEYDOWN = 0x0100
 WM_SYSKEYDOWN = 0x0104
 WM_QUIT = 0x0012
@@ -71,6 +77,22 @@ class _KBDLLHOOKSTRUCT(ctypes.Structure):
                 ('time', wt.DWORD), ('dwExtraInfo', ctypes.c_void_p)]
 
 
+# Pure decision, like classify_key: which button a low-level mouse message
+# pressed, or None for moves, releases, wheels and injected input.
+_CLICKS = {WM_LBUTTONDOWN: 'left button', WM_RBUTTONDOWN: 'right button', WM_MBUTTONDOWN: 'middle button'}
+
+
+def classify_click(message: int, flags: int) -> Optional[str]:
+    if flags & LLMHF_INJECTED:
+        return None
+    return _CLICKS.get(message)
+
+
+class _MSLLHOOKSTRUCT(ctypes.Structure):
+    _fields_ = [('pt', wt.POINT), ('mouseData', wt.DWORD), ('flags', wt.DWORD),
+                ('time', wt.DWORD), ('dwExtraInfo', ctypes.c_void_p)]
+
+
 def _bind():
     global _user32, _kernel32, _WinEventProc, _KeyboardProc
     if _user32 is not None:
@@ -87,6 +109,8 @@ def _bind():
     _user32.UnhookWindowsHookEx.argtypes = [wt.HHOOK]
     _user32.CallNextHookEx.restype = ctypes.c_ssize_t
     _user32.CallNextHookEx.argtypes = [wt.HHOOK, ctypes.c_int, wt.WPARAM, wt.LPARAM]
+    _user32.WindowFromPoint.restype = wt.HWND
+    _user32.WindowFromPoint.argtypes = [wt.POINT]
     _user32.GetAncestor.restype = wt.HWND
     _user32.GetAncestor.argtypes = [wt.HWND, wt.UINT]
     _user32.GetWindowThreadProcessId.argtypes = [wt.HWND, ctypes.POINTER(wt.DWORD)]
@@ -199,11 +223,16 @@ def _foreground_exe() -> str:
 class _Watcher:
     # `wants_focus` says whether any listener cares about focus; when none does
     # (only the delayed send is listening), the UI Automation probe is skipped.
+    # `wants_click` likewise: the mouse hook reports nothing unless a listener
+    # asked for clicks.
     def __init__(self, on_focus: Callable[[dict], None], on_typing: Callable[..., None],
-                 wants_focus: Callable[[], bool]):
+                 wants_focus: Callable[[], bool], on_click: Optional[Callable[..., None]] = None,
+                 wants_click: Optional[Callable[[], bool]] = None):
         self.on_focus = on_focus
         self.on_typing = on_typing
         self.wants_focus = wants_focus
+        self.on_click = on_click or (lambda button='': None)
+        self.wants_click = wants_click or (lambda: False)
         self._events: "queue.Queue" = queue.Queue()
         self._hook_thread: Optional[threading.Thread] = None
         self._worker: Optional[threading.Thread] = None
@@ -215,6 +244,7 @@ class _Watcher:
         # The callbacks must outlive the hooks; Windows holds raw pointers.
         self._focus_proc = None
         self._key_proc = None
+        self._mouse_proc = None
 
     def start(self) -> bool:
         _bind()
@@ -240,7 +270,7 @@ class _Watcher:
     # Hook thread: install both hooks, pump until WM_QUIT.
     def _pump(self):
         self._hook_thread_id = _kernel32.GetCurrentThreadId()
-        focus_hook = key_hook = None
+        focus_hook = key_hook = mouse_hook = None
         try:
             self._focus_proc = _WinEventProc(self._on_win_event)
             focus_hook = _user32.SetWinEventHook(EVENT_OBJECT_FOCUS, EVENT_OBJECT_FOCUS, None,
@@ -252,6 +282,13 @@ class _Watcher:
                                                  _kernel32.GetModuleHandleW(None), 0)
             if not key_hook:
                 raise OSError(f'keyboard hook failed ({ctypes.get_last_error()})')
+            # Clicks only matter to the delayed send; without them focus and
+            # typing still work, so a failed mouse hook is not fatal.
+            self._mouse_proc = _KeyboardProc(self._on_mouse)   # LowLevelMouseProc has the same signature
+            mouse_hook = _user32.SetWindowsHookExW(WH_MOUSE_LL, self._mouse_proc,
+                                                   _kernel32.GetModuleHandleW(None), 0)
+            if not mouse_hook:
+                logger.warning(f"Mouse hook unavailable ({ctypes.get_last_error()}): a click won't cancel an auto-send")
             self._ready.set()
             msg = wt.MSG()
             while _user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
@@ -261,6 +298,8 @@ class _Watcher:
             self._failed = str(e)
             self._ready.set()
         finally:
+            if mouse_hook:
+                _user32.UnhookWindowsHookEx(mouse_hook)
             if key_hook:
                 _user32.UnhookWindowsHookEx(key_hook)
             if focus_hook:
@@ -285,6 +324,30 @@ class _Watcher:
             pass
         return _user32.CallNextHookEx(None, code, wparam, lparam)
 
+    # Kept short: Windows drops a hook that is slow. Only the position goes
+    # to the worker, which decides whose window it was.
+    def _on_mouse(self, code, wparam, lparam):
+        try:
+            if code >= 0 and self.wants_click():
+                ms = ctypes.cast(lparam, ctypes.POINTER(_MSLLHOOKSTRUCT)).contents
+                button = classify_click(wparam, ms.flags)
+                if button:
+                    self._events.put(('click', button, ms.pt.x, ms.pt.y))
+        except Exception:
+            pass
+        return _user32.CallNextHookEx(None, code, wparam, lparam)
+
+    # A click on one of Koli's own windows (the bubble's Cancel or Send now,
+    # the app window) is Koli's business, not "I'll do it myself".
+    def _report_click(self, button: str, x: int, y: int) -> None:
+        try:
+            hwnd = _user32.WindowFromPoint(wt.POINT(x, y))
+            if hwnd and _root_pid(hwnd) == os.getpid():
+                return
+        except Exception:
+            pass
+        self._call(self.on_click, button)
+
     # Worker thread: let a focus storm settle, probe the last element, report.
     def _work(self):
         probe = _Probe()
@@ -294,6 +357,9 @@ class _Watcher:
                 break
             if item[0] == 'typing':
                 self._call(self.on_typing, item[1])
+                continue
+            if item[0] == 'click':
+                self._report_click(*item[1:])
                 continue
             hwnd = item[1]
             deadline = time.monotonic() + FOCUS_SETTLE_SECONDS
@@ -311,6 +377,8 @@ class _Watcher:
                     break
                 if later[0] == 'typing':
                     self._call(self.on_typing, later[1])
+                elif later[0] == 'click':
+                    self._report_click(*later[1:])
                 elif later[0] == 'focus':
                     hwnd = later[1]
             if quit_seen:
@@ -331,43 +399,56 @@ class _Watcher:
 
 # ── Listeners ────────────────────────────────────────────────────────────────
 _watcher: Optional[_Watcher] = None
-_listeners: dict = {}          # token -> (on_focus or None, on_typing or None)
+_listeners: dict = {}          # token -> (on_focus, on_typing, on_click), each may be None
 _next_token = 1
 _lock = threading.Lock()
 
 
 def _dispatch_focus(info: dict) -> None:
-    for on_focus, _ in list(_listeners.values()):
+    for on_focus, _, _ in list(_listeners.values()):
         if on_focus is not None:
             on_focus(info)
 
 
 def _dispatch_typing(key: str = '') -> None:
-    for _, on_typing in list(_listeners.values()):
+    for _, on_typing, _ in list(_listeners.values()):
         if on_typing is not None:
             on_typing(key)
 
 
+def _dispatch_click(button: str = '') -> None:
+    for _, _, on_click in list(_listeners.values()):
+        if on_click is not None:
+            on_click(button)
+
+
 def _wants_focus() -> bool:
-    return any(on_focus is not None for on_focus, _ in list(_listeners.values()))
+    return any(on_focus is not None for on_focus, _, _ in list(_listeners.values()))
 
 
-# Platform contract: start(on_focus, on_typing) -> token (0 on failure),
-# stop(token), is_running(). Either callback may be None. `on_typing` gets a
-# short description of the key ("key 0x41"), so the console can say which key
-# ended a recording when it was not what the user expected. The hooks run
-# while at least one listener is registered.
-def start(on_focus: Optional[Callable[[dict], None]], on_typing: Optional[Callable[..., None]]) -> int:
+def _wants_click() -> bool:
+    return any(on_click is not None for _, _, on_click in list(_listeners.values()))
+
+
+# Platform contract: start(on_focus, on_typing, on_click=None) -> token (0 on
+# failure), stop(token), is_running(). Any callback may be None. `on_typing`
+# gets a short description of the key ("key 0x41"), so the console can say
+# which key ended a recording when it was not what the user expected;
+# `on_click` gets the button ("left button"). The hooks run while at least
+# one listener is registered.
+def start(on_focus: Optional[Callable[[dict], None]], on_typing: Optional[Callable[..., None]],
+          on_click: Optional[Callable[..., None]] = None) -> int:
     global _watcher, _next_token
     with _lock:
         if _watcher is None:
-            watcher = _Watcher(_dispatch_focus, _dispatch_typing, _wants_focus)
+            watcher = _Watcher(_dispatch_focus, _dispatch_typing, _wants_focus,
+                               on_click=_dispatch_click, wants_click=_wants_click)
             if not watcher.start():
                 return 0
             _watcher = watcher
         token = _next_token
         _next_token += 1
-        _listeners[token] = (on_focus, on_typing)
+        _listeners[token] = (on_focus, on_typing, on_click)
         return token
 
 

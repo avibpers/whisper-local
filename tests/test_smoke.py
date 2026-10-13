@@ -6506,10 +6506,12 @@ class _SendClock:
 class _SendWatch:
     def __init__(self):
         self.on_typing = None
+        self.on_click = None
         self.stopped = []
 
-    def start(self, on_focus, on_typing):
+    def start(self, on_focus, on_typing, on_click=None):
         self.on_typing = on_typing
+        self.on_click = on_click
         return 7
 
     def stop(self, token=None):
@@ -6598,6 +6600,19 @@ class DelayedSendTests(unittest.TestCase):
         ds.poll()
         self.assertEqual(self.sent, [])
 
+    # Clicking into the text (to fix a word) means "I'll send it myself",
+    # like typing. Clicks on Koli's own bubble never reach this.
+    def test_a_mouse_click_cancels_the_send(self):
+        ds = self._sender()
+        ds.schedule(5)
+        self.assertIsNotNone(self.watch.on_click, 'the countdown listens for clicks')
+        self.watch.on_click('left button')
+        self.assertFalse(ds.is_pending())
+        self.assertEqual(self.events[-1][1], {'state': 'cancelled', 'reason': 'you clicked'})
+        self.clock.now = 6.0
+        ds.poll()
+        self.assertEqual(self.sent, [])
+
     def test_a_new_send_replaces_the_pending_one(self):
         ds = self._sender()
         ds.schedule(5)
@@ -6624,8 +6639,9 @@ class InputWatchListenersTests(unittest.TestCase):
         created = []
 
         class FakeWatcher:
-            def __init__(self, on_focus, on_typing, wants_focus):
+            def __init__(self, on_focus, on_typing, wants_focus, on_click=None, wants_click=None):
                 self.on_focus, self.on_typing, self.wants_focus = on_focus, on_typing, wants_focus
+                self.on_click, self.wants_click = on_click, wants_click
                 self.stopped = False
                 created.append(self)
 
@@ -6654,6 +6670,45 @@ class InputWatchListenersTests(unittest.TestCase):
             self.iw.stop(second)
             self.assertTrue(created[0].stopped)
             self.assertFalse(self.iw.is_running())
+
+    # Only a listener that asks for clicks (the delayed send) gets them;
+    # auto-dictation's focus and typing listener doesn't.
+    def test_clicks_go_only_to_listeners_that_ask(self):
+        import unittest.mock as mock
+        created = []
+
+        class FakeWatcher:
+            def __init__(self, on_focus, on_typing, wants_focus, on_click=None, wants_click=None):
+                self.on_click, self.wants_click = on_click, wants_click
+                created.append(self)
+
+            def start(self):
+                return True
+
+            def stop(self):
+                pass
+
+        clicked = []
+        with mock.patch.object(self.iw, '_Watcher', FakeWatcher),                 mock.patch.object(self.iw, '_watcher', None),                 mock.patch.object(self.iw, '_listeners', {}):
+            self.iw.start(lambda info: None, lambda key='': None)
+            self.assertFalse(created[0].wants_click())
+            token = self.iw.start(None, lambda key='': None, clicked.append)
+            self.assertTrue(created[0].wants_click())
+            created[0].on_click('left button')
+            self.assertEqual(clicked, ['left button'])
+            self.iw.stop(token)
+            self.assertFalse(created[0].wants_click())
+
+    # Real presses of the left, right or middle button count; Koli's own
+    # injected input and moves or releases don't.
+    def test_which_mouse_events_are_clicks(self):
+        classify = self.iw.classify_click
+        self.assertEqual(classify(0x0201, 0), 'left button')
+        self.assertEqual(classify(0x0204, 0), 'right button')
+        self.assertEqual(classify(0x0207, 0), 'middle button')
+        self.assertIsNone(classify(0x0202, 0), 'a release is not a new click')
+        self.assertIsNone(classify(0x0200, 0), 'a move is not a click')
+        self.assertIsNone(classify(0x0201, 0x1), 'injected')
 
 
 class DelayedSendDeliveryTests(unittest.TestCase):

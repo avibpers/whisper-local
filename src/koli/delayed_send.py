@@ -1,8 +1,8 @@
 # delayed_send.py
 # Auto-send with a pause to think: after the text is pasted, Koli waits a few
 # seconds before pressing Enter, so you can read it and stop the send. Esc, the
-# bubble's Cancel button, a new dictation, typing, or switching to another
-# window stop it; "Send now" skips the wait. Each step is published on the
+# bubble's Cancel button, a new dictation, typing, a mouse click (not on Koli),
+# or switching to another window stop it; "Send now" skips the wait. Each step is published on the
 # event bus as 'auto_send' for the floating bubble. The wait is fixed seconds
 # or "Auto" (fast, medium, slow), which follows the message's length.
 
@@ -181,8 +181,9 @@ class DelayedSend:
                                         'total': max(1, math.ceil(pending['total']))})
 
     # Typing during the wait (fixing a word, or pressing Enter yourself) means
-    # "I'll send it myself". Koli's own paste and Enter are injected keys,
-    # which the watcher ignores.
+    # "I'll send it myself", and so does clicking (into the text to fix it).
+    # Koli's own paste and Enter are injected keys, which the watcher ignores,
+    # and clicks on Koli's own windows (the bubble's buttons) don't count.
     def _watch_typing(self) -> int:
         watch = self._typing_watch
         if watch is None:
@@ -192,7 +193,7 @@ class DelayedSend:
                 return 0
             self._typing_watch = watch
         try:
-            return watch.start(None, self._on_typing) or 0
+            return watch.start(None, self._on_typing, self._on_click) or 0
         except Exception as e:
             logger.debug(f"Auto-send: typing watch unavailable ({e})")
             return 0
@@ -206,6 +207,9 @@ class DelayedSend:
 
     def _on_typing(self, key: str = '') -> None:
         self.cancel('you started typing')
+
+    def _on_click(self, button: str = '') -> None:
+        self.cancel('you clicked')
 
     # The countdown thread: ticks until nothing is waiting.
     def _run(self) -> None:
