@@ -339,6 +339,12 @@ class WakeListener:
     GATE_MARGIN_DB = 15.0
     GATED_LOG_S = 30.0        # at most one "taken as background" line this often
     DEFAULT_VOICE_MATCH = 0.45
+    # The console shows tries that are probably you: a voice this close under
+    # "Sounds like you", or (with "Hey Koli", where every burst reaches
+    # Whisper) text this much like the wake word. Other voices and a TV
+    # score far below both, so they stay out of it.
+    CONSOLE_NEAR_VOICE = 0.10
+    CONSOLE_NEAR_WORD = 0.5
 
     def __init__(self, state_manager, config_manager, *,
                  transcribe: Optional[Callable] = None,
@@ -375,6 +381,7 @@ class WakeListener:
         self.state = SLEEPING
         self._deadline = 0.0
         self._chime_until = 0.0
+        self._retry_left = False     # a missed first command may be said once more
         self._locked_cache = (False, -1e9)
         self._busy_checked = -1e9
         self._enrolling = False
@@ -597,6 +604,11 @@ class WakeListener:
         self._gated_frames = 0
         if seconds < self.MIN_SPEECH_S:
             return
+        # Awake, this was most likely the command: say it was too quiet.
+        if self.state != SLEEPING:
+            floor = self.voice_floor_db()
+            _console(f"✗ Too quiet for a command: {seconds:.1f} s of speech up to {self._gated_peak:.0f} dB, "
+                     f"needs {floor if floor is not None else 0:.0f} dB")
         count, total, peak, since = self._gated_summary
         count, total, peak = count + 1, total + seconds, max(peak, self._gated_peak)
         self._gated_peak = -200.0
@@ -706,6 +718,7 @@ class WakeListener:
         if speech_seconds < self.MIN_SPEECH_S:
             return None
         said = f"Wake check ({speech_seconds:.1f} s of speech)"
+        voice = ''      # the score, for the console
         if self.personal():
             score = self.similarity(audio)
             if score is None:
@@ -713,11 +726,16 @@ class WakeListener:
                 self.logger.info(f"{said}: no - your voice can't be checked on this microphone yet")
                 return None
             said += f", voice {score:.2f} (needs {self.voice_match():.2f})"
+            voice = f" (voice {score:.2f}, needs {self.voice_match():.2f})"
             if score < self.voice_match():
                 self.logger.info(f"{said}: no - doesn't sound enough like your recordings")
+                if score >= self.voice_match() - self.CONSOLE_NEAR_VOICE:
+                    _console(f"👂 Almost your voice{voice}: not woken")
                 return None
         if not self.budget.take():
             self.logger.info(f"{said}: skipped - checking less often after many misses")
+            if self.personal():
+                _console(f"👂 Sounded like you{voice}, but skipped: checking less often after many misses")
             return None
         try:
             text = self._transcribe(audio) or ''
@@ -731,8 +749,13 @@ class WakeListener:
         if rest is None:
             self.budget.missed()
             self.logger.info(f"{said}: no")
+            # Your voice, or close to the wake word: show what Whisper wrote.
+            if self.personal() or ratio >= self.CONSOLE_NEAR_WORD:
+                _console(f"👂 Heard “{text or '…'}”{voice}: not “{spelling}” ({ratio:.2f} alike, "
+                         f"needs {self.match_ratio():.2f})")
         else:
             self.logger.info(f"{said}: woke")
+            _console(f"👂 Heard “{text}”{voice}: woke, listening for the command")
         return rest
 
     def _log_text(self) -> bool:
@@ -808,6 +831,7 @@ class WakeListener:
 
     def _woke(self) -> None:
         self.budget.woke()
+        self._retry_left = True
         self.logger.info("Wake word heard")
         try:
             self._play_sound()
@@ -815,17 +839,26 @@ class WakeListener:
             pass
         self._chime_until = self._clock() + self.CHIME_GUARD_S
 
+    # A first command that matches nothing gets one more try without the wake
+    # word ("Didn't catch that - say it again"); only one, so a TV that keeps
+    # talking can't hold Koli awake.
     def _run(self, audio=None, text=None, first: bool = True) -> None:
         only_media = not first and not self.personal()
+        can_retry = first and self._retry_left
         try:
-            outcome = self._run_command(audio=audio, text=text, only_media=only_media, report_miss=first)
+            outcome = self._run_command(audio=audio, text=text, only_media=only_media, report_miss=first,
+                                        can_retry=can_retry)
         except Exception as e:
             self.logger.warning(f"Wake word: the command failed ({e})")
-            outcome = MISSED
+            outcome, can_retry = MISSED, False
         if outcome == RAN:
             self._enter(FOLLOW_UP, self._seconds('follow_up_seconds', 5))
         elif outcome == EMPTY and first:
             self._enter(WAITING, self._seconds('command_timeout_seconds', 5))   # only the wake word was said
+        elif can_retry and outcome == MISSED:
+            self._retry_left = False
+            self.logger.info("Wake word: no command matched, listening for one more try")
+            self._enter(WAITING, self._seconds('command_timeout_seconds', 5))
         elif first:
             self._sleep()
         # A follow-up that matched nothing (lyrics, talking to someone) keeps its window.
@@ -952,3 +985,13 @@ def _platform_is_locked() -> bool:
 def _publish(topic, payload):
     from .ui.events import publish
     publish(topic, payload)
+
+
+# A line in the terminal, like the dictation ones ("✓ Transcribed: ..."). The
+# terminal only, not the log: the log has its own line per check, and the app
+# window re-renders on every log line.
+def _console(line: str) -> None:
+    try:
+        print(f"   {line}")
+    except (UnicodeEncodeError, OSError):
+        pass        # a console that can't show it (or none, under pythonw)

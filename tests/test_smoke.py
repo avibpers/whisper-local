@@ -5681,6 +5681,38 @@ class AutoDictationStateManagerTests(unittest.TestCase):
         self.assertIs(check.call_args.args[0], raw)
         self.assertEqual(check.call_args.args[4], 1.0, 'no Whisper-mode boost to undo on raw audio')
 
+    # Found in a real test: with a 4 dB margin your own quieter sentences
+    # (5 dB under your level) were dropped whole, and the voiceprint, which can
+    # tell you from music or a TV, never ran. A phrase loudness would drop
+    # whole is kept when your voiceprint says it is you; unknown doesn't save it.
+    def test_your_voiceprint_keeps_a_phrase_loudness_would_drop_whole(self):
+        import unittest.mock as mock
+        import numpy as np
+        pieces = [{'text': ' Second problem.', 'start': 0.0, 'end': 2.0}]
+        for similarity, kept in ((0.52, 'Second problem.'), (0.11, ''), (None, '')):
+            sm, processed, raw = self._voiceprint_sm(similarity)
+            raw[:] = 0.1                                   # -20 dB: 5 dB under you
+            sm.config_manager = mock.Mock(config={'audio': {'voice_filter': {'margin_db': 4}}})
+            sm.voice_levels = mock.Mock(my_level=mock.Mock(return_value=-15.0))
+            with mock.patch('builtins.print'), self.assertLogs('test', level='INFO') as logs:
+                text, info = sm._keep_my_voice('Second problem.', processed, {'segments': pieces}, True)
+            self.assertEqual(text, kept, f'voiceprint {similarity}')
+            self.assertIn('not checked' if similarity is None else f'{similarity:.2f}', '\n'.join(logs.output))
+            self.assertEqual(info['segments'], pieces if kept else [])
+
+    # You and a quieter TV in one phrase: the voiceprint of the whole phrase
+    # is yours, so it can't vouch for the TV's part, which is still left out.
+    def test_your_voiceprint_doesnt_bring_back_a_quiet_part_next_to_you(self):
+        import unittest.mock as mock
+        sm, processed, raw = self._voiceprint_sm(0.52)
+        raw[:16000], raw[16000:] = 0.2, 0.02               # you at -14 dB, then a TV at -34 dB
+        sm.config_manager = mock.Mock(config={'audio': {'voice_filter': {'margin_db': 4}}})
+        sm.voice_levels = mock.Mock(my_level=mock.Mock(return_value=-15.0))
+        pieces = [{'text': ' Hello.', 'start': 0.0, 'end': 1.0}, {'text': ' Breaking news.', 'start': 1.0, 'end': 2.0}]
+        with mock.patch('builtins.print'):
+            text, _ = sm._keep_my_voice('Hello. Breaking news.', processed, {'segments': pieces}, True)
+        self.assertEqual(text, 'Hello.')
+
     def test_typing_cancel_only_touches_auto_recordings(self):
         import unittest.mock as mock
         sm = self._sm(had_speech=False)
@@ -6049,8 +6081,15 @@ class AutoDictationStateManagerTests(unittest.TestCase):
         self.assertIn("doesn't sound like you", r['reason'])
 
     def test_the_voice_check_leaves_out_a_much_quieter_voice(self):
-        r = self._voice_check(level=-40.0)
+        r = self._voice_check(score=None, learned=1, level=-40.0)
         self.assertEqual((r['verdict'], r['loudness']['status']), ('leave_out', 'quieter'))
+
+    # Like auto-dictation: your voiceprint overrules the loudness check.
+    def test_the_voice_check_types_a_quieter_you(self):
+        r = self._voice_check(level=-40.0)
+        self.assertEqual((r['verdict'], r['loudness']['status'], r['voiceprint']['status']),
+                         ('type', 'quieter', 'match'))
+        self.assertIn('sounds like you', r['reason'])
 
     def test_the_voice_check_says_when_your_voice_isnt_learned_yet(self):
         r = self._voice_check(score=None, learned=1)

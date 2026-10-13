@@ -22,7 +22,8 @@ your voice.
 | Wake word and command in one breath ("Hey Koli play Spotify") | The rest of the sentence is the command. No pause needed. |
 | Wake word, then silence for `command_timeout_seconds` (5) | Goes back to sleep quietly. |
 | Command recognised | Runs it like a hotkey command. Then stays awake `follow_up_seconds` (5) for another command without the wake word ("next", "louder"). With a personal word, follow-ups must sound like you. With "Hey Koli" there is no voice check, so follow-ups only run media commands (play/pause, next, volume). Lyrics from the song you just started can't trigger "undo" or "lock screen". |
-| No command matches | The bar shows "Didn't catch that", then sleeps. Nothing is typed. |
+| No command matches | The bar shows "Didn't catch that - say it again" and Koli listens `command_timeout_seconds` (5) more for the command, without the wake word. A second miss shows "Didn't catch that" and sleeps; one retry only, so a TV can't keep Koli awake. Nothing is typed. |
+| Any try that is probably you | The terminal shows what Whisper heard and the voice score: woke, not the word, almost your voice (within 0.10 of "Sounds like you"), or a command too quiet to count. With "Hey Koli" only text at least half like it is shown. Nothing for other voices or the TV. |
 | Personal word, but your voice on this microphone isn't known (new headset, or the voiceprint model isn't loaded) | Doesn't wake. The Commands screen says to record the word on this microphone. See open questions. |
 | Dictation (hotkey or auto-dictation), meeting running, or command mode from the hotkey | Not listening. It resumes when that ends. |
 | PC locked | Not listening. If Koli can’t tell (the check fails), it counts as locked. |

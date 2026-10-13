@@ -202,6 +202,7 @@ class ListenerTestCase(unittest.TestCase):
         self.sm = FakeStateManager()
         self.transcribed = []
         self.runs = []
+        self.retries = []
         self.run_times = []
         self.events = []
         self.sounds = 0
@@ -216,12 +217,13 @@ class ListenerTestCase(unittest.TestCase):
             self.transcribed.append(text)
             return text
 
-        def run_command(audio=None, text=None, only_media=False, report_miss=True):
+        def run_command(audio=None, text=None, only_media=False, report_miss=True, can_retry=False):
             said = text if text is not None else (fake_transcribe(audio) or '')
             rest = wake_word.match_wake(said, ['hey koli'], 0.9)
             said = said if rest is None else rest
             self.runs.append({'text': said, 'audio': audio is not None, 'only_media': only_media,
                               'report_miss': report_miss})
+            self.retries.append(can_retry)
             self.run_times.append(self.clock.now)
             if self.outcomes:
                 return self.outcomes.pop(0)
@@ -330,12 +332,47 @@ class WakeListenerTests(ListenerTestCase):
         self.quiet(6)
         self.assertEqual(listener.state, self.ww.SLEEPING)
 
-    def test_a_first_command_that_matches_nothing_says_so_and_sleeps(self):
+    # Found in a real test: "Didn't catch that" and Koli was asleep again, so
+    # you had to say the wake word once more. A miss gets one more try.
+    def test_a_first_miss_says_so_and_waits_for_one_more_try(self):
         listener = self.make()
         self.say(1, 9, seconds=0.6)
         self.quiet(0.8)
         self.assertTrue(self.runs[-1]['report_miss'])
+        self.assertEqual(self.retries[-1], True, 'the miss says you can say it again')
+        self.assertEqual(listener.state, self.ww.WAITING)
+        self.say(2)
+        self.quiet(0.8)
+        self.assertEqual(self.runs[-1]['text'], 'next song')
+        self.assertEqual(listener.state, self.ww.FOLLOW_UP)
+
+    # Only one: a TV that keeps talking must not keep Koli awake.
+    def test_a_second_miss_sleeps(self):
+        listener = self.make()
+        self.say(1, 9, seconds=0.6)
+        self.quiet(0.8)
+        self.say(9)
+        self.quiet(0.8)
+        self.assertEqual(len(self.runs), 2)
+        self.assertEqual(self.retries[-1], False, 'the last try says only that it missed')
         self.assertEqual(listener.state, self.ww.SLEEPING)
+
+    def test_the_retry_window_runs_out(self):
+        listener = self.make()
+        self.say(1, 9, seconds=0.6)
+        self.quiet(6)
+        self.assertEqual(listener.state, self.ww.SLEEPING)
+        self.assertEqual(len(self.runs), 1)
+
+    def test_a_new_wake_after_a_retry_gets_its_own_retry(self):
+        listener = self.make()
+        for _ in range(2):
+            self.say(1, 9, seconds=0.6)
+            self.quiet(0.8)
+            self.say(9)
+            self.quiet(0.8)
+            self.assertEqual(listener.state, self.ww.SLEEPING)
+        self.assertEqual(self.retries, [True, False, True, False])
 
     def test_a_hotkey_in_the_middle_of_a_wake_drops_it(self):
         listener = self.make()
@@ -437,6 +474,36 @@ class BackgroundSoundTests(ListenerTestCase):
         self.assertLessEqual(len(gated), 3)
         self.assertIn('stretch(es)', gated[0])
 
+    # Awake, a command quieter than the gate is otherwise lost without a word:
+    # the console says it was too quiet. Asleep, background stays in the log.
+    def test_a_too_quiet_command_says_so_in_the_console(self):
+        import unittest.mock as mock
+        listener = self.make(learned_level=MY_LEVEL)
+        with mock.patch('builtins.print') as out:
+            self.say(8, seconds=1.0)
+            self.quiet(0.5)
+            self.assertEqual(out.call_count, 0, 'background while asleep')
+            self.say(1)
+            self.quiet(1)
+            self.assertEqual(listener.state, self.ww.WAITING)
+            self.say(8, seconds=1.0)
+            self.quiet(0.5)
+        lines = [' '.join(str(a) for a in c.args) for c in out.call_args_list]
+        self.assertTrue(any('quiet' in l.lower() and '-45' in l and '-33' in l for l in lines), lines)
+
+    # "Hey Koli" sends every burst to Whisper: only what comes close to the
+    # wake word is shown, never a TV's sentences.
+    def test_with_hey_koli_the_console_shows_only_close_tries(self):
+        import unittest.mock as mock
+        self.make()
+        with mock.patch('builtins.print') as out:
+            self.say(9)
+            self.quiet(1)
+            self.assertEqual(out.call_count, 0)
+            self.say(1, 2, seconds=0.6)
+            self.quiet(0.8)
+        self.assertTrue(any('woke' in ' '.join(map(str, c.args)) for c in out.call_args_list))
+
     def test_without_a_level_the_command_is_cut_soon_after_the_wake(self):
         self.make()
         start = self.clock.now
@@ -501,6 +568,35 @@ class PersonalWakeWordTests(ListenerTestCase):
         self.quiet(0.8)
         self.assertEqual(self.runs[-1], {'text': 'undo', 'audio': True, 'only_media': False, 'report_miss': False})
         self.assertEqual(listener.state, self.ww.FOLLOW_UP)
+
+    # The console says when Koli heard a try at the wake word and what Whisper
+    # made of it, so you know whether it was heard at all. Other voices and
+    # the TV (far from your voice) stay out of it.
+    def printed(self, run):
+        import unittest.mock as mock
+        with mock.patch('builtins.print') as out:
+            run()
+        return [' '.join(str(a) for a in c.args) for c in out.call_args_list]
+
+    def test_the_console_says_when_your_word_woke_koli(self):
+        self.make_personal(self.mine)
+        lines = self.printed(lambda: (self.say(4, 2, seconds=0.6), self.quiet(0.8)))
+        self.assertTrue(any('koli' in l and 'woke' in l and '1.00' in l for l in lines), lines)
+
+    def test_the_console_shows_a_try_that_almost_sounded_like_you(self):
+        almost = np.array([0.40, 0.9165, 0.0], dtype=np.float32)    # 0.40 against 0.45
+        self.make_personal(almost)
+        lines = self.printed(lambda: (self.say(4, seconds=0.6), self.quiet(0.8)))
+        self.assertTrue(any('0.40' in l and '0.45' in l for l in lines), lines)
+
+    def test_the_console_stays_quiet_for_other_voices(self):
+        self.make_personal(self.theirs)
+        self.assertEqual(self.printed(lambda: (self.say(4, seconds=0.6), self.quiet(0.8))), [])
+
+    def test_the_console_shows_what_whisper_heard_when_it_isnt_your_word(self):
+        self.make_personal(self.mine)
+        lines = self.printed(lambda: (self.say(3, seconds=0.6), self.quiet(0.8)))
+        self.assertTrue(any('undo' in l and 'not' in l for l in lines), lines)
 
     def test_a_microphone_without_your_word_says_so_once(self):
         self.make_personal(self.mine)
@@ -684,6 +780,12 @@ class WakeCommandStateManagerTests(unittest.TestCase):
         sm = self._sm(heard='hey koli make coffee')
         self.assertEqual(self.run_(sm, audio=np.zeros(16000, dtype=np.float32)), MISSED)
         sm.level_overlay.flash_failure.assert_called_once_with("Didn't catch that")
+
+    def test_a_miss_with_a_retry_open_asks_you_to_say_it_again(self):
+        from koli.wake_word import MISSED
+        sm = self._sm(heard='hey koli make coffee')
+        self.assertEqual(self.run_(sm, audio=np.zeros(16000, dtype=np.float32), can_retry=True), MISSED)
+        sm.level_overlay.flash_failure.assert_called_once_with("Didn't catch that - say it again")
 
     def test_a_media_only_follow_up_skips_other_commands_quietly(self):
         from koli.wake_word import MISSED

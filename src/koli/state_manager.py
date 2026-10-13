@@ -555,7 +555,10 @@ class StateManager:
     # start dropped, and the rest matched. `only_media`: a follow-up after
     # "Hey Koli", where anything audible could be a command. `report_miss`:
     # a first command says "Didn't catch that"; a follow-up misses quietly.
-    def run_wake_command(self, audio=None, text=None, only_media: bool = False, report_miss: bool = True) -> str:
+    # `can_retry`: Koli listens for one more try after this miss, so the
+    # bubble asks you to say it again.
+    def run_wake_command(self, audio=None, text=None, only_media: bool = False, report_miss: bool = True,
+                         can_retry: bool = False) -> str:
         from .voice_commands import is_media_command
         from .wake_word import BUSY, EMPTY, MISSED, RAN, match_wake
         from .utils import normalize_spoken
@@ -588,11 +591,14 @@ class StateManager:
                 confirm_runs=not personal)
             if matched or report_miss:
                 self._emit_pipeline('command', mode='wake', raw=text, matched=bool(matched))
+            if not matched and report_miss and can_retry:
+                print("   ↻ Say the command again (no wake word needed)")
             if self.level_overlay:
                 if matched:
                     self.level_overlay.flash_success()
                 elif report_miss:
-                    self.level_overlay.flash_failure("Didn't catch that")
+                    self.level_overlay.flash_failure("Didn't catch that - say it again" if can_retry
+                                                     else "Didn't catch that")
             return RAN if matched else MISSED
         finally:
             with self._state_lock:
@@ -706,6 +712,8 @@ class StateManager:
             verdict, reason = 'no_speech', "No speech heard: auto-dictation would stay quiet"
         elif voiceprint['status'] == 'no_match':
             verdict, reason = 'leave_out', "It doesn't sound like you on this microphone: auto-dictation leaves it out"
+        elif loudness['status'] == 'quieter' and voiceprint['status'] == 'match':
+            verdict, reason = 'type', "Quieter than you usually are, but it sounds like you: auto-dictation would type this"
         elif loudness['status'] == 'quieter':
             verdict, reason = 'leave_out', "It's much quieter than you: auto-dictation leaves it out"
         else:
@@ -778,6 +786,7 @@ class StateManager:
         # The raw clip is cut where this one is, so Whisper's piece times fit
         # it; it has no Whisper-mode boost to take back out.
         raw = self._raw_audio(audio)
+        heard_text, heard_info = text, info
         pieces = info.get('segments')
         if pieces:
             pieces, why = my_voice_pieces(raw, pieces, mine, margin, 1.0)
@@ -786,10 +795,36 @@ class StateManager:
                 info = {**info, 'segments': pieces}
         else:
             text, why = keep_my_voice(text, raw, None, mine, margin, 1.0)
+        # Loudness would drop the whole phrase: your voiceprint, which tells
+        # you from music or a TV, gets the last word. Only for the whole
+        # phrase - next to you, a quiet part could still be the TV.
+        if why and not text and self._voiceprint_says_me(audio):
+            self.logger.info(f"Only my voice: {why} (your level {mine:.0f} dB), "
+                             f"but it sounds like you - kept")
+            print("   ✓ Kept: quieter than you usually are, but it sounds like you")
+            return heard_text, heard_info
         if why:
             self.logger.info(f"Only my voice: {why} (your level {mine:.0f} dB)")
             print(f"   ✗ Not your voice: {why}" if not text else f"   ✓ Kept your voice ({why})")
         return text, info
+
+    # True only when your voiceprint on this microphone is known and `audio`
+    # matches it: unknown or unchecked is no proof, unlike _sounds_like_me.
+    def _voiceprint_says_me(self, audio) -> bool:
+        if not self._voiceprint_on():
+            return False
+        try:
+            similarity = self.meetings.my_voice_similarity(self._raw_audio(audio), self._mic_key())
+        except Exception as e:
+            self.logger.info(f"Only my voice: voiceprint not checked ({e})")
+            return False
+        if similarity is None:
+            self.logger.info("Only my voice: voiceprint not checked (not learned on this microphone yet)")
+            return False
+        says = similarity >= VOICEPRINT_MATCH
+        verdict = 'sounds like you' if says else "doesn't sound like you"
+        self.logger.info(f"Only my voice: {verdict} ({similarity:.2f}, needs {VOICEPRINT_MATCH})")
+        return says
 
     def _phrase_started(self) -> None:
         with self._state_lock:

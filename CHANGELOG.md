@@ -186,6 +186,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
   off both still happen when recording starts.
 
 ### Fixed
+- **A missed wake command gets a second try.** "Didn't catch that - say it
+  again": Koli keeps listening 5 more seconds for the command, no wake word
+  needed. A second miss ends it.
+- **The console says when the wake word heard you.** Each try that is
+  probably you shows what Whisper heard and your voice score ("Heard “Hey
+  Via” (voice 0.55, needs 0.30): woke"), a try that almost sounded like you
+  says so, and a command too quiet to count says "Too quiet for a command".
+  Other voices and the TV stay out of it.
+- **Only my voice dropped your own quieter sentences.** When the loudness
+  check would leave out a whole phrase, your voiceprint now decides: if it
+  sounds like you, it is typed.
 - **Auto-dictation typed words nobody said** ("Thank you."). With "Languages
   I speak" its "is this even speech?" check read the language's share of
   your list (always high) instead of how sure Whisper was, and very short
