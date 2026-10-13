@@ -58,9 +58,23 @@ def ratio_for(sensitivity: str, personal: bool = False) -> float:
 # "Hey Koli" as "heykoli" or "hey ko li" too.
 def match_wake(text: str, spellings: Iterable[str], min_ratio: float) -> Optional[str]:
     words = normalize_spoken(text).split()
-    if not words:
+    ratio, take, _ = _closest(words, spellings)
+    if take is None or ratio < min_ratio:
         return None
-    best_ratio, best_take = 0.0, None
+    return ' '.join(words[take:])
+
+
+# How close the start of `text` came to a spelling, and which one: for the
+# log line that says why a try didn't wake Koli.
+def closest_wake(text: str, spellings: Iterable[str]) -> tuple:
+    ratio, _, spelling = _closest(normalize_spoken(text).split(), spellings)
+    return ratio, spelling
+
+
+# (best ratio, words it took, spelling) over every spelling and one word more
+# or less than it has.
+def _closest(words: List[str], spellings: Iterable[str]) -> tuple:
+    best_ratio, best_take, best_spelling = 0.0, None, ''
     for spelling in spellings:
         target_words = normalize_spoken(spelling).split()
         if not target_words:
@@ -70,11 +84,9 @@ def match_wake(text: str, spellings: Iterable[str], min_ratio: float) -> Optiona
             if take < 1 or take > len(words):
                 continue
             ratio = difflib.SequenceMatcher(None, ''.join(words[:take]), target).ratio()
-            if ratio >= min_ratio and ratio > best_ratio:
-                best_ratio, best_take = ratio, take
-    if best_take is None:
-        return None
-    return ' '.join(words[best_take:])
+            if ratio > best_ratio:
+                best_ratio, best_take, best_spelling = ratio, take, spelling
+    return best_ratio, best_take, best_spelling
 
 
 # The distinct spellings in what Whisper wrote for your recordings, or None
@@ -348,6 +360,8 @@ class WakeListener:
         self._frame_level = frame_level or _frame_level_db
         self._learned_level = learned_level or self._state_manager_level
         self._recent_power = collections.deque(maxlen=max(1, int(round(self.LEVEL_WINDOW_S / FRAME_S))))
+        self._window_db = -200.0
+        self._gated_frames, self._gated_peak = 0, -200.0
         self._floor_cache = (None, None, -1e9)     # (mic, floor dB, when)
         self._clock = clock
         self.budget = CheckBudget(clock)
@@ -527,6 +541,10 @@ class WakeListener:
         loud = self._loud_enough(frame)      # every frame, so the level window stays current
         if prob >= BurstCutter.SPEECH and not loud:
             prob = 0.0           # speech-like, but much quieter than you: music, a TV across the room
+            self._gated_frames += 1
+            self._gated_peak = max(self._gated_peak, self._window_db)
+        elif self._gated_frames:
+            self._log_gated()
         for event, burst in self.cutter.feed(frame, prob, may_start=self._may_start):
             if event == 'head':
                 self._on_head(burst)
@@ -555,11 +573,19 @@ class WakeListener:
     def _loud_enough(self, frame: np.ndarray) -> bool:
         rms = 10 ** (self._frame_level(frame) / 20)
         self._recent_power.append(rms * rms)
-        floor = self.voice_floor_db()
-        if floor is None:
-            return True
         power = sum(self._recent_power) / self._recent_power.maxlen
-        return 10 * np.log10(max(power, 1e-20)) >= floor
+        self._window_db = 10 * np.log10(max(power, 1e-20))
+        floor = self.voice_floor_db()
+        return floor is None or self._window_db >= floor
+
+    # A stretch of speech the gate took for background, said once it ends:
+    # if it was you, the floor is too high for how you speak now.
+    def _log_gated(self) -> None:
+        seconds = self._gated_frames * FRAME_S
+        if seconds >= self.MIN_SPEECH_S:
+            self.logger.info(f"Wake word: {seconds:.1f} s of speech taken as background "
+                             f"(up to {self._gated_peak:.0f} dB, needs {self.voice_floor_db():.0f} dB)")
+        self._gated_frames, self._gated_peak = 0, -200.0
 
     # Your level on this microphone less the margin (dBFS), or None. Your
     # recorded wake word sets the level; otherwise the one learned from hotkey
@@ -658,23 +684,44 @@ class WakeListener:
 
     # The text after the wake word, or None. Cheapest filter first: length,
     # your voice (personal word), the budget, then Whisper.
+    # Each try gets one log line saying why it did or didn't wake Koli; what
+    # Whisper heard only with log_transcriptions on.
     def _check_wake(self, audio: np.ndarray, speech_seconds: float) -> Optional[str]:
         if speech_seconds < self.MIN_SPEECH_S:
             return None
-        if self.personal() and not self._sounds_like_you(audio):
-            return None
+        said = f"Wake check ({speech_seconds:.1f} s of speech)"
+        if self.personal():
+            score = self.similarity(audio)
+            if score is None:
+                self._notice_unknown_voice()
+                self.logger.info(f"{said}: no - your voice can't be checked on this microphone yet")
+                return None
+            said += f", voice {score:.2f} (needs {self.voice_match():.2f})"
+            if score < self.voice_match():
+                self.logger.info(f"{said}: no - doesn't sound enough like your recordings")
+                return None
         if not self.budget.take():
+            self.logger.info(f"{said}: skipped - checking less often after many misses")
             return None
         try:
             text = self._transcribe(audio) or ''
         except Exception as e:
-            self.logger.debug(f"Wake check failed: {e}")
+            self.logger.info(f"{said}: Whisper failed ({e})")
             return None
         rest = match_wake(text, self.spellings(), self.match_ratio())
+        ratio, spelling = closest_wake(text, self.spellings())
+        heard = f" “{text}”" if self._log_text() else f" {len(text.split())} word(s)"
+        said += f", heard{heard}, {ratio:.2f} like “{spelling}” (needs {self.match_ratio():.2f})"
         if rest is None:
             self.budget.missed()
-            self.logger.debug("Wake check: not the wake word")
+            self.logger.info(f"{said}: no")
+        else:
+            self.logger.info(f"{said}: woke")
         return rest
+
+    def _log_text(self) -> bool:
+        logging_cfg = (getattr(self.cm, 'config', None) or {}).get('logging') or {}
+        return bool(logging_cfg.get('log_transcriptions'))
 
     # How much `audio` sounds like your recorded word on this microphone, or
     # None when that can't be told (no recording on this mic, no voiceprint
