@@ -65,11 +65,42 @@ def set_corrections(settings, corrections: dict) -> dict:
             continue
         if isinstance(variants, str):
             variants = [variants]
-        vs = [str(v).strip() for v in (variants or []) if str(v).strip()]
-        if vs:
-            clean[canonical] = vs
+        # A term with no mishearings yet stays: the card adds the term first,
+        # then how it gets misheard (typed or recorded).
+        clean[canonical] = [str(v).strip() for v in (variants or []) if str(v).strip()]
     settings.set('postprocess.corrections', clean)
     return clean
+
+
+# "When I say this, I mean this": one recording of you saying `canonical`.
+# What Whisper writes for it, the way dictation hears you, is added as a
+# mishearing of `canonical` (as plain words, so punctuation doesn't matter).
+# Uses the wake word's microphone capture, which works with the wake word off.
+def record_correction(sm, settings, canonical: str) -> dict:
+    from ..utils import normalize_spoken
+    canonical = str(canonical or '').strip()
+    if not canonical:
+        raise ValueError("Type how it should be written first")
+    listener = getattr(sm, '_wake_listener', None)
+    if listener is None:
+        raise ValueError("Recording isn't available in this mode")
+    audio = listener.capture_word(timeout=6.0, max_seconds=5.0)
+    if audio is None:
+        raise ValueError("Didn't hear anything. Press Record, then say it.")
+    heard = (sm.whisper_engine.transcribe_audio(audio, quiet=True) or '').strip()
+    variant = normalize_spoken(heard)
+    if not variant:
+        raise ValueError("Couldn't make out any words. Say it again, a little louder.")
+    current = dict(settings.get('postprocess.corrections') or {})
+    if variant == normalize_spoken(canonical):
+        return {'heard': heard, 'variant': variant, 'added': False, 'already_right': True, 'corrections': current}
+    variants = [str(v) for v in (current.get(canonical) or [])]
+    added = variant not in {normalize_spoken(v) for v in variants}
+    if added:
+        variants.append(variant)
+    current[canonical] = variants
+    return {'heard': heard, 'variant': variant, 'added': added, 'already_right': False,
+            'corrections': set_corrections(settings, current)}
 
 
 def set_replacements(settings, items: list) -> list:

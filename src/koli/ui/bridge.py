@@ -462,6 +462,12 @@ class Bridge:
         from ..services import vocabulary
         return vocabulary.set_corrections(self._settings, data)
 
+    # Blocks until you've said it (or a few seconds of nothing).
+    @_api
+    def vocab_record_correction(self, canonical):
+        from ..services import vocabulary
+        return vocabulary.record_correction(self._sm, self._settings, canonical)
+
     @_api
     def vocab_set_replacements(self, items):
         from ..services import vocabulary

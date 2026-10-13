@@ -79,6 +79,19 @@ def reimport_under(test, fakes: dict):
         sys.modules.pop(name)
 
 
+# A settings service stand-in: dotted paths in a flat dict.
+class _DictSettings:
+    def __init__(self, values=None):
+        self.values = dict(values or {})
+
+    def get(self, path, default=None):
+        return self.values.get(path, default)
+
+    def set(self, path, value, **_):
+        self.values[path] = value
+        return {'ok': True, 'value': value}
+
+
 class HotkeyParsingTests(unittest.TestCase):
     def test_parse_hotkey_splits_on_plus(self):
         from koli.utils import parse_hotkey
@@ -2033,6 +2046,48 @@ class MergedFeatureTests(unittest.TestCase):
         self.assertEqual(postprocess('MY SEQUEL rocks', cfg), 'MySQL rocks')
         cfg2 = {'corrections': {'DOG': ['cat']}}
         self.assertEqual(postprocess('category cat', cfg2), 'category DOG')
+
+    # A recorded mishearing is saved as words ("hey yeah"); Whisper writes it
+    # "Hey, yeah!" or "hey yeah." the next time. Punctuation and spacing
+    # between the words don't matter; a variant with symbols stays exact.
+    def test_corrections_ignore_punctuation_between_words(self):
+        from koli.text_postprocess import postprocess
+        cfg = {'corrections': {'Avia': ['hey yeah']}}
+        self.assertEqual(postprocess('Hey, yeah! Play music', cfg), 'Avia! Play music')
+        self.assertEqual(postprocess('so hey  yeah.', cfg), 'so Avia.')
+        cfg2 = {'corrections': {'C#': ['see sharp'], 'X': ['c#']}}
+        self.assertEqual(postprocess('I write see, sharp code', cfg2), 'I write C# code')
+        self.assertEqual(postprocess('a c b', cfg2), 'a c b', 'a symbol variant is not reduced to its letters')
+
+    # The Corrections card adds a term first ("Avia": []), then how it gets
+    # misheard; saving must keep the empty term, or it vanishes on Add.
+    def test_a_new_correction_without_mishearings_is_kept(self):
+        from koli.services import vocabulary
+        settings = _DictSettings()
+        self.assertEqual(vocabulary.set_corrections(settings, {'Avia': [], ' ': ['x']}), {'Avia': []})
+
+    # "When I say this, I mean this": record yourself saying it, and what
+    # Whisper writes (as dictation would) becomes a mishearing of the term.
+    def test_recording_adds_what_whisper_heard(self):
+        import unittest.mock as mock
+        import numpy as np
+        from koli.services import vocabulary
+        settings = _DictSettings({'postprocess.corrections': {'Avia': ['avya']}})
+        sm = mock.Mock()
+        sm._wake_listener.capture_word.return_value = np.zeros(16000, dtype=np.float32)
+        sm.whisper_engine.transcribe_audio.return_value = 'Hey, yeah!'
+        result = vocabulary.record_correction(sm, settings, ' Avia ')
+        self.assertEqual(result['heard'], 'Hey, yeah!')
+        self.assertEqual(settings.get('postprocess.corrections'), {'Avia': ['avya', 'hey yeah']})
+        again = vocabulary.record_correction(sm, settings, 'Avia')
+        self.assertFalse(again['added'], 'the same mishearing twice is kept once')
+        sm.whisper_engine.transcribe_audio.return_value = 'Avia.'
+        right = vocabulary.record_correction(sm, settings, 'Avia')
+        self.assertTrue(right['already_right'])
+        self.assertEqual(settings.get('postprocess.corrections'), {'Avia': ['avya', 'hey yeah']})
+        sm._wake_listener.capture_word.return_value = None
+        with self.assertRaisesRegex(ValueError, "Didn't hear"):
+            vocabulary.record_correction(sm, settings, 'Avia')
 
     def test_corrections_tolerate_malformed_config(self):
         from koli.text_postprocess import postprocess

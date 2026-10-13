@@ -415,18 +415,37 @@ def _apply_smart_formatting(text: str, cfg: dict) -> str:
 # the longer variant must win, otherwise the shorter one shadows it and leaves a
 # dangling "x". Matching is case-insensitive; the replacement is inserted with
 # the exact casing the user wrote.
+#
+# A variant made only of words ("hey yeah", recorded from what Whisper wrote)
+# matches with any punctuation or spacing between its words, because Whisper
+# writes the same mishearing as "Hey, yeah!" one time and "hey yeah." the
+# next. A variant with symbols ("c#") stays exact.
+_WORDS_ONLY = re.compile(r'\w+(?:[\W_]+\w+)*')
+
+
+def _words_key(text: str) -> str:
+    return re.sub(r'[\W_]+', ' ', text).strip().casefold()
+
+
 @functools.lru_cache(maxsize=8)
 def _compile_corrections(items: tuple):
-    lookup = {}
+    lookup, patterns = {}, {}
     for canonical, variants in items:
         for variant in variants:
             variant = str(variant).strip()
-            if variant:
-                lookup[variant.casefold()] = str(canonical)
+            if not variant:
+                continue
+            if _WORDS_ONLY.fullmatch(variant):
+                key = _words_key(variant)
+                patterns[key] = r'[\W_]+'.join(re.escape(w) for w in key.split(' '))
+            else:
+                key = variant.casefold()
+                patterns[key] = re.escape(variant)
+            lookup[key] = str(canonical)
     if not lookup:
         return None, {}
     longest_first = sorted(lookup, key=len, reverse=True)
-    pattern = '|'.join(re.escape(v) for v in longest_first)
+    pattern = '|'.join(patterns[key] for key in longest_first)
     return re.compile(rf'\b(?:{pattern})\b', re.IGNORECASE), lookup
 
 
@@ -455,7 +474,11 @@ def _apply_corrections(text: str, corrections) -> str:
     regex, lookup = _compile_corrections(key)
     if regex is None:
         return text
-    return regex.sub(lambda m: lookup.get(m.group().casefold(), m.group()), text)
+
+    def replace(m):
+        found = m.group()
+        return lookup.get(found.casefold()) or lookup.get(_words_key(found)) or found
+    return regex.sub(replace, text)
 
 
 # =============================================================================

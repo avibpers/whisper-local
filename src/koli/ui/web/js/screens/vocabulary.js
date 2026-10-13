@@ -1,9 +1,9 @@
 // screens/vocabulary.js
 // Vocabulary ("My words" in Simple mode): favored words Whisper leans toward,
-// with suggestions from history and a folder scan; plus, in Advanced mode,
-// corrections (one spelling, many mishearings), replacements (find/replace
-// with options) and snippets (spoken shortcuts). Each edit applies to the
-// next dictation.
+// with suggestions from history and a folder scan; corrections (one spelling,
+// many mishearings, typed or recorded: "when I say this, I mean this") and
+// snippets (spoken shortcuts); plus, in Advanced mode, replacements
+// (find/replace with options). Each edit applies to the next dictation.
 
 import { html, useEffect, useState } from '../../vendor/preact-htm.module.js';
 import { call } from '../api.js';
@@ -44,17 +44,34 @@ function Corrections() {
   const save = (next) => call('vocab_set_corrections', next).then((v) => app.set((s) => ({ settings: { ...s.settings, postprocess: { ...s.settings.postprocess, corrections: v } } })))
     .catch((e) => toast(e.message, { kind: 'err' }));
   const [draft, setDraft] = useState('');
+  const [recording, setRecording] = useState(null);   // the term being recorded
+  // Say it once: what Whisper writes becomes a mishearing of `canonical`.
+  const record = (canonical) => {
+    setRecording(canonical);
+    return call('vocab_record_correction', canonical)
+      .then((r) => {
+        app.set((s) => ({ settings: { ...s.settings, postprocess: { ...s.settings.postprocess, corrections: r.corrections } } }));
+        toast(r.already_right ? `Whisper already writes “${canonical}”` : r.added ? `Heard “${r.heard}” → now written “${canonical}”` : `“${r.variant}” is already there`);
+        return true;
+      })
+      .catch((e) => { toast(e.message, { kind: 'err' }); return false; })
+      .finally(() => setRecording(null));
+  };
+  const recordButton = (canonical, label) => html`<button type="button" class="btn ghost sm" disabled=${recording !== null}
+    onClick=${() => record(canonical)}><${Icon} name="mic" />${recording === canonical ? 'Say it now…' : label}</button>`;
   return html`<section class="card" aria-labelledby="h-corr">
-    <div class="card-head"><div><h2 id="h-corr">Corrections</h2><p>One right spelling, every way it gets misheard. The longest match wins.</p></div></div>
+    <div class="card-head"><div><h2 id="h-corr">Corrections</h2><p>When you say this, it's written like this. Record yourself saying it, or type what Whisper writes instead. The longest match wins.</p></div></div>
     <div class="tbl-wrap"><table class="tbl"><thead><tr><th scope="col" style="width:30%">Write it as</th><th scope="col">When Whisper hears</th><th scope="col"><span class="sr-only">Delete</span></th></tr></thead>
       <tbody>${rows.map(([canonical, variants]) => html`<tr>
         <td><b style="font-weight:500" dir="auto">${canonical}</b></td>
         <td><${TagInput} values=${variants} label=${`Mishearings of ${canonical}`} onChange=${(v) => save({ ...data, [canonical]: v })} /></td>
-        <td class="end"><button type="button" class="btn ghost icon" aria-label=${`Delete ${canonical}`} onClick=${() => { const n = { ...data }; delete n[canonical]; save(n); }}><${Icon} name="x" /></button></td></tr>`)}
+        <td class="end">${recordButton(canonical, 'Record')}<button type="button" class="btn ghost icon" aria-label=${`Delete ${canonical}`} onClick=${() => { const n = { ...data }; delete n[canonical]; save(n); }}><${Icon} name="x" /></button></td></tr>`)}
         <tr><td colspan="3"><div class="row-flex"><input class="inp" placeholder="Correct spelling, e.g. CAPEX" aria-label="New correction" dir="auto" value=${draft}
           onInput=${(e) => setDraft(e.currentTarget.value)} onKeyDown=${(e) => { if (e.key === 'Enter' && draft.trim()) { save({ ...data, [draft.trim()]: [] }); setDraft(''); } }} />
           <button type="button" class="btn" disabled=${!draft.trim()} onClick=${() => { save({ ...data, [draft.trim()]: [] }); setDraft(''); }}><${Icon} name="plus" />Add</button>
-          <span class="small muted">Then add how it gets misheard.</span></div></td></tr>
+          <button type="button" class="btn" disabled=${!draft.trim() || recording !== null}
+            onClick=${() => record(draft.trim()).then((ok) => ok && setDraft(''))}><${Icon} name="mic" />${recording !== null && recording === draft.trim() ? 'Say it now…' : 'Record how you say it'}</button>
+          <span class="small muted">Type how it should be written, then record yourself saying it.</span></div></td></tr>
       </tbody></table></div>
   </section>`;
 }
@@ -108,7 +125,8 @@ export function VocabularyScreen() {
     <div><h1 class="page-title">${mode === 'advanced' ? 'Vocabulary' : 'My words'}</h1>
       <p class="page-sub">Teach it your names and terms. Every change applies to the next dictation.</p></div>
     <${Words} />
-    ${mode === 'advanced' && html`<${Corrections} /><${Replacements} /><${Snippets} />`}
-    ${mode !== 'advanced' && html`<${Snippets} />`}
+    <${Corrections} />
+    ${mode === 'advanced' && html`<${Replacements} />`}
+    <${Snippets} />
   </div>`;
 }

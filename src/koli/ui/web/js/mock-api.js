@@ -298,6 +298,12 @@ export function createMock(emit) {
     vocab_add: (words) => { const list = [...(getPath(data.settings, 'whisper.hotwords') || []), ...words]; setPath(data.settings, 'whisper.hotwords', list); return ok(list); },
     vocab_scan: () => ok([{ word: 'Kubernetes', count: 4 }, { word: 'Jabra', count: 2 }]),
     vocab_set_corrections: (v) => ok(v),
+    vocab_record_correction: (canonical) => new Promise((resolve) => setTimeout(() => {
+      const all = { ...(getPath(data.settings, 'postprocess.corrections') || {}) };
+      all[canonical] = [...(all[canonical] || []), 'hey yeah'];
+      setPath(data.settings, 'postprocess.corrections', all);
+      resolve(ok({ heard: 'Hey, yeah!', variant: 'hey yeah', added: true, already_right: false, corrections: all }));
+    }, 900)),
     vocab_set_replacements: (v) => ok(v),
     vocab_set_snippets: (v) => ok(v),
 
