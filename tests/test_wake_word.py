@@ -406,6 +406,24 @@ class BackgroundSoundTests(ListenerTestCase):
         self.assertEqual(self.runs[-1]['text'], 'next song')
         self.assertLess(self.run_times[-1] - spoke, 1.0)
 
+    # Found in the second real test: the recorded level is your loud end
+    # (-13.5 dB) and "Only my voice" had a 4 dB margin, so normal speech
+    # (-18 to -26 dB on the 0.3 s average) was all taken for background. The
+    # wake word's gate has its own wide margin: it only has to drop music.
+    def test_your_normal_speech_isnt_taken_for_background(self):
+        LEVELS[6] = -26.0                      # you, saying the word normally
+        WORDS[6] = 'hey koli'
+        self.addCleanup(LEVELS.pop, 6)
+        self.addCleanup(WORDS.pop, 6)
+        self.make()
+        self.sm._voice_margin_db = lambda: 4.0  # the dictation setting must not narrow it
+        self.voices.set('Jabra', [np.ones(3, dtype=np.float32)], level_db=-13.5)
+        self.say(6, 2, seconds=0.6)
+        self.quiet(0.8)
+        self.assertEqual(self.runs[-1]['text'], 'next song')
+        self.say(8, seconds=2)                 # speaker music, 30 dB under you, still isn't speech
+        self.assertEqual(len(self.transcribed), 1)
+
     def test_without_a_level_the_command_is_cut_soon_after_the_wake(self):
         self.make()
         start = self.clock.now

@@ -327,12 +327,16 @@ class WakeListener:
     # (or a follow-up) is cut at COMMAND_MAX_S, never at the 8 s burst cut.
     COMMAND_AFTER_WAKE_S = 4.0
     COMMAND_MAX_S = 4.0
-    # Sound quieter than your voice by more than the margin is silence: music
-    # from the speakers reads as speech to TEN VAD and would hold every burst
-    # open. Judged on the last LEVEL_WINDOW_S, like the recorder's own gate.
+    # Sound quieter than your voice by more than GATE_MARGIN_DB is silence:
+    # music from the speakers reads as speech to TEN VAD and would hold every
+    # burst open. Judged on the last LEVEL_WINDOW_S. The margin is the wake
+    # word's own, and wide: your level is the loud end of your recordings
+    # (-13.5 dB on a real EMEET), the 0.3 s average of normal speech sits
+    # 5-13 dB under it, and speaker music 25+ dB. "Only my voice"'s margin
+    # (set to 4 dB there) took every try for background.
     LEVEL_WINDOW_S = 0.3
     FLOOR_CACHE_S = 5.0
-    DEFAULT_MARGIN_DB = 12.0
+    GATE_MARGIN_DB = 15.0
     DEFAULT_VOICE_MATCH = 0.45
 
     def __init__(self, state_manager, config_manager, *,
@@ -602,15 +606,9 @@ class WakeListener:
                 level = self._learned_level(current)
             except Exception:
                 level = None
-        floor = None if level is None else float(level) - self._margin_db()
+        floor = None if level is None else float(level) - self.GATE_MARGIN_DB
         self._floor_cache = (current, floor, now)
         return floor
-
-    def _margin_db(self) -> float:
-        try:
-            return float(self.sm._voice_margin_db())
-        except Exception:
-            return self.DEFAULT_MARGIN_DB
 
     def _may_start(self) -> bool:
         return self._clock() >= self._chime_until and self.may_listen()

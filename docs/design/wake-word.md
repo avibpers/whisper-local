@@ -74,7 +74,8 @@ mic ──► TEN VAD ──► speech burst ──► [personal word: is it you
    **Quieter than you is silence.** Music from the speakers reads as speech
    to TEN VAD and never pauses, so in the first real test (2026-10-12) every
    burst ran to the 8 s cut: commands waited ~6 s and a wake word said
-   mid-burst was never checked. Speech more than the margin (12 dB) under
+   mid-burst was never checked. Speech more than 15 dB (the wake word's own
+   margin, not "Only my voice"'s, which at 4 dB took every try for background) under
    your level, on a 0.3 s energy average like the recorder's own gate,
    counts as silence. Your level is the one measured when you recorded your
    word on this microphone, else the one learned from hotkey dictations.
