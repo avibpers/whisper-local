@@ -59,7 +59,7 @@ class Appliers:
 
     # Apply one changed setting. Returns {'applied': kind, 'task_id': id|None}.
     def apply(self, path: str, value: Any, old: Any) -> dict:
-        if path in _READ_ON_USE or path.startswith('postprocess.'):
+        if path in _READ_ON_USE or path.startswith(('postprocess.', 'ai.')):
             return self._live()
         if path in _LISTENER_KEYS or path.startswith('hotkey.'):
             return self._hotkeys(path, value)

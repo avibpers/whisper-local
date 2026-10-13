@@ -143,10 +143,11 @@ export function confirmModal({ title, body, confirm = 'OK', cancel = 'Cancel', d
   });
 }
 
-// Resolves the entered text, or null when cancelled.
-export function promptModal({ title, label, value = '', placeholder = '', confirm = 'Save' }) {
+// Resolves the entered text, or null when cancelled. `secret` hides what is
+// typed (API keys).
+export function promptModal({ title, label, value = '', placeholder = '', confirm = 'Save', secret = false, body = null }) {
   return new Promise((resolve) => {
-    app.set({ modal: { kind: 'prompt', title, label, value, placeholder, confirm,
+    app.set({ modal: { kind: 'prompt', title, label, value, placeholder, confirm, secret, body,
       resolve: (v) => { closeModal(); resolve(v); } } });
   });
 }

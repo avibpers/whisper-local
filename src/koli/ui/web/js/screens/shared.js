@@ -74,14 +74,84 @@ function DynamicSelect({ s, value }) {
   return html`<${Select} label=${s.label} value=${value} options=${options} onChange=${(v) => saveSetting(s.path, v)} />`;
 }
 
-function OllamaModel({ s, value }) {
-  const [models, setModels] = useState([]);
-  const endpoint = useSetting('postprocess.ollama.endpoint');
-  useEffect(() => { call('ai_probe', endpoint).then((r) => setModels(r.models || [])).catch(() => {}); }, [endpoint]);
-  if (!models.length) return html`<${TextField} label=${s.label} value=${value} onCommit=${(v) => saveSetting(s.path, v)} />`;
-  const opts = models.map((m) => [m, m]);
-  if (!models.includes(value)) opts.unshift([value, `${value} (not installed)`]);
-  return html`<${Select} label=${s.label} value=${value} options=${opts} onChange=${(v) => saveSetting(s.path, v)} />`;
+// ── AI model pickers ──────────────────────────────────────────────────────
+// A model is "provider/model". The provider list never changes while the app
+// runs; each provider's models are asked once per 30 seconds at most.
+
+let aiCatalog = null;
+const aiModelCache = {};
+
+export function useAiCatalog() {
+  const [list, setList] = useState(aiCatalog || []);
+  useEffect(() => {
+    if (!aiCatalog) call('ai_catalog').then((c) => { aiCatalog = c; setList(c); }).catch(() => {});
+  }, []);
+  return list;
+}
+
+export function aiModels(provider, fresh = false) {
+  const hit = aiModelCache[provider];
+  if (!fresh && hit && Date.now() - hit.at < 30000) return hit.promise;
+  const promise = call('ai_models', provider);
+  aiModelCache[provider] = { at: Date.now(), promise };
+  promise.catch(() => { delete aiModelCache[provider]; });
+  return promise;
+}
+
+export const splitModel = (spec) => {
+  const i = String(spec || '').indexOf('/');
+  return i > 0 ? [spec.slice(0, i), spec.slice(i + 1)] : ['', ''];
+};
+
+// "Local" or "Cloud" next to a model, so it is always clear where text goes.
+export function KindBadge({ kind }) {
+  if (!kind) return null;
+  return html`<span class=${'chip sm ' + (kind === 'local' ? 'ok' : 'warn')}
+    title=${kind === 'local' ? 'Runs on this computer' : 'Sends the text to this provider'}>${kind === 'local' ? 'Local' : 'Cloud'}</span>`;
+}
+
+// Provider, then one of its models (or a typed name when the list can't be
+// had). `empty` is the label for no model ('' is saved).
+export function AiModelPicker({ value, onChange, empty = 'None', label = 'Model' }) {
+  const catalog = useAiCatalog();
+  const [provider, model] = splitModel(value);
+  const [chosen, setChosen] = useState(provider);
+  const [models, setModels] = useState(null);
+  const [error, setError] = useState('');
+  useEffect(() => setChosen(provider), [provider]);
+  useEffect(() => {
+    setModels(null); setError('');
+    if (chosen) aiModels(chosen).then(setModels).catch((e) => { setModels([]); setError(e.message); });
+  }, [chosen]);
+  const kind = (catalog.find((p) => p.id === chosen) || {}).kind;
+  const pickProvider = (p) => { setChosen(p); if (!p) onChange(''); };
+  const options = (models || []).map((m) => [m.id, `${m.label}${m.loaded ? ' · loaded' : ''}`]);
+  if (model && chosen === provider && models && !models.some((m) => m.id === model)) options.unshift([model, `${model} (not listed)`]);
+  return html`<span class="row-flex" style="flex-wrap:wrap;gap:6px;justify-content:flex-end">
+    <${Select} label=${`${label}: provider`} value=${chosen} style="max-width:200px"
+      options=${[['', empty], ...catalog.map((p) => [p.id, p.label])]} onChange=${pickProvider} />
+    ${chosen && (models === null ? html`<span class="small muted">Loading…</span>`
+      // Keyed by the value: the list loses its "Choose a model" row once one is
+      // picked, and a reused <select> would keep the old position.
+      : options.length ? html`<${Select} key=${`${chosen}|${value}`} label=${`${label}: model`} value=${chosen === provider ? model : ''} style="max-width:260px"
+          options=${chosen === provider ? options : [['', 'Choose a model'], ...options]} onChange=${(m) => m && onChange(`${chosen}/${m}`)} />`
+      : html`<${TextField} label=${`${label}: model name`} mono width="200px" placeholder="model name"
+          value=${chosen === provider ? model : ''} onCommit=${(m) => m && onChange(`${chosen}/${m.trim()}`)} />`)}
+    <${KindBadge} kind=${kind} />
+    ${error && html`<span class="small muted" style="flex-basis:100%;text-align:end">${error}</span>`}
+  </span>`;
+}
+
+// The fallback list: each model with Remove, then a picker to add one.
+function AiModelList({ s, value }) {
+  const items = value || [];
+  const save = (next) => saveSetting(s.path, next).catch(() => {});
+  return html`<div class="stack" style="gap:6px;align-items:flex-end">
+    ${items.map((spec, i) => html`<span class="row-flex">
+      <span class="mono small">${i + 1}. ${spec}</span>
+      <button type="button" class="btn ghost icon" aria-label=${`Remove ${spec}`} onClick=${() => save(items.filter((_, n) => n !== i))}><${Icon} name="x" /></button></span>`)}
+    <${AiModelPicker} key=${items.length} value="" empty="Add a fallback…" label="Fallback" onChange=${(v) => v && save([...items, v])} />
+  </div>`;
 }
 
 function SoundControl({ s, value }) {
@@ -104,10 +174,10 @@ export function SettingControl({ s }) {
       return html`<${Select} value=${value} options=${s.choices} label=${s.label} onChange=${save} />`;
     case 'number': return html`<${NumberField} value=${value} label=${s.label} min=${s.min} max=${s.max} step=${s.step} unit=${s.unit} onCommit=${save} />`;
     case 'range': return html`<${RangeField} value=${value} label=${s.label} min=${s.min} max=${s.max} step=${s.step} unit=${s.unit} onCommit=${save} />`;
-    case 'text':
-      if (s.source === 'ollama_models') return html`<${OllamaModel} s=${s} value=${value} />`;
-      return html`<${TextField} value=${value} label=${s.label} mono=${s.path.includes('endpoint') || s.path.includes('host')} onCommit=${save} />`;
-    case 'textarea': return html`<${TextArea} value=${value} label=${s.label} mono=${s.path.includes('ollama')} onCommit=${save} />`;
+    case 'text': return html`<${TextField} value=${value} label=${s.label} mono=${s.path.includes('address') || s.path.includes('host')} onCommit=${save} />`;
+    case 'textarea': return html`<${TextArea} value=${value} label=${s.label} mono=${s.path.startsWith('ai.')} onCommit=${save} />`;
+    case 'ai_model': return html`<${AiModelPicker} value=${value} label=${s.label} empty=${s.path === 'ai.model' ? 'None' : 'Same as default'} onChange=${save} />`;
+    case 'ai_models': return html`<${AiModelList} s=${s} value=${value} />`;
     case 'tags': return html`<${TagInput} values=${value || []} label=${s.label} onChange=${save}
       locked=${s.path === 'postprocess.voice_editing_phrases' ? ['scratch that', 'delete that', 'strike that'] : []} />`;
     case 'choice_tags': return html`<${ChoiceTags} values=${value || []} options=${s.choices} label=${s.label} onChange=${save} />`;

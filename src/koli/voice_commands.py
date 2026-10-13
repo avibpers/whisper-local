@@ -157,11 +157,10 @@ def _with_number(command: dict, digit: str) -> dict:
 
 
 class VoiceCommandManager:
-    def __init__(self, enabled=True, clipboard_manager=None, log_transcriptions=False, ollama_config_provider=None):
+    def __init__(self, enabled=True, clipboard_manager=None, log_transcriptions=False):
         self.enabled = enabled
         self.clipboard_manager = clipboard_manager
         self.log_transcriptions = log_transcriptions
-        self.ollama_config_provider = ollama_config_provider
         self.logger = logging.getLogger(__name__)
 
         if not self.enabled:
@@ -341,11 +340,8 @@ class VoiceCommandManager:
 
     def _execute_rephrase(self, instruction: str, trigger: str):
         import time
-        from .text_postprocess import _ollama_polish
-
-        if not self.ollama_config_provider:
-            print("   ✗ Rephrase requires Ollama config; nothing wired")
-            return
+        from . import llm
+        from .llm import prompts
 
         try:
             original_clipboard = pyperclip.paste()
@@ -365,18 +361,10 @@ class VoiceCommandManager:
             except Exception: pass
             return
 
-        full_prompt = (
-            f"{instruction}\n\n"
-            "Output ONLY the rewritten text with no preamble, no quotes, no commentary.\n\n"
-            f"Input:\n{selection}"
-        )
-        ollama_cfg = dict(self.ollama_config_provider() or {})
-        ollama_cfg['enabled'] = True
-        ollama_cfg['prompt'] = '{text}'
-
-        polished = _ollama_polish(full_prompt, ollama_cfg)
+        result = llm.complete('rewrite', prompts.rewrite(instruction, selection))
+        polished = result.text
         if not polished:
-            print("   ✗ Rephrase failed — Ollama unreachable or returned nothing")
+            print(f"   ✗ Rephrase failed: {result.error}")
             try: pyperclip.copy(original_clipboard)
             except Exception: pass
             return

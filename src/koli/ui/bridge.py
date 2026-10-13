@@ -18,7 +18,11 @@ logger = logging.getLogger(__name__)
 
 # Links the app may open in the default browser.
 _URL_ALLOW = ('https://github.com/drajb/whisper-local', 'https://ollama.com', 'https://huggingface.co',
-              'https://developer.microsoft.com/microsoft-edge/webview2', 'https://go.microsoft.com')
+              'https://developer.microsoft.com/microsoft-edge/webview2', 'https://go.microsoft.com',
+              # AI providers: sites, key pages and the device-login pages
+              'https://lmstudio.ai', 'https://chatgpt.com', 'https://auth.openai.com', 'https://grok.com',
+              'https://accounts.x.ai', 'https://auth.x.ai', 'https://aistudio.google.com', 'https://openrouter.ai',
+              'https://platform.openai.com')
 
 
 def _api(fn):
@@ -750,12 +754,77 @@ class Bridge:
         from ..services import rules
         rules.set_profile_enabled(name, bool(enabled))
 
-    # ── Local AI ─────────────────────────────────────────────────────────────
+    # ── AI providers ─────────────────────────────────────────────────────────
+    # Settings › AI: provider cards (status, keys, device logins, Test) and the
+    # model pickers. Addresses and routes are ordinary settings.
 
     @_api
-    def ai_probe(self, endpoint=None):
-        from ..services import system
-        return system.ollama_probe(endpoint or self._settings.get('postprocess.ollama.endpoint'))
+    def ai_catalog(self):
+        from .. import llm
+        return llm.catalog()
+
+    @_api
+    def ai_providers(self, provider=None):
+        from .. import llm
+        return llm.provider_status(provider)
+
+    @_api
+    def ai_models(self, provider):
+        from .. import llm
+        return llm.list_models(provider)
+
+    @_api
+    def ai_test(self, model):
+        from .. import llm
+        return llm.test(model)
+
+    # A key provider's API key, or LM Studio's optional token. Returns how many
+    # models the key can use.
+    @_api
+    def ai_set_key(self, provider, key):
+        from ..llm import providers
+        target = providers.get(provider)
+        if not hasattr(target, 'set_key'):
+            raise ValueError(f"{target.label} doesn't take a key")
+        return target.set_key(key)
+
+    # Remove a key, or disconnect a subscription.
+    @_api
+    def ai_remove(self, provider):
+        from ..llm import providers
+        from ..llm.oauth import SUBSCRIPTIONS
+        if provider in SUBSCRIPTIONS:
+            SUBSCRIPTIONS[provider].disconnect()
+        else:
+            providers.get(provider).remove()
+
+    @_api
+    def ai_login_start(self, provider):
+        from ..llm.oauth import SUBSCRIPTIONS
+        if provider not in SUBSCRIPTIONS:
+            raise ValueError(f"{provider} doesn't sign in with a code")
+        return SUBSCRIPTIONS[provider].start_login()
+
+    @_api
+    def ai_login_status(self, provider):
+        from ..llm.oauth import SUBSCRIPTIONS
+        return SUBSCRIPTIONS[provider].login_state()
+
+    # Opens the sign-in page of the login in progress. The address came from
+    # the provider, not the page, so it isn't held to the link allow list
+    # (xAI may send a host we don't know in advance).
+    @_api
+    def ai_login_open(self, provider):
+        from ..llm.oauth import SUBSCRIPTIONS
+        url = str(SUBSCRIPTIONS[provider].login_state().get('url') or '')
+        if not url.startswith('https://'):
+            raise ValueError("There's no sign-in page to open; press Connect again")
+        webbrowser.open(url)
+
+    @_api
+    def ai_login_cancel(self, provider):
+        from ..llm.oauth import SUBSCRIPTIONS
+        SUBSCRIPTIONS[provider].cancel_login()
 
     # ── Diagnostics ──────────────────────────────────────────────────────────
 

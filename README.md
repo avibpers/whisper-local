@@ -63,7 +63,7 @@ This is a **community tool**, not a product. There's no support SLA, no roadmap 
 | **Customisable voice commands** | ✅ | partial | ✅ | ❌ | ❌ |
 | **Push-to-talk + auto-paste + auto-send** | ✅ | ✅ | partial | ❌ | ❌ |
 | **GPU acceleration (NVIDIA & AMD)** | ✅ | n/a | n/a | n/a | ❌ |
-| **AI rephrase / transforms (Ollama)** | ✅ | ✅ | ❌ | ❌ | ❌ |
+| **AI rephrase / transforms (local or cloud model)** | ✅ | ✅ | ❌ | ❌ | ❌ |
 | **Hackable / MIT licensed** | ✅ | ❌ | ❌ | ❌ | ❌ |
 | **No account required** | ✅ | ❌ | ❌ | ❌ | ✅ |
 
@@ -85,7 +85,7 @@ This is a **community tool**, not a product. There's no support SLA, no roadmap 
 - 🙌 **Hands-free lock** — double-tap the record hotkey to keep recording without holding it; tap again to stop (`hotkey.double_tap_to_lock`, opt-in)
 - 🤫 **Whisper mode** — boosts quiet speech so you can dictate in an open office (`audio.whisper_mode`, opt-in)
 - 🔢 **Smart formatting** — deterministic, offline: "3 p.m." → "3 PM", "john at example dot com" → "john@example.com" (`postprocess.smart_formatting`, each toggle opt-in)
-- 🤖 **AI rephrase** — dedicated `Ctrl+Shift+Win` hotkey: select text, hold, speak your instruction, release — local Ollama rewrites it in place
+- 🤖 **AI rephrase** — dedicated `Ctrl+Shift+Win` hotkey: select text, hold, speak your instruction, release — the AI model (local or your subscription) rewrites it in place
 - 🌐 **Translation mode** — speak any language, get English; tray → Profile → Translate
 - 🔁 **Continuous dictation mode** — for long-form notes, the app auto-restarts recording after each delivery
 - 🖱️ **Start listening when a text field gets focus** (Windows, opt-in) — click into any field and talk; quiet if you say nothing, cancels the moment you type or leave the field
@@ -100,7 +100,7 @@ This is a **community tool**, not a product. There's no support SLA, no roadmap 
 - 🎛️ **Profiles** — switch between Dictation / Chat / Code / Notes presets from the tray
 - 🪟 **Per-app rules** — different behaviour *and* formatting per foreground app: auto-send in Slack, copy-only + verbatim (no auto-caps/periods) in VS Code, full sentences in email, suppress in 1Password
 - ⌨️ **Type-as-you-speak** *(experimental, opt-in)* — `streaming.deliver_to_cursor` commits finalized phrases to the cursor live, Wispr-Flow style (trades full-Whisper accuracy for latency; see [docs/streaming.md](docs/streaming.md))
-- 🧹 **Optional LLM cleanup** — pipe transcripts through a local [Ollama](https://ollama.ai) model for punctuation / capitalisation polish (off by default, fully local)
+- 🧹 **Optional LLM cleanup** — pipe transcripts through a model for punctuation / capitalisation polish: local Ollama or LM Studio, your ChatGPT or SuperGrok subscription, or a Gemini / OpenRouter / OpenAI key (off by default)
 - 📜 **Recent transcriptions** — last 10 results in the tray menu, click to copy back
 - 🔧 **Settings backup/restore** — `--export-settings` / `--import-settings` for portability
 - 🖥️ **Settings UI** — `koli --settings` opens a GUI settings window (no YAML editing required)
@@ -336,23 +336,27 @@ context (`initial_prompt`, `language`, `task`), **and** formatting
 (`capitalize_first`, `ensure_punctuation`, `strip_trailing_period`,
 `inline_formatting`). Hot-reloads — edit and the next transcription picks it up.
 
-## 🧹 Optional LLM cleanup
+## 🧹 Optional AI polish and rewrites
 
-If you have [Ollama](https://ollama.ai) running locally, Koli can
-pipe each transcript through a small local model for punctuation and
-capitalisation polish. **Off by default and fully local** — set
-`postprocess.ollama.enabled: true` in `user_settings.yaml` to enable.
+Koli can pipe each transcript through a language model for punctuation and
+capitalisation polish, and rewrite selected text (Transforms, Rephrase).
+**Off by default.** Pick where the model runs in **Settings › AI**:
+
+- **On this computer:** [Ollama](https://ollama.ai) or [LM Studio](https://lmstudio.ai). Nothing leaves it.
+- **Your subscription:** ChatGPT (through Codex) or SuperGrok. Connect with a
+  code typed on their sign-in page.
+- **An API key:** Gemini, OpenRouter or OpenAI.
+
+Each model is marked Local or Cloud. Logins and keys are stored encrypted in
+the `credentials` folder, never in `user_settings.yaml`.
 
 ```yaml
-postprocess:
-  capitalize_first: true        # works without Ollama
-  ensure_punctuation: true      # works without Ollama
-  strip_filler_words: true      # works without Ollama
-  ollama:
-    enabled: false              # set true to opt in
-    endpoint: http://localhost:11434
-    model: llama3.2
-    timeout: 5
+ai:
+  model: lmstudio/qwen/qwen3-8b   # provider/model
+  fallbacks: [ollama/llama3.2]    # tried when the model doesn't answer
+  polish:
+    enabled: true
+    timeout: 5                    # then the dictation goes out unpolished
 ```
 
 ## ⚙️ Configuration

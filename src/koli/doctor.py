@@ -1,6 +1,6 @@
 # doctor.py
 # `koli --doctor` health check. Walks runtime, dependencies, config,
-# audio devices, Whisper model cache, hotkeys, post-process/Ollama, transforms,
+# audio devices, Whisper model cache, hotkeys, post-process/AI model, transforms,
 # and recent log errors, printing a per-section report. Exit 0 = clean, 1 = issues.
 
 import importlib
@@ -334,11 +334,7 @@ def _section_postprocess_and_rules() -> int:
         else:
             Check("Text filters").info("none enabled").print()
 
-        ollama_cfg = post_cfg.get('ollama') or {}
-        if ollama_cfg.get('enabled'):
-            failures += _probe_ollama(ollama_cfg)
-        else:
-            Check("Ollama post-edit").info("disabled").print()
+        failures += _check_ai(cfg)
     except Exception as e:
         Check("Post-process config").warn(str(e)).print()
 
@@ -365,25 +361,29 @@ def _section_postprocess_and_rules() -> int:
     return failures
 
 
-def _probe_ollama(cfg: dict) -> int:
-    import json
-    import urllib.error
-    import urllib.request
-    endpoint = cfg.get('endpoint', 'http://localhost:11434').rstrip('/')
-    timeout = float(cfg.get('timeout', 5))
-    try:
-        with urllib.request.urlopen(f"{endpoint}/api/tags", timeout=timeout) as resp:
-            data = json.loads(resp.read())
-        names = [m.get('name', '') for m in data.get('models', [])]
-        target = cfg.get('model', 'llama3.2')
-        if any(target in n for n in names):
-            Check("Ollama post-edit").ok(f"{endpoint} reachable, model '{target}' available").print()
-            return 0
-        Check("Ollama post-edit").warn(f"{endpoint} reachable but '{target}' not pulled").print()
-        return 1
-    except (urllib.error.URLError, OSError) as e:
-        Check("Ollama post-edit").fail(f"unreachable at {endpoint} ({e})").print()
-        return 1
+# The default AI model's provider: running (local) or connected / key saved
+# (cloud). Reads the saved login without refreshing it, so running --doctor
+# next to the app never spends a rotating token.
+def _check_ai(cfg) -> int:
+    from . import llm
+    from .llm import routing
+    llm.configure(cfg)
+    spec = cfg.get_path('ai.model') or ''
+    polish = cfg.get_path('ai.polish.enabled') is True
+    parsed = routing.parse(spec)
+    if not parsed:
+        if polish:
+            Check("AI model").fail("Polish is on but no model is chosen (Settings › AI)").print()
+            return 1
+        Check("AI model").info("none chosen").print()
+        return 0
+    status = (llm.provider_status(parsed[0]) or [{}])[0]
+    label = f"{spec} ({status.get('kind', '')})"
+    if status.get('connected'):
+        Check("AI model").ok(f"{label}: {status.get('detail', '')}").print()
+        return 0
+    Check("AI model").fail(f"{label}: {status.get('detail') or status.get('error') or 'not available'}").print()
+    return 1
 
 
 def _section_logs() -> int:

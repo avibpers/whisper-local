@@ -1,9 +1,10 @@
 # Koli — Transforms
 #
-# Hotkey-triggered text rewrites via your local Ollama. Workflow:
+# Hotkey-triggered text rewrites with the AI model from Settings › AI.
+# Workflow:
 #   1. Select text in any app
 #   2. Press the transform's hotkey (or pick from tray > Transforms)
-#   3. Selection is sent to local Ollama with the transform's prompt
+#   3. Selection is sent to the Rewrite model with the transform's prompt
 #   4. The polished result replaces your selection
 #
 # Each transform is a dict with:
@@ -11,14 +12,13 @@
 #   description:  one-line summary (shown as tooltip)
 #   hotkey:       OPTIONAL key combo to trigger directly. Leave empty
 #                 to make the transform only available from the tray.
-#   prompt:       the instruction sent to Ollama (your selection is
-#                 concatenated below)
-#   model:        OPTIONAL — override the default Ollama model just
-#                 for this transform
-#   timeout:      OPTIONAL — override the default Ollama timeout
+#   prompt:       the instruction sent to the model (your selection
+#                 follows it)
+#   model:        OPTIONAL — a model just for this transform, written
+#                 provider/model (lmstudio/qwen/qwen3-8b, codex/gpt-5.5)
+#   timeout:      OPTIONAL — seconds to wait, instead of the Rewrite limit
 #
-# Requires Ollama running locally (`ollama serve`). Hot-reloads on
-# file save — no app restart needed.
+# Hot-reloads on file save — no app restart needed.
 
 transforms:
   - name: polish

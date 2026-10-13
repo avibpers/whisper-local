@@ -313,19 +313,26 @@ class TextPostprocessTests(unittest.TestCase):
         }
         self.assertEqual(postprocess("x backref y", cfg), r"x \1\g<0> y")
 
-    def test_ollama_polish_handles_curly_braces_in_text(self):
-        from koli.text_postprocess import _ollama_polish
-        cfg = {'enabled': True, 'endpoint': 'http://127.0.0.1:0', 'timeout': 0.1,
-               'prompt': 'Polish:\n\n{text}'}
-        result = _ollama_polish("config = {a: 1, b: 2}", cfg)
-        self.assertEqual(result, '')
+    def test_polish_prompt_handles_curly_braces(self):
+        from koli.llm import prompts
+        msgs = prompts.polish('Polish:\n\n{text}', "config = {a: 1, b: 2}")
+        self.assertEqual(msgs[-1]['content'], "Polish:\n\nconfig = {a: 1, b: 2}")
+        msgs = prompts.polish('Format: {format_var} not a placeholder. {text}', "hi")
+        self.assertEqual(msgs[-1]['content'], "Format: {format_var} not a placeholder. hi")
+        # No {text}: the dictation follows the instruction.
+        self.assertEqual(prompts.polish('Fix it', 'x')[-1]['content'], "Fix it\n\nx")
 
-    def test_ollama_polish_handles_curly_braces_in_prompt(self):
-        from koli.text_postprocess import _ollama_polish
-        cfg = {'enabled': True, 'endpoint': 'http://127.0.0.1:0', 'timeout': 0.1,
-               'prompt': 'Format: {format_var} not a placeholder. {text}'}
-        result = _ollama_polish("hi", cfg)
-        self.assertEqual(result, '')
+    def test_postprocess_polish_runs_last_and_empty_keeps_text(self):
+        from koli.text_postprocess import postprocess
+        cfg = {'capitalize_first': True}
+        trace = []
+        self.assertEqual(postprocess("hello", cfg, trace=trace, polish=lambda t: t + '!'), "Hello!")
+        self.assertIn('ai_polish', trace)
+        # The model didn't answer: the text goes out as the rules left it.
+        self.assertEqual(postprocess("hello", cfg, polish=lambda t: ''), "Hello")
+        # A dictation that is only a snippet is never polished.
+        snip = {'snippets': [{'trigger': 'my sig', 'expansion': 'Avi'}]}
+        self.assertEqual(postprocess("my sig", snip, polish=lambda t: 'POLISHED'), "Avi")
 
     # --- Post-transcription replacements (correction-learning backing store) ---
     def test_replacement_literal_whole_word(self):
@@ -462,7 +469,6 @@ class TextPostprocessTests(unittest.TestCase):
         for bad in (
             {'smart_formatting': 'not-a-dict'},
             {'smart_formatting': True},
-            {'ollama': 'not-a-dict'},
             {'replacements': 'not-a-list'},
             {'replacements': [None, 42, 'str', {'no_from_key': 1}]},
             {'inline_formatting': True, 'inline_formatting_replacements': 'nope'},
@@ -1424,7 +1430,7 @@ class BundleRedactionTests(unittest.TestCase):
     # (this is what protects doctor.txt, not just user_settings.yaml).
     def test_redact_masks_url_credentials_and_tokens(self):
         from koli.bundle_logs import _redact
-        out = _redact("Ollama post-edit: http://user:s3cret@ollama.host:11434 reachable")
+        out = _redact("AI model: http://user:s3cret@ollama.host:11434 reachable")
         self.assertNotIn("s3cret", out)
         self.assertIn("<REDACTED>@", out)
         out2 = _redact("GET https://api.example.com/x?token=abc123&z=1")
@@ -1438,9 +1444,9 @@ class BundleRedactionTests(unittest.TestCase):
             "whisper:\n"
             "  hotwords: [SecretName, CodeWord]\n"
             "  initial_prompt: my private context\n"
-            "postprocess:\n"
+            "ai:\n"
             "  ollama:\n"
-            "    endpoint: http://user:pass@host:11434\n"
+            "    address: http://user:pass@host:11434\n"
         )
         out = _redact_yaml(sample)
         self.assertNotIn('SecretName', out)
@@ -1881,7 +1887,7 @@ class ReviewFixTests(unittest.TestCase):
         from koli.settings_ui import _coerce
         sentinel = object()  # not a BooleanVar
         self.assertEqual(_coerce(sentinel, "2024", "whisper.initial_prompt"), "2024")
-        self.assertEqual(_coerce(sentinel, "3", "postprocess.ollama.model"), "3")
+        self.assertEqual(_coerce(sentinel, "3", "ai.model"), "3")
         self.assertEqual(_coerce(sentinel, "5", "whisper.beam_size"), 5)
         self.assertAlmostEqual(_coerce(sentinel, "0.75", "audio.noise_suppression.strength"), 0.75)
 
@@ -5758,7 +5764,7 @@ class AutoDictationStateManagerTests(unittest.TestCase):
         sm._idle_actions = []
         sm._update_ui_state = mock.Mock()
         with mock.patch('builtins.print'), mock.patch('koli.state_manager.publish'), \
-             mock.patch('koli.state_manager.postprocess', side_effect=lambda t, cfg, trace=None: t), \
+             mock.patch('koli.state_manager.postprocess', side_effect=lambda t, cfg, trace=None, polish=None: t), \
              mock.patch('koli.state_manager.record_transcription'), mock.patch('koli.state_manager.record_transcript'), \
              mock.patch('koli.state_manager.foreground') as fg:
             fg.get_foreground_app.return_value = {'exe': 'discord.exe'}
@@ -5805,7 +5811,7 @@ class AutoDictationStateManagerTests(unittest.TestCase):
             prepare(sm)
         clip = np.zeros(16000, dtype=np.float32) if audio is None else audio
         with mock.patch('builtins.print'), mock.patch('koli.state_manager.publish'), \
-             mock.patch('koli.state_manager.postprocess', side_effect=lambda t, cfg, trace=None: t), \
+             mock.patch('koli.state_manager.postprocess', side_effect=lambda t, cfg, trace=None, polish=None: t), \
              mock.patch('koli.state_manager.record_transcription'), mock.patch('koli.state_manager.record_transcript'), \
              mock.patch('koli.state_manager.foreground') as fg:
             fg.get_foreground_app.return_value = {'exe': 'whatsapp.root.exe'}

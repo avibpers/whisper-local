@@ -321,15 +321,11 @@ def setup_audio_feedback(audio_feedback_config):
         ready_sound=audio_feedback_config['ready_sound']
     )
 
-def setup_voice_commands(voice_commands_config, clipboard_manager, log_transcriptions=False, config_manager=None):
-    provider = None
-    if config_manager is not None:
-        provider = lambda: (config_manager.get_postprocess_config().get('ollama') or {})
+def setup_voice_commands(voice_commands_config, clipboard_manager, log_transcriptions=False):
     return VoiceCommandManager(
         enabled=voice_commands_config['enabled'],
         clipboard_manager=clipboard_manager,
         log_transcriptions=log_transcriptions,
-        ollama_config_provider=provider,
     )
 
 def setup_system_tray(tray_config, config_manager, state_manager, model_registry, console_config=None):
@@ -805,7 +801,13 @@ def main():
         streaming_manager.initialize()
         clipboard_manager = setup_clipboard_manager(clipboard_config)
         audio_feedback = setup_audio_feedback(audio_feedback_config)
-        voice_command_manager = setup_voice_commands(voice_commands_config, clipboard_manager, log_transcriptions, config_manager)
+        voice_command_manager = setup_voice_commands(voice_commands_config, clipboard_manager, log_transcriptions)
+
+        # AI features read their models and addresses from the live config;
+        # subscription logins and client versions are kept fresh in the background.
+        from . import llm
+        llm.configure(config_manager)
+        llm.start_background()
 
         # Terminal tab title mirrors app state for people running in a visible
         # terminal. Self-disables when stdout isn't a TTY, so it costs nothing

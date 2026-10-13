@@ -36,6 +36,22 @@ function history(n) {
 }
 const HISTORY = history(64);
 
+// Settings › AI: one of each provider state.
+const MOCK_AI = [
+  { id: 'ollama', label: 'Ollama', kind: 'local', auth: 'none', site: 'https://ollama.com/download', connected: false, detail: 'Not running', address: 'http://localhost:11434' },
+  { id: 'lmstudio', label: 'LM Studio', kind: 'local', auth: 'none', site: 'https://lmstudio.ai', connected: true, detail: 'Running · 4 models, 1 loaded', address: 'http://127.0.0.1:1234', key_hint: '' },
+  { id: 'codex', label: 'ChatGPT (Codex)', kind: 'cloud', auth: 'device', site: 'https://chatgpt.com', connected: true, reconnect: false, email: 'dana@example.com', detail: 'Connected as dana@example.com' },
+  { id: 'grok', label: 'SuperGrok', kind: 'cloud', auth: 'device', site: 'https://grok.com', connected: false, reconnect: false, detail: 'Not connected' },
+  { id: 'gemini', label: 'Gemini', kind: 'cloud', auth: 'key', site: 'https://aistudio.google.com/apikey', connected: true, detail: 'Key saved', key_hint: '…x9Qa' },
+  { id: 'openrouter', label: 'OpenRouter', kind: 'cloud', auth: 'key', site: 'https://openrouter.ai/keys', connected: false, detail: 'No key', key_hint: '' },
+  { id: 'openai', label: 'OpenAI API', kind: 'cloud', auth: 'key', site: 'https://platform.openai.com/api-keys', connected: false, detail: 'No key', key_hint: '' },
+];
+const MOCK_AI_MODELS = {
+  lmstudio: ['qwen/qwen3-8b', 'google/gemma-3-12b', 'openai/gpt-oss-20b', 'mistralai/mistral-small-3.2'],
+  codex: ['gpt-5.5', 'gpt-5.4-mini', 'gpt-5.3-codex'],
+  gemini: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'],
+};
+
 export function createMock(emit) {
   let data = { settings: {}, schema: { sections: [], settings: [] } };
   const loaded = fetch(new URL('./mock-data.json', import.meta.url)).then((r) => r.json()).then((d) => {
@@ -342,7 +358,16 @@ export function createMock(emit) {
     profiles_list: () => ok({ active: profile, profiles: data.profiles }),
     profile_activate: (id) => { profile = id; emit('profile', { active: id }); emit('notify', { message: `Profile: ${id}` }); return ok(id); },
 
-    ai_probe: () => ok({ reachable: false, models: [] }),
+    ai_catalog: () => ok(MOCK_AI.map(({ id, label, kind, auth, site }) => ({ id, label, kind, auth, site }))),
+    ai_providers: () => ok(MOCK_AI),
+    ai_models: (provider) => ok((MOCK_AI_MODELS[provider] || []).map((id) => ({ id, label: id, loaded: provider === 'lmstudio' && id.includes('qwen') }))),
+    ai_test: (model) => new Promise((resolve) => setTimeout(() => resolve(ok({ ok: true, text: 'pong', error: '', seconds: 1.4, model })), 900)),
+    ai_set_key: () => ok(12),
+    ai_remove: () => ok(null),
+    ai_login_start: () => ok({ pending: true, user_code: 'KQ7F-2MXD', url: 'https://auth.openai.com/codex/device', error: '' }),
+    ai_login_status: () => ok({ pending: true, user_code: 'KQ7F-2MXD', url: 'https://auth.openai.com/codex/device', error: '' }),
+    ai_login_open: () => ok(null),
+    ai_login_cancel: () => ok(null),
     server_status: () => ok({ running: false, url: 'http://127.0.0.1:7777' }),
     diag_checks: () => ok([
       { section: 'System', name: 'Python', status: 'ok', detail: '3.13.1' },

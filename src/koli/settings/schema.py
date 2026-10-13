@@ -26,7 +26,7 @@ class Setting:
     section: str
     control: str                  # toggle | segmented | select | number | range | text | textarea |
                                   # tags | choice_tags | hotkey | sound | microphone | audiohost | model_table |
-                                  # cue_table | styles | table | readonly
+                                  # cue_table | styles | table | readonly | ai_model | ai_models
     help: str = ''
     apply: str = LIVE
     mode: str = ADVANCED
@@ -38,7 +38,7 @@ class Setting:
     unit: str = ''
     nullable: bool = False        # None is a valid value (e.g. audio host = automatic)
     optional: bool = False        # key may be absent in older/newer defaults files
-    source: str = ''              # dynamic choices: streaming_models, ollama_models
+    source: str = ''              # dynamic choices: streaming_models, whisper_models
     warn: str = ''                # shown under the control when relevant
 
     def to_dict(self) -> dict:
@@ -53,7 +53,8 @@ SECTIONS = [
     {'id': 'delivery', 'title': 'Delivery & clipboard', 'desc': "How text reaches the app you're in."},
     {'id': 'writing', 'title': 'Writing & formatting', 'desc': 'Applies to the next dictation. App rules can set their own style.'},
     {'id': 'smart', 'title': 'Smart editing', 'desc': 'Offline rules, no AI. Each one is off until you turn it on.'},
-    {'id': 'ai', 'title': 'Local AI (Ollama)', 'desc': 'Optional polish and rewrites with a model on your own machine. Nothing leaves it.'},
+    {'id': 'ai', 'title': 'AI', 'desc': 'Models that polish and rewrite your text. Local ones run on this '
+     'computer; cloud ones send the text to that provider. Logins and keys are stored encrypted, never in the settings file.'},
     {'id': 'overlay', 'title': 'Bubble & sounds', 'desc': 'What you see and hear when the window is closed.'},
     {'id': 'meetings', 'title': 'Meetings', 'desc': 'Calls in Discord, Zoom, Teams and the browser: when Koli listens, who said what, and the panel.'},
     {'id': 'privacy', 'title': 'Privacy & logs', 'desc': 'Everything stays on this computer. Here is what gets written to disk.'},
@@ -223,7 +224,7 @@ SCHEMA = [
     _S('hotkey.cancel_combination', 'Cancel', 'hotkeys', 'hotkey'),
     _S('hotkey.command_hotkey', 'Voice command', 'hotkeys', 'hotkey', nullable=True),
     _S('hotkey.rephrase_hotkey', 'AI rephrase selection', 'hotkeys', 'hotkey', nullable=True,
-       help='Needs Local AI.'),
+       help='Needs a model in Settings › AI.'),
     _S('hotkey.pause_hotkey', 'Pause all hotkeys', 'hotkeys', 'hotkey', nullable=True),
     _S('hotkey.paste_last_hotkey', 'Paste last dictation', 'hotkeys', 'hotkey', nullable=True),
     _S('hotkey.meeting_hotkey', 'Start or end a meeting', 'hotkeys', 'hotkey', nullable=True),
@@ -308,15 +309,26 @@ SCHEMA = [
     _S('postprocess.smart_formatting.urls', 'Web addresses', 'smart', 'toggle',
        help='“example dot com” → “example.com”'),
 
-    # ── Local AI ─────────────────────────────────────────────────────────────
-    _S('postprocess.ollama.enabled', 'Polish every dictation', 'ai', 'toggle',
+    # ── AI ───────────────────────────────────────────────────────────────────
+    # The provider cards (connect, keys, test) are drawn above these rows.
+    _S('ai.model', 'Default model', 'ai', 'ai_model', group='Models',
+       help='Used by every AI feature that has no model of its own.'),
+    _S('ai.fallbacks', 'If it doesn’t answer, try', 'ai', 'ai_models', group='Models',
+       help='In this order, while the feature still has time.'),
+    _S('ai.timeout', 'Give up after', 'ai', 'number', group='Models', min=1, max=600, step=1, unit='seconds',
+       help='For features without their own limit.'),
+    _S('ai.polish.enabled', 'Polish every dictation', 'ai', 'toggle', group='Polish',
        help='Fixes punctuation and capitals after the offline rules.'),
-    _S('postprocess.ollama.endpoint', 'Address', 'ai', 'text'),
-    _S('postprocess.ollama.model', 'Model', 'ai', 'text', source='ollama_models'),
-    _S('postprocess.ollama.timeout', 'Give up after', 'ai', 'number', min=1, max=120, step=1, unit='seconds',
-       help='Falls back to the plain transcript.'),
-    _S('postprocess.ollama.prompt', 'Polish instruction', 'ai', 'textarea',
+    _S('ai.polish.model', 'Polish with', 'ai', 'ai_model', group='Polish', help='Empty uses the default model.'),
+    _S('ai.polish.timeout', 'Give up after', 'ai', 'number', group='Polish', min=1, max=120, step=1, unit='seconds',
+       help='Then the dictation goes out without polish.'),
+    _S('ai.polish.prompt', 'Polish instruction', 'ai', 'textarea', group='Polish',
        help='{text} is replaced with your dictation.'),
+    _S('ai.rewrite.model', 'Rewrite with', 'ai', 'ai_model', group='Rewrite',
+       help='Transforms and Rephrase. Empty uses the default model. A transform can name its own.'),
+    _S('ai.rewrite.timeout', 'Give up after', 'ai', 'number', group='Rewrite', min=1, max=600, step=1, unit='seconds'),
+    _S('ai.ollama.address', 'Ollama address', 'ai', 'text', mode=HIDDEN, help='Edited on the Ollama card.'),
+    _S('ai.lmstudio.address', 'LM Studio address', 'ai', 'text', mode=HIDDEN, help='Edited on the LM Studio card.'),
 
     # ── Bubble & sounds ────────────────────────────────────────────────────
     _S('overlay.enabled', 'Show the Koli bubble', 'overlay', 'toggle', mode=SIMPLE),
@@ -545,6 +557,17 @@ def coerce(setting: Setting, value: Any) -> Any:
         return out
     if c in ('text', 'textarea', 'hotkey', 'sound'):
         return '' if value is None else str(value)
+    if c == 'ai_model':
+        return _ai_model(setting, value)
+    if c == 'ai_models':
+        if not isinstance(value, (list, tuple)):
+            raise ValueError(f"{setting.label} must be a list")
+        out = []
+        for v in value:
+            v = _ai_model(setting, v)
+            if v and v not in out:
+                out.append(v)
+        return out
     if c == 'microphone':
         # '' (same as dictation) and 'default' stay words; a device id is a number.
         if value in ('', 'default'):
@@ -553,6 +576,14 @@ def coerce(setting: Setting, value: Any) -> Any:
             return int(value)
         except (TypeError, ValueError):
             raise ValueError(f"{setting.label} must be a device")
+    return value
+
+
+# "provider/model", or '' for none.
+def _ai_model(setting: Setting, value) -> str:
+    value = str(value or '').strip()
+    if value and ('/' not in value or value.startswith('/') or value.endswith('/')):
+        raise ValueError(f"{setting.label}: write it as provider/model, like lmstudio/qwen3-8b")
     return value
 
 

@@ -222,7 +222,7 @@ hotkey: # Hotkey Configuration
 
     # Key combination for AI rephrase mode
     # Select text first, hold this key, speak instructions like "make this concise".
-    # Selection is sent to local Ollama with your instruction; result pastes back.
+    # Selection is sent to the Rewrite model (Settings › AI) with your instruction; result pastes back.
     # Leave empty to disable.
     rephrase_hotkey: "ctrl+shift+win | macos: ctrl+option+command"
 
@@ -670,7 +670,7 @@ postprocess: # Transcription post-processing pipeline
     inline_formatting: true
 
     # Custom phrase -> symbol replacements for inline_formatting. Runs after Whisper
-    # and before any Ollama step. Essential for NON-ENGLISH dictation: when Whisper
+    # and before any AI polish. Essential for NON-ENGLISH dictation: when Whisper
     # transcribes (say) Polish, the built-in English triggers above won't appear, so
     # define your own. Matching is whole-word and case-insensitive.
     #
@@ -730,7 +730,7 @@ postprocess: # Transcription post-processing pipeline
         urls: false
 
     # Post-transcription corrections: literal, whole-word, case-insensitive text
-    # fixes applied after Whisper and before any Ollama step. Use this for
+    # fixes applied after Whisper and before any AI polish. Use this for
     # consistent misrecognitions ("see translate two" → "CTranslate2"). The
     # history window can append here for you via "Fix this everywhere...".
     # Each entry: from (required), to, whole_word (default true),
@@ -829,17 +829,39 @@ postprocess: # Transcription post-processing pipeline
     # Append a period if the text doesn't end in punctuation
     ensure_punctuation: false
 
-    # Optional local LLM cleanup via Ollama (https://ollama.ai)
-    # Off by default. Requires Ollama running locally on the configured endpoint.
-    ollama:
+ai: # Language models for polish, rewrites and later features (Settings › AI)
+    # A model is "provider/model": ollama/llama3.2, lmstudio/qwen/qwen3-8b,
+    # codex/gpt-5.5, grok/grok-4, gemini/gemini-2.5-flash,
+    # openrouter/anthropic/claude-sonnet-4, openai/gpt-5-mini.
+    # Logins and API keys are kept encrypted in the credentials folder, never here.
+    model: ''
+
+    # Tried in order when the model above doesn't answer
+    fallbacks: []
+
+    # Seconds a feature waits for an answer, fallbacks included
+    timeout: 30
+
+    # Polish every dictation after the offline rules
+    polish:
         enabled: false
-        endpoint: http://localhost:11434
-        model: llama3.2
+        model: '' # empty = the default model
         timeout: 5
         prompt: |-
             Polish this dictation. Fix punctuation and capitalization only. Do not change wording or add anything. Output ONLY the polished text:
 
             {text}
+
+    # Transforms, the Rephrase hotkey and Rephrase voice commands
+    rewrite:
+        model: '' # empty = the default model
+        timeout: 30
+
+    ollama:
+        address: http://localhost:11434
+
+    lmstudio:
+        address: http://127.0.0.1:1234
 
 ui: # The app window and floating bar
     # simple = plain-language settings for everyday use

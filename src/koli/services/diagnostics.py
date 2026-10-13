@@ -17,7 +17,7 @@ _STATUS = {'[OK]': 'ok', '[!]': 'warn', '[X]': 'fail', '[i]': 'info'}
 # Next steps the screen can offer for known problems.
 _ACTIONS = {
     'CUDA libraries': {'label': 'Install GPU support', 'action': 'gpu_install'},
-    'Ollama': {'label': 'How to start Ollama', 'action': 'open_url', 'arg': 'https://ollama.com/download'},
+    'AI model': {'label': 'Open AI settings', 'action': 'navigate', 'arg': 'settings/ai'},
 }
 
 

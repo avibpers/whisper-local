@@ -1,9 +1,10 @@
 # transforms.py
 # Wispr-style AI text transforms: take the current selection or clipboard and
-# rewrite it with a local Ollama model using a named prompt from
-# `transforms.yaml` (e.g. "make it formal", "summarise"). User-editable and
-# hot-reloaded on file change. Entirely local — no cloud call — and a no-op when
-# Ollama isn't running, so the feature degrades quietly rather than erroring.
+# rewrite it with the Rewrite model from Settings › AI (local or cloud), using
+# a named prompt from `transforms.yaml` (e.g. "make it formal", "summarise").
+# A transform can name its own model. User-editable and hot-reloaded on file
+# change. When no model answers, the selection is left alone and a
+# notification says why.
 
 import logging
 import time
@@ -16,8 +17,9 @@ import pyperclip
 # .platform → .platform.windows pulls in win32api, which doesn't exist on Linux.
 # Keeping the import lazy means transforms.py is importable on CI (Linux smoke
 # tests) and from tools that only need to read transforms.yaml metadata.
+from . import llm
 from .defaults_merge import load_layered
-from .text_postprocess import _ollama_polish
+from .llm import prompts
 from .utils import get_user_app_data_path
 
 USER_FILE = "transforms.yaml"
@@ -51,12 +53,11 @@ USER_FILE_HEADER = """\
 
 
 class TransformsManager:
-    def __init__(self, ollama_config_provider=None, system_tray=None):
+    def __init__(self, system_tray=None):
         self.logger = logging.getLogger(__name__)
         self.transforms: list = []
         self._mtime = 0.0
         self._path: Optional[Path] = None
-        self.ollama_config_provider = ollama_config_provider
         self.system_tray = system_tray
         self._load()
 
@@ -102,10 +103,10 @@ class TransformsManager:
         return None
 
     # Runs a named transform end-to-end: grab the user's selection (falling back
-    # to clipboard), send it to Ollama with that transform's prompt, and paste the
-    # rewrite back over the selection. Returns False rather than raising on any
-    # failure (unknown name, Ollama down, empty selection) so a missing optional
-    # dependency can never break the hotkey that triggered it.
+    # to clipboard), send it to the Rewrite model with that transform's prompt,
+    # and paste the rewrite back over the selection. Returns False rather than
+    # raising on any failure (unknown name, no model answering, empty
+    # selection) so it can never break the hotkey that triggered it.
     def apply(self, name: str) -> bool:
         self.reload_if_changed()
         transform = self.find(name)
@@ -140,25 +141,12 @@ class TransformsManager:
             except Exception: pass
             return False
 
-        if not self.ollama_config_provider:
-            self._notify("Transforms require Ollama config (postprocess.ollama)")
-            try: pyperclip.copy(original_clipboard)
-            except Exception: pass
-            return False
-
-        full_prompt = f"{prompt}\n\n{selection}"
-        ollama_cfg = dict(self.ollama_config_provider() or {})
-        ollama_cfg['enabled'] = True
-        ollama_cfg['prompt'] = '{text}'
-        if transform.get('model'):
-            ollama_cfg['model'] = transform['model']
-        if transform.get('timeout') is not None:
-            ollama_cfg['timeout'] = transform['timeout']
-
-        result = _ollama_polish(full_prompt, ollama_cfg)
+        answer = llm.complete('rewrite', prompts.transform(prompt, selection),
+                              model=str(transform.get('model') or ''), timeout=transform.get('timeout'))
+        result = answer.text
         if not result:
-            self.logger.warning(f"Transform '{name}' returned empty from Ollama")
-            self._notify(f"Transform '{name}' failed — Ollama unreachable?")
+            self.logger.warning(f"Transform '{name}' got no answer: {answer.error}")
+            self._notify(f"Transform '{name}' failed: {answer.error}")
             try: pyperclip.copy(original_clipboard)
             except Exception: pass
             return False

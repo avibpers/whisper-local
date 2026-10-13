@@ -11,7 +11,7 @@ import { html, useEffect, useState } from '../../vendor/preact-htm.module.js';
 import { call } from '../api.js';
 import { app, closeModal, confirmModal, openModal, saveSetting, toast, useSetting } from '../store.js';
 import { HotkeyCapture, Icon, Keys, Toggle } from '../ui.js';
-import { SettingRow, TaskProgress, useRunningTasks } from './shared.js';
+import { KindBadge, SettingRow, splitModel, TaskProgress, useAiCatalog, useRunningTasks } from './shared.js';
 
 const ACTIONS = [['hotkey', 'Press keys', 'KEYS', 'acc'], ['type', 'Type text', 'TYPE', 'ok'], ['run', 'Run a program', 'RUN', 'warn'], ['rephrase', 'AI rewrite of the selection', 'AI', '']];
 const ACTION = Object.fromEntries(ACTIONS.map(([k, label, tag, tone]) => [k, { label, tag, tone }]));
@@ -290,8 +290,8 @@ function openTransformEditor(item, reload) {
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
         <label class="stack" style="gap:6px"><span class="eyebrow">Name</span><input class="inp" value=${e.name} onInput=${(ev) => { e.name = ev.currentTarget.value; }} /></label>
         <label class="stack" style="gap:6px"><span class="eyebrow">What it does</span><input class="inp" value=${e.description || ''} onInput=${(ev) => { e.description = ev.currentTarget.value; }} /></label>
-        <label class="stack" style="gap:6px"><span class="eyebrow">Model override</span><input class="inp" placeholder="use the AI settings model" value=${e.model || ''} onInput=${(ev) => { e.model = ev.currentTarget.value; }} /></label>
-        <label class="stack" style="gap:6px"><span class="eyebrow">Timeout (seconds)</span><input class="inp mono" placeholder="5" value=${e.timeout ?? ''} onInput=${(ev) => { e.timeout = ev.currentTarget.value; }} /></label>
+        <label class="stack" style="gap:6px"><span class="eyebrow">Model override</span><input class="inp mono" placeholder="provider/model, e.g. lmstudio/qwen3-8b" value=${e.model || ''} onInput=${(ev) => { e.model = ev.currentTarget.value; }} /></label>
+        <label class="stack" style="gap:6px"><span class="eyebrow">Timeout (seconds)</span><input class="inp mono" placeholder="the Rewrite limit" value=${e.timeout ?? ''} onInput=${(ev) => { e.timeout = ev.currentTarget.value; }} /></label>
       </div>
       <label class="stack" style="gap:6px"><span class="eyebrow">Instruction</span><textarea class="inp" rows="4" value=${e.prompt} onInput=${(ev) => { e.prompt = ev.currentTarget.value; }}></textarea></label>
     </div>
@@ -301,13 +301,18 @@ function openTransformEditor(item, reload) {
 
 function Transforms() {
   const [items, setItems] = useState([]);
-  const [ollama, setOllama] = useState(null);
+  const rewriteModel = useSetting('ai.rewrite.model');
+  const defaultModel = useSetting('ai.model');
+  const model = rewriteModel || defaultModel;
+  const catalog = useAiCatalog();
+  const kind = (catalog.find((p) => p.id === splitModel(model)[0]) || {}).kind;
   const reload = () => call('transforms_list').then(setItems).catch((e) => toast(e.message, { kind: 'err' }));
-  useEffect(() => { reload(); call('ai_probe').then(setOllama).catch(() => {}); }, []);
+  useEffect(() => { reload(); }, []);
   const setKey = (it, key) => call('transform_save', { ...it.entry, hotkey: key || '' }, it.id).then(() => { toast('Shortcut saved'); reload(); }).catch((e) => toast(e.message, { kind: 'err' }));
   return html`<section class="card" style="overflow:hidden" aria-labelledby="h-tr">
-    <div class="card-head"><div><h2 id="h-tr">Transforms</h2><p>Select text anywhere, press a shortcut, and your local AI rewrites it in place.</p></div>
-      <div class="row-flex">${ollama && html`<span class=${'chip ' + (ollama.reachable ? 'ok' : 'rec')}><span class="dot"></span>${ollama.reachable ? 'Ollama reachable' : 'Ollama not reachable'}</span>`}
+    <div class="card-head"><div><h2 id="h-tr">Transforms</h2><p>Select text anywhere, press a shortcut, and the AI rewrites it in place.</p></div>
+      <div class="row-flex">${model ? html`<span class="chip"><span class="mono">${model}</span></span><${KindBadge} kind=${kind} />`
+        : html`<span class="chip rec"><span class="dot"></span>No AI model chosen</span>`}
         <a class="btn" href="#/settings/ai">AI settings</a>
         <button type="button" class="btn" onClick=${() => openTransformEditor(null, reload)}><${Icon} name="plus" />New transform</button></div></div>
     <div class="tbl-wrap"><table class="tbl"><thead><tr><th scope="col">Name</th><th scope="col">What it does</th><th scope="col">Shortcut</th><th scope="col">Model</th><th scope="col">On</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>

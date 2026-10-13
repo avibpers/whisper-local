@@ -376,7 +376,7 @@ export function ModalHost() {
       <div class="modal-body">
         ${typeof modal.body === 'function' ? modal.body() : modal.body && html`<p style="margin:0">${modal.body}</p>`}
         ${isPrompt && html`<label class="stack" style="gap:6px"><span class="eyebrow">${modal.label}</span>
-          <input class="inp" value=${text} placeholder=${modal.placeholder} autofocus dir="auto"
+          <input class="inp" type=${modal.secret ? 'password' : 'text'} value=${text} placeholder=${modal.placeholder} autofocus dir="auto"
             onInput=${(e) => setText(e.currentTarget.value)}
             onKeyDown=${(e) => e.key === 'Enter' && modal.resolve(text)} /></label>`}
       </div>

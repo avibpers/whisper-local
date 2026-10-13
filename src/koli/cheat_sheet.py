@@ -89,7 +89,7 @@ def _run(config_manager, transforms_manager):
         ("Voice command mode", hk.get('command_hotkey'),
          "Say a trigger phrase from commands.yaml to run shortcuts/macros"),
         ("AI rephrase (PTT)", hk.get('rephrase_hotkey'),
-         "Select text, hold, speak your instruction, release — local Ollama rewrites it"),
+         "Select text, hold, speak your instruction, release — the AI model rewrites it"),
         ("Paste last dictation", hk.get('paste_last_hotkey'),
          "Type your last dictation again, e.g. after it landed in the wrong window"),
         ("Pause all hotkeys", hk.get('pause_hotkey'),

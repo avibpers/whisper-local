@@ -26,7 +26,7 @@ _REDACTIONS = [
     (re.compile(r'(/Users/)([^/]+)'), r'\1<USER>'),
     (re.compile(r'(/home/)([^/]+)'), r'\1<USER>'),
     # URL credentials (scheme://user:pass@host) — applied to EVERY bundled file, so
-    # a custom Ollama endpoint with embedded creds is masked in doctor.txt and logs
+    # an AI server address with embedded creds is masked in doctor.txt and logs
     # too, not just user_settings.yaml (which _redact_yaml handles separately).
     (re.compile(r'(\bhttps?://)[^/\s:@]+:[^/\s@]+@', re.IGNORECASE), r'\1<REDACTED>@'),
     # Secret-ish query params.
@@ -38,17 +38,19 @@ _REDACTIONS = [
 # Config fields that can carry personal or sensitive data. These are scrubbed
 # from user_settings.yaml specifically, because the bundle is meant to be
 # attached to public GitHub issues. Users routinely put names, codewords, and
-# occasionally secrets in hotwords; Ollama endpoints may embed user:pass or
-# ?token=; initial_prompt can contain private instructions.
+# occasionally secrets in hotwords; AI server addresses (Ollama, LM Studio) may
+# embed user:pass or ?token=; initial_prompt can contain private instructions.
+# API keys and logins never reach the bundle: they live in credentials\, which
+# isn't collected.
 #  - hotwords:        a YAML list, possibly inline [a, b] or block over lines
-#  - endpoint:        scalar URL
+#  - endpoint/address: scalar URL
 #  - initial_prompt:  scalar (possibly quoted) string
 _YAML_REDACTIONS = [
     # inline list form: hotwords: [a, b, c]
     (re.compile(r'(^\s*hotwords\s*:\s*)\[[^\]]*\]', re.MULTILINE), r'\1[<REDACTED>]'),
     # block list form: hotwords: followed by "- item" lines
     (re.compile(r'(^\s*hotwords\s*:\s*)\n(\s*-\s.*\n?)+', re.MULTILINE), r'\1 [<REDACTED>]\n'),
-    (re.compile(r'(^\s*endpoint\s*:\s*).+$', re.MULTILINE), r'\1<REDACTED>'),
+    (re.compile(r'(^\s*(?:endpoint|address)\s*:\s*).+$', re.MULTILINE), r'\1<REDACTED>'),
     (re.compile(r'(^\s*initial_prompt\s*:\s*).+$', re.MULTILINE), r'\1<REDACTED>'),
 ]
 
@@ -116,7 +118,7 @@ def bundle_logs(output_path: str = None) -> int:
     for f in bundled:
         print(f"   • {f}")
     print("\n   ℹ Redacted: usernames in paths, emails, and sensitive settings")
-    print("     (hotwords, Ollama endpoint, initial_prompt).")
+    print("     (hotwords, AI server addresses, initial_prompt). AI keys and logins are never included.")
     print("   ℹ Review the zip before sharing if you've enabled log_transcriptions.\n")
     return 0
 
@@ -139,8 +141,9 @@ def _build_about() -> str:
         "  crashes/*        — last 10 crash reports from the past 7 days\n\n"
         "Privacy:\n"
         "  Usernames in paths and any email-shaped strings have been replaced\n"
-        "  with placeholders. In user_settings.yaml, hotwords, the Ollama endpoint,\n"
-        "  and initial_prompt are masked with <REDACTED>. Transcript text is NOT in\n"
+        "  with placeholders. In user_settings.yaml, hotwords, AI server addresses,\n"
+        "  and initial_prompt are masked with <REDACTED>. AI keys and logins are kept\n"
+        "  outside the settings file and are not included. Transcript text is NOT in\n"
         "  the log unless you enabled `logging.log_transcriptions: true`. Please\n"
         "  review before sharing.\n"
     )
@@ -182,7 +185,7 @@ def _redact(text: str) -> str:
 
 
 # Extra scrub applied only to user_settings.yaml: masks config fields that may
-# hold personal data or secrets (hotwords, Ollama endpoint, initial_prompt).
+# hold personal data or secrets (hotwords, AI server addresses, initial_prompt).
 def _redact_yaml(text: str) -> str:
     for pattern, replacement in _YAML_REDACTIONS:
         text = pattern.sub(replacement, text)

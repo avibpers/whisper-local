@@ -2,8 +2,8 @@
 // Advanced Settings: every setting in the schema, grouped into the eleven
 // sections, each saved the moment it changes. Custom editors cover what a
 // single control can't: the models table, GPU setup, voice-cue table, your
-// own writing styles, start on login, backups, the local API, reset and
-// uninstall. The search box at the top filters every section as you type
+// own writing styles, the AI provider cards (connect, keys, test), start on
+// login, backups, the local API, reset and uninstall. The search box at the top filters every section as you type
 // (Ctrl+F jumps to it, Esc clears it); a Ctrl+K result scrolls to its row and
 // highlights it.
 
@@ -11,8 +11,8 @@ import { html, useEffect, useRef, useState } from '../../vendor/preact-htm.modul
 import { call } from '../api.js';
 import { matchesTerms, searchTerms, settingHaystack } from '../search.js';
 import { app, confirmModal, fmtBytes, live, navigate, openModal, closeModal, promptModal, saveSetting, toast, undo, useSetting } from '../store.js';
-import { Icon, Select, Toggle } from '../ui.js';
-import { BgBadge, MicTest, SettingRow, settingsBySection, TaskProgress, useRunningTasks } from './shared.js';
+import { Icon, Select, TextField, Toggle } from '../ui.js';
+import { BgBadge, KindBadge, MicTest, SettingRow, settingsBySection, TaskProgress, useRunningTasks } from './shared.js';
 
 // ── Models ────────────────────────────────────────────────────────────────
 
@@ -165,15 +165,101 @@ function Autostart() {
       onChange=${(v) => call('system_set_autostart', v).then((on) => { setState({ ...state, enabled: on }); toast(on ? 'Will start on login' : "Won't start on login"); }).catch((e) => toast(e.message, { kind: 'err' }))} /></div></div>`;
 }
 
-function OllamaStatus() {
-  const endpoint = useSetting('postprocess.ollama.endpoint');
-  const [st, setSt] = useState(null);
-  const probe = () => call('ai_probe', endpoint).then(setSt).catch(() => setSt({ reachable: false }));
-  useEffect(() => { probe(); }, [endpoint]);
-  if (!st) return null;
-  return html`<span class="row-flex"><span class=${'chip ' + (st.reachable ? 'ok' : 'rec')}><span class="dot"></span>
-    ${st.reachable ? `Ollama reachable · ${st.models.length} models` : 'Ollama not reachable'}</span>
-    <button type="button" class="btn sm" onClick=${probe}>Test</button></span>`;
+// ── AI providers ──────────────────────────────────────────────────────────
+// One row per provider: whether it is running / connected / has a key, and
+// what you can do about it. Codex and Grok sign in with a device code shown
+// in a popup that waits for your approval.
+
+const LOGIN_POLL_MS = 2000;
+
+function chipTone(p) {
+  if (p.reconnect) return 'warn';
+  return p.connected ? 'ok' : (p.auth === 'none' ? 'rec' : '');
+}
+
+// The device-code popup. Closes by itself once the provider says yes.
+function openDeviceLogin(provider, onDone) {
+  let timer = null;
+  const stop = () => { clearInterval(timer); timer = null; };
+  const cancel = () => { stop(); call('ai_login_cancel', provider.id).catch(() => {}); closeModal(); };
+  const render = (st) => () => html`<div class="modal"><div class="modal-head"><h2>Connect ${provider.label}</h2></div>
+    <div class="modal-body">
+      <p style="margin:0">Open the sign-in page, log in with your ${provider.label} account, and type this code:</p>
+      <div class="row-flex" style="justify-content:center;gap:12px">
+        <b class="mono" style="font-size:28px;letter-spacing:3px">${st.user_code}</b>
+        <button type="button" class="btn sm" onClick=${() => call('copy_text', st.user_code).then(() => toast('Code copied'))}>Copy code</button>
+      </div>
+      <button type="button" class="btn pri" style="align-self:center" onClick=${() => call('ai_login_open', provider.id)}>Open the sign-in page</button>
+      <span class="small muted" role="status" style="text-align:center">${st.error ? html`<b style="color:var(--rec)">${st.error}</b>` : 'Waiting for approval…'}</span>
+    </div>
+    <div class="modal-foot"><button type="button" class="btn" onClick=${cancel}>${st.error ? 'Close' : 'Cancel'}</button></div></div>`;
+  call('ai_login_start', provider.id).then((st) => {
+    openModal(render(st));
+    call('ai_login_open', provider.id).catch(() => {});
+    timer = setInterval(() => {
+      call('ai_login_status', provider.id).then((now) => {
+        if (now.connected) { stop(); closeModal(); toast(`${provider.label} connected`); onDone(); }
+        else if (now.error) { stop(); openModal(render(now)); }
+        else if (!now.pending) { stop(); }
+      }).catch(() => {});
+    }, LOGIN_POLL_MS);
+  }).catch((e) => toast(e.message, { kind: 'err' }));
+}
+
+function ProviderRow({ p, reload }) {
+  const act = (promise, ok) => promise.then(() => { if (ok) toast(ok); reload(); }).catch((e) => toast(e.message, { kind: 'err' }));
+  const addKey = async () => {
+    const isToken = p.id === 'lmstudio';
+    const key = await promptModal({ title: isToken ? 'LM Studio API token' : `${p.label} API key`, secret: true, confirm: 'Save',
+      label: isToken ? 'Only needed when “Require authentication” is on in LM Studio' : 'Paste your key. It is checked, then stored encrypted.' });
+    if (key) act(call('ai_set_key', p.id, key).then((n) => n && toast(`${p.label} key saved · ${n} models`)), isToken ? 'Token saved' : '');
+  };
+  const disconnect = async () => {
+    if (!(await confirmModal({ title: `Remove ${p.label}?`, body: p.auth === 'device' ? 'Signs Koli out of this subscription. You can connect again any time.' : 'Deletes the saved key from this computer.', confirm: 'Remove', danger: true }))) return;
+    act(call('ai_remove', p.id), `${p.label} removed`);
+  };
+  const local = p.auth === 'none';
+  return html`<div class="srow"><div class="slabel"><b>${p.label} <${KindBadge} kind=${p.kind} /></b>
+      <small><span class=${'chip sm ' + chipTone(p)}><span class="dot"></span>${p.detail || '…'}</span>
+        ${p.key_hint && html` <span class="mono">${p.key_hint}</span>`}${p.error && !p.connected && !local ? ` ${p.error}` : ''}</small></div>
+    <div class="sctl" style="flex-wrap:wrap;justify-content:flex-end">
+      ${local && html`<${TextField} label=${`${p.label} address`} mono width="220px" value=${p.address}
+        onCommit=${(v) => saveSetting(`ai.${p.id}.address`, v.trim()).then(reload)} />`}
+      ${p.id === 'lmstudio' && (p.key_hint
+        ? html`<button type="button" class="btn ghost sm" onClick=${disconnect}>Remove token</button>`
+        : html`<button type="button" class="btn ghost sm" onClick=${addKey}>API token…</button>`)}
+      ${p.auth === 'device' && (p.connected
+        ? html`<button type="button" class="btn ghost sm" onClick=${disconnect}>Disconnect</button>`
+        : html`<button type="button" class="btn sm pri" onClick=${() => openDeviceLogin(p, reload)}>${p.reconnect ? 'Connect again' : 'Connect'}</button>`)}
+      ${p.auth === 'key' && (p.connected
+        ? html`<button type="button" class="btn ghost sm" onClick=${disconnect}>Remove key</button>`
+        : html`<button type="button" class="btn sm" onClick=${addKey}>Add key…</button>`)}
+      ${local && html`<button type="button" class="btn sm" onClick=${reload}>Check</button>`}
+      ${!p.connected && p.site && html`<button type="button" class="btn ghost sm" onClick=${() => call('app_open_url', p.site)}>${local ? 'Get it' : p.auth === 'key' ? 'Get a key' : 'Website'}</button>`}
+    </div></div>`;
+}
+
+function AiProviders() {
+  const [list, setList] = useState(null);
+  const reload = () => call('ai_providers').then(setList).catch((e) => toast(e.message, { kind: 'err' }));
+  useEffect(() => { reload(); }, []);
+  return html`<div class="subhead"><div class="eyebrow">Providers</div></div>
+    ${!list ? html`<div class="empty">Checking providers…</div>` : list.map((p) => html`<${ProviderRow} key=${p.id} p=${p} reload=${reload} />`)}`;
+}
+
+// Test on a model row: one short question, then how long it took.
+function AiTest({ path }) {
+  const own = useSetting(path);
+  const fallback = useSetting('ai.model');
+  const spec = own || fallback;
+  const [busy, setBusy] = useState(false);
+  if (!spec) return null;
+  const run = () => {
+    setBusy(true);
+    call('ai_test', spec).then((r) => toast(r.ok ? `${r.model} answered in ${r.seconds} s` : r.error, { kind: r.ok ? 'info' : 'err' }))
+      .catch((e) => toast(e.message, { kind: 'err' })).finally(() => setBusy(false));
+  };
+  return html`<button type="button" class="btn sm" style="margin-top:6px" disabled=${busy} onClick=${run}>${busy ? 'Testing…' : 'Test'}</button>`;
 }
 
 function PrivacyExtras() {
@@ -369,6 +455,7 @@ const SECTION_EXTRAS = {
   audio: { mic: 'Check your microphone level test mic',
     voicecheck: 'Does Koli recognize you voice check voiceprint only my voice TV test' },
   hotkeys: { transforms: 'Transform shortcuts polish prompt engineer keys' },
+  ai: { providers: 'Providers Ollama LM Studio ChatGPT Codex SuperGrok Grok Gemini OpenRouter OpenAI API key connect login subscription' },
   privacy: { privacy: 'Transcript history delete clear export privacy' },
   system: { system: 'Local API address server settings backup export import model offline computer reset all uninstall' },
 };
@@ -403,7 +490,7 @@ function SectionCard({ section, schema, highlight, terms }) {
     if (s.control === 'model_table') return s.path === 'whisper.model' ? html`<${ModelsTable} key="models" />` : null;
     if (s.control === 'cue_table') return html`<${CueTable} />`;
     if (s.control === 'styles') return html`<div class="srow"><div class="slabel"><b>${s.label}</b><small>${s.help}</small></div><div class="sctl"><${StylesEditor} /></div></div>`;
-    if (s.path === 'postprocess.ollama.enabled') return html`<${SettingRow} s=${s} highlight=${highlight === s.path} extra=${html`<${OllamaStatus} />`} />`;
+    if (s.control === 'ai_model') return html`<${SettingRow} s=${s} highlight=${highlight === s.path} extra=${html`<${AiTest} path=${s.path} />`} />`;
     if (s.path === 'audio.voice_filter.margin_db') return html`<${SettingRow} s=${s} highlight=${highlight === s.path} extra=${html`<${LoudnessTuner} />`} />`;
     if (s.path === 'whisper.device') return html`<${SettingRow} s=${s} highlight=${highlight === s.path} /><${GpuRow} />`;
     return html`<${SettingRow} s=${s} highlight=${highlight === s.path} />`;
@@ -413,6 +500,7 @@ function SectionCard({ section, schema, highlight, terms }) {
       ${!filtering && html`<button type="button" class="btn ghost sm" onClick=${resetSection}>Reset section</button>`}</div>
     ${extras.has('autostart') && html`<${Autostart} />`}
     ${extras.has('mic') && html`<div class="srow"><div class="slabel"><b>Check your microphone</b><small>Shows the level while you talk.</small></div><div class="sctl"><${MicTest} /></div></div>`}
+    ${extras.has('providers') && html`<${AiProviders} />`}
     ${groups.map((g) => html`${g.name && html`<div class="subhead"><div class="eyebrow">${g.name}</div></div>`}${g.items.map(renderRow)}
       ${g.name === VOICE_GROUP && extras.has('voicecheck') && html`<${VoiceCheck} />`}`)}
     ${extras.has('voicecheck') && !groups.some((g) => g.name === VOICE_GROUP) && html`<${VoiceCheck} />`}

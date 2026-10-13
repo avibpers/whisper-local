@@ -1,7 +1,7 @@
 # services/system.py
 # System actions from Settings › System and the welcome flow: start on login,
 # settings backup, moving a model to an offline computer, the guided uninstall,
-# Ollama reachability, GPU detection and install, and a manual update check.
+# GPU detection and install, and a manual update check.
 # Long jobs run as background tasks and stream their progress.
 
 import contextlib
@@ -120,19 +120,6 @@ def uninstall(remove_models: bool) -> dict:
     if config_dir.is_dir() and un._remove(config_dir):
         removed.append(str(config_dir))
     return {'removed': removed}
-
-
-# ── Local AI ─────────────────────────────────────────────────────────────────
-
-def ollama_probe(endpoint: str, timeout: float = 2.0) -> dict:
-    endpoint = (endpoint or 'http://localhost:11434').rstrip('/')
-    try:
-        with urllib.request.urlopen(f"{endpoint}/api/tags", timeout=timeout) as resp:
-            data = json.loads(resp.read())
-        models = [m.get('name') for m in data.get('models', []) if m.get('name')]
-        return {'reachable': True, 'models': models}
-    except Exception as e:
-        return {'reachable': False, 'models': [], 'error': str(e)}
 
 
 # ── GPU ──────────────────────────────────────────────────────────────────────

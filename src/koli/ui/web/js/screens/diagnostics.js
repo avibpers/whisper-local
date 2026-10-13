@@ -20,6 +20,7 @@ function Health() {
   const act = (a) => {
     if (a.action === 'gpu_install') call('gpu_install').then(() => toast('Installing GPU support in the background')).catch((e) => toast(e.message, { kind: 'err' }));
     if (a.action === 'open_url') call('app_open_url', a.arg);
+    if (a.action === 'navigate') navigate(a.arg);
   };
   let section = null;
   return html`<section class="card" style="grid-column:span 2;min-width:0" aria-labelledby="h-health">

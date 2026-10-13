@@ -41,12 +41,14 @@ Koli is a fork of `drajb/whisper-local` by Rohit Burani (repo `avibpers/whisper-
 | **Terminal Title** | `terminal_title.py` | Animated terminal tab title reflecting app state | - |
 | **Level Overlay (legacy)** | `level_overlay.py` | Tk level pill, replaced by the floating bar (`ui/floating_bar.py`) | tkinter |
 | **Fallback Window (legacy)** | `fallback_window.py` | Tk capture window when no text field is focused; the app shows the text on its Live screen | tkinter |
-| **Transforms** | `transforms.py` | Wispr-style AI text transforms via Ollama | ruamel.yaml |
+| **AI Providers** | `llm/` | One `complete(feature, messages)` for every AI feature: Ollama, LM Studio, ChatGPT (Codex) and SuperGrok subscriptions, Gemini / OpenRouter / OpenAI keys; routes with fallbacks, device-code logins, encrypted credentials (design: `docs/design/ai-providers.md`) | urllib, DPAPI |
+| **Secrets** | `platform/*/secrets.py` | Encrypts AI logins and keys (DPAPI on Windows; pass-through on macOS for now) | pywin32 |
+| **Transforms** | `transforms.py` | Wispr-style AI text transforms with the Rewrite model | ruamel.yaml |
 | **Dictionary** | `dictionary.py` | Hotword add/remove/list + add-word dialog | tkinter, ruamel.yaml |
 | **Profiles** | `profiles.py` | Dictation/Chat/Code/Notes/Translate presets | ruamel.yaml |
 | **Per-App Rules** | `app_rules.py` | Foreground-app-specific behaviour overrides | ruamel.yaml |
 | **Layered Defaults** | `defaults_merge.py` | Loads shipped defaults under the user's app_rules/commands/transforms/profiles, and migrates pre-0.21 full copies | ruamel.yaml |
-| **Text Post-Process** | `text_postprocess.py` | Inline formatting, smart formatting, voice editing, corrections + optional Ollama polish | urllib |
+| **Text Post-Process** | `text_postprocess.py` | Inline formatting, smart formatting, voice editing, corrections, then the optional AI polish it is handed | re |
 | **Dictation Cleanup** | `dictation_cleanup.py` | Backtrack ("actually 3"), stutter removal, spoken lists, lowercase | re |
 | **Snippets** | `snippets.py` | Spoken shortcuts expanded inline during dictation | re |
 | **Styles** | `styles.py` | Named writing styles (formal/casual/very casual/verbatim), global or per app | - |

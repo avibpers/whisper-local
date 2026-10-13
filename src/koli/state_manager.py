@@ -170,9 +170,7 @@ class StateManager:
         self._initialize_audio_host()
         self.profile_manager = ProfileManager(config_manager)
         self.app_rules = AppRules()
-        self.transforms_manager = TransformsManager(
-            ollama_config_provider=lambda: (config_manager.get_postprocess_config().get('ollama') or {}),
-        )
+        self.transforms_manager = TransformsManager()
         self.level_overlay = None
         self.fallback_window = FallbackWindow()
         # Set by the UI host: builds the floating bar instead of the Tk overlay.
@@ -1279,7 +1277,8 @@ class StateManager:
             postprocess_cfg = effective_postprocess_config(raw_postprocess_cfg, rule)
             trace = []
             heard_text = transcribed_text
-            transcribed_text = postprocess(transcribed_text, postprocess_cfg, trace=trace)
+            polish = self._ai_polish if self.config_manager.get_path('ai.polish.enabled') is True else None
+            transcribed_text = postprocess(transcribed_text, postprocess_cfg, trace=trace, polish=polish)
             rule_id = _rule_label(rule)
             fg_now = foreground.get_foreground_app() or {}
             self._emit_pipeline('postprocessed', mode=mode, raw=heard_text, text=transcribed_text,
@@ -1729,27 +1728,30 @@ class StateManager:
             print(f"❌ Failed to change model: {e}")
             self.set_model_loading(False)
 
+    # The last post-processing step when "Polish every dictation" is on. An
+    # empty answer (model down, too slow) keeps the dictation as it was.
+    def _ai_polish(self, text: str) -> str:
+        from . import llm
+        from .llm import prompts
+        result = llm.complete('polish', prompts.polish(self.config_manager.get_path('ai.polish.prompt'), text))
+        if result.error:
+            self.logger.warning(f"AI polish skipped: {result.error}")
+        return result.text
+
     def _handle_rephrase(self, selection: str, instruction: str):
         import time
         import pyperclip
-        from .text_postprocess import _ollama_polish
+        from . import llm
+        from .llm import prompts
         from .platform import keyboard as kb
 
         print(f"\n   🤖 Rephrasing ({len(selection)} chars) with instruction: '{instruction[:60]}'")
 
-        full_prompt = (
-            f"{instruction}\n\n"
-            "Output ONLY the rewritten text with no preamble, no quotes, no commentary.\n\n"
-            f"Input:\n{selection}"
-        )
-        ollama_cfg = dict(self.config_manager.get_postprocess_config().get('ollama') or {})
-        ollama_cfg['enabled'] = True
-        ollama_cfg['prompt'] = '{text}'
-
-        polished = _ollama_polish(full_prompt, ollama_cfg)
+        result = llm.complete('rewrite', prompts.rewrite(instruction, selection))
+        polished = result.text
         if not polished:
-            print("   ✗ Rephrase failed — Ollama unreachable or returned nothing")
-            self.system_tray.notify("Rephrase failed — is Ollama running?")
+            print(f"   ✗ Rephrase failed: {result.error}")
+            self.system_tray.notify(f"Rephrase failed: {result.error}")
             if self.level_overlay:
                 self.level_overlay.flash_failure()
             return

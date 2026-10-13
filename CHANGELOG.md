@@ -5,6 +5,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 ## [Unreleased]
 
 ### Added
+- **AI from more places than Ollama.** Settings › AI lists seven providers:
+  Ollama and LM Studio on this computer, your ChatGPT subscription (through
+  Codex) and SuperGrok subscription, and Gemini, OpenRouter or OpenAI with an
+  API key. ChatGPT and SuperGrok connect with a code you type on their sign-in
+  page, and stay connected. Choose a default model and fallbacks to try when
+  it doesn't answer; Polish and Rewrite (Transforms, Rephrase) can each use
+  their own. Every model shows whether it is Local or Cloud. Logins and keys
+  are stored encrypted, outside the settings file, so backups and bug reports
+  never contain them.
 - **Wake word: "Hey Koli, next song".** Voice commands without a hotkey:
   say "Hey Koli" and the command in one breath, or "Hey Koli", a pause, and
   the command. For 5 seconds after, another one works without the wake word
@@ -175,6 +184,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
   "take over" behaviour of a second launch.
 
 ### Changed
+- **`postprocess.ollama` is replaced by the `ai:` section.** A model is written
+  `provider/model` (`ollama/llama3.2`, `lmstudio/qwen/qwen3-8b`); a transform's
+  own `model:` uses the same form. Choose your model again in Settings › AI.
 - **Pausing the music and lowering the volume wait for your voice.** Both now
   happen once Koli hears you start talking, not when the recording starts, so
   a text field that starts auto-dictation no longer quiets the computer for

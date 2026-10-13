@@ -582,27 +582,17 @@ def _build_postprocess_tab(nb, cm, vars_, row_index):
 
     _separator(tab)
 
-    ollama = pp.get('ollama') or {}
+    # AI polish. Providers, logins and keys are set up in the app window's
+    # Settings › AI; here only the switch and the model name.
+    ai = cfg.get('ai') or {}
 
-    v = tk.BooleanVar(value=bool(ollama.get('enabled', False)))
-    vars_['postprocess.ollama.enabled'] = v
-    _check(tab, 'postprocess.ollama.enabled',
-           'Ollama polish  (local LLM punctuation cleanup)', v, row_index)
+    v = tk.BooleanVar(value=(ai.get('polish') or {}).get('enabled') is True)
+    vars_['ai.polish.enabled'] = v
+    _check(tab, 'ai.polish.enabled', 'AI polish  (punctuation cleanup by a language model)', v, row_index)
 
-    v = tk.StringVar(value=str(ollama.get('endpoint', 'http://localhost:11434')))
-    vars_['postprocess.ollama.endpoint'] = v
-    _row(tab, 'postprocess.ollama.endpoint', 'Ollama endpoint',
-         lambda p: _entry(p, v), row_index)
-
-    v = tk.StringVar(value=str(ollama.get('model', 'llama3.2')))
-    vars_['postprocess.ollama.model'] = v
-    _row(tab, 'postprocess.ollama.model', 'Ollama model',
-         lambda p: _entry(p, v), row_index)
-
-    v = tk.StringVar(value=str(ollama.get('timeout', 5)))
-    vars_['postprocess.ollama.timeout'] = v
-    _row(tab, 'postprocess.ollama.timeout', 'Ollama timeout (s)',
-         lambda p: _entry(p, v), row_index)
+    v = tk.StringVar(value=str(ai.get('model') or ''))
+    vars_['ai.model'] = v
+    _row(tab, 'ai.model', 'AI model (provider/model)', lambda p: _entry(p, v), row_index)
 
 
 # Flatten the {dotted.path: tkinter.Var} dict back into ConfigManager updates.
@@ -646,7 +636,6 @@ _NUMERIC_PATHS = {
     'audio.max_duration',
     'audio.noise_suppression.strength',
     'vad.vad_silence_timeout_seconds',
-    'postprocess.ollama.timeout',
     'audio.whisper_mode.max_gain',
     'hotkey.double_tap_window_ms',
 }
