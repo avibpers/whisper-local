@@ -534,6 +534,9 @@ wake_word: # Say a word to run a voice command, no hotkey
     # How Whisper writes your own word, filled when you record it on the
     # Commands screen. Empty = the built-in "Hey Koli", for any voice.
     phrases: []
+    # How you spell your word ("Hey Avia"), typed when you record it: Whisper
+    # is told to expect it, so a made-up word isn't written as a real one
+    spelling: ''
     # Wake only when the word sounds like you (set by recording your word)
     only_my_voice: false
     # How close the heard words must be to the wake word: low, medium, high

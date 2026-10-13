@@ -387,13 +387,16 @@ class WhisperEngine:
     # The wake word's checks pass `beam_size` (1, fast), `task` ("transcribe",
     # even under the Translate profile) and `quiet`: nothing printed or logged
     # about the text, and `last_info` left to the dictation it describes.
+    # `hotwords` replaces your favored words for one call: the wake word's
+    # spelling, so Whisper writes "Hey Avia" and not "hey yeah".
     def transcribe_audio(self,
                          audio_data: np.ndarray,
                          language: Optional[str] = None,
                          use_prompt: bool = True,
                          beam_size: Optional[int] = None,
                          task: Optional[str] = None,
-                         quiet: bool = False) -> Optional[str]:
+                         quiet: bool = False,
+                         hotwords: Optional[str] = None) -> Optional[str]:
         if self.model is None:
             return None
         
@@ -429,8 +432,9 @@ class WhisperEngine:
                               condition_on_previous_text=False)
                 if prompt and use_prompt:
                     kwargs["initial_prompt"] = prompt
-                if self.hotwords:
-                    kwargs["hotwords"] = self.hotwords
+                words = self.hotwords if hotwords is None else hotwords
+                if words:
+                    kwargs["hotwords"] = words
                 segments, info = model.transcribe(audio_data, **kwargs)
                 pieces = [{'text': s.text, 'start': float(s.start), 'end': float(s.end),
                            'no_speech_prob': round(float(s.no_speech_prob), 3),

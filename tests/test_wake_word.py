@@ -809,6 +809,26 @@ class WakeSetupTests(ListenerTestCase):
         self.assertEqual((result['woke'], result['heard'], result['similarity']), (True, 'koli', 1.0))
         self.assertEqual(result['needs'], listener.voice_match())
 
+    # Found in the third real test: "Hey Avia" came out "hey yeah" three
+    # times. Typed, the spelling is told to Whisper while recording and in
+    # every check after, and saved first among the spellings.
+    def test_a_typed_spelling_guides_whisper_and_comes_first(self):
+        listener = self.setup([1, 1, 1, 1])
+        hints = []
+        real_transcribe = listener._transcribe
+        listener._transcribe = lambda audio: hints.append(listener.spelling_hint()) or real_transcribe(audio)
+        self.commands.wake_prepare(self.sm, '  Hey Avia ')
+        for _ in range(3):
+            self.commands.wake_record(self.sm)
+        self.assertEqual(hints, ['Hey Avia'] * 3)
+        status = self.commands.wake_save(self.sm, self.settings)
+        self.assertEqual(listener.spellings()[0], 'hey avia')
+        self.assertIn('hey koli', listener.spellings(), 'what Whisper wrote is kept too')
+        self.assertEqual(status['word'], 'Hey Avia')
+        self.assertEqual(listener.spelling_hint(), 'Hey Avia', 'later checks expect it too')
+        self.commands.wake_reset(self.sm, self.settings)
+        self.assertEqual(listener.spelling_hint(), 'Hey Koli')
+
     def test_reset_goes_back_to_hey_koli(self):
         listener = self.setup([4, 4, 4])
         self.commands.wake_prepare(self.sm)

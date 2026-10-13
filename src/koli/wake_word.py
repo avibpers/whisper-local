@@ -382,6 +382,9 @@ class WakeListener:
         self._warm_checked = -1e9
         # Recordings of your word on the setup screen, until saved: {'heard', 'voiceprint'}.
         self.recordings: list = []
+        # How you spell the word being recorded ("Hey Avia"), if you typed it.
+        self.recording_spelling = ''
+        self._hint_override: Optional[str] = None
         # The worker: audio from the tap waits here, measured in samples.
         self._pending = collections.deque()
         self._pending_samples = 0
@@ -829,8 +832,23 @@ class WakeListener:
     # ── Recording your word (setup screen) ───────────────────────────────────
 
     # What Whisper writes for `audio`, the way a wake check hears it.
-    def hear(self, audio: np.ndarray) -> Optional[str]:
-        return self._transcribe(audio)
+    # `spelling`: the word being recorded, for Whisper to expect ('' = none).
+    def hear(self, audio: np.ndarray, spelling: Optional[str] = None) -> Optional[str]:
+        self._hint_override = spelling
+        try:
+            return self._transcribe(audio)
+        finally:
+            self._hint_override = None
+
+    # The word Whisper is told to expect: the one being recorded, your typed
+    # spelling, or "Hey Koli". A made-up word gets written as one it knows
+    # ("Hey Avia" came out "hey yeah" three times) unless Whisper is told.
+    def spelling_hint(self) -> str:
+        if self._hint_override is not None:
+            return self._hint_override
+        if self.personal():
+            return str(self._cfg().get('spelling') or '').strip()
+        return 'Hey Koli'
 
     # One burst of speech from the microphone (your word), or None when
     # nothing was said within `timeout`. Works with the feature off: the tap
@@ -880,7 +898,8 @@ class WakeListener:
         if engine is None or getattr(engine, 'model', None) is None:
             return None
         return engine.transcribe_audio(audio, language=self.sm.wake_language(), use_prompt=False,
-                                       beam_size=1, task='transcribe', quiet=True)
+                                       beam_size=1, task='transcribe', quiet=True,
+                                       hotwords=self.spelling_hint())
 
     def _meeting_voiceprint(self, audio: np.ndarray):
         meetings = getattr(self.sm, 'meetings', None)

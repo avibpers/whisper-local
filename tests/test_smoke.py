@@ -6926,6 +6926,20 @@ class LanguageModelRoutingTests(unittest.TestCase):
         printed.assert_not_called()
         self.assertEqual(engine.last_info, {'model': 'from the dictation'})
 
+    # The wake word's spelling replaces your favored words for one call;
+    # '' sends none; leaving it out keeps yours.
+    def test_hotwords_can_be_replaced_for_one_call(self):
+        import unittest.mock as mock
+        import numpy as np
+        engine = self._engine(second=False)
+        with mock.patch('builtins.print'):
+            engine.transcribe_audio(np.zeros(16000, dtype=np.float32), hotwords='Hey Avia', quiet=True)
+            self.assertEqual(engine.model.calls[-1][1].get('hotwords'), 'Hey Avia')
+            engine.transcribe_audio(np.zeros(16000, dtype=np.float32), hotwords='', quiet=True)
+            self.assertNotIn('hotwords', engine.model.calls[-1][1])
+            engine.transcribe_audio(np.zeros(16000, dtype=np.float32), quiet=True)
+            self.assertEqual(engine.model.calls[-1][1].get('hotwords'), 'Koli')
+
     # A list of one is a fixed language: no detection at all.
     def test_a_one_language_list_skips_detection(self):
         engine = self._engine(second=False, allowed=['he'])

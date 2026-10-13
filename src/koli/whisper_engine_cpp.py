@@ -80,7 +80,8 @@ class WhisperEngineCpp:
     # `language` overrides the engine's setting for one call (meeting mode):
     # None keeps the setting, 'auto' detects, anything else forces that one.
     # `use_prompt` mirrors WhisperEngine; this backend never sends a prompt.
-    # `beam_size` is accepted for the same API (whisper.cpp sets it at load);
+    # `beam_size` and `hotwords` are accepted for the same API (whisper.cpp
+    # sets the beam at load and takes no hotwords);
     # `task` and `quiet` work as in WhisperEngine (wake-word checks).
     def transcribe_audio(self,
                          audio_data: Optional[np.ndarray],
@@ -88,7 +89,8 @@ class WhisperEngineCpp:
                          use_prompt: bool = True,
                          beam_size: Optional[int] = None,
                          task: Optional[str] = None,
-                         quiet: bool = False) -> Optional[str]:
+                         quiet: bool = False,
+                         hotwords: Optional[str] = None) -> Optional[str]:
         if audio_data is None or len(audio_data) == 0:
             self.logger.warning("No audio data to transcribe")
             return None

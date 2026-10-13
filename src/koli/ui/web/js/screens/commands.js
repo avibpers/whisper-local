@@ -191,6 +191,7 @@ function openWakeRecorder(onSaved) {
     const [busy, setBusy] = useState('');       // 'listening' | 'saving'
     const [error, setError] = useState('');
     const [needed, setNeeded] = useState(3);
+    const [spelling, setSpelling] = useState('');   // how you write it, so Whisper expects it
     const tasks = useRunningTasks('meeting');
     // Fresh recordings; waits while the voice model gets ready (downloaded once).
     const start = () => { setHeard([]); setError(''); call('wake_word_prepare').then((r) => setReady(r.ready)).catch((e) => setError(e.message)); };
@@ -202,7 +203,10 @@ function openWakeRecorder(onSaved) {
     }, [ready]);
     const record = () => {
       setBusy('listening'); setError('');
-      call('wake_word_record').then((r) => { setHeard((h) => [...h, r.heard]); setNeeded(r.needed); })
+      // The first recording starts the set with the spelling as typed now.
+      (heard.length ? Promise.resolve() : call('wake_word_prepare', spelling))
+        .then(() => call('wake_word_record'))
+        .then((r) => { setHeard((h) => [...h, r.heard]); setNeeded(r.needed); })
         .catch((e) => setError(e.message)).finally(() => setBusy(''));
     };
     const save = () => {
@@ -213,7 +217,11 @@ function openWakeRecorder(onSaved) {
     const done = heard.length >= needed;
     return html`<div class="modal" role="dialog" aria-modal="true"><div class="modal-head"><h2>Record your wake word</h2></div>
       <div class="modal-body">
-        <p>Press Record and say your word once, in any language. ${needed} times in all, the way you'll say it. After that it wakes Koli only in your voice, on this microphone.</p>
+        <p>Press Record and say your word once, in any language. ${needed} times in all, the way you'll say it. After that it wakes Koli only in your voice, on this microphone. Two or three syllables work best (“Hey Avia”).</p>
+        <label class="stack" style="gap:6px"><span class="eyebrow">How do you spell it? (optional)</span>
+          <input class="inp" dir="auto" value=${spelling} placeholder="Hey Avia" aria-label="How you spell your wake word" disabled=${heard.length > 0}
+            onInput=${(e) => setSpelling(e.currentTarget.value)} />
+          <span class="small muted">For a made-up word: Whisper writes it the way you type it here instead of a real word that sounds close (“hey yeah”).</span></label>
         ${!ready && html`<div class="notice"><span class="grow">Getting the voice model ready…</span></div>${tasks.map((t) => html`<${TaskProgress} task=${t} cancel=${false} />`)}`}
         <ol class="stack" style="gap:6px;margin:0;padding-inline-start:20px">
           ${Array.from({ length: needed }, (_, i) => html`<li dir="auto">${heard[i] ? html`<span class="chip ok">Heard “${heard[i]}”</span>`

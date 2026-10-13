@@ -449,6 +449,7 @@ SCHEMA = [
        help='For another command without the wake word, like “louder”.'),
     _S('wake_word.phrases', 'Your wake word', 'internal', 'readonly', apply=INTERNAL, mode=HIDDEN),
     _S('wake_word.only_my_voice', 'Wake word: only your voice', 'internal', 'readonly', apply=INTERNAL, mode=HIDDEN),
+    _S('wake_word.spelling', 'How you spell your wake word', 'internal', 'readonly', apply=INTERNAL, mode=HIDDEN),
 
     # ── Managed by the app ───────────────────────────────────────────────────
     _S('onboarding.gpu', 'GPU setup status', 'internal', 'readonly', apply=INTERNAL, mode=HIDDEN),

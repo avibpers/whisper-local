@@ -314,7 +314,7 @@ export function createMock(emit) {
         recorded_here: true, recordings: [], needed: 3, can_record: true });
     },
     wake_word_prepare: () => ok({ ready: true }),
-    wake_word_record: () => new Promise((resolve) => setTimeout(() => resolve(ok({ heard: 'קולי', count: 1, needed: 3 })), 900)),
+    wake_word_record: () => new Promise((resolve) => setTimeout(() => resolve(ok({ heard: 'Hey Avia', count: 1, needed: 3 })), 900)),
     wake_word_save: () => {
       setPath(data.settings, 'wake_word.phrases', ['קולי']);
       setPath(data.settings, 'wake_word.only_my_voice', true);

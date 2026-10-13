@@ -207,7 +207,7 @@ def wake_status(sm) -> dict:
     personal = listener.personal()
     return {
         'personal': personal,
-        'word': listener.spellings()[0] if personal else 'Hey Koli',
+        'word': (listener.spelling_hint() or listener.spellings()[0]) if personal else 'Hey Koli',
         'spellings': listener.spellings() if personal else [],
         'mic': mic,
         'recorded_here': listener.wake_voices.get(mic) is not None,
@@ -217,14 +217,16 @@ def wake_status(sm) -> dict:
     }
 
 
-# Starts a fresh set of recordings. `ready` is False while the voiceprint
-# model loads (a background task); ask again until it is True.
-def wake_prepare(sm) -> dict:
+# Starts a fresh set of recordings of the word spelled `spelling` (optional:
+# Whisper is told to expect it). `ready` is False while the voiceprint model
+# loads (a background task); ask again until it is True.
+def wake_prepare(sm, spelling: str = '') -> dict:
     listener = _wake_listener(sm)
     meetings = getattr(sm, 'meetings', None)
     if meetings is None:
         raise ValueError("Recording your own word needs the app window")
     listener.recordings = []
+    listener.recording_spelling = str(spelling or '').strip()[:40]
     return {'ready': bool(meetings.voiceprint_ready())}
 
 
@@ -238,7 +240,7 @@ def wake_record(sm) -> dict:
     audio = listener.capture_word()
     if audio is None:
         raise ValueError("Didn't hear anything. Press Record, then say your word.")
-    heard = (listener.hear(audio) or '').strip()
+    heard = (listener.hear(audio, spelling=listener.recording_spelling) or '').strip()
     if not vc.normalize_spoken(heard):
         raise ValueError("Couldn't make out a word. Say it again, a little louder.")
     voiceprint = meetings.voiceprint_of(audio)
@@ -262,6 +264,9 @@ def wake_save(sm, settings) -> dict:
     if spellings is None:
         listener.recordings = []
         raise ValueError("Whisper heard different words each time. Record your word again.")
+    typed = listener.recording_spelling
+    if typed and vc.normalize_spoken(typed):
+        spellings = [vc.normalize_spoken(typed)] + [s for s in spellings if s != vc.normalize_spoken(typed)]
     existing = listener.spellings() if listener.personal() else []
     same_word = existing and all(ww.match_wake(s, [existing[0]], ww.RECORDINGS_AGREE_RATIO) == '' for s in spellings)
     if same_word:
@@ -274,8 +279,10 @@ def wake_save(sm, settings) -> dict:
     level_db = float(statistics.median(levels)) if levels else None
     listener.wake_voices.set(_wake_mic(sm), [r['voiceprint'] for r in recordings], level_db=level_db)
     settings.set('wake_word.phrases', spellings, source='app', record_undo=False)
+    settings.set('wake_word.spelling', typed, source='app', record_undo=False)
     settings.set('wake_word.only_my_voice', True, source='app', record_undo=False)
     listener.recordings = []
+    listener.recording_spelling = ''
     return wake_status(sm)
 
 
@@ -303,5 +310,6 @@ def wake_reset(sm, settings) -> dict:
     listener.wake_voices.clear()
     listener.recordings = []
     settings.set('wake_word.phrases', [], source='app', record_undo=False)
+    settings.set('wake_word.spelling', '', source='app', record_undo=False)
     settings.set('wake_word.only_my_voice', False, source='app', record_undo=False)
     return wake_status(sm)
