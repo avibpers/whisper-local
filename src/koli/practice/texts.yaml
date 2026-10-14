@@ -1,0 +1,130 @@
+# Koli practice: built-in reading texts, used when no AI model is connected
+# (or one doesn't answer). Sentences people really dictate, numbers in words,
+# no abbreviations or niqqud. `templates` put your own words in a sentence;
+# {w} is the word. Domains missing for a language fall back to general.
+
+en:
+  templates:
+    - "Please add {w} to the notes for tomorrow."
+    - "We talked about {w} again this morning."
+    - "Can you check what {w} means in this context?"
+    - "I mentioned {w} twice in the last meeting."
+  general:
+    sentences:
+      - "Could you send me the updated schedule before the meeting tomorrow morning?"
+      - "I think the third version is worth three times the effort."
+      - "Thanks for the quick reply, I will check the details tonight."
+      - "Please remind me to call the bank about the new account."
+      - "The weather was beautiful, so we walked through the old market."
+      - "Let us book a table for four people at the Italian restaurant."
+      - "I already read the article, and I have a few thoughts about it."
+      - "Can you share the photos from the trip with the whole family?"
+      - "We need to buy vegetables, fresh bread, and something sweet for dessert."
+      - "My flight was delayed, so I will probably arrive after midnight."
+      - "I would rather leave early than wait in the heavy traffic."
+      - "The very last video was worth watching twice."
+    paragraph: >-
+      Yesterday I finally had some time to think about our summer plans. We could
+      visit the north for a week, rent a small house near the water, and spend the
+      evenings outside. My brother wants to join us with his family, which would be
+      wonderful, but we need a bigger place. Could you check a few options and send
+      me the links? I would like to decide before the end of the month.
+  software:
+    sentences:
+      - "Please refactor the authentication service before we merge the pull request."
+      - "The database migration failed because the schema was out of date."
+      - "Let us deploy the new version to staging and run the integration tests."
+      - "I opened an issue about the memory leak in the background worker."
+      - "We should cache the response and invalidate it when the user logs out."
+      - "The frontend calls the endpoint with a JSON payload and an access token."
+      - "Check the logs in Kubernetes, the pod keeps restarting every few minutes."
+      - "Rename the variable to something clearer and add a short comment."
+      - "The TypeScript compiler complains about a missing type on this function."
+      - "Can you review my branch and tell me if the async code looks right?"
+      - "The query is slow because the table has no index on that column."
+      - "Write a unit test that mocks the HTTP client and checks the retry logic."
+    paragraph: >-
+      This morning the build broke after the last merge. The integration tests pass
+      on my machine, but the pipeline fails on the step that runs the database
+      migration. I think the problem is an old schema in the staging environment.
+      Before we deploy again, let us add a check that compares the versions, refactor
+      the script so it can run twice safely, and write a short note in the
+      documentation for the rest of the team.
+  business:
+    sentences:
+      - "Please forward the quarterly report to the finance team by Friday."
+      - "We agreed on the budget, but the timeline still needs approval."
+      - "I would like to schedule a call with the client next week."
+      - "Our revenue grew this quarter, mostly thanks to the new partnership."
+      - "Could you prepare a short presentation for the board meeting?"
+      - "The invoice was sent twice, so please cancel the second one."
+      - "Let us discuss the marketing strategy after the product launch."
+      - "Thank you for your patience while we review the contract."
+      - "I need the signed agreement before we can start the project."
+      - "Please update the customer about the delivery delay today."
+    paragraph: >-
+      Thank you for the productive meeting yesterday. As we discussed, the proposal
+      covers the first phase of the project, including the budget, the timeline,
+      and the responsibilities of each team. I would appreciate your feedback by the
+      end of the week, so we can present the final version to the board. If anything
+      is unclear, I am happy to schedule another call.
+
+he:
+  templates:
+    - "תוסיף בבקשה את {w} לסיכום של מחר."
+    - "דיברנו על {w} שוב הבוקר."
+    - "תבדוק מה המשמעות של {w} בהקשר הזה."
+    - "הזכרתי את {w} פעמיים בפגישה האחרונה."
+  general:
+    sentences:
+      - "אני צריך לקבוע תור לרופא לשבוע הבא בבוקר."
+      - "תוכל לשלוח לי את התמונות מהטיול של סוף השבוע?"
+      - "הפגישה עם הצוות נדחתה ליום חמישי אחרי הצהריים."
+      - "קנינו ירקות טריים בשוק ולחם חם מהמאפייה."
+      - "תזכיר לי להתקשר לבנק לגבי החשבון החדש."
+      - "הספר שקראתי החודש היה מרתק ומלא בהפתעות."
+      - "בוא נזמין שולחן לארבעה אנשים במסעדה האיטלקית."
+      - "הילדים חזרו מבית הספר עייפים אבל מרוצים."
+      - "צריך לבחור תמונת כריכה חדשה לאלבום המשפחתי."
+      - "השכנים הזמינו אותנו לארוחת ערב ביום שישי."
+      - "בקיץ אנחנו הולכים לבריכה כמעט כל ערב."
+      - "החתול קפץ על הכיסא ושבר את הכוס הכחולה."
+    paragraph: >-
+      אתמול סוף סוף היה לי זמן לחשוב על התוכניות לקיץ. אפשר לנסוע לצפון לשבוע,
+      לשכור בית קטן ליד המים ולבלות את הערבים בחוץ. אחי רוצה להצטרף עם המשפחה
+      שלו, וזה יהיה נהדר, אבל נצטרך מקום גדול יותר. תוכל לבדוק כמה אפשרויות
+      ולשלוח לי קישורים? הייתי רוצה להחליט לפני סוף החודש.
+  software:
+    sentences:
+      - "צריך לעשות refactor לשירות ההתחברות לפני ה-merge."
+      - "ה-deploy לסביבת staging נכשל בגלל בעיה במיגרציה של מסד הנתונים."
+      - "תפתח issue על דליפת הזיכרון ב-worker שרץ ברקע."
+      - "הוספתי cache לתשובה מה-API וזה שיפר מאוד את הזמנים."
+      - "תבדוק בלוגים של Kubernetes למה ה-pod עולה ונופל."
+      - "הפונקציה מחזירה Promise ולכן צריך להוסיף await לפני הקריאה."
+      - "שיניתי את שם המשתנה כדי שיהיה ברור יותר מה הוא מחזיק."
+      - "תעשה לי code review על ה-pull request לפני הצהריים."
+      - "הטסטים עוברים מקומית אבל נכשלים ב-CI בלי סיבה ברורה."
+      - "צריך לעדכן את התיעוד אחרי שמשנים את ה-schema."
+    paragraph: >-
+      הבוקר ה-build נשבר אחרי ה-merge האחרון. הטסטים עוברים אצלי, אבל ה-pipeline
+      נכשל בשלב של המיגרציה של מסד הנתונים. נראה לי שהבעיה היא schema ישן בסביבת
+      staging. לפני ה-deploy הבא בוא נוסיף בדיקה שמשווה גרסאות, נעשה refactor
+      לסקריפט כדי שיהיה בטוח להריץ אותו פעמיים, ונכתוב הסבר קצר בתיעוד.
+  business:
+    sentences:
+      - "אני אשלח לך את הדוח הרבעוני עד סוף השבוע."
+      - "סיכמנו על התקציב, אבל לוח הזמנים עדיין מחכה לאישור."
+      - "בוא נקבע שיחה עם הלקוח בתחילת השבוע הבא."
+      - "ההכנסות עלו ברבעון הזה בזכות השותפות החדשה."
+      - "תכין בבקשה מצגת קצרה לישיבת ההנהלה."
+      - "החשבונית נשלחה פעמיים, אז צריך לבטל את השנייה."
+      - "נדבר על אסטרטגיית השיווק אחרי השקת המוצר."
+      - "תודה על הסבלנות בזמן שאנחנו בודקים את החוזה."
+      - "אני צריך את ההסכם החתום לפני שמתחילים את הפרויקט."
+      - "תעדכן את הלקוח על העיכוב במשלוח עוד היום."
+    paragraph: >-
+      תודה על הפגישה הפורייה אתמול. כמו שסיכמנו, ההצעה כוללת את השלב הראשון של
+      הפרויקט, כולל התקציב, לוח הזמנים והאחריות של כל צוות. אשמח לקבל ממך הערות
+      עד סוף השבוע, כדי שנוכל להציג את הגרסה הסופית להנהלה. אם משהו לא ברור, אשמח
+      לקבוע שיחה נוספת.

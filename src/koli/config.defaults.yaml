@@ -857,6 +857,12 @@ ai: # Language models for polish, rewrites and later features (Settings › AI)
         model: '' # empty = the default model
         timeout: 30
 
+    # Practice (My words › Practice): writes the texts you read and analyses
+    # how Whisper heard you. Without any model, built-in texts are used.
+    practice:
+        model: '' # empty = the default model
+        timeout: 90
+
     ollama:
         address: http://localhost:11434
 

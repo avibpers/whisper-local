@@ -1,8 +1,8 @@
 // screens/welcome.js
 // First run: four short steps instead of console prompts — your language,
 // your microphone, the graphics card (only when one is found), and a first
-// try. The installer will ask the same questions later; until then this is
-// where a new user lands.
+// try, which also offers Practice (teach Koli your voice). The installer will
+// ask the same questions later; until then this is where a new user lands.
 
 import { html, useEffect, useState } from '../../vendor/preact-htm.module.js';
 import { call } from '../api.js';
@@ -27,9 +27,10 @@ export function WelcomeScreen() {
   const steps = ['language', 'microphone', ...(showGpu ? ['gpu'] : []), 'try'];
   const current = steps[Math.min(step, steps.length - 1)];
   const gpuTask = Object.values(tasks).find((t) => t.kind === 'gpu');
-  const finish = () => call('app_welcome_done').then(() => {
+  // `then`: where to go after the welcome (Practice from the last step).
+  const finish = (then) => call('app_welcome_done').then(() => {
     app.set((s) => ({ settings: { ...s.settings, ui: { ...s.settings.ui, welcome_done: true } } }));
-    navigate(setting('ui.mode') === 'advanced' ? 'live' : 'home');
+    navigate(typeof then === 'string' ? then : setting('ui.mode') === 'advanced' ? 'live' : 'home');
   });
   const next = () => (step >= steps.length - 1 ? finish() : setStep(step + 1));
 
@@ -62,7 +63,10 @@ export function WelcomeScreen() {
           ${keys.map((k, i) => html`${i ? ' + ' : ' '}<span class="kbd">${k}</span>`)} and say something.</p>
         <textarea class="inp" rows="3" dir="auto" placeholder="Your words appear here…" style="font-size:15px"></textarea>
         ${typed && html`<div class="notice info"><${Icon} name="check" /><span>It works. That's all there is to it.</span></div>`}
-        <p class="small muted" style="margin:0">The first dictation may take a little longer while the model loads.</p></div>`}
+        <p class="small muted" style="margin:0">The first dictation may take a little longer while the model loads.</p>
+        <div class="notice info" style="align-items:center"><${Icon} name="mic" />
+          <span class="grow">Speak with an accent, or mix languages? Read a few short texts and Koli learns your words and how you say them. About 3 minutes.</span>
+          <button type="button" class="btn sm" onClick=${() => finish('practice')}>Teach Koli your voice</button></div></div>`}
 
       <div class="row-flex" style="justify-content:space-between">
         <button type="button" class="btn ghost" onClick=${finish}>Skip setup</button>

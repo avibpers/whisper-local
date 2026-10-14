@@ -901,7 +901,10 @@ class WakeListener:
     # One burst of speech from the microphone (your word), or None when
     # nothing was said within `timeout`. Works with the feature off: the tap
     # is added for this one recording. Wake detection pauses meanwhile.
-    def capture_word(self, timeout: float = 6.0, max_seconds: float = 3.0) -> Optional[np.ndarray]:
+    # Practice reads whole sentences: `end_silence_s` is the pause that ends
+    # it, and `stop` (an Event) ends it at once with what was said so far.
+    def capture_word(self, timeout: float = 6.0, max_seconds: float = 3.0, end_silence_s: float = 0.7,
+                     stop: Optional[threading.Event] = None) -> Optional[np.ndarray]:
         recorder = getattr(self.sm, 'audio_recorder', None)
         if recorder is None:
             return None
@@ -912,7 +915,7 @@ class WakeListener:
             chunks.append(np.asarray(chunk, dtype=np.float32).reshape(-1))
             arrived.set()
 
-        cutter = BurstCutter(head_s=max_seconds, end_silence_s=0.7, max_s=max_seconds)
+        cutter = BurstCutter(head_s=max_seconds, end_silence_s=end_silence_s, max_s=max_seconds)
         speech_prob = self._speech_prob_factory()
         remainder = np.zeros(0, dtype=np.float32)
         give_up = time.monotonic() + timeout
@@ -925,6 +928,9 @@ class WakeListener:
             while time.monotonic() < give_up or (cutter.burst is not None and time.monotonic() < give_up + max_seconds):
                 arrived.wait(0.1)
                 arrived.clear()
+                if stop is not None and stop.is_set():
+                    burst = cutter.burst
+                    return burst.audio() if burst is not None and burst.speech_seconds() >= self.MIN_SPEECH_S else None
                 while chunks:
                     audio = np.concatenate([remainder, chunks.popleft()])
                     whole = len(audio) // FRAME * FRAME

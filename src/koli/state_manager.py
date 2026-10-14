@@ -178,6 +178,18 @@ class StateManager:
         # Work that must wait until no recording/transcription is running
         # (engine and recorder swaps from instant-apply settings).
         self._idle_actions = []
+        self._wire_learned_vocabulary()
+
+    # What practice taught Koli reaches every transcription: the engine asks
+    # for the learned favored words and prompt terms of the language it is
+    # about to transcribe, under the active profile.
+    def _wire_learned_vocabulary(self):
+        from . import learned_vocabulary
+        store = learned_vocabulary.get()
+        try:
+            self.whisper_engine.vocabulary_extras = lambda lang: store.extras(lang, self.profile_manager.get_active())
+        except Exception as e:
+            self.logger.debug(f"Learned vocabulary not wired: {e}")
 
     def attach_components(self,
                           audio_recorder: AudioRecorder,
@@ -1275,6 +1287,7 @@ class StateManager:
             if fmt_overrides:
                 self.logger.info(f"App rule {rule.get('match')} → formatting overrides {fmt_overrides}")
             postprocess_cfg = effective_postprocess_config(raw_postprocess_cfg, rule)
+            postprocess_cfg = self._with_learned_corrections(postprocess_cfg)
             trace = []
             heard_text = transcribed_text
             polish = self._ai_polish if self.config_manager.get_path('ai.polish.enabled') is True else None
@@ -1590,6 +1603,7 @@ class StateManager:
         with self._state_lock:
             old = self.whisper_engine
             self.whisper_engine = new_engine
+        self._wire_learned_vocabulary()
         self.logger.info(f"Whisper engine swapped: {getattr(old, 'model_key', '?')} -> "
                          f"{getattr(new_engine, 'model_key', '?')} on {getattr(new_engine, 'device', '?')}")
         # Free the old engine's graphics memory now, not whenever Python gets
@@ -1727,6 +1741,18 @@ class StateManager:
             self.logger.error(f"Failed to initiate model change: {e}")
             print(f"❌ Failed to change model: {e}")
             self.set_model_loading(False)
+
+    # Your corrections plus the ones practice learned for the language this
+    # dictation came out in. A copy: the config itself is never changed.
+    def _with_learned_corrections(self, postprocess_cfg: dict) -> dict:
+        from . import learned_vocabulary
+        language = (getattr(self.whisper_engine, 'last_info', None) or {}).get('language')
+        try:
+            merged = learned_vocabulary.get().merged_corrections(postprocess_cfg.get('corrections'), language)
+        except Exception as e:
+            self.logger.debug(f"Learned corrections skipped: {e}")
+            return postprocess_cfg
+        return {**postprocess_cfg, 'corrections': merged} if merged else postprocess_cfg
 
     # The last post-processing step when "Polish every dictation" is on. An
     # empty answer (model down, too slow) keeps the dictation as it was.

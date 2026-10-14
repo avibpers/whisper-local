@@ -327,6 +327,11 @@ SCHEMA = [
     _S('ai.rewrite.model', 'Rewrite with', 'ai', 'ai_model', group='Rewrite',
        help='Transforms and Rephrase. Empty uses the default model. A transform can name its own.'),
     _S('ai.rewrite.timeout', 'Give up after', 'ai', 'number', group='Rewrite', min=1, max=600, step=1, unit='seconds'),
+    _S('ai.practice.model', 'Practice with', 'ai', 'ai_model', group='Practice',
+       help='Writes the texts you read in Practice and analyses how Whisper heard you. Empty uses the default '
+            'model; with no model at all, built-in texts are used.'),
+    _S('ai.practice.timeout', 'Give up after', 'ai', 'number', group='Practice', min=10, max=600, step=5,
+       unit='seconds'),
     _S('ai.ollama.address', 'Ollama address', 'ai', 'text', mode=HIDDEN, help='Edited on the Ollama card.'),
     _S('ai.lmstudio.address', 'LM Studio address', 'ai', 'text', mode=HIDDEN, help='Edited on the LM Studio card.'),
 

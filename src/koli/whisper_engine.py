@@ -260,6 +260,67 @@ class WhisperEngine:
             return self.model, self.model_key, None, self.initial_prompt, probability
         return self.model, self.model_key, language, self.initial_prompt, probability
 
+    # Your prompt and favored words with what practice taught Koli for this
+    # language (`vocabulary_extras`, set by the state manager; every language
+    # when `lang` isn't known yet). Prompt terms go to the main model only:
+    # the Hebrew second model gets no prompt, only favored words.
+    def _with_learned(self, model, lang, prompt, words) -> tuple:
+        extras_for = getattr(self, 'vocabulary_extras', None)
+        if extras_for is None:
+            return prompt, words
+        try:
+            extras = extras_for(lang) or {}
+        except Exception as e:
+            self.logger.debug(f"Learned vocabulary unavailable: {e}")
+            return prompt, words
+        learned = [w for w in extras.get('hotwords') or [] if w]
+        if learned:
+            words = ", ".join(([words] if words else []) + learned)
+        terms = [t for t in extras.get('prompt_terms') or [] if t]
+        if terms and model is self.model:
+            prompt = f"{prompt} Terms: {', '.join(terms)}." if prompt else f"Terms: {', '.join(terms)}."
+        return prompt, words
+
+    # One practice reading, word by word: the text, each word with Whisper's
+    # confidence, and the language and model used. Routed like a dictation
+    # (`language` None = your Language setting, 'auto' = detect). With
+    # `with_vocabulary`, `prompt` plus your favored words and learned items;
+    # without, nothing: what Whisper hears from your voice alone. None when
+    # the model isn't loaded.
+    def transcribe_words(self, audio_data: np.ndarray, language: Optional[str] = None,
+                         prompt: Optional[str] = None, with_vocabulary: bool = True) -> Optional[dict]:
+        if self.model is None or audio_data is None or len(audio_data) == 0:
+            return None
+        audio = np.asarray(audio_data, dtype=np.float32).reshape(-1)
+
+        def decode():
+            model, key, lang, routed_prompt, _probability = self._route(audio, language)
+            kwargs = dict(beam_size=self.beam_size, language=lang, task='transcribe',
+                          condition_on_previous_text=False, word_timestamps=True)
+            if with_vocabulary:
+                # The second model never takes a prompt (see _route).
+                base = (prompt or None) if model is self.model else None
+                full_prompt, words = self._with_learned(model, lang, base, self.hotwords)
+                if full_prompt:
+                    kwargs['initial_prompt'] = full_prompt
+                if words:
+                    kwargs['hotwords'] = words
+            segments, info = model.transcribe(audio, **kwargs)
+            words_out = []
+            for segment in segments:
+                for w in getattr(segment, 'words', None) or []:
+                    words_out.append({'word': w.word, 'prob': round(float(w.probability), 3),
+                                      'start': round(float(w.start), 2), 'end': round(float(w.end), 2)})
+            return words_out, info.language, key
+
+        try:
+            words, detected, used_key = ENGINE_THREAD.run(decode)
+        except Exception as e:
+            self.logger.error(f"Practice transcription failed: {e}")
+            return None
+        return {'text': ''.join(w['word'] for w in words).strip(), 'words': words,
+                'language': detected, 'model': used_key}
+
     # The clip's language and how sure the main model is. Without a list, an
     # unsure guess (under 50%) comes back as None so Whisper decides while
     # transcribing. With a list, the best-scoring listed language always wins,
@@ -430,9 +491,14 @@ class WhisperEngine:
                 model, key, lang, prompt, detected_probability = self._route(audio_data, language)
                 kwargs = dict(beam_size=beam_size or self.beam_size, language=lang, task=task or self.task,
                               condition_on_previous_text=False)
+                # Learned words join yours only on ordinary calls: the wake
+                # word passes its own spelling as `hotwords`.
+                if hotwords is None and use_prompt:
+                    prompt, words = self._with_learned(model, lang, prompt, self.hotwords)
+                else:
+                    words = self.hotwords if hotwords is None else hotwords
                 if prompt and use_prompt:
                     kwargs["initial_prompt"] = prompt
-                words = self.hotwords if hotwords is None else hotwords
                 if words:
                     kwargs["hotwords"] = words
                 segments, info = model.transcribe(audio_data, **kwargs)

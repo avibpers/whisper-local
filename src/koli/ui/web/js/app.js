@@ -19,6 +19,7 @@ import { SimpleSettingsScreen } from './screens/simple.js';
 import { DiagnosticsScreen } from './screens/diagnostics.js';
 import { WelcomeScreen } from './screens/welcome.js';
 import { MeetingsScreen } from './screens/meetings.js';
+import { PracticeScreen } from './screens/practice.js';
 
 const ADVANCED_NAV = [
   ['live', 'Live', 'wave'], ['history', 'History', 'clock'], ['meetings', 'Meetings', 'people'],
@@ -33,9 +34,9 @@ const SIMPLE_NAV = [
 const SCREENS = {
   live: LiveScreen, home: HomeScreen, history: HistoryScreen, meetings: MeetingsScreen, vocabulary: VocabularyScreen,
   commands: CommandsScreen, apps: AppsScreen, settings: SettingsScreen, 'simple-settings': SimpleSettingsScreen,
-  diagnostics: DiagnosticsScreen, welcome: WelcomeScreen,
+  diagnostics: DiagnosticsScreen, welcome: WelcomeScreen, practice: PracticeScreen,
 };
-const SIMPLE_ROUTES = new Set(['home', 'history', 'vocabulary', 'simple-settings', 'welcome']);
+const SIMPLE_ROUTES = new Set(['home', 'history', 'vocabulary', 'simple-settings', 'welcome', 'practice']);
 
 // A page asked for from outside (tray, --settings) in Simple mode goes to the
 // Simple screen for the same thing; Advanced-only pages switch to Advanced.

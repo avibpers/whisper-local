@@ -4,11 +4,13 @@
 // many mishearings, typed or recorded: "when I say this, I mean this") and
 // snippets (spoken shortcuts); plus, in Advanced mode, replacements
 // (find/replace with options). Each edit applies to the next dictation.
+// Two tabs: Mine (all of the above, typed by you) and Learned (what Practice
+// added, with the "how you speak" notes).
 
 import { html, useEffect, useState } from '../../vendor/preact-htm.module.js';
 import { call } from '../api.js';
-import { app, closeModal, openModal, toast, useSetting } from '../store.js';
-import { Icon, TagInput, TextArea, TextField, Toggle } from '../ui.js';
+import { app, closeModal, confirmModal, navigate, openModal, toast, useSetting } from '../store.js';
+import { Icon, Select, TagInput, TextArea, TextField, Toggle } from '../ui.js';
 
 function Words() {
   const words = useSetting('whisper.hotwords') || [];
@@ -119,14 +121,85 @@ function Snippets() {
   </section>`;
 }
 
-export function VocabularyScreen() {
+// ── Learned (from Practice) ───────────────────────────────────────────────
+// What practice rounds added, apart from what you typed: delete one, several
+// or all. Each item applies to its language, on every microphone.
+
+const KIND_NAMES = { favored: 'Favored word', correction: 'Correction', prompt: 'Prompt term' };
+
+// "he" → "Hebrew · עברית", from the schema's language list.
+function languageName(code) {
+  const schema = app.get().schema;
+  const s = schema && schema.settings.find((x) => x.path === 'whisper.languages');
+  const hit = s && s.choices && s.choices.find(([c]) => c === code);
+  return hit ? hit[1] : code;
+}
+
+function Learned() {
+  const [data, setData] = useState(null);
+  const [picked, setPicked] = useState(new Set());
+  const [language, setLanguage] = useState('');
+  const [mic, setMic] = useState('');
+  const reload = () => call('learned_list').then((d) => { setData(d); setPicked(new Set()); }).catch((e) => toast(e.message, { kind: 'err' }));
+  useEffect(() => { reload(); }, []);
+  if (!data) return html`<div class="empty">Loading…</div>`;
+  const shown = data.items.filter((i) => (!language || i.language === language) && (!mic || i.mic === mic));
+  const languages = [...new Set(data.items.map((i) => i.language).filter(Boolean))];
+  const mics = [...new Set(data.items.map((i) => i.mic).filter(Boolean))];
+  const toggle = (id) => { const n = new Set(picked); if (n.has(id)) n.delete(id); else n.add(id); setPicked(n); };
+  const allPicked = shown.length > 0 && shown.every((i) => picked.has(i.id));
+  const remove = async (ids) => {
+    if (!(await confirmModal({ title: `Delete ${ids.length} learned ${ids.length === 1 ? 'item' : 'items'}?`, body: 'The next dictation goes without them.', confirm: 'Delete', danger: true }))) return;
+    call('learned_delete', ids).then((n) => { toast(`Deleted ${n}`); reload(); }).catch((e) => toast(e.message, { kind: 'err' }));
+  };
+  const removeAll = async () => {
+    if (!(await confirmModal({ title: 'Start fresh?', body: 'Deletes everything practice taught Koli, the “how you speak” notes and the practice recordings. Your own words and your answers stay.', confirm: 'Delete all learned', danger: true }))) return;
+    call('learned_delete_all').then(() => { toast('Learned vocabulary cleared'); reload(); }).catch((e) => toast(e.message, { kind: 'err' }));
+  };
+  const what = (i) => (i.kind === 'correction' ? html`<span><bdi class="mono">${i.heard.join(', ')}</bdi> → <b style="font-weight:500"><bdi>${i.term}</bdi></b></span>`
+    : html`<b style="font-weight:500"><bdi>${i.term}</bdi></b>${i.profile ? html` <span class="chip sm">${i.profile}</span>` : ''}`);
+  return html`
+    ${Object.keys(data.notes).length > 0 && html`<section class="card" aria-labelledby="h-notes">
+      <div class="card-head"><div><h2 id="h-notes">How you speak</h2><p>Written by the AI model after practice. Smart correction will use it.</p></div></div>
+      ${Object.entries(data.notes).map(([l, note]) => html`<div class="srow"><div class="slabel"><b><bdi>${languageName(l)}</bdi></b><small dir="auto">${note}</small></div></div>`)}</section>`}
+    <section class="card" aria-labelledby="h-learned">
+      <div class="card-head"><div><h2 id="h-learned">Learned from practice</h2>
+        <p>${data.items.length ? `${data.items.length} items from ${data.sessions.length} ${data.sessions.length === 1 ? 'round' : 'rounds'}. Each one applies to its language, on every microphone.`
+          : 'Nothing yet. Practice reads a few texts with you and suggests words to add here.'}</p></div>
+        ${data.items.length > 0 && html`<button type="button" class="btn danger" onClick=${removeAll}>Delete all…</button>`}</div>
+      ${data.items.length > 0 && html`<div class="row-flex" style="padding:0 18px 12px;flex-wrap:wrap">
+        <${Select} label="Language" value=${language} options=${[['', 'All languages'], ...languages.map((l) => [l, languageName(l)])]} onChange=${setLanguage} />
+        ${mics.length > 1 && html`<${Select} label="Microphone" value=${mic} options=${[['', 'All microphones'], ...mics.map((m) => [m, m])]} onChange=${setMic} />`}
+        <span class="grow"></span>
+        ${picked.size > 0 && html`<button type="button" class="btn" onClick=${() => remove([...picked])}><${Icon} name="trash" />Delete ${picked.size}</button>`}</div>
+      <div class="tbl-wrap"><table class="tbl"><thead><tr>
+        <th scope="col" style="width:40px"><input type="checkbox" aria-label="Select all shown" checked=${allPicked}
+          onChange=${() => setPicked(allPicked ? new Set() : new Set(shown.map((i) => i.id)))} /></th>
+        <th scope="col">Word</th><th scope="col">Kind</th><th scope="col">Language</th><th scope="col">Microphone</th><th scope="col">Why</th>
+        <th scope="col"><span class="sr-only">Delete</span></th></tr></thead>
+        <tbody>${shown.map((i) => html`<tr>
+          <td><input type="checkbox" aria-label=${`Select ${i.term}`} checked=${picked.has(i.id)} onChange=${() => toggle(i.id)} /></td>
+          <td>${what(i)}</td><td class="small">${KIND_NAMES[i.kind] || i.kind}</td><td class="small"><bdi>${i.language ? languageName(i.language) : 'all'}</bdi></td>
+          <td class="small muted">${i.mic}</td><td class="small muted">${i.reason}${i.source === 'ai' ? ' · AI' : ''}</td>
+          <td class="end"><button type="button" class="btn ghost icon" aria-label=${`Delete ${i.term}`} onClick=${() => remove([i.id])}><${Icon} name="x" /></button></td></tr>`)}
+        </tbody></table></div>`}
+    </section>`;
+}
+
+export function VocabularyScreen({ route }) {
   const mode = useSetting('ui.mode');
+  const tab = (route || '').split('/')[1] === 'learned' ? 'learned' : 'mine';
   return html`<div class=${'page' + (mode === 'advanced' ? '' : ' narrow')}>
-    <div><h1 class="page-title">${mode === 'advanced' ? 'Vocabulary' : 'My words'}</h1>
+    <div class="page-head"><div><h1 class="page-title">${mode === 'advanced' ? 'Vocabulary' : 'My words'}</h1>
       <p class="page-sub">Teach it your names and terms. Every change applies to the next dictation.</p></div>
-    <${Words} />
-    <${Corrections} />
-    ${mode === 'advanced' && html`<${Replacements} />`}
-    <${Snippets} />
+      <button type="button" class="btn" onClick=${() => navigate('practice')}><${Icon} name="mic" />Practice</button></div>
+    <div class="seg" role="tablist" aria-label="Whose words" style="align-self:flex-start">
+      ${[['mine', 'Mine'], ['learned', 'Learned']].map(([id, label]) => html`<button type="button" role="tab" aria-selected=${tab === id}
+        class=${tab === id ? 'on' : ''} onClick=${() => navigate(id === 'mine' ? 'vocabulary' : 'vocabulary/learned')}>${label}</button>`)}</div>
+    ${tab === 'learned' ? html`<${Learned} />` : html`
+      <${Words} />
+      <${Corrections} />
+      ${mode === 'advanced' && html`<${Replacements} />`}
+      <${Snippets} />`}
   </div>`;
 }

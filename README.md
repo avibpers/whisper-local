@@ -336,6 +336,16 @@ context (`initial_prompt`, `language`, `task`), **and** formatting
 (`capitalize_first`, `ensure_punctuation`, `strip_trailing_period`,
 `inline_formatting`). Hot-reloads — edit and the next transcription picks it up.
 
+## 🎙️ Practice: teach Koli your voice
+
+Speak with an accent, or mix Hebrew and English? **My words › Practice**
+has you read about ten short sentences and a paragraph (3 minutes), shows
+what Whisper wrote word by word, and suggests favored words, corrections and
+profile terms for you to approve. They are kept in **My words › Learned**,
+per language, and you can delete them any time. An AI model from Settings › AI
+writes the texts for you and describes how you're misheard; without one,
+built-in English and Hebrew texts are used.
+
 ## 🧹 Optional AI polish and rewrites
 
 Koli can pipe each transcript through a language model for punctuation and

@@ -46,6 +46,23 @@ const MOCK_AI = [
   { id: 'openrouter', label: 'OpenRouter', kind: 'cloud', auth: 'key', site: 'https://openrouter.ai/keys', connected: false, detail: 'No key', key_hint: '' },
   { id: 'openai', label: 'OpenAI API', kind: 'cloud', auth: 'key', site: 'https://platform.openai.com/api-keys', connected: false, detail: 'No key', key_hint: '' },
 ];
+// Practice: a short round in English and Hebrew, and what Whisper "heard".
+const MOCK_PRACTICE_TEXTS = [
+  { language: 'en', text: 'Please refactor the authentication service before we merge the pull request.', targets: ['refactor'] },
+  { language: 'he', text: 'צריך לבחור תמונת כריכה חדשה לאלבום המשפחתי.', targets: ['כריכה'] },
+  { language: 'he', text: 'צריך לעשות refactor לשירות ההתחברות לפני ה-merge.', targets: ['refactor', 'merge'] },
+  { language: 'en', text: 'The TypeScript compiler complains about a missing type on this function.', targets: ['TypeScript'] },
+];
+const MOCK_PARAGRAPH = { language: 'he', text: 'הבוקר ה-build נשבר אחרי ה-merge האחרון. הטסטים עוברים אצלי, אבל ה-pipeline נכשל בשלב של המיגרציה של מסד הנתונים, ובחרנו תמונת כריכה חדשה לדוח.', targets: ['כריכה'] };
+function mockCompare(text) {
+  const words = text.split(' ').map((w) => ({ text: w, norm: w.toLowerCase(), status: 'right', heard: w, prob: 0.9 }));
+  const wrong = words.find((w) => w.text.startsWith('כריכה') || w.text === 'refactor');
+  if (wrong) Object.assign(wrong, { status: 'wrong', heard: wrong.text.startsWith('כריכה') ? 'בריכה' : 're factor', prob: null });
+  if (words[3]) Object.assign(words[3], { status: 'unsure', prob: 0.3 });
+  const right = words.filter((w) => w.status !== 'wrong').length;
+  return { words, extra: [], spans: [], accuracy: right / words.length };
+}
+
 const MOCK_AI_MODELS = {
   lmstudio: ['qwen/qwen3-8b', 'google/gemma-3-12b', 'openai/gpt-oss-20b', 'mistralai/mistral-small-3.2'],
   codex: ['gpt-5.5', 'gpt-5.4-mini', 'gpt-5.3-codex'],
@@ -64,6 +81,9 @@ export function createMock(emit) {
   const undo = [];
   const tasks = {};
   let state = { state: 'idle', mode: 'dictate', paused: false, model: 'small', device: 'cpu' };
+  let practiceIntake = { languages: ['en', 'he'], accent: '', work: 'software', work_other: '', words: [] };
+  let practiceRound = null;
+  let learnedItems = [];
   let profile = 'dictation';
   const frame = { custom: true, maximized: false };   // the page draws the window buttons
   let seq = 0;
@@ -367,6 +387,46 @@ export function createMock(emit) {
     ai_login_start: () => ok({ pending: true, user_code: 'KQ7F-2MXD', url: 'https://auth.openai.com/codex/device', error: '' }),
     ai_login_status: () => ok({ pending: true, user_code: 'KQ7F-2MXD', url: 'https://auth.openai.com/codex/device', error: '' }),
     ai_login_open: () => ok(null),
+    practice_state: () => ok({ intake: practiceIntake, has_intake: false,
+      domains: [['software', 'Software development'], ['business', 'Business and email'], ['medicine', 'Medicine'], ['law', 'Law'], ['studies', 'Studies'], ['creative', 'Creative work'], ['other', 'Other']],
+      terms: [{ term: 'Koli', from: 'history' }, { term: 'TypeScript', from: 'history' }, { term: 'כריכה', from: 'you' }],
+      model: 'codex/gpt-5.6-luna', model_kind: 'cloud', packs: { en: true, he: true }, word_confidence: true,
+      round: practiceRound, notes: {} }),
+    practice_save_intake: (intake) => { practiceIntake = intake; return ok(intake); },
+    practice_start: () => delay(700).then(() => {
+      practiceRound = { id: 'r1', stage: 'first', model: 'codex/gpt-5.6-luna', mic: 'Jabra Evolve2 65', notes: [], accuracy: {}, planned: 4,
+        items: MOCK_PRACTICE_TEXTS.slice(0, 2).map((t, index) => ({ ...t, index, kind: 'sentence', stage: 'first', result: null, skipped: false })) };
+      return { ok: true, data: practiceRound };
+    }),
+    practice_record: (index) => delay(1500).then(() => {
+      const item = practiceRound.items[index];
+      item.result = { heard: item.text.replace('כריכה', 'בריכה'), heard_bare: item.text.replace('כריכה', 'בריכה').replace('refactor', 're factor'),
+        comparison: mockCompare(item.text), confidence: true, seconds: 1.2 };
+      return { ok: true, data: item };
+    }),
+    practice_stop: () => ok(null),
+    practice_flag: (index) => { practiceRound.items[index].flagged = true; return ok(practiceRound); },
+    practice_skip: (index) => { practiceRound.items[index].skipped = true; return ok(practiceRound); },
+    practice_next: () => delay(600).then(() => {
+      const r = practiceRound;
+      if (r.stage === 'first') { r.stage = 'second'; MOCK_PRACTICE_TEXTS.slice(2).forEach((t) => r.items.push({ ...t, index: r.items.length, kind: 'sentence', stage: 'second', result: null, skipped: false })); }
+      else if (r.stage === 'second') { r.stage = 'paragraph'; r.items.push({ ...MOCK_PARAGRAPH, index: r.items.length, kind: 'paragraph', stage: 'paragraph', result: null, skipped: false }); }
+      else r.stage = 'results';
+      return { ok: true, data: r };
+    }),
+    practice_results: () => delay(900).then(() => ok({ round: practiceRound, accuracy: { en: 0.93, he: 0.84 },
+      context: [{ word: 'כריכה', alone: 'wrong', in_context: 'right', effect: 'fixed' }],
+      notes: { he: 'The k sound of כ is often heard as ב, especially at the start of a word. English terms inside Hebrew come out right.' },
+      findings: [
+        { id: 'f1', kind: 'correction', language: 'he', term: 'תמונת כריכה', heard: ['תמונת בריכה'], profile: '', reason: 'Whisper wrote “⁨תמונת בריכה⁩” for “⁨תמונת כריכה⁩” (2×)', source: 'ai' },
+        { id: 'f2', kind: 'favored', language: 'he', term: 'כריכה', heard: [], profile: '', reason: 'Misheard or dropped (2×)', source: 'rules' },
+        { id: 'f3', kind: 'favored', language: 'en', term: 'refactor', heard: [], profile: '', reason: 'Misheard or dropped', source: 'rules' },
+        { id: 'f4', kind: 'prompt', language: 'en', term: 'TypeScript', heard: [], profile: 'code', reason: 'A term from your work that Whisper missed', source: 'ai' }] })),
+    practice_apply: (ids) => { learnedItems.push(...ids.map((id, n) => ({ id, kind: n ? 'favored' : 'correction', language: 'he', term: n ? 'כריכה' : 'תמונת כריכה', heard: n ? [] : ['תמונת בריכה'], profile: '', mic: 'Jabra Evolve2 65', session: 'r1', reason: 'From practice', source: 'ai' }))); practiceRound = null; return ok(ids.length); },
+    practice_close: () => { practiceRound = null; return ok(null); },
+    learned_list: () => ok({ items: learnedItems, notes: learnedItems.length ? { he: 'The k sound of כ is often heard as ב.' } : {}, sessions: learnedItems.length ? [{ id: 'r1' }] : [] }),
+    learned_delete: (ids) => { const before = learnedItems.length; learnedItems = learnedItems.filter((i) => !ids.includes(i.id)); return ok(before - learnedItems.length); },
+    learned_delete_all: () => { learnedItems = []; return ok(null); },
     ai_login_cancel: () => ok(null),
     server_status: () => ok({ running: false, url: 'http://127.0.0.1:7777' }),
     diag_checks: () => ok([

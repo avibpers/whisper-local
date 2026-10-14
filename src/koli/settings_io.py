@@ -11,13 +11,15 @@ from .utils import get_user_app_data_path
 
 # Every user-editable config file. Anything the user can customize must be here
 # or backup/restore silently loses it. (Hotwords/dictionary live inside
-# user_settings.yaml, so they're already covered.)
+# user_settings.yaml, so they're already covered.) learned.json is what
+# practice taught Koli (My words › Learned); the recordings stay behind.
 EXPORTABLE_FILES = [
     "user_settings.yaml",
     "commands.yaml",
     "profiles.yaml",
     "app_rules.yaml",
     "transforms.yaml",
+    "learned.json",
 ]
 
 

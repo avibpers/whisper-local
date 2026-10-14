@@ -5,6 +5,21 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 ## [Unreleased]
 
 ### Added
+- **Practice: teach Koli your voice.** My words › Practice (also offered at
+  the end of the welcome) asks four short questions (your languages, your
+  accent, your work, words Koli gets wrong), then has you read about ten short
+  sentences and one paragraph. After each reading you see what Whisper wrote,
+  word by word: right, unsure, wrong or missing, and what it heard without
+  your vocabulary. The results suggest favored words, corrections (always
+  with a neighbouring word, so a real word elsewhere is never replaced) and
+  terms for a profile's prompt; you uncheck what you don't want and Apply.
+  With an AI model (Settings › AI › Practice), the texts are written for you
+  and the analysis adds a "how you speak" note; without one, built-in English
+  and Hebrew texts are used. Only your answers and a list of terms are sent
+  to the model, never your dictations.
+- **My words › Learned.** What practice added is kept apart from what you
+  typed, by language and on every microphone: delete one, several, or all
+  (with the practice recordings) to start fresh. Settings export carries it.
 - **AI from more places than Ollama.** Settings › AI lists seven providers:
   Ollama and LM Studio on this computer, your ChatGPT subscription (through
   Codex) and SuperGrok subscription, and Gemini, OpenRouter or OpenAI with an

@@ -19,7 +19,7 @@ from .types import ConfigError, ProviderError, ReconnectNeeded, Result
 logger = logging.getLogger(__name__)
 
 __all__ = ['Result', 'configure', 'complete', 'list_models', 'provider_status', 'test', 'kind_of',
-           'start_background', 'strip_reasoning']
+           'start_background', 'strip_reasoning', 'parse_json', 'model_for']
 
 _config_manager = None
 
@@ -50,6 +50,47 @@ _UNCLOSED = re.compile(r'^\s*<(think|thinking|reasoning)>.*', re.S | re.I)
 def strip_reasoning(text: str) -> str:
     text = _REASONING.sub('', text or '')
     return _UNCLOSED.sub('', text).strip()
+
+
+# The JSON object in a model's answer, or None. Models without a JSON mode
+# (Codex, Grok) often wrap it in a ```json fence or a sentence; the first
+# {...} block that parses is taken.
+def parse_json(text: str):
+    import json as _json
+    text = (text or '').strip()
+    fenced = re.search(r'```(?:json)?\s*(.*?)```', text, re.S)
+    candidates = [fenced.group(1)] if fenced else []
+    candidates.append(text)
+    for candidate in candidates:
+        start = candidate.find('{')
+        while start != -1:
+            depth, in_string, escaped = 0, False, False
+            for end in range(start, len(candidate)):
+                ch = candidate[end]
+                if in_string:
+                    if escaped:
+                        escaped = False
+                    elif ch == '\\':
+                        escaped = True
+                    elif ch == '"':
+                        in_string = False
+                    continue
+                if ch == '"':
+                    in_string = True
+                elif ch == '{':
+                    depth += 1
+                elif ch == '}':
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            value = _json.loads(candidate[start:end + 1])
+                            if isinstance(value, dict):
+                                return value
+                        except ValueError:
+                            pass
+                        break
+            start = candidate.find('{', start + 1)
+    return None
 
 
 def complete(feature: str, messages: list, json: bool = False, on_text=None,
@@ -120,6 +161,14 @@ def list_models(provider_id: str) -> list:
 # Every provider's name, kind and login style, without asking any of them.
 def catalog() -> list:
     return [p.describe() for p in providers.PROVIDERS.values()]
+
+
+# The model a feature would ask first ("provider/model"), or '' when none is
+# chosen: so a feature can say which model it will use, or offer to work
+# without one.
+def model_for(feature: str) -> str:
+    models, _ = routing.route(_setting, feature)
+    return models[0] if models else ''
 
 
 def kind_of(spec: str) -> str:

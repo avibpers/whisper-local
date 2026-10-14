@@ -826,6 +826,73 @@ class Bridge:
         from ..llm.oauth import SUBSCRIPTIONS
         SUBSCRIPTIONS[provider].cancel_login()
 
+    # ── Practice and Learned vocabulary ──────────────────────────────────────
+    # A round: intake → sentences (two batches) → paragraph → results → apply.
+    # Recording a reading blocks until you pause, like voice_check.
+
+    @property
+    def _practice(self):
+        if getattr(self, '_practice_service', None) is None:
+            from ..services.practice import PracticeService
+            self._practice_service = PracticeService(self._sm, self._cm)
+        return self._practice_service
+
+    @_api
+    def practice_state(self):
+        return self._practice.state()
+
+    @_api
+    def practice_save_intake(self, intake):
+        return self._practice.save_intake(intake)
+
+    @_api
+    def practice_start(self):
+        return self._practice.start()
+
+    @_api
+    def practice_record(self, index):
+        return self._practice.record(int(index))
+
+    @_api
+    def practice_stop(self):
+        self._practice.stop()
+
+    @_api
+    def practice_skip(self, index):
+        return self._practice.skip(int(index))
+
+    @_api
+    def practice_flag(self, index):
+        return self._practice.flag(int(index))
+
+    @_api
+    def practice_next(self):
+        return self._practice.next()
+
+    @_api
+    def practice_results(self):
+        return self._practice.results()
+
+    @_api
+    def practice_apply(self, ids):
+        return self._practice.apply(list(ids or []))
+
+    @_api
+    def practice_close(self):
+        self._practice.close()
+
+    @_api
+    def learned_list(self):
+        return self._practice.learned()
+
+    @_api
+    def learned_delete(self, ids):
+        return self._practice.delete(list(ids or []))
+
+    @_api
+    def learned_delete_all(self):
+        self._practice.delete_all()
+
     # ── Diagnostics ──────────────────────────────────────────────────────────
 
     @_api
