@@ -180,8 +180,9 @@ class DelayedSend:
             self._publish('auto_send', {'state': 'counting', 'remaining': remaining,
                                         'total': max(1, math.ceil(pending['total']))})
 
-    # Typing during the wait (fixing a word, or pressing Enter yourself) means
-    # "I'll send it myself", and so does clicking (into the text to fix it).
+    # Typing during the wait (fixing a word) means "I'll send it myself", and
+    # so does clicking (into the text to fix it); pressing Enter yourself is
+    # the send (see _on_typing).
     # Koli's own paste and Enter are injected keys, which the watcher ignores,
     # and clicks on Koli's own windows (the bubble's buttons) don't count.
     def _watch_typing(self) -> int:
@@ -205,7 +206,17 @@ class DelayedSend:
             except Exception as e:
                 logger.debug(f"Auto-send: typing watch stop failed ({e})")
 
+    # Your own Enter is the send itself: Koli's Enter is dropped (or the
+    # message would go twice) and the bubble says it was sent, not cancelled.
+    # The watcher reports keys as "key 0x0D flags 0x00"; 0x0D is Enter.
     def _on_typing(self, key: str = '') -> None:
+        if str(key).upper().startswith('KEY 0X0D'):
+            with self._lock:
+                if self._pending is not None:
+                    self._end('sent', 'you sent it', announce=False)
+                    self._publish('auto_send', {'state': 'sent', 'reason': 'you sent it'})
+                    logger.info("Auto-send: you pressed Enter yourself")
+            return
         self.cancel('you started typing')
 
     def _on_click(self, button: str = '') -> None:

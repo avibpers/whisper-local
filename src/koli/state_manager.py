@@ -43,7 +43,7 @@ from .app_rules import AppRules, formatting_overrides as app_rules_formatting_ov
 from .streaming_delivery import StreamingDelivery, decide_stream_delivery
 from .transforms import TransformsManager
 from .text_postprocess import postprocess
-from .dictation_cleanup import confident_speech, is_prompt_echo
+from .dictation_cleanup import confident_speech, is_prompt_echo, unsure_short_clip
 from .voice_filter import (LEARN_VOICEPRINT_S, VOICEPRINT_MATCH, VoiceLevels, keep_my_voice, my_voice_pieces,
                            speech_level_db)
 from .stats import record_transcription
@@ -297,8 +297,24 @@ class StateManager:
             print("\r" + " " * 75 + "\r", end="", flush=True)
             self._streaming_display_active = False
     
+    # A hotkey recording stopped this soon was a tap, not a dictation: only
+    # the pre-roll was recorded, and Whisper fills that with "Thank you."
+    # (app.log 2026-10-14, a 0.08 s press). Double-tap-to-lock never gets here
+    # that fast: its first tap waits out the double-tap window.
+    MIN_HOTKEY_HOLD_S = 0.3
+
     def stop_recording(self, use_auto_enter: bool = False) -> bool:
         currently_recording = self.audio_recorder.get_recording_status()
+
+        if currently_recording and not self._auto_started:
+            held = time.monotonic() - (getattr(self, '_recording_started_at', None) or 0.0)
+            if held < self.MIN_HOTKEY_HOLD_S:
+                self.logger.info(f"Hotkey tapped ({held:.2f} s): nothing recorded")
+                print("   ✗ Too short - hold the keys while you talk")
+                self.cancel_active_recording(quiet=True)
+                if self.level_overlay:
+                    self.level_overlay.flash_failure("Hold the keys while you talk")
+                return True
 
         if currently_recording:
             self._clear_streaming_display()
@@ -391,6 +407,9 @@ class StateManager:
 
     def start_recording(self):
         self._cancel_pending_send('you started a new dictation')
+        if self.is_auto_recording():
+            self._take_over_auto_session()
+            return
         if not self.can_start_recording():
             current_state = self.get_current_state()
             if self.is_processing:
@@ -482,6 +501,7 @@ class StateManager:
         success = self.audio_recorder.start_recording(silence_timeout=silence_timeout, phrase_pause=phrase_pause)
 
         if success:
+            self._recording_started_at = time.monotonic()
             self._auto_started = auto_started
             self._hands_free = hands_free and not auto_started
             self._auto_pasted = False
@@ -534,6 +554,28 @@ class StateManager:
 
     def is_auto_recording(self) -> bool:
         return bool(self._auto_started) and self.audio_recorder.get_recording_status()
+
+    # The record hotkey while auto-dictation listens: the recording is yours
+    # now, a hotkey dictation like any other. No pastes at pauses (a Ctrl+V
+    # with your Ctrl+Win still down is Win+Ctrl+V, Windows' sound panel), no
+    # cancel when focus moves, the hotkey's silence stop instead of the auto
+    # one, and it ends when you let go (app.log 2026-10-14 10:34:43). The
+    # session number stays, so a phrase already being prepared is still typed.
+    def _take_over_auto_session(self):
+        with self._state_lock:
+            self._auto_started = False
+            self._hands_free = False
+            self._finish_after_phrases = False
+        detector = getattr(self.audio_recorder, 'continuous_vad', None)
+        if detector is not None:
+            detector.set_phrase_pause(0)
+            configured = getattr(self.vad_manager, 'vad_silence_timeout_seconds', None)
+            if configured:
+                detector.set_silence_timeout(configured)
+        self._recording_started_at = time.monotonic()
+        self.logger.info("Auto-dictation: taken over by the record hotkey - a hotkey dictation now")
+        print("   🎤 Yours now: keep talking, let go of the keys to finish")
+        self.audio_feedback.play_start_sound()
 
     # Typing means "I'll write it myself": the audio is dropped, quietly.
     def cancel_auto_recording(self, reason: str = '') -> bool:
@@ -1226,6 +1268,19 @@ class StateManager:
             # continuous-mode restart. It hears whatever is around.
             unprompted = auto_session or hands_free
 
+            # A short hotkey clip Whisper wasn't sure of is a breath or a click
+            # turned into "Thank you.": not typed, and checked before it can
+            # teach Koli "your" voice below.
+            if not unprompted:
+                why = unsure_short_clip(info)
+                if why:
+                    self.logger.info(f"Hotkey dictation: {why} - nothing typed")
+                    print(f"   ✗ Didn't catch that ({why}) - nothing typed")
+                    self._emit_pipeline('empty', mode=mode, info=info)
+                    if self.level_overlay:
+                        self.level_overlay.flash_failure("Didn't catch that")
+                    return
+
             # A hotkey dictation is you: it teaches Koli how loud you are and
             # how you sound on this microphone.
             if not unprompted:
@@ -1240,7 +1295,7 @@ class StateManager:
                 return
 
             # A recording nobody started on purpose: keep only what Whisper is
-            # sure is speech. A hotkey recording is not second-guessed.
+            # sure is speech. A hotkey recording only had the short-clip check.
             if unprompted:
                 forced = bool(getattr(self.whisper_engine, 'language', None))
                 kept, why = confident_speech(transcribed_text, info, language_forced=forced)
@@ -1377,6 +1432,11 @@ class StateManager:
                     self._announce_copy_only(rule)
 
             try:
+                # A phrase is pasted mid-recording, when a hotkey may be down
+                # (you just took the session over): its Ctrl+V must not merge
+                # with your Ctrl+Win into Win+Ctrl+V.
+                if phrase:
+                    self._wait_for_modifiers_released(timeout=30.0)
                 # A phrase gets a trailing space so the next one does not glue to it.
                 success = self.clipboard_manager.deliver_transcription(
                     transcribed_text + ' ' if phrase else transcribed_text, effective_auto_enter,

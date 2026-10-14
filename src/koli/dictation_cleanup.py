@@ -27,7 +27,8 @@ def is_prompt_echo(text: str, prompt) -> bool:
 # How sure Whisper must be before auto-dictation types something. A recording
 # nobody started on purpose picks up whatever is around, and Whisper turns
 # noise into fluent sentences ("Do you know what I'm saying?") while its own
-# numbers say it is unsure. Hotkey recordings are not filtered.
+# numbers say it is unsure. Hotkey recordings only get the short-clip check
+# (unsure_short_clip), with a lower bar.
 MIN_LANGUAGE_CONFIDENCE = 0.6    # its guess of the language, when not set
 MAX_NO_SPEECH = 0.6              # a piece it rates as more likely silence
 MIN_AVG_LOGPROB = -1.0           # a piece it was unsure of word by word
@@ -37,6 +38,11 @@ MAX_COMPRESSION = 2.4            # a piece that repeats itself ("I'm sick, I'm s
 # -1.12 per word; real short speech -0.09. Meeting turns use the same rule.
 SHORT_CLIP_S = 2.0
 SHORT_CLIP_MIN_LOGPROB = -0.35
+# A hotkey press is meant, so its bar is lower than auto-dictation's, but a
+# breath or a click is no speech either: "Thank you." came from a 0.68 s and
+# a 0.08 s press at -1.12 and -1.21 (app.log 2026-10-14); real short speech
+# scores about -0.1.
+HOTKEY_SHORT_MIN_LOGPROB = -0.6
 
 
 # A piece (Whisper segment) Whisper itself wasn't sure of. Also used by
@@ -44,6 +50,19 @@ SHORT_CLIP_MIN_LOGPROB = -0.35
 def unsure_piece(piece: dict) -> bool:
     return (piece.get('no_speech_prob', 0) > MAX_NO_SPEECH or piece.get('avg_logprob', 0) < MIN_AVG_LOGPROB
             or piece.get('compression_ratio', 0) > MAX_COMPRESSION)
+
+
+# Why a short hotkey clip is not typed, or '' when it is fine. Only clips
+# under SHORT_CLIP_S: a long hotkey dictation is never second-guessed.
+def unsure_short_clip(info: dict, min_logprob: float = HOTKEY_SHORT_MIN_LOGPROB) -> str:
+    info = info or {}
+    seconds, pieces = info.get('audio_seconds'), info.get('segments')
+    if seconds is None or not pieces or seconds >= SHORT_CLIP_S:
+        return ''
+    worst = min(p.get('avg_logprob', 0) for p in pieces)
+    if worst < min_logprob:
+        return f'{seconds:.1f} s clip Whisper was not sure of ({worst:.2f})'
+    return ''
 
 
 # The text worth typing from an auto-dictation clip, and why anything was left

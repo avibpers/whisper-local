@@ -2328,6 +2328,42 @@ class ReportedIssueHandlerTests(unittest.TestCase):
         stop.assert_not_called()
         self.assertFalse(listener.is_paused, 'second press must resume')
 
+    # Ctrl is the stop key and the first key of ctrl+win+b. During an auto
+    # session it waits a moment: the rest of the record chord makes it a
+    # takeover, not a stop (app.log 2026-10-14 10:35:05 and 10:35:30).
+    def _stop_key_listener(self):
+        listener = self._listener()
+        listener.stop_key = 'ctrl'
+        listener.recording_hotkey = 'ctrl+win+b'
+        listener.keys_armed = True
+        listener.tap_latch = None
+        listener.state_manager.is_auto_recording.return_value = True
+        self.timers = []
+        listener._timer_factory = lambda seconds, fn: self.timers.append((seconds, fn)) or __import__('unittest.mock').mock.Mock()
+        return listener
+
+    def test_ctrl_followed_by_the_record_chord_takes_over_instead_of_stopping(self):
+        listener = self._stop_key_listener()
+        listener._stop_key_pressed()
+        listener.state_manager.stop_recording.assert_not_called()
+        self.assertEqual(len(self.timers), 1)
+        listener._standard_hotkey_pressed()
+        listener.state_manager.start_recording.assert_called_once()
+        self.timers[0][1]()                     # the grace timer fires late anyway
+        listener.state_manager.stop_recording.assert_not_called()
+
+    def test_ctrl_alone_still_stops_an_auto_session(self):
+        listener = self._stop_key_listener()
+        listener._stop_key_pressed()
+        self.timers[0][1]()
+        listener.state_manager.stop_recording.assert_called_once()
+        # A hotkey recording stops at once, as before.
+        listener = self._stop_key_listener()
+        listener.state_manager.is_auto_recording.return_value = False
+        listener._stop_key_pressed()
+        listener.state_manager.stop_recording.assert_called_once()
+        self.assertEqual(self.timers, [])
+
     def test_pause_gates_other_callbacks_but_not_itself(self):
         # The flag is only useful if it actually suppresses the other hotkeys —
         # and if pause itself stays live, otherwise you could never un-pause.
@@ -6016,6 +6052,98 @@ class AutoDictationStateManagerTests(unittest.TestCase):
         self._run_auto_pipeline('both', None, True, info=info, audio=audio, levels=levels)
         levels.learn.assert_not_called()      # an auto session could be anyone
 
+    # ── Hotkey phantoms (app.log, 2026-10-14) ──
+    # 07:56:56 ctrl+win+b held 0.68 s → 1.14 s clip, "Thank you." at -1.12;
+    # 07:56:59 held 0.08 s → 0.59 s of pre-roll, "Thank you." at -1.21. Both
+    # were pasted, and the first taught Koli "your" voice from noise.
+
+    def _phantom_info(self, seconds, logprob, text=' Thank you.'):
+        return {'language_probability': 1.0, 'language_raw_probability': 0.88, 'audio_seconds': seconds,
+                'segments': [{'text': text, 'start': 0.0, 'end': seconds, 'no_speech_prob': 0.0,
+                              'avg_logprob': logprob, 'compression_ratio': 0.6}]}
+
+    def test_a_short_unsure_hotkey_clip_is_not_typed_and_teaches_nothing(self):
+        import unittest.mock as mock
+        levels = mock.Mock()
+        overlay = mock.Mock()
+        cb = self._run_auto_pipeline('Thank you.', None, False, info=self._phantom_info(1.14, -1.12), auto=False,
+                                     levels=levels, prepare=lambda sm: setattr(sm, 'level_overlay', overlay))
+        cb.deliver_transcription.assert_not_called()
+        levels.learn.assert_not_called()
+        overlay.flash_failure.assert_called_once_with("Didn't catch that")
+
+    def test_a_short_sure_hotkey_clip_is_typed(self):
+        cb = self._run_auto_pipeline('Yes.', None, False, info=self._phantom_info(0.9, -0.09, ' Yes.'), auto=False)
+        self.assertEqual(cb.deliver_transcription.call_args.args[0], 'Yes.')
+
+    def test_a_long_unsure_hotkey_dictation_is_still_typed(self):
+        # Only short clips are second-guessed: a long hotkey dictation is you.
+        cb = self._run_auto_pipeline('Merge it.', None, False, info=self._phantom_info(4.0, -1.1, ' Merge it.'),
+                                     auto=False)
+        self.assertEqual(cb.deliver_transcription.call_args.args[0], 'Merge it.')
+
+    def test_a_tap_on_the_hotkey_is_not_a_dictation(self):
+        import time
+        import unittest.mock as mock
+        sm = self._sm(had_speech=True)
+        sm._auto_started = False
+        sm._update_ui_state = mock.Mock()
+        sm._recording_started_at = time.monotonic() - 0.08
+        with mock.patch('builtins.print'):
+            self.assertTrue(sm.stop_recording())
+        sm.audio_recorder.cancel_recording.assert_called_once()
+        sm._transcription_pipeline.assert_not_called()
+        sm.audio_feedback.play_cancel_sound.assert_not_called()
+        # Held long enough: transcribed as usual.
+        sm = self._sm(had_speech=True)
+        sm._auto_started = False
+        sm._recording_started_at = time.monotonic() - 0.7
+        sm.stop_recording()
+        sm._transcription_pipeline.assert_called_once()
+        # Auto-dictation stopped early by the stop key still goes through its own guards.
+        sm = self._sm(had_speech=True)
+        sm._recording_started_at = time.monotonic() - 0.08
+        sm.stop_recording()
+        sm._transcription_pipeline.assert_called_once()
+
+    # ── The hotkey during auto-dictation (app.log, 2026-10-14 10:34-10:35) ──
+    # A click started auto-dictation, then ctrl+win+b was pressed to dictate.
+    # The press was ignored, the session pasted a phrase with Ctrl+V while
+    # Ctrl+Win were held (Win+Ctrl+V opened Windows' sound panel), focus left
+    # the chat, and the session was cancelled mid-sentence.
+
+    def test_the_hotkey_takes_over_an_auto_session(self):
+        import unittest.mock as mock
+        from koli.voice_activity_detection import VadEvent
+        sm = self._sm(had_speech=True)
+        sm._auto_session = sm._live_session = 3
+        sm._begin_recording = mock.Mock()
+        sm._update_ui_state = mock.Mock()
+        sm.clipboard_manager = mock.Mock()
+        sm.vad_manager.vad_silence_timeout_seconds = 30.0
+        with mock.patch('builtins.print'):
+            sm.start_recording()
+        sm._begin_recording.assert_not_called()          # the same recording goes on
+        self.assertFalse(sm._auto_started)
+        detector = sm.audio_recorder.continuous_vad
+        detector.set_phrase_pause.assert_called_with(0)   # no pastes while you hold the keys
+        detector.set_silence_timeout.assert_called_with(30.0)
+        self.assertEqual(sm._live_session, 3)             # a phrase already on its way is still typed
+        sm.handle_vad_event(VadEvent.PHRASE_PAUSE)
+        sm._transcription_pipeline.assert_not_called()
+        self.assertFalse(sm.cancel_auto_recording('the text field lost focus'))
+        sm.audio_recorder.cancel_recording.assert_not_called()
+
+    def test_a_phrase_waits_for_your_keys_before_pasting(self):
+        import unittest.mock as mock
+        order = []
+
+        def prepare(sm):
+            sm._wait_for_modifiers_released = mock.Mock(side_effect=lambda **kw: order.append('wait'))
+            sm.clipboard_manager.deliver_transcription.side_effect = lambda *a, **kw: order.append('paste') or True
+        self._run_auto_pipeline('Hello there', None, True, info=self._sure_info(), prepare=prepare)
+        self.assertEqual(order, ['wait', 'paste'])
+
     def test_all_recordings_filters_hotkey_dictation_too(self):
         audio, info, levels = self._me_then_tv()
         config = {'audio': {'voice_filter': {'apply_to': 'all', 'quieter_than_me': True, 'margin_db': 12}}}
@@ -6641,6 +6769,19 @@ class DelayedSendTests(unittest.TestCase):
         self.assertFalse(ds.is_pending())
         self.assertEqual(self.events[-1][1]['reason'], 'you started typing')
         self.assertEqual(self.watch.stopped, [7])
+        self.clock.now = 6.0
+        ds.poll()
+        self.assertEqual(self.sent, [])
+
+    # Your own Enter is the send itself (app.log 2026-10-14 10:35:51): Koli
+    # must not press Enter again, and the bubble says sent, not cancelled.
+    def test_your_own_enter_is_the_send(self):
+        ds = self._sender()
+        ds.schedule(5)
+        self.watch.on_typing('key 0x0D flags 0x00')
+        self.assertFalse(ds.is_pending())
+        last = self.events[-1][1]
+        self.assertEqual((last['state'], last['reason']), ('sent', 'you sent it'))
         self.clock.now = 6.0
         ds.poll()
         self.assertEqual(self.sent, [])
@@ -7400,6 +7541,7 @@ class DelayedSendStateManagerTests(unittest.TestCase):
         sm.clipboard_manager.delayed_send.cancel.return_value = True
         sm.get_current_state = mock.Mock(return_value='recording' if recording else 'idle')
         sm.cancel_active_recording = mock.Mock()
+        sm._auto_started = False
         return sm
 
     def test_esc_stops_a_pending_send(self):

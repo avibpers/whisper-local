@@ -214,6 +214,7 @@ class HotkeyListener:
 
     def _standard_hotkey_pressed(self):
         self.logger.info(f"Standard hotkey pressed: {self.recording_hotkey}")
+        self._grace_stop = None   # Ctrl was the start of this chord, not a stop
         self.keys_armed = False
         self.state_manager.start_recording()
 
@@ -228,10 +229,42 @@ class HotkeyListener:
             return
 
         if self.keys_armed:
+            if self._stop_key_starts_record_chord() and self.state_manager.is_auto_recording():
+                # Ctrl may be the start of ctrl+win+b, pressed to take the
+                # auto session over: wait a moment for the rest of the chord.
+                token = object()
+                self._grace_stop = token
+                self._timer_factory(self.STOP_KEY_GRACE_S, lambda: self._stop_after_grace(token))
+                return
             self.logger.info(f"Stop key activated: {self.stop_key}")
             self.state_manager.stop_recording()
         else:
             self.logger.debug("Stop key ignored - waiting for key release first")
+
+    # Ctrl alone during an auto session still stops it, a moment later
+    # (app.log 2026-10-14 10:35:05: Ctrl ended a session 55 ms after it
+    # started, and the record chord that followed was lost).
+    STOP_KEY_GRACE_S = 0.25
+
+    def _stop_after_grace(self, token):
+        if getattr(self, '_grace_stop', None) is not token:
+            return   # the record chord came: a takeover, not a stop
+        self._grace_stop = None
+        if self.state_manager.is_auto_recording():
+            self.logger.info(f"Stop key activated: {self.stop_key}")
+            self.state_manager.stop_recording()
+
+    def _stop_key_starts_record_chord(self) -> bool:
+        stop = str(self.stop_key or '').lower().strip()
+        return bool(stop) and stop in [k.strip() for k in str(self.recording_hotkey or '').lower().split('+')]
+
+    @staticmethod
+    def _timer_factory(seconds, fn):
+        import threading
+        timer = threading.Timer(seconds, fn)
+        timer.daemon = True
+        timer.start()
+        return timer
 
     def _auto_send_key_pressed(self):
         self.logger.debug(f"Auto-send key pressed: {self.auto_send_key}, keys_armed={self.keys_armed}")

@@ -213,6 +213,22 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
   off both still happen when recording starts.
 
 ### Fixed
+- **The record hotkey takes over auto-dictation instead of fighting it.**
+  Clicking into a field and then pressing the record keys used to cut you off
+  mid-sentence: the press was ignored, Ctrl (the stop key, and the first key
+  of the record keys) ended the session, or a paste at your pause merged with
+  the held Ctrl+Win into Win+Ctrl+V and opened Windows' sound panel, so the
+  text field lost focus. Now the same recording becomes yours: no pastes at
+  pauses, no cancel when focus moves, and it ends when you let go. Ctrl alone
+  still ends an auto session, a quarter second later.
+- **Your own Enter during the auto-send countdown is the send.** Koli no
+  longer presses Enter a second time, and the bubble says sent instead of
+  "cancelled: you started typing".
+- **"Thank you." from a hotkey tap is no longer typed.** A press shorter than
+  0.3 s records nothing ("Hold the keys while you talk"), and a hotkey clip
+  under 2 seconds that Whisper scored below -0.6 isn't typed ("Didn't catch
+  that") and no longer teaches Koli your voice. Longer hotkey dictations are
+  never second-guessed.
 - **A missed wake command gets a second try.** "Didn't catch that - say it
   again": Koli keeps listening 5 more seconds for the command, no wake word
   needed. A second miss ends it.
