@@ -10,6 +10,7 @@ import collections
 import difflib
 import json
 import logging
+import re
 import threading
 import time
 from pathlib import Path
@@ -234,6 +235,11 @@ class Burst:
         self.head_done = False
         self.is_wake = False      # this burst held the wake word
         self.max_frames = 0       # cut here even if it never goes quiet (set by the cutter)
+        self.paused = False       # the first short pause was reported
+        self.checks = 0           # wake checks run on this burst
+        self.checked_frames = 0   # speech frames it had at the last check
+        self.wake_frames = 0      # speech frames when it woke Koli
+        self.wake_rest = ''       # what followed the wake word in that check
 
     def audio(self) -> np.ndarray:
         return np.concatenate(self.frames) if self.frames else np.zeros(0, dtype=np.float32)
@@ -242,19 +248,24 @@ class Burst:
         return self.speech_frames * FRAME_S
 
 
-# Frames in, ('head' | 'end', burst) events out. A burst starts on a speech
-# frame (with PREROLL_S before it, so the first sound isn't clipped) when
-# `may_start()` agrees, and ends after END_SILENCE_S of silence or at MAX_S.
-# 'head' comes once, at HEAD_S or at the end if the burst is shorter.
+# Frames in, ('pause' | 'head' | 'end', burst) events out. A burst starts on
+# a speech frame (with PREROLL_S before it, so the first sound isn't clipped)
+# when `may_start()` agrees, and ends after END_SILENCE_S of silence or at
+# MAX_S. 'pause' comes once, at the first PAUSE_S of silence after speech
+# (the wake word said on its own is checked then, not 0.6 s after it);
+# 'head' once, at HEAD_S or at the end if the burst is shorter (one breath,
+# "Hey Koli next song", is checked while you are still talking).
 class BurstCutter:
     SPEECH = 0.5
-    HEAD_S = 2.0
+    HEAD_S = 1.2
+    PAUSE_S = 0.3
     END_SILENCE_S = 0.6
     MAX_S = 8.0
     PREROLL_S = 0.3
 
     def __init__(self, head_s: float = HEAD_S, end_silence_s: float = END_SILENCE_S, max_s: float = MAX_S):
         self.head_frames = max(1, int(round(head_s / FRAME_S)))
+        self.pause_frames = max(1, int(round(self.PAUSE_S / FRAME_S)))
         self.end_frames = max(1, int(round(end_silence_s / FRAME_S)))
         self.max_frames = max(self.head_frames, int(round(max_s / FRAME_S)))
         self._preroll = collections.deque(maxlen=max(1, int(round(self.PREROLL_S / FRAME_S))))
@@ -279,6 +290,9 @@ class BurstCutter:
             burst.silence_frames += 1
         events = []
         over = burst.silence_frames >= self.end_frames or len(burst.frames) >= burst.max_frames
+        if not burst.paused and not over and burst.silence_frames >= self.pause_frames and burst.speech_frames:
+            burst.paused = True
+            events.append(('pause', burst))
         if over:
             burst.over = True
             self.burst = None
@@ -292,6 +306,10 @@ class BurstCutter:
     # How long new bursts may run before they are cut.
     def set_max_seconds(self, seconds: float) -> None:
         self.max_frames = max(self.head_frames, int(round(seconds / FRAME_S)))
+
+    # The silence that ends a burst, from now on (the one in progress too).
+    def set_end_silence(self, seconds: float) -> None:
+        self.end_frames = max(1, int(round(seconds / FRAME_S)))
 
     # Cut the burst in progress `seconds` from now at the latest.
     def cut_after(self, seconds: float) -> None:
@@ -327,6 +345,14 @@ class WakeListener:
     # (or a follow-up) is cut at COMMAND_MAX_S, never at the 8 s burst cut.
     COMMAND_AFTER_WAKE_S = 4.0
     COMMAND_MAX_S = 4.0
+    # A command is short and you've just been asked for it: a shorter pause
+    # ends it than the 0.6 s that ends a burst while Koli sleeps.
+    COMMAND_END_SILENCE_S = 0.45
+    # Wake checks per burst: at its first short pause (or the head), and once
+    # more at its end when it grew since ("Hey… Via" with a gap). Bursts
+    # longer than RECHECK_MAX_S are talk, not a wake word: no second check.
+    MAX_CHECKS_PER_BURST = 2
+    RECHECK_MAX_S = 3.0
     # Sound quieter than your voice by more than GATE_MARGIN_DB is silence:
     # music from the speakers reads as speech to TEN VAD and would hold every
     # burst open. Judged on the last LEVEL_WINDOW_S. The margin is the wake
@@ -379,6 +405,7 @@ class WakeListener:
         self.budget = CheckBudget(clock)
         self.cutter = BurstCutter()
         self.state = SLEEPING
+        self._phase = 'sleeping'     # what the bubble was last told
         self._deadline = 0.0
         self._chime_until = 0.0
         self._retry_left = False     # a missed first command may be said once more
@@ -417,6 +444,20 @@ class WakeListener:
     def spellings(self) -> List[str]:
         phrases = [p for p in (self._cfg().get('phrases') or []) if isinstance(p, str) and p.strip()]
         return phrases or list(DEFAULT_SPELLINGS)
+
+    # The language the wake check reads the word in, from how it is spelled:
+    # Hebrew letters → 'he', Latin → 'en', anything else None (detected).
+    # Telling Whisper skips its language detection, a second pass over the
+    # audio (2026-10-14: 106 ms → 58 ms on an idle GPU, ~0.4 s saved in the
+    # running app). The command after it is read in your own language.
+    def wake_language(self) -> Optional[str]:
+        word = str(self._cfg().get('spelling') or '').strip() or self.spellings()[0]
+        if re.search(r'[֐-׿]', word):
+            return 'he'
+        letters = re.findall(r'[^\W\d_]', word)
+        if letters and all('a' <= c.lower() <= 'z' for c in letters):
+            return 'en'
+        return None
 
     # Your own word that must sound like you.
     def personal(self) -> bool:
@@ -562,10 +603,10 @@ class WakeListener:
         elif self._gated_frames:
             self._log_gated()
         for event, burst in self.cutter.feed(frame, prob, may_start=self._may_start):
-            if event == 'head':
-                self._on_head(burst)
-            else:
+            if event == 'end':
                 self._on_end(burst)
+            else:
+                self._maybe_wake(burst, event)
         self.tick()
 
     # Time-based moves: the wait for a command or a follow-up runs out, or
@@ -678,29 +719,51 @@ class WakeListener:
             self._locked_cache = (value, now)
         return value
 
-    def _on_head(self, burst: Burst) -> None:
-        if self.state != SLEEPING:
+    # A wake check on a burst while Koli sleeps, at its first short pause, its
+    # head or its end (`when`). Skipped when nothing new was said since the
+    # last check, after MAX_CHECKS_PER_BURST, and for a second check on a
+    # burst too long to be a wake word.
+    def _maybe_wake(self, burst: Burst, when: str) -> None:
+        if self.state != SLEEPING or burst.is_wake:
             return       # a command or follow-up burst is handled whole, at its end
-        if not self.may_listen():
+        if burst.speech_frames <= burst.checked_frames or burst.checks >= self.MAX_CHECKS_PER_BURST:
             return
-        rest = self._check_wake(burst.audio(), burst.speech_seconds())
+        if burst.checks and burst.speech_seconds() > self.RECHECK_MAX_S:
+            return
+        if burst.speech_seconds() < self.MIN_SPEECH_S or not self.may_listen():
+            return
+        burst.checks += 1
+        burst.checked_frames = burst.speech_frames
+        silence = burst.silence_frames * FRAME_S
+        rest = self._check_wake(burst.audio(), burst.speech_seconds(),
+                                when=f"at a {silence:.2f} s pause" if silence else f"while talking ({when})")
         if rest is None:
             return
         self._woke()
         burst.is_wake = True
+        burst.wake_frames, burst.wake_rest = burst.speech_frames, rest
         if not burst.over:
-            self._enter(AWAKE)                       # still talking: the command follows
+            self._enter(AWAKE)                       # the command may follow in this burst
             self.cutter.cut_after(self.COMMAND_AFTER_WAKE_S)
         elif rest:
-            self._run(text=rest, first=True)         # "Hey Koli next", all inside the head
+            self._run(audio=burst.audio(), first=True)   # "Hey Koli next", read in your language
         else:
             self._enter(WAITING, self._seconds('command_timeout_seconds', 5))
 
     def _on_end(self, burst: Burst) -> None:
         if burst.is_wake:
             if self.state == AWAKE:
-                self._run(audio=burst.audio(), first=True)
+                said_more = burst.speech_frames - burst.wake_frames >= self.MIN_SPEECH_S / FRAME_S
+                if burst.wake_rest or said_more:
+                    self._run(audio=burst.audio(), first=True)
+                else:
+                    # Only the wake word, already read: wait for the command.
+                    self._enter(WAITING, self._seconds('command_timeout_seconds', 5))
             return
+        if self.state == SLEEPING:
+            self._maybe_wake(burst, 'end')
+            if burst.is_wake:
+                return
         if burst.speech_seconds() < self.MIN_SPEECH_S:
             return
         if self.state == WAITING:
@@ -714,10 +777,12 @@ class WakeListener:
     # your voice (personal word), the budget, then Whisper.
     # Each try gets one log line saying why it did or didn't wake Koli; what
     # Whisper heard only with log_transcriptions on.
-    def _check_wake(self, audio: np.ndarray, speech_seconds: float) -> Optional[str]:
+    # `when` says where in the burst it ran ("at a 0.30 s pause"), and the
+    # line ends with how long Whisper took: what the chime waits for.
+    def _check_wake(self, audio: np.ndarray, speech_seconds: float, when: str = '') -> Optional[str]:
         if speech_seconds < self.MIN_SPEECH_S:
             return None
-        said = f"Wake check ({speech_seconds:.1f} s of speech)"
+        said = f"Wake check ({speech_seconds:.1f} s of speech{', ' + when if when else ''})"
         voice = ''      # the score, for the console
         if self.personal():
             score = self.similarity(audio)
@@ -737,15 +802,18 @@ class WakeListener:
             if self.personal():
                 _console(f"👂 Sounded like you{voice}, but skipped: checking less often after many misses")
             return None
+        started = time.monotonic()
         try:
             text = self._transcribe(audio) or ''
         except Exception as e:
             self.logger.info(f"{said}: Whisper failed ({e})")
             return None
+        took_ms = (time.monotonic() - started) * 1000
         rest = match_wake(text, self.spellings(), self.match_ratio())
         ratio, spelling = closest_wake(text, self.spellings())
         heard = f" “{text}”" if self._log_text() else f" {len(text.split())} word(s)"
-        said += f", heard{heard}, {ratio:.2f} like “{spelling}” (needs {self.match_ratio():.2f})"
+        said += (f", heard{heard} in {took_ms:.0f} ms, {ratio:.2f} like “{spelling}” "
+                 f"(needs {self.match_ratio():.2f})")
         if rest is None:
             self.budget.missed()
             self.logger.info(f"{said}: no")
@@ -866,15 +934,23 @@ class WakeListener:
     def _enter(self, state: str, seconds: float = 0.0) -> None:
         self.state = state
         self._deadline = self._clock() + seconds
-        # A command after a pause, or a follow-up, is short: cut it soon.
+        # A command after a pause, or a follow-up, is short: cut it soon, and
+        # end it at a shorter pause.
         self.cutter.set_max_seconds(self.COMMAND_MAX_S if state in (WAITING, FOLLOW_UP) else BurstCutter.MAX_S)
+        self.cutter.set_end_silence(self.COMMAND_END_SILENCE_S)
         self._busy_checked = self._clock()
-        self._publish('wake', {'phase': 'follow_up' if state == FOLLOW_UP else 'awake'})
+        # Awake → waiting is the same to the bubble: say it once.
+        phase = 'follow_up' if state == FOLLOW_UP else 'awake'
+        if phase != getattr(self, '_phase', None):
+            self._phase = phase
+            self._publish('wake', {'phase': phase})
 
     def _sleep(self) -> None:
         was, self.state = self.state, SLEEPING
         self.cutter.set_max_seconds(BurstCutter.MAX_S)
+        self.cutter.set_end_silence(BurstCutter.END_SILENCE_S)
         if was != SLEEPING:
+            self._phase = 'sleeping'
             self._publish('wake', {'phase': 'sleeping'})
 
     # ── Recording your word (setup screen) ───────────────────────────────────
@@ -951,8 +1027,8 @@ class WakeListener:
         engine = getattr(self.sm, 'whisper_engine', None)
         if engine is None or getattr(engine, 'model', None) is None:
             return None
-        return engine.transcribe_audio(audio, language=self.sm.wake_language(), use_prompt=False,
-                                       beam_size=1, task='transcribe', quiet=True,
+        return engine.transcribe_audio(audio, language=self.wake_language() or self.sm.wake_language(),
+                                       use_prompt=False, beam_size=1, task='transcribe', quiet=True,
                                        hotwords=self.spelling_hint())
 
     def _meeting_voiceprint(self, audio: np.ndarray):

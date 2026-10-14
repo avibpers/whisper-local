@@ -211,6 +211,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
   When the recording ends, the players Koli paused play again (one you already
   restarted is left alone) and the volume comes back. With "Stop on silence"
   off both still happen when recording starts.
+- **The wake word answers sooner.** Koli checks your word at the first short
+  pause after it (0.3 s, was 0.6 s), reads it in its own language instead of
+  detecting one first (Whisper's extra pass), checks "Hey Koli next song"
+  while you are still talking, ends a command at a 0.45 s pause and reads it
+  with Whisper's fast setting. A word said with a gap ("Hey… Via") still
+  wakes. The log line of each try says how long Whisper took.
 
 ### Fixed
 - **The record hotkey takes over auto-dictation instead of fighting it.**

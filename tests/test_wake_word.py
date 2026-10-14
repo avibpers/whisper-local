@@ -130,7 +130,7 @@ import numpy as np  # noqa: E402
 
 # 8 is music from the speakers, quiet at the microphone: Whisper writes
 # nothing for it, but TEN VAD hears it as speech. 9 is loud talk (a TV).
-WORDS = {1: 'hey koli', 2: 'next song', 3: 'undo', 4: 'koli', 5: 'ding', 8: '', 9: 'blah blah'}
+WORDS = {1: 'hey koli', 2: 'next song', 3: 'undo', 4: 'koli', 5: 'ding', 7: 'hey', 8: '', 9: 'blah blah'}
 COMMANDS = {'next song': 'media', 'undo': 'other'}
 # How loud each token is at the microphone (dBFS); you speak at -18.
 LEVELS = {0: -90.0, 8: -45.0}
@@ -219,7 +219,8 @@ class ListenerTestCase(unittest.TestCase):
 
         def run_command(audio=None, text=None, only_media=False, report_miss=True, can_retry=False):
             said = text if text is not None else (fake_transcribe(audio) or '')
-            rest = wake_word.match_wake(said, ['hey koli'], 0.9)
+            # Like StateManager.run_wake_command: the listener's own word is dropped.
+            rest = wake_word.match_wake(said, self.listener.spellings(), self.listener.match_ratio())
             said = said if rest is None else rest
             self.runs.append({'text': said, 'audio': audio is not None, 'only_media': only_media,
                               'report_miss': report_miss})
@@ -276,13 +277,89 @@ class WakeListenerTests(ListenerTestCase):
         self.assertEqual(listener.state, self.ww.FOLLOW_UP)
         self.assertEqual(self.phases(), ['awake', 'follow_up'])
 
-    def test_one_short_breath_runs_from_the_heads_text(self):
+    # The wake check reads the word in its own language (faster, no
+    # detection), so the command is read again in yours: "Hey Via תפעיל
+    # מוזיקה" must not come out in English letters.
+    def test_one_short_breath_runs_the_command_from_the_audio(self):
         listener = self.make()
         self.say(1, 2, seconds=0.6)
         self.quiet(0.8)
-        self.assertEqual(self.runs, [{'text': 'next song', 'audio': False, 'only_media': False, 'report_miss': True}])
-        self.assertEqual(len(self.transcribed), 1, 'no second Whisper pass')
+        self.assertEqual(self.runs, [{'text': 'next song', 'audio': True, 'only_media': False, 'report_miss': True}])
+        self.assertEqual(len(self.transcribed), 1, 'one wake check')
         self.assertEqual(listener.state, self.ww.FOLLOW_UP)
+
+    # ── Speed (2026-10-14: the chime came 1.0-1.5 s after "Hey Via") ──
+
+    def test_the_wake_word_is_checked_at_the_first_short_pause(self):
+        listener = self.make()
+        self.say(1, seconds=0.6)
+        self.quiet(0.35)                  # before the end of the burst (0.6 s)
+        self.assertEqual(self.sounds, 1, 'the chime comes at the first short pause')
+        self.assertEqual(self.transcribed, ['hey koli'])
+        self.quiet(0.6)
+        self.assertEqual(listener.state, self.ww.WAITING)
+        self.assertEqual(self.runs, [])
+        self.assertEqual(len(self.transcribed), 1, 'the wake word alone is not read twice')
+
+    def test_a_gap_inside_the_wake_word_still_wakes(self):
+        listener = self.make()
+        self.say(7, seconds=0.4)          # "hey"
+        self.quiet(0.35)                  # checked here: not the word yet
+        self.say(4, seconds=0.4)          # "koli", the same burst
+        self.quiet(0.8)
+        self.assertEqual(self.transcribed, ['hey', 'hey koli'])
+        self.assertEqual(self.sounds, 1)
+        self.assertEqual(listener.state, self.ww.WAITING)
+
+    def test_long_talk_is_checked_at_most_twice_per_burst(self):
+        self.make()
+        for _ in range(8):
+            self.say(9, seconds=0.5)
+            self.quiet(0.35)              # short gaps: one long burst
+        self.quiet(0.8)
+        self.assertLessEqual(len(self.transcribed), 2)
+
+    def test_one_breath_is_checked_while_you_are_still_talking(self):
+        listener = self.make()
+        self.say(1, seconds=0.6)
+        self.say(2, seconds=0.7)          # 1.3 s into the burst, still talking
+        self.assertEqual(listener.state, self.ww.AWAKE)
+        self.assertEqual(self.sounds, 1)
+
+    def test_a_command_ends_after_a_shorter_pause(self):
+        listener = self.make()
+        self.say(1)
+        self.quiet(1.0)
+        self.assertEqual(listener.state, self.ww.WAITING)
+        self.say(2)
+        self.quiet(0.5)                   # 0.45 s ends a command
+        self.assertEqual(self.runs[-1]['text'], 'next song')
+
+    def test_the_wake_check_reads_the_word_in_its_own_language(self):
+        listener = self.make(phrases=['hey via'])
+        self.assertEqual(listener.wake_language(), 'en')
+        listener = self.make(phrases=['היי קולי'])
+        self.assertEqual(listener.wake_language(), 'he')
+        listener = self.make(phrases=['привет коли'])
+        self.assertIsNone(listener.wake_language())
+        listener = self.make(phrases=['hey via'], spelling='היי ויה')
+        self.assertEqual(listener.wake_language(), 'he', 'how you spell it wins')
+
+    def test_the_engine_check_gets_the_words_language(self):
+        import unittest.mock as mock
+        from koli import wake_word
+        sm = FakeStateManager()
+        sm.whisper_engine = mock.Mock()
+        sm.whisper_engine.transcribe_audio.return_value = 'hey via'
+        sm.wake_language = lambda: 'auto'
+        listener = wake_word.WakeListener(sm, Config(phrases=['hey via']), speech_prob=lambda f: 0.0,
+                                          is_locked=lambda: False, publish=lambda *a: None, play_sound=lambda: None)
+        listener._engine_transcribe(np.zeros(16000, dtype=np.float32))
+        self.assertEqual(sm.whisper_engine.transcribe_audio.call_args.kwargs['language'], 'en')
+        listener = wake_word.WakeListener(sm, Config(phrases=['привет коли']), speech_prob=lambda f: 0.0,
+                                          is_locked=lambda: False, publish=lambda *a: None, play_sound=lambda: None)
+        listener._engine_transcribe(np.zeros(16000, dtype=np.float32))
+        self.assertEqual(sm.whisper_engine.transcribe_audio.call_args.kwargs['language'], 'auto')
 
     def test_one_long_breath_runs_the_whole_burst(self):
         listener = self.make()
@@ -759,6 +836,7 @@ class WakeCommandStateManagerTests(unittest.TestCase):
         self.assertEqual(sm.voice_command_manager.execute_command.call_args[0][0]['hotkey'], 'media_next')
         kwargs = sm.whisper_engine.transcribe_audio.call_args.kwargs
         self.assertEqual((kwargs['language'], kwargs['use_prompt'], kwargs['task']), ('auto', False, 'transcribe'))
+        self.assertEqual(kwargs['beam_size'], 1, 'commands are short: the fast setting')
         sm.level_overlay.flash_success.assert_called_once()
         self.assertFalse(sm.is_processing)
 

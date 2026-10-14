@@ -69,9 +69,16 @@ mic ──► TEN VAD ──► speech burst ──► [personal word: is it you
    and the command.
 2. **Speech bursts.** It runs its own TEN VAD instance; the speech check and
    live detection stopped sharing one in `27fc52a`. When speech starts,
-   Koli keeps the audio. The check runs on the first ~2 s, or on the whole
-   burst if it is shorter. A burst that has already been checked and wasn't
-   the wake word is ignored until the next silence.
+   Koli keeps the audio. The check runs at the burst's first 0.3 s pause
+   (the word said on its own wakes Koli then, not after the 0.6 s that ends
+   a burst), or 1.2 s in when you keep talking (one breath), whichever comes
+   first. If that missed and the burst grew ("Hey… Via" with a gap), it is
+   checked once more at its end, unless it is longer than 3 s of speech
+   (talk, not a wake word). At most two checks per burst.
+   *Speed (2026-10-14):* the chime came 1.0-1.5 s after "Hey Via": the 0.6 s
+   wait, a language-detection pass (~0.4 s in the running app) and the
+   shared Whisper queue. Each "Wake check" log line now says where in the
+   burst it ran and how long Whisper took.
    **Quieter than you is silence.** Music from the speakers reads as speech
    to TEN VAD and never pauses, so in the first real test (2026-10-12) every
    burst ran to the 8 s cut: commands waited ~6 s and a wake word said
@@ -89,9 +96,10 @@ mic ──► TEN VAD ──► speech burst ──► [personal word: is it you
 4. **Whisper.** The burst head is transcribed with beam size 1, no
    initial prompt (prompt words can't fake a match) and always as
    "transcribe" (the Translate profile would turn a Hebrew word English).
-   The language is the one in Settings, not the last dictation's app rule,
-   so `whisper.languages` and the Hebrew model apply. Koli only checks when
-   it is idle, so a check never competes with a dictation.
+   The language is the word's own, from how it is spelled (Hebrew letters
+   → Hebrew, Latin → English), so Whisper skips detecting it: 106 → 58 ms on
+   an idle GPU. Other scripts fall back to the one in Settings. Koli only
+   checks when it is idle, so a check never competes with a dictation.
 5. **Match.** The transcript is normalised the way commands are
    (`normalize_spoken`). Its first words, with one word more or less and
    the spaces taken out ("heykoli", "hey ko li"), are compared with each
@@ -100,12 +108,14 @@ mic ──► TEN VAD ──► speech burst ──► [personal word: is it you
    high = 0.8. "hey cool" (0.86) only wakes at high; "hey kelly" never. A
    personal word gets 0.15 more (it must sound like you too, and has only
    three recordings' spellings), so "coli" for "koli" passes at medium.
-6. **Command.** When the whole burst was inside the head ("Hey Koli next"),
-   the head's text already holds the command: no second Whisper pass.
-   Otherwise recording continues until silence, Koli transcribes the whole
-   burst, strips the wake word from the start, and sends the rest through
-   `VoiceCommandManager`, the same path as hotkey commands. If nothing is
-   left, Koli waits for the command (pause case).
+6. **Command.** Recording continues until a 0.45 s pause (shorter than the
+   0.6 s that ends a burst while asleep: you were just asked for it), Koli
+   transcribes the whole burst in the language from Settings (the wake
+   check read it in the word's language, which would spell a Hebrew command
+   in English letters), with beam 1, strips the wake word from the start,
+   and sends the rest through `VoiceCommandManager`, the same path as hotkey
+   commands. If only the wake word was said, Koli waits for the command
+   (pause case) without reading the burst again.
 7. **The chime.** For 0.6 s after the wake sound (0.45 s long) no new burst starts, so
    the chime through the speakers can't become the command. A burst already
    going (one breath) carries on.

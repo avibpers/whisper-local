@@ -625,8 +625,10 @@ class StateManager:
             if text is None:
                 if report_miss:
                     self._publish_state('processing')
+                # Beam 1: a command is a few words matched loosely, and the
+                # careful setting only made you wait (0.4-0.9 s on 2026-10-14).
                 text = self.whisper_engine.transcribe_audio(
-                    audio, language=self.wake_language(), use_prompt=False, task='transcribe',
+                    audio, language=self.wake_language(), use_prompt=False, beam_size=1, task='transcribe',
                     quiet=not report_miss) or ''
             listener = self._wake_listener
             if listener is not None:
