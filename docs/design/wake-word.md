@@ -108,6 +108,16 @@ mic ──► TEN VAD ──► speech burst ──► [personal word: is it you
    high = 0.8. "hey cool" (0.86) only wakes at high; "hey kelly" never. A
    personal word gets 0.15 more (it must sound like you too, and has only
    three recordings' spellings), so "coli" for "koli" passes at medium.
+   A match Whisper wasn't sure of doesn't wake: every piece rated more
+   likely silence (no-speech over 0.6), guessed word by word (log-prob
+   under -1.0) or repeating itself, the rule meetings and auto-dictation
+   use. Told to expect your word, Whisper writes it for noise too
+   (2026-10-16: nothing said, "Viush" heard, voice 0.26 against 0.24). The
+   log line of every check ends with the two numbers, to tune this by, and
+   **Test** shows them. The bar stays at -1.0, not the -0.6 of a short
+   hotkey clip: real commands after the wake word scored -0.13 to -1.03 in
+   app.log (2026-10-15/16), noise read as a command -1.36 to -2.9. Wake
+   clips themselves weren't logged before this.
 6. **Command.** Recording continues until a 0.45 s pause (shorter than the
    0.6 s that ends a burst while asleep: you were just asked for it), Koli
    transcribes the whole burst in the language from Settings (the wake
@@ -115,7 +125,11 @@ mic ──► TEN VAD ──► speech burst ──► [personal word: is it you
    in English letters), with beam 1, strips the wake word from the start,
    and sends the rest through `VoiceCommandManager`, the same path as hotkey
    commands. If only the wake word was said, Koli waits for the command
-   (pause case) without reading the burst again.
+   (pause case) without reading the burst again. With your own word, a
+   command said after the pause must sound like you, as follow-ups must:
+   one that doesn't is skipped ("✗ Not your voice" on the console) and Koli
+   keeps waiting. A command in the same breath as the word was checked
+   with it.
 7. **The chime.** For 0.6 s after the wake sound (0.45 s long) no new burst starts, so
    the chime through the speakers can't become the command. A burst already
    going (one breath) carries on.
@@ -153,6 +167,30 @@ In the app, under Commands → Wake word:
 
 If the three recordings come back as very different text, Koli asks you to
 record again: Whisper isn't hearing the word reliably.
+
+### Adding recordings
+
+Three quiet recordings can stop fitting: on 2026-10-16 the real "Viush"
+scored 0.24-0.29, the same as the room's noise (up to 0.29), down from
+0.50 right after recording. **Add recordings** (shown once your word is
+recorded on this microphone) teaches the saved word more, up to 10 at a
+time, one at least:
+
+- Each recording joins your voiceprint on this microphone: the average
+  grows by count (`WakeVoices.add`), so three more in today's noise move it
+  as much as the first three set it. The level grows the same way.
+- Each one shows what Whisper wrote, whether that is a new spelling, and
+  its score against your saved voice.
+- A new spelling ("Deus" for "Viush") is kept when the recording sounds
+  like your others: its score against the saved average and the rest of
+  the set, itself left out, reaches `voice_match` and at least 0.45: a
+  spelling stays for good, so a "Sounds like you" set low for a noisy day
+  doesn't lower its bar. A scrap (under 3
+  letters) or more than one word longer than your word isn't kept. Save
+  says which were added and which weren't, and why.
+- **Also matches** on the card lists the spellings after the first, each
+  with a remove button for one that wakes Koli when you didn't call it.
+  The first (how you spelled it) stays.
 
 The built-in "Hey Koli" ships with the spellings Whisper usually writes:
 `hey koli`, `hey coli`, `hey coley` (what Whisper wrote for a synthesised "Hey Koli"), `hey collie`, `hey cooley`, `hey kohli`, `היי קולי`,
@@ -215,7 +253,7 @@ and `only_my_voice` are written by recording and reset, not edited.
 | Running the command | `state_manager.py` (`run_wake_command`) | Claims "processing" under the state lock, transcribes, strips the wake word, runs the command (media only for "Hey Koli" follow-ups), flashes the bubble. |
 | Voice | `services/meetings.py` | Lends its voiceprint model (`voiceprint_of`, `voiceprint_ready`). |
 | Commands | `voice_commands.py`, `services/commands.py`, Commands screen | `other_triggers` ("Also say"); media commands; `is_media_command`. |
-| Setup | `services/commands.py`, `ui/bridge.py` (`wake_word_*`), Commands screen | Record x3 / save / test / reset; the Wake word card. |
+| Setup | `services/commands.py`, `ui/bridge.py` (`wake_word_*`), Commands screen | Record x3 / add recordings / save / test / reset; the Wake word card with its spellings. |
 | Bubble | `bar.js`, `ui/host.py` | "Listening for a command", then "Anything else?" during the follow-up; "Didn't catch that". |
 | Sound | `audio_feedback.py` | The wake sound (the 'ready' chime for now). |
 | Measuring | `tools/measure_wake_word.py` | Whisper time on your settings, voice scores of short clips (me / other / tv), tap cost. |

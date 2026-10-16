@@ -517,9 +517,9 @@ class Bridge:
         return commands.wake_status(self._sm)
 
     @_api
-    def wake_word_prepare(self, spelling=''):
+    def wake_word_prepare(self, spelling='', more=False):
         from ..services import commands
-        return commands.wake_prepare(self._sm, spelling)
+        return commands.wake_prepare(self._sm, spelling, more)
 
     # Blocks until you've said the word (or a few seconds of nothing).
     @_api

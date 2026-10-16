@@ -5,6 +5,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 ## [Unreleased]
 
 ### Added
+- **Wake word: add recordings.** Commands → Wake word has **Add
+  recordings** for your own word: say it again, in the noise around you or
+  from further away, as many times as you like (up to 10 at a time). Each
+  one joins your voice on this microphone instead of replacing it, and when
+  Whisper writes it a new way ("Deus" for "Viush") that spelling is kept
+  too, if the recording sounds like your others. The spellings are listed on
+  the card, each with a remove button.
 - **AI actions: say what you want.** When none of your voice commands
   matches, the AI does it: "(your wake word), move today's photos from Downloads to
   Pictures", "open the newest PDF in Documents", in English or Hebrew. Only
@@ -247,6 +254,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
   wakes. The log line of each try says how long Whisper took.
 
 ### Fixed
+- **Background noise no longer wakes your own word and runs a command.**
+  Told to expect your word, Whisper wrote it for noise ("Viush" with
+  nothing said), and the noise after it became a command. A wake Whisper
+  wasn't sure of no longer counts, and with your own word the command after
+  a pause must sound like you too, as follow-ups already had to.
 - **The record hotkey takes over auto-dictation instead of fighting it.**
   Clicking into a field and then pressing the record keys used to cut you off
   mid-sentence: the press was ignored, Ctrl (the stop key, and the first key

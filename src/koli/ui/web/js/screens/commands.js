@@ -192,57 +192,89 @@ function VoiceCommands() {
 
 // ── Wake word ─────────────────────────────────────────────────────────────
 // "Hey Koli" for anyone, or your own word: recorded three times, it wakes
-// Koli only in your voice. Test says whether a try would have woken it.
+// Koli only in your voice. "Add recordings" teaches a saved word more (in
+// noise, from further away); Test says whether a try would have woken it.
 
-function openWakeRecorder(onSaved) {
+// What one added recording showed: a new way Whisper wrote it, your voice score.
+function addedNote(r) {
+  return [r.new_spelling && 'new spelling', r.similarity != null && `voice ${r.similarity}`].filter(Boolean).join(' · ');
+}
+
+// After adding recordings: how many, which spellings joined, which didn't and why.
+function addedSummary(s) {
+  const parts = [`Added ${s.added_recordings} recording${s.added_recordings === 1 ? '' : 's'}`];
+  if (s.added_spellings.length) parts.push(`new spellings: ${s.added_spellings.join(', ')}`);
+  s.skipped_spellings.forEach((x) => parts.push(`“${x.spelling}” not kept: ${x.why}`));
+  return parts.join(' · ');
+}
+
+// `more`: add recordings to your saved word instead of recording a new one.
+function openWakeRecorder(onSaved, more = false) {
   const Recorder = () => {
     const [ready, setReady] = useState(false);
-    const [heard, setHeard] = useState([]);
+    const [heard, setHeard] = useState([]);     // per recording: {heard, new_spelling?, similarity?}
     const [busy, setBusy] = useState('');       // 'listening' | 'saving'
     const [error, setError] = useState('');
-    const [needed, setNeeded] = useState(3);
+    const [needed, setNeeded] = useState(more ? 1 : 3);
+    const [most, setMost] = useState(3);
     const [spelling, setSpelling] = useState('');   // how you write it, so Whisper expects it
     const tasks = useRunningTasks('meeting');
+    const prepare = (typed = '') => call('wake_word_prepare', typed, more);
     // Fresh recordings; waits while the voice model gets ready (downloaded once).
-    const start = () => { setHeard([]); setError(''); call('wake_word_prepare').then((r) => setReady(r.ready)).catch((e) => setError(e.message)); };
+    const start = () => {
+      setHeard([]); setError('');
+      prepare().then((r) => { setReady(r.ready); setNeeded(r.needed); setMost(r.most); }).catch((e) => setError(e.message));
+    };
     useEffect(() => { start(); }, []);
     useEffect(() => {
       if (ready) return undefined;
-      const t = setInterval(() => call('wake_word_prepare').then((r) => r.ready && setReady(true)).catch(() => {}), 1500);
+      const t = setInterval(() => prepare().then((r) => r.ready && setReady(true)).catch(() => {}), 1500);
       return () => clearInterval(t);
     }, [ready]);
     const record = () => {
       setBusy('listening'); setError('');
       // The first recording starts the set with the spelling as typed now.
-      (heard.length ? Promise.resolve() : call('wake_word_prepare', spelling))
+      (heard.length ? Promise.resolve() : prepare(spelling))
         .then(() => call('wake_word_record'))
-        .then((r) => { setHeard((h) => [...h, r.heard]); setNeeded(r.needed); })
+        .then((r) => { setHeard((h) => [...h, r]); setNeeded(r.needed); })
         .catch((e) => setError(e.message)).finally(() => setBusy(''));
     };
     const save = () => {
       setBusy('saving');
-      call('wake_word_save').then((s) => { closeModal(); toast(`Your wake word is “${s.word}”`); onSaved(); })
-        .catch((e) => { setError(e.message); setHeard([]); }).finally(() => setBusy(''));
+      call('wake_word_save').then((s) => {
+        closeModal();
+        if (more) toast(addedSummary(s), s.skipped_spellings.length ? { kind: 'warn', timeout: 9000 } : {});
+        else toast(`Your wake word is “${s.word}”`);
+        onSaved();
+      }).catch((e) => { setError(e.message); setHeard([]); }).finally(() => setBusy(''));
     };
     const done = heard.length >= needed;
-    return html`<div class="modal" role="dialog" aria-modal="true"><div class="modal-head"><h2>Record your wake word</h2></div>
+    const full = heard.length >= most;
+    // A new word shows its fixed slots; added recordings grow one at a time.
+    const slots = more ? heard.length + (busy === 'listening' ? 1 : 0) : needed;
+    const recordButton = html`<button type="button" class=${'btn' + (more && done ? '' : ' pri')} disabled=${!ready || !!busy || full} onClick=${record}>
+      <${Icon} name="mic" />${busy === 'listening' ? 'Listening…' : 'Record'}</button>`;
+    return html`<div class="modal" role="dialog" aria-modal="true"><div class="modal-head"><h2>${more ? 'Add recordings of your word' : 'Record your wake word'}</h2></div>
       <div class="modal-body">
-        <p>Press Record and say your word once, in any language. ${needed} times in all, the way you'll say it. After that it wakes Koli only in your voice, on this microphone. Two or three syllables work best (“Hey Avia”).</p>
+        ${more
+          ? html`<p>Press Record and say your word, as many times as you like (up to ${most}). Say it the ways that miss today: with the noise around, from further away, quickly. Each one joins your voice on this microphone. When Whisper writes it a new way, that spelling is kept too, if the recording sounds like your others.</p>`
+          : html`<p>Press Record and say your word once, in any language. ${needed} times in all, the way you'll say it. After that it wakes Koli only in your voice, on this microphone. Two or three syllables work best (“Hey Avia”).</p>
         <label class="stack" style="gap:6px"><span class="eyebrow">How do you spell it? (optional)</span>
           <input class="inp" dir="auto" value=${spelling} placeholder="Hey Avia" aria-label="How you spell your wake word" disabled=${heard.length > 0}
             onInput=${(e) => setSpelling(e.currentTarget.value)} />
-          <span class="small muted">For a made-up word: Whisper writes it the way you type it here instead of a real word that sounds close (“hey yeah”).</span></label>
+          <span class="small muted">For a made-up word: Whisper writes it the way you type it here instead of a real word that sounds close (“hey yeah”).</span></label>`}
         ${!ready && html`<div class="notice"><span class="grow">Getting the voice model ready…</span></div>${tasks.map((t) => html`<${TaskProgress} task=${t} cancel=${false} />`)}`}
-        <ol class="stack" style="gap:6px;margin:0;padding-inline-start:20px">
-          ${Array.from({ length: needed }, (_, i) => html`<li dir="auto">${heard[i] ? html`<span class="chip ok">Heard “${heard[i]}”</span>`
+        ${slots > 0 && html`<ol class="stack" style="gap:6px;margin:0;padding-inline-start:20px">
+          ${Array.from({ length: slots }, (_, i) => html`<li dir="auto">${heard[i] ? html`<span class="chip ok">Heard “${heard[i].heard}”</span>
+              ${addedNote(heard[i]) && html` <span class="small muted">${addedNote(heard[i])}</span>`}`
             : i === heard.length && busy === 'listening' ? html`<span class="chip">Say it now…</span>` : html`<span class="muted">—</span>`}</li>`)}
-        </ol>
+        </ol>`}
         ${error && html`<div class="notice warn" role="alert"><span class="grow">${error}</span></div>`}
       </div>
       <div class="modal-foot"><button type="button" class="btn" onClick=${closeModal}>Cancel</button>
         ${heard.length > 0 && html`<button type="button" class="btn" disabled=${!!busy} onClick=${start}>Start over</button>`}
-        ${done ? html`<button type="button" class="btn pri" disabled=${!!busy} onClick=${save}>Save</button>`
-          : html`<button type="button" class="btn pri" disabled=${!ready || !!busy} onClick=${record}><${Icon} name="mic" />${busy === 'listening' ? 'Listening…' : 'Record'}</button>`}</div></div>`;
+        ${more ? html`${recordButton}${done && html`<button type="button" class="btn pri" disabled=${!!busy} onClick=${save}>Save</button>`}`
+          : done ? html`<button type="button" class="btn pri" disabled=${!!busy} onClick=${save}>Save</button>` : recordButton}</div></div>`;
   };
   openModal(() => html`<${Recorder} />`);
 }
@@ -272,6 +304,7 @@ function WakeWord() {
     test.woke ? 'Woke Koli' : 'Wouldn’t wake Koli',
     test.heard ? `heard “${test.heard}”` : 'heard nothing',
     test.similarity != null ? `voice ${test.similarity} (needs ${test.needs})` : test.needs != null ? 'voice unknown on this microphone' : '',
+    test.sure ? `Whisper ${test.sure}` : '',
   ].filter(Boolean).join(' · '));
   return html`<section class="card" style="overflow:hidden" aria-labelledby="h-wake">
     <div class="card-head"><div><h2 id="h-wake">Wake word</h2><p>Say “Hey Koli, next song”, or “Hey Koli”, a pause, and the command. No shortcut.</p></div>
@@ -280,13 +313,20 @@ function WakeWord() {
       ${enabled && !commandsOn && html`<div class="notice warn"><span class="grow">Voice commands are off, so the wake word has nothing to run. Turn them on below.</span></div>`}
       ${status && html`<div class="row-flex" style="flex-wrap:wrap">
         <span class="chip ok" dir="auto">${status.personal ? `Wakes on “${status.word}” · only your voice` : 'Wakes on “Hey Koli” · any voice'}</span>
-        ${status.can_record && html`<button type="button" class="btn" onClick=${() => openWakeRecorder(reload)}><${Icon} name="mic" />${status.personal ? 'Record again' : 'Record your own word'}</button>`}
+        ${status.can_record && status.personal && status.recorded_here && html`<button type="button" class="btn" onClick=${() => openWakeRecorder(reload, true)}><${Icon} name="mic" />Add recordings</button>`}
+        ${status.can_record && html`<button type="button" class="btn" onClick=${() => openWakeRecorder(reload)}>${status.personal ? 'Record again' : html`<${Icon} name="mic" />Record your own word`}</button>`}
         <button type="button" class="btn" disabled=${testing} onClick=${runTest}>${testing ? 'Say it now…' : 'Test'}</button>
         ${status.personal && html`<button type="button" class="btn ghost" onClick=${reset}>Back to “Hey Koli”</button>`}
       </div>`}
       ${testText && html`<span class=${'chip ' + (test.woke ? 'ok' : '')} style="align-self:flex-start" dir="auto" role="status">${testText}</span>`}
       ${status && status.personal && !status.recorded_here && html`<div class="notice warn"><span class="grow">Your word isn't recorded on this microphone (${status.mic}), so it can't wake Koli here. Record it again with this microphone.</span></div>`}
-      ${status && status.personal && status.spellings.length > 1 && html`<span class="small muted" dir="auto">Also matches: ${status.spellings.slice(1).join(' · ')}</span>`}
+      ${status && status.personal && status.recorded_here && html`<span class="small muted">${status.samples} recording${status.samples === 1 ? '' : 's'} of your voice on this microphone. If it often misses you, add recordings the way it misses.</span>`}
+      ${status && status.personal && status.spellings.length > 1 && html`<div class="row-flex" style="flex-wrap:wrap;gap:4px">
+        <span class="small muted">Also matches:</span>
+        ${status.spellings.slice(1).map((sp) => html`<span class="row-flex" style="gap:0"><span class="chip" dir="auto">${sp}</span>
+          <button type="button" class="btn ghost icon" aria-label=${`Remove ${sp}`} title="Remove: if it wakes Koli when you didn't call it"
+            onClick=${() => saveSetting('wake_word.phrases', status.spellings.filter((x) => x !== sp)).catch(() => {})}><${Icon} name="x" /></button></span>`)}
+      </div>`}
       <span class="small muted">It doesn't listen while you dictate, during a meeting, while Koli is paused or while the PC is locked.</span>
     </div>
     ${rows.map((s) => html`<${SettingRow} s=${s} />`)}

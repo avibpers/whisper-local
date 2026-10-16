@@ -18,6 +18,7 @@ from typing import Callable, Iterable, List, Optional
 
 import numpy as np
 
+from .dictation_cleanup import unsure_piece
 from .utils import get_user_app_data_path, normalize_spoken
 
 logger = logging.getLogger(__name__)
@@ -162,6 +163,40 @@ class CheckBudget:
 WAKE_VOICE_FILE = 'wake_voice.json'
 
 
+# Each voiceprint made unit length; zero vectors are left out.
+def _unit_vectors(vectors) -> List[np.ndarray]:
+    units = []
+    for v in vectors:
+        v = np.asarray(v, dtype=np.float32)
+        norm = float(np.linalg.norm(v))
+        if norm > 0:
+            units.append(v / norm)
+    return units
+
+
+# How much each of `vectors` sounds like the rest of you: its score against
+# `saved` (the stored average over `count` recordings) plus the other new
+# recordings, itself left out so it can't vouch for itself.
+def leave_one_out_scores(vectors, saved: Optional[np.ndarray] = None, count: int = 0) -> List[Optional[float]]:
+    units = []
+    for v in vectors:
+        v = np.asarray(v, dtype=np.float32)
+        norm = float(np.linalg.norm(v))
+        units.append(v / norm if norm > 0 else None)
+    present = [u for u in units if u is not None]
+    if not present:
+        return [None] * len(units)
+    total = np.sum(present, axis=0)
+    if saved is not None and count:
+        total = total + np.asarray(saved, dtype=np.float32) * count
+    scores = []
+    for unit in units:
+        rest = None if unit is None else total - unit
+        norm = 0.0 if rest is None else float(np.linalg.norm(rest))
+        scores.append(None if norm == 0 else float(np.dot(unit, rest / norm)))
+    return scores
+
+
 class WakeVoices:
     def __init__(self, path: Optional[Path] = None):
         self.path = Path(path) if path else Path(get_user_app_data_path()) / WAKE_VOICE_FILE
@@ -194,12 +229,7 @@ class WakeVoices:
     # Keeps the average of `vectors` (one per recording) for `mic`, and how
     # loud you said it, so quieter sound there isn't taken for you.
     def set(self, mic: str, vectors: List[np.ndarray], level_db: Optional[float] = None) -> None:
-        units = []
-        for v in vectors:
-            v = np.asarray(v, dtype=np.float32)
-            norm = float(np.linalg.norm(v))
-            if norm > 0:
-                units.append(v / norm)
+        units = _unit_vectors(vectors)
         if not units:
             return
         centroid = np.mean(units, axis=0)
@@ -211,6 +241,46 @@ class WakeVoices:
                 data[mic or 'default']['level_db'] = round(float(level_db), 1)
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self.path.write_text(json.dumps(data), encoding='utf-8')
+
+    # Adds more recordings to your voiceprint on `mic` instead of replacing
+    # it: the average grows by how many recordings each side holds, so three
+    # more in today's noise move it as much as the first three set it.
+    # Returns False when nothing is saved on `mic` yet.
+    def add(self, mic: str, vectors: List[np.ndarray], level_db: Optional[float] = None) -> bool:
+        units = _unit_vectors(vectors)
+        if not units:
+            return False
+        with self._lock:
+            data = self._read()
+            entry = data.get(mic or 'default')
+            if not entry or not entry.get('centroid'):
+                return False
+            count = int(entry.get('count') or 1)
+            old = np.asarray(entry['centroid'], dtype=np.float32)
+            centroid = (old * count + np.sum(units, axis=0)) / (count + len(units))
+            entry.update(centroid=[round(float(x), 6) for x in centroid], count=count + len(units),
+                         saved=time.strftime('%Y-%m-%dT%H:%M:%S'))
+            if level_db is not None:
+                old_level = entry.get('level_db')
+                entry['level_db'] = round(float(level_db) if old_level is None else
+                                          (float(old_level) * count + float(level_db) * len(units)) / (count + len(units)), 1)
+            self.path.write_text(json.dumps(data), encoding='utf-8')
+        return True
+
+    # How many recordings make your voiceprint on `mic` (0 when none).
+    def count(self, mic: str) -> int:
+        with self._lock:
+            entry = self._read().get(mic or 'default') or {}
+        return int(entry.get('count') or 0) if entry.get('centroid') else 0
+
+    # The saved average on `mic` as it is stored (not made unit length), with
+    # its count: what new recordings are weighed against.
+    def raw(self, mic: str) -> tuple:
+        with self._lock:
+            entry = self._read().get(mic or 'default') or {}
+        if not entry.get('centroid'):
+            return None, 0
+        return np.asarray(entry['centroid'], dtype=np.float32), int(entry.get('count') or 1)
 
     def mics(self) -> List[str]:
         with self._lock:
@@ -425,6 +495,7 @@ class WakeListener:
         self._ai_listens = ai_listens or self._state_manager_ai
         self._quick_command = quick_command or self._state_manager_quick
         self._sentence = False       # this command may be a sentence for the AI
+        self._last_pieces = None     # Whisper's pieces with its numbers, from the last wake check
         self._recent_power = collections.deque(maxlen=max(1, int(round(self.LEVEL_WINDOW_S / FRAME_S))))
         self._window_db = -200.0
         self._gated_frames, self._gated_peak = 0, -200.0
@@ -449,6 +520,8 @@ class WakeListener:
         self.recordings: list = []
         # How you spell the word being recorded ("Hey Avia"), if you typed it.
         self.recording_spelling = ''
+        # True while recordings are being added to your saved word, not making a new one.
+        self.recording_more = False
         self._hint_override: Optional[str] = None
         # The worker: audio from the tap waits here, measured in samples.
         self._pending = collections.deque()
@@ -804,6 +877,9 @@ class WakeListener:
         if said_frames < self.MIN_SPEECH_S / FRAME_S and not burst.wake_rest:
             return       # only the wake word so far
         burst.peeks += 1
+        # A command after a pause wasn't voice-checked as part of the wake word.
+        if not burst.is_wake and not self._sounds_like_you(burst.audio()):
+            return
         try:
             outcome = self._quick_command(burst.audio())
         except Exception as e:
@@ -829,11 +905,14 @@ class WakeListener:
                 return
         if burst.speech_seconds() < self.MIN_SPEECH_S:
             return
+        # With your own word, what follows it has to be you too: noise after
+        # a wake turned into "Via" (2026-10-16). Not you, Koli keeps waiting.
+        if self.personal() and self.state in (WAITING, FOLLOW_UP) \
+                and not self._sounds_like_you(burst.audio(), say=self.state == WAITING):
+            return
         if self.state == WAITING:
             self._run(audio=burst.audio(), first=True)
         elif self.state == FOLLOW_UP:
-            if self.personal() and not self._sounds_like_you(burst.audio()):
-                return
             self._run(audio=burst.audio(), first=False)
 
     # The text after the wake word, or None. Cheapest filter first: length,
@@ -866,6 +945,7 @@ class WakeListener:
                 _console(f"👂 Sounded like you{voice}, but skipped: checking less often after many misses")
             return None
         started = time.monotonic()
+        self._last_pieces = None
         try:
             text = self._transcribe(audio) or ''
         except Exception as e:
@@ -877,6 +957,17 @@ class WakeListener:
         heard = f" “{text}”" if self._log_text() else f" {len(text.split())} word(s)"
         said += (f", heard{heard} in {took_ms:.0f} ms, {ratio:.2f} like “{spelling}” "
                  f"(needs {self.match_ratio():.2f})")
+        sure = self._whisper_sure()
+        if sure is not None:
+            said += f", sure {sure[1]}"
+        # Told to expect your word, Whisper writes it for noise too (2026-10-16:
+        # nothing said, "Viush" heard, voice 0.26): its own numbers then say
+        # it was guessing.
+        if rest is not None and sure is not None and not sure[0]:
+            self.budget.missed()
+            self.logger.info(f"{said}: no - Whisper wasn't sure of the words")
+            _console(f"👂 Heard “{text}”{voice}, but Whisper wasn't sure ({sure[1]}): not woken")
+            return None
         if rest is None:
             self.budget.missed()
             self.logger.info(f"{said}: no")
@@ -888,6 +979,19 @@ class WakeListener:
             self.logger.info(f"{said}: woke")
             _console(f"👂 Heard “{text}”{voice}: woke, listening for the command")
         return rest
+
+    # Whisper's own numbers for the last wake check: (sure enough, the numbers
+    # for the log), or None when the engine gave none (whisper.cpp, tests).
+    # Unsure is the meeting and auto-dictation rule: every piece rated more
+    # likely silence, guessed word by word, or repeating itself.
+    def _whisper_sure(self) -> Optional[tuple]:
+        pieces = self._last_pieces
+        if not pieces:
+            return None
+        no_speech = max(p.get('no_speech_prob', 0) for p in pieces)
+        log_prob = min(p.get('avg_logprob', 0) for p in pieces)
+        sure = not all(unsure_piece(p) for p in pieces)
+        return sure, f"no-speech {no_speech:.2f} / log-prob {log_prob:.2f}"
 
     def _log_text(self) -> bool:
         logging_cfg = (getattr(self.cm, 'config', None) or {}).get('logging') or {}
@@ -911,13 +1015,20 @@ class WakeListener:
         norm = float(np.linalg.norm(vec))
         return float(np.dot(vec / norm, mine)) if norm > 0 else None
 
-    def _sounds_like_you(self, audio: np.ndarray) -> bool:
+    # A command after your word: is it your voice? `say` puts a skipped one
+    # on the console (the first command, which you're waiting on; a
+    # follow-up window hears the room and stays quiet).
+    def _sounds_like_you(self, audio: np.ndarray, say: bool = False) -> bool:
         score = self.similarity(audio)
         if score is None:
             self._notice_unknown_voice()
             return False
-        self.logger.debug(f"Wake word: voice {score:.2f} (needs {self.voice_match():.2f})")
-        return score >= self.voice_match()
+        mine = score >= self.voice_match()
+        self.logger.info(f"Wake word: command voice {score:.2f} (needs {self.voice_match():.2f})"
+                         f"{'' if mine else ' - not you, skipped'}")
+        if not mine and say:
+            _console(f"✗ Not your voice ({score:.2f}, needs {self.voice_match():.2f}): command skipped")
+        return mine
 
     # Your word can't be checked: said once per microphone when it isn't
     # recorded there, once per session while the voice model loads.
@@ -1100,9 +1211,12 @@ class WakeListener:
         engine = getattr(self.sm, 'whisper_engine', None)
         if engine is None or getattr(engine, 'model', None) is None:
             return None
-        return engine.transcribe_audio(audio, language=self.wake_language() or self.sm.wake_language(),
+        pieces = []
+        text = engine.transcribe_audio(audio, language=self.wake_language() or self.sm.wake_language(),
                                        use_prompt=False, beam_size=1, task='transcribe', quiet=True,
-                                       hotwords=self.spelling_hint())
+                                       hotwords=self.spelling_hint(), pieces=pieces)
+        self._last_pieces = pieces
+        return text
 
     def _meeting_voiceprint(self, audio: np.ndarray):
         meetings = getattr(self.sm, 'meetings', None)

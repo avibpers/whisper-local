@@ -5,6 +5,7 @@
 # changes on its own (both files hot-reload); transforms also re-register
 # their shortcuts.
 
+import re
 import statistics
 from pathlib import Path
 
@@ -201,10 +202,20 @@ def delete_transform(ident: str):
 # ── Wake word ────────────────────────────────────────────────────────────────
 # The Wake word card: what wakes Koli now, and recording your own word.
 # Each recording gives what Whisper wrote (the spellings that will match) and
-# a voiceprint of you saying it; three make your word. Design:
-# docs/design/wake-word.md
+# a voiceprint of you saying it; three make your word. "Add recordings"
+# teaches a saved word more: each one joins your voiceprint, and an odd
+# spelling ("Deus" for "Viush") joins the spellings when the recording
+# sounds like your others. Design: docs/design/wake-word.md
 
 WAKE_RECORDINGS = 3
+WAKE_MAX_ADDED = 10      # recordings added in one go
+# An added spelling must be a word or two like yours, not a short scrap
+# ("a") or a sentence: either would wake Koli on far too much.
+MIN_SPELLING_LETTERS = 3
+# A spelling stays for good, so its recording must sound like you by the
+# default bar even when "Sounds like you" is set lower (0.24 on 2026-10-16,
+# when the room's noise scored up to 0.29).
+SPELLING_VOICE_MATCH = 0.45
 
 
 def _wake_listener(sm):
@@ -231,6 +242,7 @@ def wake_status(sm) -> dict:
         'spellings': listener.spellings() if personal else [],
         'mic': mic,
         'recorded_here': listener.wake_voices.get(mic) is not None,
+        'samples': listener.wake_voices.count(mic),
         'recordings': [r['heard'] for r in listener.recordings],
         'needed': WAKE_RECORDINGS,
         'can_record': getattr(sm, 'meetings', None) is not None,
@@ -238,16 +250,25 @@ def wake_status(sm) -> dict:
 
 
 # Starts a fresh set of recordings of the word spelled `spelling` (optional:
-# Whisper is told to expect it). `ready` is False while the voiceprint model
-# loads (a background task); ask again until it is True.
-def wake_prepare(sm, spelling: str = '') -> dict:
+# Whisper is told to expect it). `more`: recordings added to your saved word
+# on this microphone instead, spelled as saved. `ready` is False while the
+# voiceprint model loads (a background task); ask again until it is True.
+def wake_prepare(sm, spelling: str = '', more: bool = False) -> dict:
     listener = _wake_listener(sm)
     meetings = getattr(sm, 'meetings', None)
     if meetings is None:
         raise ValueError("Recording your own word needs the app window")
+    if more:
+        if not listener.personal():
+            raise ValueError("Record your own word first")
+        if listener.wake_voices.get(_wake_mic(sm)) is None:
+            raise ValueError("Your word isn't recorded on this microphone yet. Record it here first.")
+        spelling = listener.spelling_hint()
     listener.recordings = []
+    listener.recording_more = bool(more)
     listener.recording_spelling = str(spelling or '').strip()[:40]
-    return {'ready': bool(meetings.voiceprint_ready())}
+    return {'ready': bool(meetings.voiceprint_ready()), 'needed': 1 if more else WAKE_RECORDINGS,
+            'most': WAKE_MAX_ADDED if more else WAKE_RECORDINGS}
 
 
 # One recording of your word. Refused (say it again) when nothing was heard,
@@ -257,6 +278,9 @@ def wake_record(sm) -> dict:
     meetings = getattr(sm, 'meetings', None)
     if meetings is None:
         raise ValueError("Recording your own word needs the app window")
+    more = listener.recording_more
+    if more and len(listener.recordings) >= WAKE_MAX_ADDED:
+        raise ValueError(f"That's {WAKE_MAX_ADDED} for now. Save them, then add more if you like.")
     audio = listener.capture_word()
     if audio is None:
         raise ValueError("Didn't hear anything. Press Record, then say your word.")
@@ -268,7 +292,15 @@ def wake_record(sm) -> dict:
         raise ValueError("Too short or too quiet to learn your voice from. Say it again.")
     from ..voice_filter import speech_level_db
     listener.recordings.append({'heard': heard, 'voiceprint': voiceprint, 'level': speech_level_db(audio)})
-    return {'heard': heard, 'count': len(listener.recordings), 'needed': WAKE_RECORDINGS}
+    result = {'heard': heard, 'count': len(listener.recordings), 'needed': 1 if more else WAKE_RECORDINGS}
+    if more:
+        # Shown next to the recording: how it scores against your saved voice
+        # today, and whether Whisper wrote it a new way.
+        from .. import wake_word as ww
+        score = listener.similarity(audio)
+        result['similarity'] = None if score is None else round(score, 2)
+        result['new_spelling'] = ww.match_wake(heard, listener.spellings(), listener.match_ratio()) is None
+    return result
 
 
 # Your recordings become the wake word: the spellings Whisper wrote and your
@@ -278,6 +310,8 @@ def wake_save(sm, settings) -> dict:
     from .. import wake_word as ww
     listener = _wake_listener(sm)
     recordings = list(listener.recordings)
+    if listener.recording_more:
+        return _wake_save_more(sm, settings, listener, recordings)
     if len(recordings) < WAKE_RECORDINGS:
         raise ValueError(f"Record your word {WAKE_RECORDINGS} times first")
     spellings = ww.spellings_from_recordings([r['heard'] for r in recordings])
@@ -306,6 +340,47 @@ def wake_save(sm, settings) -> dict:
     return wake_status(sm)
 
 
+# Added recordings join your voiceprint on this microphone. What Whisper
+# wrote a new way becomes a spelling when the recording sounds like your
+# other ones (the saved voice and the rest of this set, itself left out)
+# and is a word or two long; the status says which were added or skipped.
+def _wake_save_more(sm, settings, listener, recordings) -> dict:
+    from .. import wake_word as ww
+    if not recordings:
+        raise ValueError("Record your word at least once first")
+    mic = _wake_mic(sm)
+    saved, count = listener.wake_voices.raw(mic)
+    if saved is None:
+        raise ValueError("Your word isn't recorded on this microphone yet. Record it here first.")
+    scores = ww.leave_one_out_scores([r['voiceprint'] for r in recordings], saved, count)
+    existing = listener.spellings()
+    most_words = len(vc.normalize_spoken(existing[0]).split()) + 1
+    needs = max(listener.voice_match(), SPELLING_VOICE_MATCH)
+    added, skipped = [], []
+    for recording, score in zip(recordings, scores):
+        spelling = vc.normalize_spoken(recording['heard'])
+        if ww.match_wake(spelling, existing + added, listener.match_ratio()) is not None:
+            continue      # already matches
+        letters = len(re.sub(r'[\W\d_]', '', spelling))
+        if letters < MIN_SPELLING_LETTERS or len(spelling.split()) > most_words:
+            skipped.append({'spelling': spelling, 'why': 'too short or too long to be your word'})
+        elif score is None or score < needs:
+            skipped.append({'spelling': spelling, 'why': "didn't sound enough like your other recordings"
+                            + ('' if score is None else f" ({score:.2f}, needs {needs:.2f})")})
+        else:
+            added.append(spelling)
+    levels = [r['level'] for r in recordings if r.get('level') is not None]
+    level_db = float(statistics.median(levels)) if levels else None
+    listener.wake_voices.add(mic, [r['voiceprint'] for r in recordings], level_db=level_db)
+    if added:
+        settings.set('wake_word.phrases', existing + added, source='app', record_undo=False)
+    listener.recordings = []
+    listener.recording_more = False
+    listener.recording_spelling = ''
+    return {**wake_status(sm), 'added_recordings': len(recordings), 'added_spellings': added,
+            'skipped_spellings': skipped}
+
+
 # Say the wake word once: would it have woken Koli? With your own word, the
 # voice score shows next to what it needs, to help set "Sounds like you".
 def wake_test(sm) -> dict:
@@ -314,9 +389,15 @@ def wake_test(sm) -> dict:
     audio = listener.capture_word()
     if audio is None:
         raise ValueError("Didn't hear anything. Press Test, then say the wake word.")
+    listener._last_pieces = None
     heard = (listener.hear(audio) or '').strip()
-    word_ok = ww.match_wake(heard, listener.spellings(), listener.match_ratio()) is not None
+    # As the live check: a word Whisper wasn't sure of doesn't wake.
+    sure = listener._whisper_sure()
+    word_ok = ww.match_wake(heard, listener.spellings(), listener.match_ratio()) is not None \
+        and (sure is None or sure[0])
     result = {'heard': heard, 'word': word_ok, 'woke': word_ok}
+    if sure is not None:
+        result['sure'] = sure[1]
     if listener.personal():
         score = listener.similarity(audio)
         result.update(similarity=None if score is None else round(score, 2), needs=listener.voice_match())
@@ -329,6 +410,7 @@ def wake_reset(sm, settings) -> dict:
     listener = _wake_listener(sm)
     listener.wake_voices.clear()
     listener.recordings = []
+    listener.recording_more = False
     settings.set('wake_word.phrases', [], source='app', record_undo=False)
     settings.set('wake_word.spelling', '', source='app', record_undo=False)
     settings.set('wake_word.only_my_voice', False, source='app', record_undo=False)

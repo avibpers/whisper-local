@@ -130,7 +130,9 @@ import numpy as np  # noqa: E402
 
 # 8 is music from the speakers, quiet at the microphone: Whisper writes
 # nothing for it, but TEN VAD hears it as speech. 9 is loud talk (a TV).
-WORDS = {1: 'hey koli', 2: 'next song', 3: 'undo', 4: 'koli', 5: 'ding', 7: 'hey', 8: '', 9: 'blah blah'}
+# 11 is how Whisper wrote your word one time ("Deus" for "Viush"); 10 a scrap.
+WORDS = {1: 'hey koli', 2: 'next song', 3: 'undo', 4: 'koli', 5: 'ding', 7: 'hey', 8: '', 9: 'blah blah',
+         10: 'ab', 11: 'deus'}
 COMMANDS = {'next song': 'media', 'undo': 'other'}
 # How loud each token is at the microphone (dBFS); you speak at -18.
 LEVELS = {0: -90.0, 8: -45.0}
@@ -360,6 +362,42 @@ class WakeListenerTests(ListenerTestCase):
                                           is_locked=lambda: False, publish=lambda *a: None, play_sound=lambda: None)
         listener._engine_transcribe(np.zeros(16000, dtype=np.float32))
         self.assertEqual(sm.whisper_engine.transcribe_audio.call_args.kwargs['language'], 'auto')
+
+    def test_the_engine_check_keeps_whispers_numbers(self):
+        import unittest.mock as mock
+        from koli import wake_word
+        sm = FakeStateManager()
+        sm.whisper_engine = mock.Mock()
+        piece = {'text': 'hey via', 'no_speech_prob': 0.1, 'avg_logprob': -0.2, 'compression_ratio': 1.0}
+        sm.whisper_engine.transcribe_audio.side_effect = lambda audio, **kw: kw['pieces'].append(piece) or 'hey via'
+        sm.wake_language = lambda: 'auto'
+        listener = wake_word.WakeListener(sm, Config(phrases=['hey via']), speech_prob=lambda f: 0.0,
+                                          is_locked=lambda: False, publish=lambda *a: None, play_sound=lambda: None)
+        listener._engine_transcribe(np.zeros(16000, dtype=np.float32))
+        self.assertEqual(listener._last_pieces, [piece])
+
+    # Told to expect the word, Whisper wrote "Viush" for noise (2026-10-16);
+    # its own numbers said it was guessing.
+    def unsure_whisper(self, listener, no_speech, log_prob):
+        def transcribe(audio):
+            listener._last_pieces = [{'no_speech_prob': no_speech, 'avg_logprob': log_prob, 'compression_ratio': 1.0}]
+            self.transcribed.append(fake_transcribe(audio))
+            return fake_transcribe(audio)
+        listener._transcribe = transcribe
+
+    def test_the_word_whisper_wasnt_sure_of_doesnt_wake(self):
+        listener = self.make()
+        self.unsure_whisper(listener, no_speech=0.8, log_prob=-1.3)
+        self.say(1)
+        self.quiet(1.0)
+        self.assertEqual((self.sounds, listener.state), (0, self.ww.SLEEPING))
+
+    def test_the_word_whisper_was_sure_of_wakes(self):
+        listener = self.make()
+        self.unsure_whisper(listener, no_speech=0.1, log_prob=-0.3)
+        self.say(1)
+        self.quiet(1.0)
+        self.assertEqual((self.sounds, listener.state), (1, self.ww.WAITING))
 
     def test_one_long_breath_runs_the_whole_burst(self):
         listener = self.make()
@@ -681,6 +719,25 @@ class PersonalWakeWordTests(ListenerTestCase):
         self.quiet(0.8)
         self.assertEqual(self.runs[-1], {'text': 'undo', 'audio': True, 'only_media': False, 'report_miss': False})
         self.assertEqual(listener.state, self.ww.FOLLOW_UP)
+
+    # Noise after a real wake became "Via" (2026-10-16): the command after a
+    # pause has to be you too, and Koli keeps waiting for one that is.
+    def test_a_first_command_in_another_voice_is_skipped(self):
+        voice = {'now': self.mine}
+        listener = self.make(voiceprint=lambda audio: voice['now'], phrases=['koli'], only_my_voice=True)
+        self.voices.set('Jabra', [self.mine])
+        self.say(4)
+        self.quiet(1.0)
+        self.assertEqual(listener.state, self.ww.WAITING)
+        voice['now'] = self.theirs
+        self.say(2)
+        self.quiet(0.8)
+        self.assertEqual(self.runs, [])
+        self.assertEqual(listener.state, self.ww.WAITING)
+        voice['now'] = self.mine
+        self.say(2)
+        self.quiet(0.8)
+        self.assertEqual(self.runs[-1]['text'], 'next song')
 
     # The console says when Koli heard a try at the wake word and what Whisper
     # made of it, so you know whether it was heard at all. Other voices and
@@ -1058,6 +1115,58 @@ class WakeSetupTests(ListenerTestCase):
         self.commands.wake_reset(self.sm, self.settings)
         self.assertEqual(listener.spelling_hint(), 'Hey Koli')
 
+    # ── Adding recordings to your saved word ──
+
+    def saved_word(self, more_words, voice=None):
+        listener = self.setup([4, 4, 4] + more_words)
+        self.commands.wake_prepare(self.sm)
+        for _ in range(3):
+            self.commands.wake_record(self.sm)
+        self.commands.wake_save(self.sm, self.settings)
+        if voice is not None:
+            self.sm.meetings.voice = voice
+        return listener
+
+    def test_added_recordings_join_your_voice_and_keep_a_new_spelling(self):
+        listener = self.saved_word([11, 4])
+        prepared = self.commands.wake_prepare(self.sm, more=True)
+        self.assertEqual((prepared['needed'], prepared['most']), (1, self.commands.WAKE_MAX_ADDED))
+        first = self.commands.wake_record(self.sm)
+        self.assertEqual((first['heard'], first['new_spelling'], first['similarity']), ('deus', True, 1.0))
+        self.assertFalse(self.commands.wake_record(self.sm)['new_spelling'])
+        status = self.commands.wake_save(self.sm, self.settings)
+        self.assertEqual(status['added_spellings'], ['deus'])
+        self.assertEqual(listener.spellings(), ['koli', 'deus'])
+        self.assertEqual((status['samples'], status['added_recordings']), (5, 2))
+        self.assertFalse(listener.recording_more)
+
+    def test_a_new_spelling_in_another_voice_isnt_kept(self):
+        listener = self.saved_word([11], voice=np.array([0.0, 1.0], dtype=np.float32))
+        self.commands.wake_prepare(self.sm, more=True)
+        self.commands.wake_record(self.sm)
+        status = self.commands.wake_save(self.sm, self.settings)
+        self.assertEqual(status['added_spellings'], [])
+        self.assertEqual(status['skipped_spellings'][0]['spelling'], 'deus')
+        self.assertIn('other recordings', status['skipped_spellings'][0]['why'])
+        self.assertEqual(listener.spellings(), ['koli'])
+
+    def test_a_scrap_isnt_kept_as_a_spelling(self):
+        listener = self.saved_word([10])
+        self.commands.wake_prepare(self.sm, more=True)
+        self.commands.wake_record(self.sm)
+        status = self.commands.wake_save(self.sm, self.settings)
+        self.assertEqual(status['skipped_spellings'][0]['spelling'], 'ab')
+        self.assertEqual(listener.spellings(), ['koli'])
+
+    def test_adding_needs_your_word_on_this_microphone(self):
+        self.setup([])
+        with self.assertRaisesRegex(ValueError, 'first'):
+            self.commands.wake_prepare(self.sm, more=True)
+        self.saved_word([])
+        self.sm.mic = 'Laptop mic'
+        with self.assertRaisesRegex(ValueError, 'this microphone'):
+            self.commands.wake_prepare(self.sm, more=True)
+
     def test_reset_goes_back_to_hey_koli(self):
         listener = self.setup([4, 4, 4])
         self.commands.wake_prepare(self.sm)
@@ -1163,6 +1272,27 @@ class WakeVoicesTests(unittest.TestCase):
             self.assertIsNone(voices.get('Laptop mic'))
             voices.clear()
             self.assertIsNone(voices.get('Jabra'))
+
+    # Three more recordings move the average as much as the first three set it.
+    def test_added_recordings_are_weighed_by_count(self):
+        import tempfile
+        from koli.wake_word import WakeVoices
+        with tempfile.TemporaryDirectory() as tmp:
+            voices = WakeVoices(Path(tmp) / 'wake_voice.json')
+            self.assertFalse(voices.add('Jabra', [np.array([1.0, 0.0])]), 'nothing saved to add to')
+            voices.set('Jabra', [np.array([1.0, 0.0])] * 3, level_db=-20.0)
+            self.assertTrue(voices.add('Jabra', [np.array([0.0, 1.0])] * 3, level_db=-30.0))
+            got = voices.get('Jabra')
+            self.assertAlmostEqual(float(got[0]), float(got[1]), places=5)
+            self.assertEqual(voices.count('Jabra'), 6)
+            self.assertAlmostEqual(voices.level('Jabra'), -25.0)
+
+    def test_each_recording_is_scored_without_itself(self):
+        from koli.wake_word import leave_one_out_scores
+        mine, theirs = np.array([1.0, 0.0]), np.array([0.0, 1.0])
+        scores = leave_one_out_scores([mine, theirs], saved=mine, count=3)
+        self.assertAlmostEqual(scores[0], 3 / np.sqrt(10), places=5, msg='against 3 saved and the other one')
+        self.assertAlmostEqual(scores[1], 0.0, places=5)
 
 
 if __name__ == '__main__':

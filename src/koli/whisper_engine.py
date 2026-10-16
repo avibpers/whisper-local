@@ -450,6 +450,8 @@ class WhisperEngine:
     # about the text, and `last_info` left to the dictation it describes.
     # `hotwords` replaces your favored words for one call: the wake word's
     # spelling, so Whisper writes "Hey Avia" and not "hey yeah".
+    # `pieces`, a list, gets each piece with Whisper's numbers on how sure it
+    # was: a quiet call has no `last_info`, and the wake check needs them.
     def transcribe_audio(self,
                          audio_data: np.ndarray,
                          language: Optional[str] = None,
@@ -457,7 +459,8 @@ class WhisperEngine:
                          beam_size: Optional[int] = None,
                          task: Optional[str] = None,
                          quiet: bool = False,
-                         hotwords: Optional[str] = None) -> Optional[str]:
+                         hotwords: Optional[str] = None,
+                         pieces: Optional[list] = None) -> Optional[str]:
         if self.model is None:
             return None
         
@@ -508,7 +511,10 @@ class WhisperEngine:
                            'compression_ratio': round(float(s.compression_ratio), 2)} for s in segments]
                 return pieces, info, key, detected_probability, getattr(self, '_raw_language_probability', None)
 
-            pieces, info, used_key, detected_probability, raw_probability = ENGINE_THREAD.run(decode)
+            decoded, info, used_key, detected_probability, raw_probability = ENGINE_THREAD.run(decode)
+            if pieces is not None:
+                pieces.extend(decoded)
+            pieces = decoded
             transcribed_text = ''.join(p['text'] for p in pieces).strip()
             if quiet:
                 self.logger.debug(f"Wake check: {time.time() - start_time:.2f}s, {len(transcribed_text)} chars")
