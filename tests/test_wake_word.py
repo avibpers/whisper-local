@@ -611,6 +611,42 @@ class PersonalWakeWordTests(ListenerTestCase):
         self.voices.set('Jabra', [self.mine, self.mine * 2])
         return listener
 
+    # With AI actions on, a command after your word is a sentence: it isn't
+    # cut at 4 s, and a 1 s pause doesn't end it (2 s does).
+    def make_sentences(self, quick=None):
+        listener = self.make_personal(self.mine)
+        self.peeks = []
+        listener._ai_listens = lambda: True
+        listener._quick_command = lambda audio: self.peeks.append(fake_transcribe(audio)) or (
+            quick(fake_transcribe(audio)) if quick else self.ww.MISSED)
+        return listener
+
+    def test_a_long_sentence_runs_until_a_two_second_pause(self):
+        listener = self.make_sentences()
+        self.say(4, seconds=0.6)
+        self.say(9, seconds=6)          # talking for 6 s, past the 4 s command cut
+        self.quiet(1.0)                 # a pause to think
+        self.say(3, seconds=1)
+        self.quiet(1.0)
+        self.assertEqual(self.runs, [], 'still listening after a 1 s pause')
+        self.quiet(1.2)
+        self.assertEqual(self.runs[-1]['text'], 'blah blah undo')
+        self.assertEqual(len(self.peeks), 2, 'a quick check at each short pause, at most two')
+
+    def test_a_fixed_command_still_runs_at_the_short_pause(self):
+        listener = self.make_sentences(quick=lambda text: self.ww.RAN if text == 'koli next song' else self.ww.MISSED)
+        self.say(4, 2, seconds=0.6)
+        self.quiet(0.6)
+        self.assertEqual(self.peeks, ['koli next song'])
+        self.assertEqual(self.runs, [], 'the full run never happens')
+        self.assertEqual(listener.state, self.ww.FOLLOW_UP)
+
+    def test_without_the_ai_commands_stay_short(self):
+        listener = self.make_personal(self.mine)
+        self.say(4, 2, seconds=0.6)
+        self.quiet(0.6)
+        self.assertEqual(self.runs[-1]['text'], 'next song')
+
     def test_your_word_in_your_voice_wakes(self):
         listener = self.make_personal(self.mine)
         self.say(4, 2, seconds=0.6)

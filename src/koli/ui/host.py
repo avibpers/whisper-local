@@ -38,7 +38,7 @@ PANEL_HIDE_DELAY = 2.5
 
 # Topics each page cares about. Latest-wins topics are coalesced per batch.
 BAR_TOPICS = {'state', 'bar', 'pipeline', 'notify', 'task', 'level', 'streaming_text', 'settings',
-              'profile', 'window', 'auto_send', 'problem', 'meeting', 'wake'}
+              'profile', 'window', 'auto_send', 'problem', 'meeting', 'wake', 'agent'}
 PANEL_TOPICS = {'meeting', 'meeting_turn', 'settings', 'task', 'problem'}
 COALESCE = {'level', 'vad', 'foreground', 'streaming_text'}
 PUSH_INTERVAL = 0.05

@@ -240,6 +240,7 @@ class Burst:
         self.checked_frames = 0   # speech frames it had at the last check
         self.wake_frames = 0      # speech frames when it woke Koli
         self.wake_rest = ''       # what followed the wake word in that check
+        self.peeks = 0            # quick fixed-command checks at its short pauses
 
     def audio(self) -> np.ndarray:
         return np.concatenate(self.frames) if self.frames else np.zeros(0, dtype=np.float32)
@@ -248,13 +249,16 @@ class Burst:
         return self.speech_frames * FRAME_S
 
 
-# Frames in, ('pause' | 'head' | 'end', burst) events out. A burst starts on
+# Frames in, ('pause' | 'head' | 'quiet' | 'end', burst) events out. A burst starts on
 # a speech frame (with PREROLL_S before it, so the first sound isn't clipped)
 # when `may_start()` agrees, and ends after END_SILENCE_S of silence or at
 # MAX_S. 'pause' comes once, at the first PAUSE_S of silence after speech
 # (the wake word said on its own is checked then, not 0.6 s after it);
 # 'head' once, at HEAD_S or at the end if the burst is shorter (one breath,
-# "Hey Koli next song", is checked while you are still talking).
+# "Hey Koli next song", is checked while you are still talking). 'quiet'
+# (only after set_quiet) at every pause that long, while the burst goes on:
+# a long AI sentence ends at a 2 s pause, and its short pauses are where a
+# fixed command can be caught early.
 class BurstCutter:
     SPEECH = 0.5
     HEAD_S = 1.2
@@ -270,6 +274,7 @@ class BurstCutter:
         self.max_frames = max(self.head_frames, int(round(max_s / FRAME_S)))
         self._preroll = collections.deque(maxlen=max(1, int(round(self.PREROLL_S / FRAME_S))))
         self.burst: Optional[Burst] = None
+        self.quiet_frames = 0          # 0: no 'quiet' events
 
     def feed(self, frame: np.ndarray, prob: float, may_start: Callable[[], bool] = lambda: True) -> list:
         speech = prob >= self.SPEECH
@@ -293,6 +298,8 @@ class BurstCutter:
         if not burst.paused and not over and burst.silence_frames >= self.pause_frames and burst.speech_frames:
             burst.paused = True
             events.append(('pause', burst))
+        if self.quiet_frames and not over and burst.silence_frames == self.quiet_frames and burst.speech_frames:
+            events.append(('quiet', burst))
         if over:
             burst.over = True
             self.burst = None
@@ -311,10 +318,19 @@ class BurstCutter:
     def set_end_silence(self, seconds: float) -> None:
         self.end_frames = max(1, int(round(seconds / FRAME_S)))
 
+    # The pause that sends a 'quiet' event (0 = none).
+    def set_quiet(self, seconds: float) -> None:
+        self.quiet_frames = max(1, int(round(seconds / FRAME_S))) if seconds else 0
+
     # Cut the burst in progress `seconds` from now at the latest.
     def cut_after(self, seconds: float) -> None:
         if self.burst is not None:
             self.burst.max_frames = min(self.burst.max_frames, len(self.burst.frames) + int(round(seconds / FRAME_S)))
+
+    # Let the burst in progress run `seconds` more, even past its first cut.
+    def run_for(self, seconds: float) -> None:
+        if self.burst is not None:
+            self.burst.max_frames = len(self.burst.frames) + int(round(seconds / FRAME_S))
 
     # Forget the burst in progress (Koli got busy, the queue fell behind).
     def drop(self) -> None:
@@ -348,6 +364,14 @@ class WakeListener:
     # A command is short and you've just been asked for it: a shorter pause
     # ends it than the 0.6 s that ends a burst while Koli sleeps.
     COMMAND_END_SILENCE_S = 0.45
+    # When the AI can take it (your own word, AI actions on), a command may
+    # be a whole sentence: it runs while you talk, up to SENTENCE_MAX_S, and
+    # ends at a SENTENCE_END_S pause. A fixed command is still caught at its
+    # first short pause (COMMAND_END_SILENCE_S), when what you said so far is
+    # exactly one of its phrases; at most QUICK_PEEKS of those per sentence.
+    SENTENCE_END_S = 2.0
+    SENTENCE_MAX_S = 20.0
+    QUICK_PEEKS = 2
     # Wake checks per burst: at its first short pause (or the head), and once
     # more at its end when it grew since ("Hey… Via" with a gap). Bursts
     # longer than RECHECK_MAX_S are talk, not a wake word: no second check.
@@ -383,6 +407,8 @@ class WakeListener:
                  play_sound: Optional[Callable[[], None]] = None,
                  frame_level: Optional[Callable[[np.ndarray], float]] = None,
                  learned_level: Optional[Callable[[str], Optional[float]]] = None,
+                 ai_listens: Optional[Callable[[], bool]] = None,
+                 quick_command: Optional[Callable] = None,
                  clock: Callable[[], float] = time.monotonic):
         self.sm = state_manager
         self.cm = config_manager
@@ -396,6 +422,9 @@ class WakeListener:
         self._play_sound = play_sound or self._wake_sound
         self._frame_level = frame_level or _frame_level_db
         self._learned_level = learned_level or self._state_manager_level
+        self._ai_listens = ai_listens or self._state_manager_ai
+        self._quick_command = quick_command or self._state_manager_quick
+        self._sentence = False       # this command may be a sentence for the AI
         self._recent_power = collections.deque(maxlen=max(1, int(round(self.LEVEL_WINDOW_S / FRAME_S))))
         self._window_db = -200.0
         self._gated_frames, self._gated_peak = 0, -200.0
@@ -466,6 +495,14 @@ class WakeListener:
 
     def match_ratio(self) -> float:
         return ratio_for(self._cfg().get('sensitivity', 'medium'), personal=self.personal())
+
+    # Whether a first command may be a whole sentence: only your own word
+    # reaches the AI ("Hey Koli" is anyone's), and only with AI actions on.
+    def _sentence_mode(self) -> bool:
+        try:
+            return self.personal() and bool(self._ai_listens())
+        except Exception:
+            return False
 
     def _seconds(self, key: str, default: float) -> float:
         try:
@@ -605,6 +642,8 @@ class WakeListener:
         for event, burst in self.cutter.feed(frame, prob, may_start=self._may_start):
             if event == 'end':
                 self._on_end(burst)
+            elif event == 'quiet':
+                self._peek(burst)
             else:
                 self._maybe_wake(burst, event)
         self.tick()
@@ -744,11 +783,35 @@ class WakeListener:
         burst.wake_frames, burst.wake_rest = burst.speech_frames, rest
         if not burst.over:
             self._enter(AWAKE)                       # the command may follow in this burst
-            self.cutter.cut_after(self.COMMAND_AFTER_WAKE_S)
+            if self._sentence:
+                self.cutter.run_for(self.SENTENCE_MAX_S)
+            else:
+                self.cutter.cut_after(self.COMMAND_AFTER_WAKE_S)
         elif rest:
             self._run(audio=burst.audio(), first=True)   # "Hey Koli next", read in your language
         else:
             self._enter(WAITING, self._seconds('command_timeout_seconds', 5))
+
+    # A short pause in a sentence: when what you said so far is exactly one
+    # of your fixed commands ("next song"), it runs now instead of 2 s later,
+    # and the rest of the burst is dropped. Anything else keeps listening.
+    def _peek(self, burst: Burst) -> None:
+        if not self._sentence or self.state not in (AWAKE, WAITING) or burst.peeks >= self.QUICK_PEEKS:
+            return
+        if self.state == AWAKE and not burst.is_wake:
+            return
+        said_frames = burst.speech_frames - (burst.wake_frames if burst.is_wake else 0)
+        if said_frames < self.MIN_SPEECH_S / FRAME_S and not burst.wake_rest:
+            return       # only the wake word so far
+        burst.peeks += 1
+        try:
+            outcome = self._quick_command(burst.audio())
+        except Exception as e:
+            self.logger.debug(f"Wake word: quick command check failed ({e})")
+            return
+        if outcome == RAN:
+            self.cutter.drop()
+            self._enter(FOLLOW_UP, self._seconds('follow_up_seconds', 5))
 
     def _on_end(self, burst: Burst) -> None:
         if burst.is_wake:
@@ -935,9 +998,17 @@ class WakeListener:
         self.state = state
         self._deadline = self._clock() + seconds
         # A command after a pause, or a follow-up, is short: cut it soon, and
-        # end it at a shorter pause.
-        self.cutter.set_max_seconds(self.COMMAND_MAX_S if state in (WAITING, FOLLOW_UP) else BurstCutter.MAX_S)
-        self.cutter.set_end_silence(self.COMMAND_END_SILENCE_S)
+        # end it at a shorter pause. A first command the AI may take is a
+        # sentence: it runs while you talk and ends at a long pause, with
+        # quick checks for a fixed command at the short ones. (Follow-ups
+        # never reach the AI, so they stay short.)
+        self._sentence = state in (AWAKE, WAITING) and self._sentence_mode()
+        if state in (WAITING, FOLLOW_UP):
+            self.cutter.set_max_seconds(self.SENTENCE_MAX_S if self._sentence else self.COMMAND_MAX_S)
+        else:
+            self.cutter.set_max_seconds(BurstCutter.MAX_S)
+        self.cutter.set_end_silence(self.SENTENCE_END_S if self._sentence else self.COMMAND_END_SILENCE_S)
+        self.cutter.set_quiet(self.COMMAND_END_SILENCE_S if self._sentence else 0)
         self._busy_checked = self._clock()
         # Awake → waiting is the same to the bubble: say it once.
         phase = 'follow_up' if state == FOLLOW_UP else 'awake'
@@ -947,8 +1018,10 @@ class WakeListener:
 
     def _sleep(self) -> None:
         was, self.state = self.state, SLEEPING
+        self._sentence = False
         self.cutter.set_max_seconds(BurstCutter.MAX_S)
         self.cutter.set_end_silence(BurstCutter.END_SILENCE_S)
+        self.cutter.set_quiet(0)
         if was != SLEEPING:
             self._phase = 'sleeping'
             self._publish('wake', {'phase': 'sleeping'})
@@ -1037,6 +1110,14 @@ class WakeListener:
 
     def _state_manager_run(self, **kwargs) -> str:
         return self.sm.run_wake_command(**kwargs)
+
+    def _state_manager_ai(self) -> bool:
+        enabled = getattr(self.sm, '_agent_enabled', None)
+        return bool(enabled()) if callable(enabled) else False
+
+    def _state_manager_quick(self, audio) -> str:
+        quick = getattr(self.sm, 'run_quick_command', None)
+        return quick(audio) if callable(quick) else MISSED
 
     # Your speaking level on `mic`, learned from hotkey dictations.
     def _state_manager_level(self, mic: str) -> Optional[float]:

@@ -8,7 +8,7 @@
 import logging
 
 from .hotkey_gestures import TapLatch
-from .platform import hotkeys
+from .platform import hotkeys, keyboard
 from .state_manager import StateManager
 
 class HotkeyListener:
@@ -222,8 +222,17 @@ class HotkeyListener:
         self.logger.info("Push-to-talk key released")
         self.state_manager.stop_recording()
 
+    # Koli's own keys (its Ctrl+V, its Enter) are not yours: never a stop.
+    @staticmethod
+    def own_keys() -> bool:
+        sent = getattr(keyboard, 'sent_recently', None)
+        return bool(sent and sent())
+
     def _stop_key_pressed(self):
         self.logger.debug(f"Stop key pressed: {self.stop_key}, keys_armed={self.keys_armed}")
+        if self.own_keys():
+            self.logger.debug("Stop key ignored - Koli's own paste")
+            return
         if self.tap_latch and self.tap_latch.intercept_stop_key():
             self.logger.debug("Stop key ignored - second tap of a double-tap")
             return
@@ -268,6 +277,8 @@ class HotkeyListener:
 
     def _auto_send_key_pressed(self):
         self.logger.debug(f"Auto-send key pressed: {self.auto_send_key}, keys_armed={self.keys_armed}")
+        if self.own_keys():
+            return
         if self.tap_latch and self.tap_latch.intercept_stop_key():
             return
 

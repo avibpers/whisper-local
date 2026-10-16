@@ -332,6 +332,13 @@ SCHEMA = [
             'model; with no model at all, built-in texts are used.'),
     _S('ai.practice.timeout', 'Give up after', 'ai', 'number', group='Practice', min=10, max=600, step=5,
        unit='seconds'),
+    _S('ai.commands.enabled', 'Do what I ask when no command matches', 'ai', 'toggle', group='AI actions',
+       help='Your own wake word or the command shortcut, then any request ("move today\'s photos to Pictures"). '
+            'Deleting and big changes ask for your password; the rest can be undone.'),
+    _S('ai.commands.model', 'Actions with', 'ai', 'ai_model', group='AI actions',
+       help='Writes and checks each action. Empty uses the default model.'),
+    _S('ai.commands.timeout', 'Give up after', 'ai', 'number', group='AI actions', min=5, max=300, step=5,
+       unit='seconds'),
     _S('ai.ollama.address', 'Ollama address', 'ai', 'text', mode=HIDDEN, help='Edited on the Ollama card.'),
     _S('ai.lmstudio.address', 'LM Studio address', 'ai', 'text', mode=HIDDEN, help='Edited on the LM Studio card.'),
 

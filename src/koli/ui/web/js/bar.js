@@ -22,7 +22,14 @@ const bar = createStore({
   dragging: false,
   meeting: { state: 'idle' },   // the meeting's state, as the meeting panel gets it
   wake: null,      // 'awake' after "Hey Koli", 'follow_up' after a command ran
+  agent: null,     // an AI action: { phase, text, lines, needs, run_id, undo, phrase, heard }
 });
+
+// AI action phases that stay until the next event, and how long the others show.
+const AGENT_LIVE = new Set(['thinking', 'checking', 'working', 'approve', 'ask']);
+const AGENT_SHOW_MS = { done: 12000, undone: 6000, offer_save: 20000, needs_password: 12000, not_understood: 10000,
+  failed: 10000, nothing: 9000 };
+let agentTimer = null;
 
 const MEETING_ON = new Set(['live', 'paused']);
 
@@ -46,6 +53,18 @@ function wire() {
   });
   on('streaming_text', (p) => bar.set({ streaming: p.text }));
   on('wake', (w) => bar.set({ wake: w.phase === 'sleeping' ? null : w.phase }));
+  on('agent', (a) => {
+    clearTimeout(agentTimer);
+    bar.set({ agent: a, flash: null });
+    // A longer message stays up longer: time to read it slowly (about 11
+    // letters a second), and it waits while the mouse is on it.
+    const readMs = 4000 + 90 * (a.text || '').length;
+    const hide = () => {
+      if (bar.get().hover) { agentTimer = setTimeout(hide, 1500); return; }
+      bar.set({ agent: null });
+    };
+    if (!AGENT_LIVE.has(a.phase)) agentTimer = setTimeout(hide, Math.max(AGENT_SHOW_MS[a.phase] || 8000, readMs));
+  });
   on('bar', (b) => {
     if (b.cmd === 'failure') flash('fail', b.message || "Didn't work");
     if (b.cmd === 'shape') bar.set({ upright: b.upright });
@@ -288,6 +307,7 @@ function Status() {
   const upright = bar.use((s) => s.upright);
   const meeting = bar.use((s) => s.meeting);
   const wake = bar.use((s) => s.wake);
+  const agent = bar.use((s) => s.agent);
   const openMenu = () => bar.set({ menu: true });
   if (!settings) return html`<div class="bub rest" aria-label="Koli is starting"></div>`;
   const keys = prettyKeys(settings.hotkey.recording_hotkey).join(' ');
@@ -309,6 +329,7 @@ function Status() {
         <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2.5"></rect></svg></button>
     </div>`;
   }
+  if (agent) return html`<${AgentStatus} a=${agent} />`;
   if (st.state === 'processing') {
     return html`<div class="bub" style="padding-inline-end:16px"><${Badge} tone="acc" icon="pen" />Writing it down · <${Timer} /></div>`;
   }
@@ -364,9 +385,79 @@ function Status() {
   return html`<div class=${upright ? 'bub rest' : 'bub rest flat'} role="button" tabindex="0" aria-label="Koli is ready. Open quick actions" onClick=${openMenu}></div>`;
 }
 
+// ── AI actions ────────────────────────────────────────────────────────────
+// What the AI is doing with a request: thinking, asking for your password
+// (or a click when your voice can't be checked here), done with Undo, or why
+// nothing happened. The buttons never take focus from the app you're in.
+
+const dismissAgent = () => bar.set({ agent: null });
+
+// The bubble an AI action talks through. A short message stays one row: badge,
+// words, buttons. Past LONG_WORDS words or LONG_CHARS letters it reads like a
+// message: the bubble's full width for the words (7-8 a line), a small icon
+// in the first line instead of a column of its own, and the buttons underneath.
+const LONG_WORDS = 7;
+const LONG_CHARS = 48;
+
+function AgentBubble({ tone, icon, text, title, role = 'status', label, children }) {
+  const buttons = [].concat(children || []).filter(Boolean);
+  const words = String(text || '').trim();
+  const long = words.split(/\s+/).length > LONG_WORDS || words.length > LONG_CHARS;
+  if (!long) {
+    return html`<div class="bub talk" role=${role} aria-label=${label}><${Badge} tone=${tone} icon=${icon} />
+      <span class="text" title=${title} dir="auto">${text}</span>${buttons}<span style="width:4px"></span></div>`;
+  }
+  return html`<div class="bub talk stack" role=${role} aria-label=${label}>
+    <p class="say" title=${title} dir="auto"><span class=${`badge mini ${tone}`}><${Icon} name=${icon} /></span>${text}</p>
+    ${buttons.length > 0 && html`<div class="acts">${buttons}</div>`}</div>`;
+}
+
+function AgentStatus({ a }) {
+  const what = (a.lines || [])[0];
+  const why = (a.reasons || []).join(' · ');
+  const cancel = html`<button type="button" class="btn" onClick=${() => call('agent_cancel')}>Cancel</button>`;
+  if (a.phase === 'thinking' || a.phase === 'checking' || a.phase === 'working') {
+    const text = a.phase === 'thinking' && a.heard ? `${a.text} “${a.heard}”` : what ? `${a.text} ${what}` : a.text;
+    return html`<${AgentBubble} tone="purple" icon="command" text=${text} title=${a.heard || what || ''}>
+      ${a.phase !== 'working' && cancel}<//>`;
+  }
+  if (a.phase === 'ask') {
+    // Koli asks you something and is listening for the answer (no wake word).
+    return html`<${AgentBubble} tone="acc" icon="mic" role="alertdialog" label="Koli asks"
+      text=${`${a.text} · Listening…`} title="Answer out loud, or press Cancel">${cancel}<//>`;
+  }
+  if (a.phase === 'approve') {
+    return html`<${AgentBubble} tone="warn" icon="lock" role="alertdialog" label="Approve this action"
+      text=${`${(a.reasons || [])[0] || what || ''}${(a.reasons || [])[0] || what ? ' · ' : ''}${a.text}`}
+      title=${[what, why, a.note, a.detail].filter(Boolean).join('\n')}>
+      ${cancel}
+      ${a.needs === 'click' && html`<button type="button" class="btn pri" onClick=${() => call('agent_approve')}>Approve</button>`}<//>`;
+  }
+  if (a.phase === 'done' || a.phase === 'undone') {
+    // Show opens Explorer at what was made or moved, with it selected.
+    return html`<${AgentBubble} tone="ok" icon="check" text=${a.text} title=${[...(a.lines || []), a.reply].filter(Boolean).join('\n')}>
+      ${a.show && html`<button type="button" class="btn pri" title="Open the folder with it selected" onClick=${() => call('agent_show', a.run_id).catch((e) => { dismissAgent(); flash('fail', e.message || "It isn't there any more"); })}>Show</button>`}
+      ${a.undo && html`<button type="button" class="btn" onClick=${() => call('agent_undo', a.run_id)}>Undo</button>`}<//>`;
+  }
+  if (a.phase === 'offer_save') {
+    return html`<${AgentBubble} tone="purple" icon="command" text=${a.text} title=${(a.lines || []).join('\n')}>
+      <button type="button" class="btn pri" onClick=${() => call('agent_save', a.run_id, a.phrase).then(() => flash('ok', `Say “${a.phrase}” next time`, {}, 3500)).catch(() => {}).finally(dismissAgent)}>Save</button>
+      <button type="button" class="btn" onClick=${dismissAgent}>Not now</button>
+      <button type="button" class="btn" onClick=${() => call('agent_decline', a.run_id).finally(dismissAgent)}>Never</button>
+      ${a.undo && html`<button type="button" class="btn" title="Undo what was just done" onClick=${() => call('agent_undo', a.run_id).finally(dismissAgent)}>Undo</button>`}<//>`;
+  }
+  // not_understood, nothing, failed, cancelled, needs_password. When the AI
+  // answered in words, that answer is the message; what Koli heard is shown
+  // only with "Sorry, I didn't understand" (and always on hover).
+  const heard = a.phase === 'not_understood' && a.heard && !a.reply ? ` · “${a.heard}”` : '';
+  return html`<${AgentBubble} tone="warn" icon="alert" text=${`${a.text}${heard}`}
+    title=${[a.heard && `Heard: ${a.heard}`, a.detail].filter(Boolean).join('\n')}>
+    ${a.phase === 'needs_password' && html`<button type="button" class="btn" onClick=${() => { call('window_open', 'commands'); dismissAgent(); }}>Set it up</button>`}<//>`;
+}
+
 // True while the bubble is the slim resting tab (painted in its resting colour).
 function isResting(s) {
-  return !!s.settings && !s.menu && !s.hover && !s.flash && !s.task && !s.sending && !s.wake && s.state.state !== 'recording'
+  return !!s.settings && !s.menu && !s.hover && !s.flash && !s.task && !s.sending && !s.wake && !s.agent && s.state.state !== 'recording'
     && s.state.state !== 'processing' && !s.state.paused && s.meeting.state !== 'offered';
 }
 

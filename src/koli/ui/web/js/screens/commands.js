@@ -3,8 +3,9 @@
 // starts a command with no shortcut), voice commands (say a trigger after the
 // command shortcut and it presses keys, types text, runs a program or
 // rewrites the selection, with optional follow-up steps, in as many phrases
-// and languages as you like) and AI transforms (rewrite the selection with a
-// local model, from a shortcut). Shipped entries can be changed, switched off
+// and languages as you like), AI actions (any request no command matches,
+// with the approval password and the activity list) and AI transforms
+// (rewrite the selection with a model, from a shortcut). Shipped entries can be changed, switched off
 // or reset; your own are kept as-is across updates.
 
 import { html, useEffect, useState } from '../../vendor/preact-htm.module.js';
@@ -13,8 +14,11 @@ import { app, closeModal, confirmModal, openModal, saveSetting, toast, useSettin
 import { HotkeyCapture, Icon, Keys, Toggle } from '../ui.js';
 import { KindBadge, SettingRow, splitModel, TaskProgress, useAiCatalog, useRunningTasks } from './shared.js';
 
-const ACTIONS = [['hotkey', 'Press keys', 'KEYS', 'acc'], ['type', 'Type text', 'TYPE', 'ok'], ['run', 'Run a program', 'RUN', 'warn'], ['rephrase', 'AI rewrite of the selection', 'AI', '']];
+const ACTIONS = [['hotkey', 'Press keys', 'KEYS', 'acc'], ['type', 'Type text', 'TYPE', 'ok'], ['run', 'Run a program', 'RUN', 'warn'], ['rephrase', 'AI rewrite of the selection', 'AI', ''],
+  ['script', 'AI script (saved AI action)', 'SCRIPT', 'purple'], ['agent', 'AI actions', 'AI', 'purple']];
 const ACTION = Object.fromEntries(ACTIONS.map(([k, label, tag, tone]) => [k, { label, tag, tone }]));
+// What a step can be set to in the editor: "undo last action" ships, it isn't made here.
+const EDITABLE = ACTIONS.filter(([k]) => k !== 'agent');
 const ORIGIN = { shipped: '', changed: 'changed by you', yours: 'yours' };
 
 function TypeTag({ action }) {
@@ -80,13 +84,17 @@ function StepEditor({ step, onChange, onRemove, first, phrase }) {
   const commitKeys = (keys) => onChange({ ...step, hotkey: usesNumber && /^\d$/.test(lastKey(keys)) ? withNumberKey(keys, true) : keys });
   return html`<div class="row-flex" style="padding:10px 12px;border:1px solid var(--line);border-radius:10px">
     <select class="sel" aria-label="Step type" onChange=${(e) => setKind(e.currentTarget.value)}>
-      ${[...ACTIONS.map(([k, l]) => [k, l]), ...(first ? [] : [['delay', 'Wait']])].map(([k, l]) => html`<option value=${k} selected=${k === kind}>${l}</option>`)}
+      ${[...(kind === 'agent' ? ACTIONS : EDITABLE).filter(([k]) => first || k !== 'script').map(([k, l]) => [k, l]), ...(first ? [] : [['delay', 'Wait']])]
+        .map(([k, l]) => html`<option value=${k} selected=${k === kind}>${l}</option>`)}
     </select>
     ${kind === 'hotkey' && html`<${HotkeyCapture} value=${value} label="Keys" sendsKeys=${true} onCommit=${commitKeys} />
       ${(usesNumber || (phrase || '').includes(NUMBER)) && html`<label class="row-flex small">Last key = the number you said
         <${Toggle} checked=${usesNumber} label="Last key is the number you said" onChange=${(on) => onChange({ ...step, hotkey: withNumberKey(value, on) })} /></label>`}
       <${SendToPicker} step=${step} onChange=${onChange} />`}
     ${kind === 'delay' && html`<input class="inp num mono" value=${value} aria-label="Seconds" onBlur=${(e) => onChange({ delay: Number(e.currentTarget.value) || 0 })} /><span class="muted">seconds (max 60)</span>`}
+    ${kind === 'script' && html`<textarea class="inp mono" rows="6" style="flex:1;min-width:260px" aria-label="AI script" value=${value || ''}
+      onBlur=${(e) => onChange({ script: e.currentTarget.value })}></textarea>
+      <span class="small muted" style="flex-basis:100%">Only Koli's actions. Checked and rehearsed every time it runs; deleting and big changes still ask for your password.</span>`}
     ${(kind === 'type' || kind === 'run' || kind === 'rephrase') && html`<input class=${'inp' + (kind === 'run' ? ' mono' : '')} style="flex:1;min-width:200px" dir="auto"
       aria-label=${ACTION[kind].label} value=${value || ''} placeholder=${kind === 'run' ? 'notepad.exe' : kind === 'rephrase' ? 'Rewrite this to be more concise' : 'Text to type'}
       onBlur=${(e) => onChange({ [kind]: e.currentTarget.value })} />`}
@@ -172,7 +180,9 @@ function VoiceCommands() {
             <td dir="auto">${it.entry.trigger || html`<span class="mono">${it.entry.match_regex}</span>`} ${ORIGIN[it.origin] && html`<span class="chip sm">${ORIGIN[it.origin]}</span>`}
               ${(it.entry.other_triggers || []).length > 0 && html`<div class="small muted" dir="auto">also: ${it.entry.other_triggers.join(' · ')}</div>`}</td>
             <td><${TypeTag} action=${it.action} />${it.entry.then && html` <span class="small muted">+${it.entry.then.length} steps</span>`}</td>
-            <td>${k === 'hotkey' ? html`<${Keys} hotkey=${it.entry.hotkey} />${it.entry.send_to && html` <span class="small muted">to ${it.entry.send_to === 'windows' ? 'Windows' : it.entry.send_to}</span>`}` : html`<span class=${k === 'run' ? 'mono small' : 'small'} style="color:var(--ink2)" dir="auto">${String(it.entry[k]).slice(0, 80)}</span>`}</td>
+            <td>${k === 'hotkey' ? html`<${Keys} hotkey=${it.entry.hotkey} />${it.entry.send_to && html` <span class="small muted">to ${it.entry.send_to === 'windows' ? 'Windows' : it.entry.send_to}</span>`}`
+              : k === 'agent' ? html`<span class="small" style="color:var(--ink2)">Undo the last AI action</span>`
+              : html`<span class=${k === 'run' || k === 'script' ? 'mono small' : 'small'} style="color:var(--ink2)" dir="auto">${String(it.entry[k]).slice(0, 80)}</span>`}</td>
             <td><${Toggle} checked=${!it.disabled} label=${`Enable ${it.id}`} onChange=${(v) => call('command_enable', it.id, v).then(reload)} /></td>
             <td class="end"><button type="button" class="btn ghost sm" onClick=${() => openCommandEditor(it, reload)}>Edit</button>
               ${it.origin !== 'shipped' && html`<button type="button" class="btn ghost sm" onClick=${() => remove(it)}>${it.origin === 'yours' ? 'Delete' : 'Reset'}</button>`}</td></tr>`)}`;
@@ -283,6 +293,119 @@ function WakeWord() {
   </section>`;
 }
 
+// ── AI actions ────────────────────────────────────────────────────────────
+// A request no command matches is done by the AI, with your own wake word or
+// the command shortcut. Your approval password guards deleting and big
+// changes; Activity lists what was done, with Undo.
+
+// Your approval password, recorded like the wake word: typed once, then said
+// three times, so Koli learns how Whisper writes it and how your voice
+// sounds saying it, on this microphone.
+function openPasswordRecorder(onSaved) {
+  const Recorder = () => {
+    const [phrase, setPhrase] = useState('');
+    const [ready, setReady] = useState(false);
+    const [heard, setHeard] = useState([]);
+    const [busy, setBusy] = useState('');       // 'listening' | 'saving'
+    const [error, setError] = useState('');
+    const [needed, setNeeded] = useState(3);
+    const tasks = useRunningTasks('meeting');
+    // Waits while the voice model gets ready (downloaded once).
+    useEffect(() => {
+      if (ready) return undefined;
+      const check = () => call('agent_password_ready').then((r) => r && setReady(true)).catch((e) => setError(e.message));
+      check();
+      const t = setInterval(check, 1500);
+      return () => clearInterval(t);
+    }, [ready]);
+    const record = () => {
+      setBusy('listening'); setError('');
+      // The first recording starts the set with the phrase as typed now.
+      (heard.length ? Promise.resolve() : call('agent_password_begin', phrase))
+        .then(() => call('agent_password_record'))
+        .then((r) => { setHeard((h) => [...h, r.heard]); setNeeded(r.needed); })
+        .catch((e) => setError(e.message)).finally(() => setBusy(''));
+    };
+    const save = () => {
+      setBusy('saving');
+      call('agent_password_save').then(() => { closeModal(); toast('Password saved. It is checked in your voice on this microphone.'); onSaved(); })
+        .catch((e) => setError(e.message)).finally(() => setBusy(''));
+    };
+    const startOver = () => { setHeard([]); setError(''); };
+    const done = heard.length >= needed;
+    return html`<div class="modal" role="dialog" aria-modal="true"><div class="modal-head"><h2>Record your approval password</h2></div>
+      <div class="modal-body">
+        <p>Type a phrase you'll say to approve deleting and other risky actions, then say it ${needed} times the way you'll say it. Koli learns how Whisper writes it and how your voice sounds saying it, on this microphone. Stored encrypted on this computer.</p>
+        <label class="stack" style="gap:6px"><span class="eyebrow">Your password</span>
+          <input class="inp" dir="auto" value=${phrase} placeholder="Koli approve blue" aria-label="Your approval password" disabled=${heard.length > 0}
+            onInput=${(e) => setPhrase(e.currentTarget.value)} /></label>
+        ${!ready && html`<div class="notice"><span class="grow">Getting the voice model ready…</span></div>${tasks.map((t) => html`<${TaskProgress} task=${t} cancel=${false} />`)}`}
+        <ol class="stack" style="gap:6px;margin:0;padding-inline-start:20px">
+          ${Array.from({ length: needed }, (_, i) => html`<li dir="auto">${heard[i] ? html`<span class="chip ok">Heard “${heard[i]}”</span>`
+            : i === heard.length && busy === 'listening' ? html`<span class="chip">Say it now…</span>` : html`<span class="muted">—</span>`}</li>`)}
+        </ol>
+        ${error && html`<div class="notice warn" role="alert"><span class="grow">${error}</span></div>`}
+      </div>
+      <div class="modal-foot"><button type="button" class="btn" onClick=${closeModal}>Cancel</button>
+        ${heard.length > 0 && html`<button type="button" class="btn" disabled=${!!busy} onClick=${startOver}>Start over</button>`}
+        ${done ? html`<button type="button" class="btn pri" disabled=${!!busy} onClick=${save}>Save</button>`
+          : html`<button type="button" class="btn pri" disabled=${!ready || !!busy || phrase.trim().length < 6} onClick=${record}><${Icon} name="mic" />${busy === 'listening' ? 'Listening…' : 'Record'}</button>`}</div></div>`;
+  };
+  openModal(() => html`<${Recorder} />`);
+}
+
+function AiActions() {
+  const enabled = useSetting('ai.commands.enabled');
+  const own = useSetting('ai.commands.model');
+  const fallback = useSetting('ai.model');
+  const model = own || fallback;
+  const catalog = useAiCatalog();
+  const kind = (catalog.find((p) => p.id === splitModel(model)[0]) || {}).kind;
+  const [pw, setPw] = useState(null);
+  const [history, setHistory] = useState([]);
+  const [testing, setTesting] = useState(false);
+  const reloadPw = () => call('agent_password_status').then(setPw).catch(() => setPw(null));
+  const reloadHistory = () => call('agent_history', 20).then(setHistory).catch(() => setHistory([]));
+  useEffect(() => { reloadPw(); reloadHistory(); }, []);
+  const setPassword = () => openPasswordRecorder(reloadPw);
+  const test = () => {
+    setTesting(true);
+    call('agent_password_test').then((r) => toast(r.ok ? 'That would approve' : `Wouldn't approve: ${r.why}`, { kind: r.ok ? 'info' : 'err' }))
+      .catch((e) => toast(e.message, { kind: 'err' })).finally(() => setTesting(false));
+  };
+  const remove = async () => {
+    if (!(await confirmModal({ title: 'Remove the password?', body: 'Actions that need approval won’t run until you set one again.', confirm: 'Remove', danger: true }))) return;
+    call('agent_password_clear').then(reloadPw);
+  };
+  const undo = (id) => call('agent_undo', id).then(() => { toast('Undone'); reloadHistory(); }).catch((e) => toast(e.message, { kind: 'err' }));
+  const when = (t) => new Date(t * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  // "Couldn't do" rows are what the AI doesn't know how to do yet: the reason is its own words.
+  const OUTCOME = { not_understood: 'couldn’t do', failed: 'failed', partial: 'partly done' };
+  return html`<section class="card" style="overflow:hidden" aria-labelledby="h-ai-act">
+    <div class="card-head"><div><h2 id="h-ai-act">AI actions</h2><p>Say what you want when no command matches: “move today’s photos to Pictures”, “turn the volume up 20%”, “what’s my battery”. The AI writes the command itself; risky ones wait for your password. Only with your own wake word or the command shortcut.</p></div>
+      <div class="row-flex"><label class="row-flex" style="font-weight:500">On<${Toggle} checked=${enabled} label="AI actions" onChange=${(v) => saveSetting('ai.commands.enabled', v)} /></label>
+        ${model ? html`<span class="chip"><span class="mono">${model}</span></span><${KindBadge} kind=${kind} />` : html`<span class="chip rec"><span class="dot"></span>No AI model chosen</span>`}
+        <a class="btn" href="#/settings/ai">AI settings</a></div></div>
+    <div class="srow"><div class="slabel"><b>Approval password</b>
+      <small>${!pw ? '…' : !pw.set ? 'Not set: deleting and big changes can’t run until you set one.'
+        : pw.recorded ? 'Set and recorded: checked in your voice saying it, on this microphone.'
+        : pw.voice ? 'Set, not recorded on this microphone: checked against your wake word’s voice. Record it for a surer match.'
+        : 'Set. Your voice isn’t recorded on this microphone, so the bubble asks for a click instead. Record it to use your voice.'}</small></div>
+      <div class="sctl"><button type="button" class="btn" onClick=${setPassword}><${Icon} name="mic" />${!pw || !pw.set ? 'Set' : pw.recorded ? 'Record again' : 'Record'}</button>
+        ${pw && pw.set && pw.voice && html`<button type="button" class="btn" disabled=${testing} onClick=${test}>${testing ? 'Say it now…' : 'Test'}</button>`}
+        ${pw && pw.set && html`<button type="button" class="btn ghost" onClick=${remove}>Remove</button>`}</div></div>
+    <div class="subhead"><div class="eyebrow">Activity</div></div>
+    ${history.length === 0 ? html`<div class="empty">Nothing yet. Say your wake word and a request.</div>`
+      : html`<div class="tbl-wrap"><table class="tbl"><thead><tr><th scope="col">When</th><th scope="col">You said</th><th scope="col">Did</th><th scope="col"><span class="sr-only">Undo</span></th></tr></thead>
+        <tbody>${history.map((r) => html`<tr class=${r.undone ? 'off' : ''}>
+          <td class="small muted" style="white-space:nowrap">${when(r.at)}</td>
+          <td dir="auto">${r.sentence}${r.saved_command && html` <span class="chip sm">saved command</span>`}</td>
+          <td class="small" dir="auto">${(r.lines || []).join(' · ') || r.summary}${r.outcome !== 'done' && html` <span class="chip sm warn">${OUTCOME[r.outcome] || r.outcome}</span>`}${r.undone && html` <span class="chip sm">undone</span>`}</td>
+          <td class="end">${r.undoable && !r.undone && html`<button type="button" class="btn ghost sm" onClick=${() => undo(r.id)}>Undo</button>`}</td></tr>`)}
+        </tbody></table></div>`}
+  </section>`;
+}
+
 function openTransformEditor(item, reload) {
   const e = item ? { ...item.entry } : { name: '', description: '', prompt: '', hotkey: '' };
   openModal(() => html`<div class="modal wide"><div class="modal-head"><h2>${item ? `Edit “${item.id}”` : 'New transform'}</h2></div>
@@ -332,6 +455,6 @@ function Transforms() {
 export function CommandsScreen() {
   return html`<div class="page">
     <div><h1 class="page-title">Commands & AI</h1><p class="page-sub">Shipped commands update with the app; yours are kept.</p></div>
-    <${WakeWord} /><${VoiceCommands} /><${Transforms} />
+    <${WakeWord} /><${AiActions} /><${VoiceCommands} /><${Transforms} />
   </div>`;
 }

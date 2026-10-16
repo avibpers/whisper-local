@@ -112,6 +112,13 @@ def type_text(text: str):
     pass  # SendInput method not used in macOS
 
 
+# Whether Koli pressed keys itself just now. Here the paste carries its
+# modifiers as flags, so no Command or Control key event reaches the hotkeys.
+# Windows mirror: same name in platform/windows/keyboard.py.
+def sent_recently(seconds: float = 0.5) -> bool:
+    return False
+
+
 # True while Shift, Control, Option or Command is physically down. Checked
 # before synthesizing a paste from a hotkey, because a held modifier would
 # merge into it. Windows mirror: same name in platform/windows/keyboard.py.

@@ -168,3 +168,29 @@ wake_word:
   command_timeout_seconds: 5
   follow_up_seconds: 5
 ```
+
+
+## AI actions
+
+When none of your commands matches, the AI can do what you asked: **"(your wake word) move today's photos from Downloads to Pictures"**, **"open the newest PDF in Documents"**, **"תעביר את כל התמונות מההורדות לתמונות"**. Only with your own wake word (checked against your voice) or the command shortcut: with the generic "Hey Koli", anyone or a TV could ask, so unmatched sentences get "Sorry, I didn't understand". Your fixed commands always win and run with no AI.
+
+How it stays safe:
+
+- The AI writes a short script that can call only Koli's own actions (find, open, open an app, copy, move, rename, new folder, delete to the Recycle Bin, your own commands). Koli checks the script's code before anything runs: no imports, no other functions, nothing else.
+- It rehearses the script first and gets the exact list of what would happen. A second AI call checks that list against what you said. What runs is that list, not the script.
+- Opening and finding run at once. Copying, moving, renaming and new folders in your own folders run at once, with **Undo** on the bubble (or say **"undo last action"**). Deleting (always to the Recycle Bin), more than 50 files, anything outside your folders, or a plan the check doesn't trust, needs your **approval password**, said in your voice. Without your voice recorded on this microphone, the bubble asks for a click.
+- Koli never opens programs or scripts as files (`.exe`, `.bat`, `.ps1`…); apps start by their Start-menu name.
+- Everything that isn't files (sound, screen, Wi-Fi, Bluetooth, settings pages, "what's my IP", "how much battery is left") the AI does with a system command it writes itself, from what it knows of Windows (PowerShell) or macOS. The second AI call explains each command in plain words and rates it. Reading something, opening a settings page, or changing a setting it can put back (the volume, the brightness, dark mode) runs at once, with **Undo**. A command that deletes, writes files, downloads, installs, closes programs, restarts, or touches security or the machine's registry is on Koli's own danger list and always needs your password, whatever the AI says; so does anything rated risky or that can't be undone. Hover over the bubble to see the exact command.
+- When the AI doesn't know how to do something, the bubble says so in its own words, and **Activity** keeps it as "couldn't do".
+
+Ask the same thing three times in two weeks and the bubble offers **Save as a command**: from then on that phrase runs the plan with no AI (and still through the same checks).
+
+Set the approval password and see the **Activity** (with Undo) in **Commands → AI actions**. The model is in **Settings → AI → AI actions**.
+
+```yaml
+ai:
+  commands:
+    enabled: true
+    model: ''    # empty = the default model
+    timeout: 40
+```

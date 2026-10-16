@@ -63,6 +63,16 @@ function mockCompare(text) {
   return { words, extra: [], spans: [], accuracy: right / words.length };
 }
 
+// AI actions: what the Activity list shows.
+const MOCK_AGENT_HISTORY = [
+  { id: 'a3', at: Date.now() / 1000 - 300, sentence: 'move today’s photos from Downloads to Pictures', summary: '',
+    lines: ['Move 12 items from ~\\Downloads to ~\\Pictures'], outcome: 'done', undone: false, saved_command: false, undoable: true },
+  { id: 'a2', at: Date.now() / 1000 - 4000, sentence: 'תפתח את ה-PDF האחרון במסמכים', summary: '',
+    lines: ['Open invoice-0923.pdf'], outcome: 'done', undone: false, saved_command: false, undoable: false },
+  { id: 'a1', at: Date.now() / 1000 - 90000, sentence: 'delete the zip files in downloads', summary: '',
+    lines: ['Delete 3 items from ~\\Downloads (to the Recycle Bin)'], outcome: 'done', undone: true, saved_command: false, undoable: true },
+];
+
 const MOCK_AI_MODELS = {
   lmstudio: ['qwen/qwen3-8b', 'google/gemma-3-12b', 'openai/gpt-oss-20b', 'mistralai/mistral-small-3.2'],
   codex: ['gpt-5.5', 'gpt-5.4-mini', 'gpt-5.3-codex'],
@@ -83,6 +93,7 @@ export function createMock(emit) {
   let state = { state: 'idle', mode: 'dictate', paused: false, model: 'small', device: 'cpu' };
   let practiceIntake = { languages: ['en', 'he'], accent: '', work: 'software', work_other: '', words: [] };
   let practiceRound = null;
+  let agentPassword = false;
   let learnedItems = [];
   let profile = 'dictation';
   const frame = { custom: true, maximized: false };   // the page draws the window buttons
@@ -424,6 +435,20 @@ export function createMock(emit) {
         { id: 'f4', kind: 'prompt', language: 'en', term: 'TypeScript', heard: [], profile: 'code', reason: 'A term from your work that Whisper missed', source: 'ai' }] })),
     practice_apply: (ids) => { learnedItems.push(...ids.map((id, n) => ({ id, kind: n ? 'favored' : 'correction', language: 'he', term: n ? 'כריכה' : 'תמונת כריכה', heard: n ? [] : ['תמונת בריכה'], profile: '', mic: 'Jabra Evolve2 65', session: 'r1', reason: 'From practice', source: 'ai' }))); practiceRound = null; return ok(ids.length); },
     practice_close: () => { practiceRound = null; return ok(null); },
+    agent_password_status: () => ok({ set: agentPassword, voice: true, recorded: agentPassword }),
+    agent_password_ready: () => ok(true),
+    agent_password_begin: () => ok(true),
+    agent_password_record: () => delay(900).then(() => ({ ok: true, data: { heard: 'Koli approve blue', count: 1, needed: 3 } })),
+    agent_password_save: () => { agentPassword = true; return ok(true); },
+    agent_password_clear: () => { agentPassword = false; return ok(null); },
+    agent_password_test: () => delay(1500).then(() => ({ ok: true, data: { ok: true, why: '' } })),
+    agent_history: () => ok(MOCK_AGENT_HISTORY),
+    agent_undo: () => ok('ran'),
+    agent_cancel: () => ok(null),
+    agent_approve: () => ok(null),
+    agent_save: (id, phrase) => ok(phrase),
+    agent_decline: () => ok(null),
+    agent_show: () => ok(null),
     learned_list: () => ok({ items: learnedItems, notes: learnedItems.length ? { he: 'The k sound of כ is often heard as ב.' } : {}, sessions: learnedItems.length ? [{ id: 'r1' }] : [] }),
     learned_delete: (ids) => { const before = learnedItems.length; learnedItems = learnedItems.filter((i) => !ids.includes(i.id)); return ok(before - learnedItems.length); },
     learned_delete_all: () => { learnedItems = []; return ok(null); },

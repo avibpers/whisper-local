@@ -863,6 +863,14 @@ ai: # Language models for polish, rewrites and later features (Settings › AI)
         model: '' # empty = the default model
         timeout: 90
 
+    # AI actions: a voice command that matches none of yours ("move today's
+    # photos to Pictures") is done by the AI, with your own wake word or the
+    # command shortcut only. Deleting and big changes ask for your password.
+    commands:
+        enabled: true
+        model: '' # empty = the default model
+        timeout: 40
+
     ollama:
         address: http://localhost:11434
 

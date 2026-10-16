@@ -14,6 +14,14 @@ from .delayed_send import count_words, wait_seconds
 from .platform import keyboard
 from .utils import parse_hotkey
 
+
+def _foreground_exe() -> str:
+    try:
+        from .platform import foreground
+        return (foreground.get_foreground_app() or {}).get('exe') or ''
+    except Exception:
+        return ''
+
 class ClipboardManager:
     def __init__(self, auto_paste, delivery_method, paste_hotkey,
                  paste_pre_paste_delay, paste_preserve_clipboard,
@@ -145,7 +153,8 @@ class ClipboardManager:
             keyboard.send_hotkey(*self.paste_keys)
 
             print("   ✓ Auto-pasted via key simulation")
-            self.logger.info("Pasted at the cursor")
+            # Which app got the keys: "pasted" only means they were sent.
+            self.logger.info(f"Pasted at the cursor (in {_foreground_exe() or 'an unknown app'})")
 
             if original_content is not None:
                 time.sleep(self.paste_clipboard_restore_delay)

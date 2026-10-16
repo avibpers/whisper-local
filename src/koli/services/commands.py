@@ -13,7 +13,7 @@ from .. import transforms as tf
 from .. import voice_commands as vc
 from ..utils import get_user_app_data_path
 
-ACTION_KEYS = ('hotkey', 'type', 'run', 'rephrase')
+ACTION_KEYS = ('hotkey', 'type', 'run', 'rephrase', 'script', 'agent')
 
 
 def _commands_path() -> Path:
@@ -38,7 +38,27 @@ def _clean_action(source: dict, action: str) -> dict:
     send_to = str(source.get('send_to') or '').strip().lower()
     if action == 'hotkey' and send_to:
         clean['send_to'] = send_to
+    if action == 'script':
+        # Checked now, so a broken script can't be saved; it is checked again
+        # (and rehearsed) every time it runs.
+        from ..agent import actions, sandbox
+        try:
+            sandbox.check(str(source['script']), actions.Recorder(actions.Backend()).functions())
+        except sandbox.ScriptRejected as e:
+            raise ValueError(f"The script isn't allowed: {e}")
+        clean['made_by'] = 'ai'
+    if action == 'agent' and source['agent'] != 'undo':
+        raise ValueError("Unknown AI action")
     return clean
+
+
+# Saves an AI action that you repeat as a voice command: `phrase` runs
+# `script` from now on, through the same checks, without the AI.
+def save_ai_command(phrase: str, script: str) -> str:
+    phrase = ' '.join(str(phrase or '').split())
+    if not phrase:
+        raise ValueError("Say what the command should be called")
+    return save_command({'trigger': phrase, 'script': script})
 
 
 # `{n}` (a spoken number) appears at most once in the phrase, and keys or text

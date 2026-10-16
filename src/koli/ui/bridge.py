@@ -893,6 +893,102 @@ class Bridge:
     def learned_delete_all(self):
         self._practice.delete_all()
 
+    # ── AI actions ───────────────────────────────────────────────────────────
+    # The bubble's buttons (cancel, approve, undo, save as a command) and the
+    # Commands screen's card (password, activity). See agent/runner.py.
+
+    @property
+    def _agent(self):
+        agent = getattr(self._sm, 'agent', None)
+        if agent is None:
+            raise ValueError("AI actions aren't available")
+        return agent
+
+    @_api
+    def agent_cancel(self):
+        self._agent.cancel()
+
+    @_api
+    def agent_approve(self):
+        self._agent.approve_click()
+
+    @_api
+    def agent_undo(self, run_id=None):
+        return self._agent.undo(run_id or None)
+
+    @_api
+    def agent_save(self, run_id, phrase):
+        from ..services import commands
+        run = self._agent.journal.get(run_id)
+        if run is None:
+            raise ValueError("That action isn't in the history any more")
+        saved = commands.save_ai_command(phrase, run['script'])
+        self._agent.saved(run_id)
+        return saved
+
+    # Explorer at what an AI action made or moved (from its own results).
+    @_api
+    def agent_show(self, run_id):
+        if not self._agent.show(run_id):
+            raise ValueError("It isn't there any more")
+
+    @_api
+    def agent_decline(self, run_id):
+        self._agent.decline(run_id)
+
+    @_api
+    def agent_history(self, limit=20):
+        runs = self._agent.journal.runs(int(limit))
+        return [{'id': r.get('id'), 'at': r.get('at'), 'sentence': r.get('sentence'), 'summary': r.get('summary'),
+                 'lines': r.get('lines') or [], 'outcome': r.get('outcome'), 'undone': bool(r.get('undone')),
+                 'saved_command': bool(r.get('saved_command')),
+                 'undoable': any(x.get('undo') and x.get('status') == 'done' for x in r.get('results') or [])}
+                for r in reversed(runs)]
+
+    @_api
+    def agent_password_status(self):
+        approval = self._agent.approval
+        return {'set': bool(approval.phrase()), 'voice': approval.can_listen(), 'recorded': approval.recorded_here()}
+
+    # Recording the password, like the wake word: wait until the voice model
+    # is ready (False starts loading it; ask again), begin with the phrase as
+    # typed, say it three times (each call blocks until you have), then save.
+    @_api
+    def agent_password_ready(self):
+        meetings = getattr(self._sm, 'meetings', None)
+        if meetings is None:
+            raise ValueError('Recording the password needs the app window')
+        return bool(meetings.voiceprint_ready())
+
+    @_api
+    def agent_password_begin(self, phrase):
+        self._agent.approval.begin_recording(phrase)
+        return True
+
+    @_api
+    def agent_password_record(self):
+        return self._agent.approval.record_take()
+
+    @_api
+    def agent_password_save(self):
+        self._agent.approval.save_recording()
+        return True
+
+    @_api
+    def agent_password_clear(self):
+        self._agent.approval.clear()
+
+    # Say the password once: whether it would approve, and why not.
+    @_api
+    def agent_password_test(self):
+        approval = self._agent.approval
+        if not approval.phrase():
+            raise ValueError("Set a password first")
+        if not approval.can_listen():
+            raise ValueError("Your voice isn't recorded on this microphone: record your own wake word first")
+        ok, why = approval.ask_once()
+        return {'ok': ok, 'why': why}
+
     # ── Diagnostics ──────────────────────────────────────────────────────────
 
     @_api

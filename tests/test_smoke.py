@@ -1680,6 +1680,14 @@ class VoiceCommandPhrasesTests(unittest.TestCase):
     def test_n_works_in_another_phrase(self):
         self.assertEqual(self.manager.match_command('שולחן 3')['hotkey'], 'ctrl+3')
 
+    # The wake word's quick check at a short pause: "open notepad" may be
+    # the start of a longer sentence for the AI, so only the whole phrase runs.
+    def test_exact_needs_the_whole_phrase(self):
+        self.assertEqual(self.manager.match_command('Next song.', exact=True)['hotkey'], 'media_next')
+        self.assertIsNone(self.manager.match_command('open notepad and write a list', exact=True))
+        self.assertEqual(self.manager.match_command('desk 4', exact=True)['hotkey'], 'ctrl+4')
+        self.assertIsNone(self.manager.match_command('go to desk 4 now', exact=True))
+
     def test_only_media_blocks_everything_else(self):
         only = self.vc.is_media_command
         self.assertIsNone(self.manager.match_command('undo', only=only))
@@ -2363,6 +2371,31 @@ class ReportedIssueHandlerTests(unittest.TestCase):
         listener._stop_key_pressed()
         listener.state_manager.stop_recording.assert_called_once()
         self.assertEqual(self.timers, [])
+
+    # Koli's own Ctrl+V pasted the first phrase of an auto session, and its
+    # Ctrl ended the session as the stop key (app.log 2026-10-15 10:18:49).
+    def test_kolis_own_paste_is_not_the_stop_key(self):
+        listener = self._stop_key_listener()
+        listener.own_keys = lambda: True
+        listener._stop_key_pressed()
+        listener.state_manager.stop_recording.assert_not_called()
+        self.assertEqual(self.timers, [], 'not even the grace wait')
+        listener.own_keys = lambda: False        # your Ctrl, a moment later
+        listener._stop_key_pressed()
+        self.timers[0][1]()
+        listener.state_manager.stop_recording.assert_called_once()
+
+    def test_the_own_keys_window(self):
+        try:
+            from koli.platform.windows import keyboard as kb
+        except Exception:
+            self.skipTest('Windows keyboard not importable here')
+        import unittest.mock as mock
+        with mock.patch.object(kb.user32, 'SendInput'):
+            kb.send_hotkey('ctrl', 'v')
+        self.assertTrue(kb.sent_recently())
+        kb._sent_at -= 1.0
+        self.assertFalse(kb.sent_recently())
 
     def test_pause_gates_other_callbacks_but_not_itself(self):
         # The flag is only useful if it actually suppresses the other hotkeys —

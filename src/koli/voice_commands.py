@@ -69,6 +69,13 @@ USER_FILE_HEADER = """\
 
 """
 
+# What a command can do. `script` is an AI action saved as a command (it runs
+# through agent/runner.py's checks every time); `agent` is one of the AI
+# actions' own commands ("undo last action").
+ACTION_KEYS = ('run', 'hotkey', 'type', 'rephrase', 'script', 'agent')
+# Commands an AI script may call: the plain ones, never another script.
+PLAIN_KEYS = ('run', 'hotkey', 'type', 'rephrase')
+
 RISKY_PATTERNS = re.compile(
     r'\b(rm\s+-r|del\s+/[sq]|format\s+\w:|shutdown|reg\s+delete|sudo|takeown|del\s+/f)\b'
     r'|>(?!\s*null)|\|\s*(out-file|tee)\b',
@@ -162,6 +169,7 @@ class VoiceCommandManager:
         self.clipboard_manager = clipboard_manager
         self.log_transcriptions = log_transcriptions
         self.logger = logging.getLogger(__name__)
+        self.agent_runner = None     # agent.runner.AgentRunner, set by the state manager
 
         if not self.enabled:
             self.logger.info("Voice commands disabled by configuration")
@@ -188,15 +196,14 @@ class VoiceCommandManager:
             # A null action means "not this one": it's how a user override in
             # commands.yaml clears the action a shipped command came with
             # before naming a different one.
-            action_count = sum(1 for key in ('run', 'hotkey', 'type', 'rephrase')
-                               if cmd.get(key) is not None)
+            action_count = sum(1 for key in ACTION_KEYS if cmd.get(key) is not None)
 
             if not has_match:
                 self.logger.warning(f"Command {i}: missing trigger and match_regex, skipping")
                 continue
 
             if action_count != 1:
-                self.logger.warning(f"Command '{trigger}': needs exactly one of 'run', 'hotkey', 'type', or 'rephrase', skipping")
+                self.logger.warning(f"Command '{trigger}': needs exactly one of {', '.join(ACTION_KEYS)}, skipping")
                 continue
 
             others = cmd.get('other_triggers')
@@ -210,12 +217,25 @@ class VoiceCommandManager:
     # The command a phrase runs, or None. A `{n}` phrase returns a copy with
     # the spoken number filled in. `only` limits which commands may match (a
     # follow-up after "Hey Koli" runs media commands only).
-    def match_command(self, text: str, only: Optional[Callable[[dict], bool]] = None) -> Optional[dict]:
+    # `exact`: `text` must be the whole phrase, not contain it (the wake
+    # word's quick check at a short pause, when more may follow); patterns
+    # wait for the whole sentence.
+    def match_command(self, text: str, only: Optional[Callable[[dict], bool]] = None,
+                      exact: bool = False) -> Optional[dict]:
         self._reload_if_changed()
         normalized = normalize_spoken(text)
 
         for phrase, command, is_main in _phrases_longest_first(self.commands):
             if only is not None and not only(command):
+                continue
+
+            if exact:
+                if NUMBER_PLACEHOLDER in phrase:
+                    found = _number_trigger_regex(phrase).fullmatch(normalized)
+                    if found:
+                        return _with_number(command, _spoken_digit(found.group(1)))
+                elif phrase and normalize_spoken(phrase) == normalized:
+                    return command
                 continue
 
             # A pattern belongs to the command, not a phrase: checked once.
@@ -299,6 +319,28 @@ class VoiceCommandManager:
             self.logger.error(f"Failed to reload commands: {e}")
             print(f"   ⚠ Failed to reload commands.yaml: {e}")
 
+    # The phrases of your plain commands (no AI scripts), for an AI script to
+    # call with run_command().
+    def plain_phrases(self) -> list:
+        if not getattr(self, 'commands', None):
+            return []
+        self._reload_if_changed()
+        phrases = []
+        for cmd in self.commands:
+            if cmd.get('trigger') and any(cmd.get(k) is not None for k in PLAIN_KEYS):
+                phrases.append(cmd['trigger'])
+        return phrases
+
+    # Runs the plain command whose trigger is exactly `phrase` (an AI script's
+    # run_command). True when it ran.
+    def run_plain(self, phrase: str) -> bool:
+        wanted = normalize_spoken(phrase)
+        for cmd in getattr(self, 'commands', None) or []:
+            if normalize_spoken(cmd.get('trigger') or '') == wanted and any(cmd.get(k) is not None for k in PLAIN_KEYS):
+                self.execute_command(cmd)
+                return True
+        return False
+
     # `confirm_runs`: the command came from a voice anyone could have spoken
     # ("Hey Koli" from a TV or a video), so its run steps always ask first,
     # and don't run at all where no dialog can ask.
@@ -329,6 +371,8 @@ class VoiceCommandManager:
             self._deliver_text(self._expand_template(command['type']), trigger, use_auto_enter)
         elif command.get('rephrase') is not None:
             self._execute_rephrase(command['rephrase'], trigger)
+        elif command.get('script') is not None or command.get('agent') is not None:
+            self._execute_agent(command, trigger, anyone=confirm_runs)
         elif command.get('delay') is not None:
             import time
             try:
@@ -337,6 +381,22 @@ class VoiceCommandManager:
                 seconds = 0.0
             seconds = max(0.0, min(60.0, seconds))
             time.sleep(seconds)
+
+    # An AI action kept as a command, or "undo last action". Never from a voice
+    # anyone could have spoken (the generic "Hey Koli"): those change files.
+    def _execute_agent(self, command: dict, trigger: str, anyone: bool = False):
+        runner = self.agent_runner
+        if runner is None:
+            print(f"   ✗ AI actions aren't available: {trigger}")
+            return
+        if anyone:
+            self.logger.info(f"AI command '{trigger}' not run: the wake word wasn't your own")
+            print("   ✗ AI commands work with your own wake word or the command shortcut")
+            return
+        if command.get('agent') == 'undo':
+            runner.undo()
+        elif command.get('script'):
+            runner.run_saved(str(command['script']), trigger)
 
     def _execute_rephrase(self, instruction: str, trigger: str):
         import time

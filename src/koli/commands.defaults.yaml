@@ -12,6 +12,13 @@
 # Full documentation: https://github.com/drajb/whisper-local/blob/master/docs/voice-commands.md
 
 commands:
+  # AI actions: undo the last one (moves files back, removes copies). Longer
+  # than "undo", so it wins over Ctrl+Z.
+  - trigger: "undo last action"
+    other_triggers: ["undo the last action", "undo that action", "take that back",
+                     "בטל את הפעולה האחרונה", "בטל פעולה אחרונה"]
+    agent: undo
+
   # Hotkey commands — send keyboard shortcuts to the active window
   - trigger: "undo"
     hotkey: "ctrl+z"

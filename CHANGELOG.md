@@ -5,6 +5,34 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 ## [Unreleased]
 
 ### Added
+- **AI actions: say what you want.** When none of your voice commands
+  matches, the AI does it: "(your wake word), move today's photos from Downloads to
+  Pictures", "open the newest PDF in Documents", in English or Hebrew. Only
+  with your own wake word or the command shortcut, never the generic "Hey
+  Koli". The AI writes a script that can only call Koli's own actions; Koli
+  checks it, rehearses it, has a second AI call confirm the list matches what
+  you said, and runs that list. Moves, copies, renames and new folders in your
+  folders just happen, with Undo on the bubble or "undo last action".
+  Deleting (to the Recycle Bin), more than 50 files or anything outside your
+  folders needs your approval password, said in your voice. Programs are never
+  opened as files. Ask the same thing three times and the bubble offers to
+  save it as a command that runs without the AI. Commands → AI actions has
+  the password (recorded three times like the wake word, so Koli knows how
+  Whisper writes it and how you sound saying it) and an Activity list with
+  Undo. The bubble says what was
+  really done ("Moved 3 items from ~\Downloads to ~\Pictures"), with **Show**
+  to open the folder at it; a long message becomes a card with the buttons
+  underneath, and stays up long enough to read. Beyond files, the AI writes
+  the system command itself from what it knows of Windows or macOS ("turn the
+  volume up 20%", "what's my IP", "open the Bluetooth settings"): reading and
+  settings it can put back run at once with Undo; anything on Koli's danger
+  list or rated risky waits for your password. What it can't do it says, and
+  Activity keeps it as "couldn't do". When something is missing ("move the
+  pictures": where to?) it asks you, and listens for the answer without the
+  wake word; a folder name it can't find gets "Did you mean “avi”?". Follow-ups work on what the last action made
+  ("make a new folder", then "call it Invoices"), and Undo reverses both.
+  After your own wake word you can say a whole sentence: Koli listens until
+  you pause for 2 seconds, while a fixed command still runs at once.
 - **Practice: teach Koli your voice.** My words › Practice (also offered at
   the end of the welcome) asks four short questions (your languages, your
   accent, your work, words Koli gets wrong), then has you read about ten short

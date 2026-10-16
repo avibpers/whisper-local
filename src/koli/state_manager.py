@@ -55,6 +55,10 @@ from .level_overlay import LevelOverlay
 from .fallback_window import FallbackWindow
 from .ui.events import publish
 
+# What _handle_command_transcription returns when the AI took the command (it
+# shows its own bubble, so no success or failure flash on top).
+AGENT = 'agent'
+
 
 # Wraps the tray so every notification also reaches the event bus (the floating
 # bar and the app window show them). Everything else passes through, and a
@@ -123,6 +127,11 @@ class StateManager:
         self.audio_feedback = OptionalComponent(audio_feedback)
         self.vad_manager = vad_manager
         self.voice_command_manager = voice_command_manager
+        try:
+            self.agent = self._build_agent()     # AI actions (agent/runner.py)
+        except Exception as e:
+            logging.getLogger(__name__).warning(f"AI actions unavailable: {e}")
+            self.agent = None
 
         self.is_processing = False
         self.is_model_loading = False
@@ -642,12 +651,13 @@ class StateManager:
             personal = bool(listener is not None and listener.personal())
             matched = self._handle_command_transcription(
                 text, only=is_media_command if only_media else None, announce_miss=report_miss,
-                confirm_runs=not personal)
+                confirm_runs=not personal, source='personal' if personal else 'generic',
+                info=getattr(self.whisper_engine, 'last_info', None) if audio is not None else None)
             if matched or report_miss:
                 self._emit_pipeline('command', mode='wake', raw=text, matched=bool(matched))
             if not matched and report_miss and can_retry:
                 print("   ↻ Say the command again (no wake word needed)")
-            if self.level_overlay:
+            if self.level_overlay and matched != AGENT:   # the AI action shows its own bubble
                 if matched:
                     self.level_overlay.flash_success()
                 elif report_miss:
@@ -659,6 +669,45 @@ class StateManager:
                 self.is_processing = False
             if report_miss:
                 self._publish_state(self.get_current_state())
+            self._run_idle_actions()
+
+    # The wake word's quick check at a short pause in a sentence: runs a fixed
+    # command only when what was said so far is exactly one of its phrases.
+    # Quiet otherwise (no bubble, no console), since you may still be talking.
+    # Only your own word gets here, so nothing asks first.
+    def run_quick_command(self, audio) -> str:
+        from .wake_word import BUSY, EMPTY, MISSED, RAN, match_wake
+        from .utils import normalize_spoken
+        with self._state_lock:
+            if self.is_processing or self.is_model_loading or self.is_paused \
+                    or self.audio_recorder.get_recording_status():
+                return BUSY
+            self.is_processing = True
+        try:
+            if not self.voice_command_manager.enabled:
+                return MISSED
+            text = self.whisper_engine.transcribe_audio(
+                audio, language=self.wake_language(), use_prompt=False, beam_size=1, task='transcribe',
+                quiet=True) or ''
+            listener = self._wake_listener
+            if listener is not None:
+                rest = match_wake(text, listener.spellings(), listener.match_ratio())
+                if rest is not None:
+                    text = rest
+            if not normalize_spoken(text):
+                return EMPTY
+            matched = self.voice_command_manager.match_command(text, exact=True)
+            if not matched:
+                return MISSED
+            self.logger.info("Command caught at a short pause")
+            self.voice_command_manager.execute_command(matched)
+            self._emit_pipeline('command', mode='wake', raw=text, matched=True)
+            if self.level_overlay:
+                self.level_overlay.flash_success()
+            return RAN
+        finally:
+            with self._state_lock:
+                self.is_processing = False
             self._run_idle_actions()
 
     # ── Only my voice ────────────────────────────────────────────────────────
@@ -1317,9 +1366,10 @@ class StateManager:
                 transcribed_text = kept
 
             if command_mode:
-                matched = self._handle_command_transcription(transcribed_text, use_auto_enter)
+                matched = self._handle_command_transcription(transcribed_text, use_auto_enter, source='hotkey',
+                                                             info=info)
                 self._emit_pipeline('command', mode=mode, raw=transcribed_text, matched=bool(matched))
-                if self.level_overlay:
+                if self.level_overlay and matched != AGENT:   # the AI action shows its own bubble
                     if matched:
                         self.level_overlay.flash_success()
                     else:
@@ -1532,8 +1582,13 @@ class StateManager:
     # `only` limits which commands may run (wake-word follow-ups: media only);
     # `announce_miss=False` keeps a miss out of the console (lyrics, talk);
     # `confirm_runs`: anyone could have said it, so run steps ask first.
+    # `source`: 'personal' (your own wake word), 'hotkey', 'generic' ("Hey
+    # Koli", any voice) or None. With your own word or the hotkey, a first
+    # command no fixed one matches goes to the AI (returns AGENT); `info` is
+    # Whisper's numbers for it, so noise is turned away before the model.
     def _handle_command_transcription(self, text: str, use_auto_enter: bool = False, only=None,
-                                      announce_miss: bool = True, confirm_runs: bool = False) -> bool:
+                                      announce_miss: bool = True, confirm_runs: bool = False,
+                                      source: Optional[str] = None, info: Optional[dict] = None):
         log_config = self.config_manager.get_logging_config()
         if log_config.get('log_transcriptions', False) and announce_miss:
             self.logger.info(f"Command mode transcription: '{text}'")
@@ -1551,9 +1606,90 @@ class StateManager:
             else:
                 self.voice_command_manager.execute_command(matched, use_auto_enter)
             return True
+        if announce_miss and only is None and source in ('personal', 'hotkey') and self._agent_enabled():
+            return self._hand_to_agent(text, info)
         if announce_miss:
             print(f"   ✗ No matching command for: \"{text[:60]}\"")
         return False
+
+    # ── AI actions (agent/) ──────────────────────────────────────────────────
+
+    def _agent_enabled(self) -> bool:
+        return getattr(self, 'agent', None) is not None and \
+            self.config_manager.get_path('ai.commands.enabled', True) is not False
+
+    # Noise Whisper was unsure of never reaches the model; anything else does.
+    def _hand_to_agent(self, text: str, info: Optional[dict]):
+        from .dictation_cleanup import unsure_piece
+        pieces = (info or {}).get('segments') or []
+        if pieces and all(unsure_piece(p) for p in pieces):
+            publish('agent', {'phase': 'not_understood', 'text': "Sorry, I didn't understand", 'heard': text})
+            self.logger.info("AI action: Whisper wasn't sure of the words; not sent to the model")
+            return AGENT
+        print(f"   🤖 No command matched: asking the AI (\"{text[:60]}\")")
+        self.agent.handle(text)
+        return AGENT
+
+    # The AI actions' runner, wired to this app: the model, the bubble, your
+    # commands, and the wake word's microphone and voiceprint for the password.
+    def _build_agent(self):
+        from . import llm
+        from .agent.approval import Approval
+        from .agent.runner import AgentRunner
+
+        def listener():
+            return getattr(self, '_wake_listener', None)
+
+        def listen(stop):
+            wl = listener()
+            return wl.capture_word(timeout=8.0, max_seconds=6.0, end_silence_s=0.8, stop=stop) if wl else None
+
+        # No hint (hotwords ''): Whisper must hear the password, not expect it.
+        def transcribe(audio):
+            return self.whisper_engine.transcribe_audio(audio, language=approval.language(), use_prompt=False,
+                                                        beam_size=1, task='transcribe', quiet=True, hotwords='')
+
+        def has_voice():
+            wl = listener()
+            return bool(wl and wl.personal() and wl.wake_voices.get(self._mic_key()) is not None)
+
+        # Your recordings of the password are voiceprinted by the same model
+        # as the wake word (the meeting voices').
+        def voiceprint(audio):
+            meetings = getattr(self, 'meetings', None)
+            return meetings.voiceprint_of(audio) if meetings is not None else None
+
+        approval = Approval(listen=listen, transcribe=transcribe,
+                            similarity=lambda audio: listener().similarity(audio) if listener() else None,
+                            voice_match=lambda: listener().voice_match() if listener() else 0.45,
+                            has_voice=has_voice, voiceprint=voiceprint, mic=self._mic_key)
+        # Your answer to a question the AI asked: up to 10 s of it, ended by a
+        # 1.2 s pause, in your voice when your wake voiceprint is on this
+        # microphone (someone else answering doesn't count).
+        def hear(stop):
+            wl = listener()
+            if wl is None:
+                return None
+            audio = wl.capture_word(timeout=8.0, max_seconds=10.0, end_silence_s=1.2, stop=stop)
+            if audio is None:
+                return None
+            if has_voice():
+                score = wl.similarity(audio)
+                if score is not None and score < wl.voice_match():
+                    self.logger.info(f"AI action: an answer in another voice ({score:.2f}) was ignored")
+                    return None
+            return self.whisper_engine.transcribe_audio(audio, language=self.wake_language(), use_prompt=False,
+                                                        beam_size=1, task='transcribe', quiet=True)
+
+        vcm = self.voice_command_manager
+        runner = AgentRunner(
+            complete=lambda feature, messages, json=False: llm.complete(feature, messages, json=json),
+            publish=lambda payload: publish('agent', payload), approval=approval,
+            commands=lambda: vcm.plain_phrases() if vcm is not None and vcm.enabled else [],
+            run_fixed=lambda phrase: bool(vcm and vcm.run_plain(phrase)), hear=hear)
+        if vcm is not None:
+            vcm.agent_runner = runner
+        return runner
 
     def get_application_state(self) -> dict:
         status = {

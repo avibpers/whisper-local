@@ -5,6 +5,7 @@
 # macOS mirror: platform/macos/keyboard.py (Quartz events).
 import ctypes
 import ctypes.wintypes as wintypes
+import time
 
 user32 = ctypes.windll.user32
 
@@ -103,9 +104,23 @@ def _make_unicode_input(char_code, flags=0):
 
 
 def _send(inputs):
+    global _sent_at
+    _sent_at = time.monotonic()
     n = len(inputs)
     array = (INPUT * n)(*inputs)
     user32.SendInput(n, array, ctypes.sizeof(INPUT))
+    _sent_at = time.monotonic()
+
+
+# When Koli last pressed keys itself. The hotkey library sees those keys like
+# yours: the Ctrl of Koli's own Ctrl+V ended an auto-dictation as the stop
+# key (app.log 2026-10-15 10:18:49). Hotkeys check sent_recently() first.
+_sent_at = -1e9
+OWN_KEYS_S = 0.5
+
+
+def sent_recently(seconds: float = OWN_KEYS_S) -> bool:
+    return time.monotonic() - _sent_at < seconds
 
 
 def validate_delivery_method(method: str) -> str:
