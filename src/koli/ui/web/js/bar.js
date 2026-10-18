@@ -312,7 +312,7 @@ function Status() {
   if (!settings) return html`<div class="bub rest" aria-label="Koli is starting"></div>`;
   const keys = prettyKeys(settings.hotkey.recording_hotkey).join(' ');
 
-  if (st.state === 'recording') {
+  if (st.state === 'recording' && !waitingForSpeech(st)) {
     const command = st.mode === 'command';
     const rephrase = st.mode === 'rephrase';
     const auto = st.mode === 'auto';  // started by a focused text field, not a hotkey
@@ -455,9 +455,16 @@ function AgentStatus({ a }) {
     ${a.phase === 'needs_password' && html`<button type="button" class="btn" onClick=${() => { call('window_open', 'commands'); dismissAgent(); }}>Set it up</button>`}<//>`;
 }
 
+// A text field got focus and Koli listens, but you haven't spoken yet: maybe
+// you clicked only to scroll or read, so the bubble stays at rest until you talk.
+function waitingForSpeech(st) {
+  return st.state === 'recording' && st.mode === 'auto' && st.heard === false;
+}
+
 // True while the bubble is the slim resting tab (painted in its resting colour).
 function isResting(s) {
-  return !!s.settings && !s.menu && !s.hover && !s.flash && !s.task && !s.sending && !s.wake && !s.agent && s.state.state !== 'recording'
+  return !!s.settings && !s.menu && !s.hover && !s.flash && !s.task && !s.sending && !s.wake && !s.agent
+    && (s.state.state !== 'recording' || waitingForSpeech(s.state))
     && s.state.state !== 'processing' && !s.state.paused && s.meeting.state !== 'offered';
 }
 

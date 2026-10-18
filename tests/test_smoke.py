@@ -5635,6 +5635,7 @@ class AutoDictationStateManagerTests(unittest.TestCase):
         sm._state_lock = __import__('threading').Lock()
         sm._pipeline_lock = __import__('threading').Lock()
         sm._auto_started = True
+        sm._auto_heard = False
         sm._auto_pasted = False
         sm._command_mode = False
         sm._rephrase_mode = False
@@ -6418,6 +6419,38 @@ class AutoDictationStateManagerTests(unittest.TestCase):
             sm._auto_started = False
             sm._publish_state('recording')
             self.assertEqual(publish.call_args.args[1]['mode'], 'dictate')
+
+    # A field you clicked to scroll or read keeps the bar at rest: the bubble
+    # shows only once you start talking, and only that first time.
+    def test_bubble_waits_until_you_speak(self):
+        import unittest.mock as mock
+        from koli.voice_activity_detection import VadEvent
+        sm = self._sm(had_speech=False)
+        with mock.patch('koli.state_manager.publish') as publish, mock.patch('builtins.print'):
+            sm._publish_state('recording')
+            self.assertFalse(publish.call_args.args[1]['heard'])
+            sm.handle_vad_event(VadEvent.SPEECH_START)
+            publish.assert_called_with('state', {'heard': True})
+            publish.reset_mock()
+            sm.handle_vad_event(VadEvent.SPEECH_START)
+            publish.assert_not_called()
+            sm._publish_state('recording')
+            self.assertTrue(publish.call_args.args[1]['heard'])
+            sm._auto_started = False   # a hotkey recording always shows
+            sm._auto_heard = False
+            sm._publish_state('recording')
+            self.assertTrue(publish.call_args.args[1]['heard'])
+
+    # The record hotkey taking over a quiet auto recording shows the bubble at once.
+    def test_hotkey_take_over_shows_the_bubble(self):
+        import unittest.mock as mock
+        sm = self._sm(had_speech=False)
+        sm._recording_started_at = 0
+        with mock.patch('koli.state_manager.publish') as publish, mock.patch('builtins.print'):
+            sm._take_over_auto_session()
+        payload = publish.call_args.args[1]
+        self.assertEqual(payload['mode'], 'dictate')
+        self.assertTrue(payload['heard'])
 
 
 class AutoDictationTypingFilterTests(unittest.TestCase):
@@ -7476,6 +7509,19 @@ class ConfidentSpeechTests(unittest.TestCase):
         self.assertEqual(confident_speech('Yes, send it.', real, False)[0], 'Yes, send it.')
         longer = {'language_raw_probability': 0.9, 'audio_seconds': 4.0, 'segments': [self._seg(' Fine.', logprob=-0.85)]}
         self.assertEqual(confident_speech('Fine.', longer, False)[0], 'Fine.', 'only short clips need the closer bar')
+
+    # One sentence cut at a pause: "And I would say, if you can touch it." was
+    # pasted, then the 1.9 s "You can hold it." (-0.5) was dropped as a scrap.
+    def test_a_short_clip_continuing_pasted_words_is_kept(self):
+        from koli.dictation_cleanup import confident_speech
+        rest = {'language_raw_probability': 0.9, 'audio_seconds': 1.9,
+                'segments': [self._seg(' You can hold it.', logprob=-0.5)]}
+        self.assertEqual(confident_speech('You can hold it.', rest, False)[0], '')
+        self.assertEqual(confident_speech('You can hold it.', rest, False, continuing=True)[0], 'You can hold it.')
+        noise = {'language_raw_probability': 0.9, 'audio_seconds': 1.9,
+                 'segments': [self._seg(' Thank you.', no_speech=0.8)]}
+        self.assertEqual(confident_speech('Thank you.', noise, False, continuing=True)[0], '',
+                         'unsure pieces are still left out')
 
     # Only my voice, step 2: auto-dictation types only what sounds like you on
     # this microphone; unknown (None) or switched off never blocks.

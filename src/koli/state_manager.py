@@ -145,6 +145,10 @@ class StateManager:
         # True while the running recording was started by auto-dictation (a text
         # field got focus) rather than a hotkey; see auto_dictation.py.
         self._auto_started = False
+        # You have started talking in the running auto recording. Until then
+        # the floating bar stays at rest: a field you clicked to scroll or read
+        # should not pop up "Listening" (see _publish_state).
+        self._auto_heard = False
         # Something was pasted in the running auto-dictation session, so its
         # end may send it (see _finish_auto_session). The words pasted so far
         # size an "Auto" wait before that send.
@@ -234,6 +238,11 @@ class StateManager:
         if event == VadEvent.SPEECH_START:
             # You started talking: now the music can pause (media_control.py).
             self.media_control.on_speech()
+            # An auto recording that was listening quietly shows its bubble now.
+            if self._auto_started and not self._auto_heard:
+                self._auto_heard = True
+                print("   🗣 Heard you - showing the bubble")
+                publish('state', {'heard': True})
             return
         if event == VadEvent.PHRASE_PAUSE:
             # A short pause while auto-dictation listens: paste the words so
@@ -513,6 +522,7 @@ class StateManager:
             self._recording_started_at = time.monotonic()
             self._auto_started = auto_started
             self._hands_free = hands_free and not auto_started
+            self._auto_heard = False
             self._auto_pasted = False
             self._auto_pasted_words = 0
             if auto_started:
@@ -585,6 +595,7 @@ class StateManager:
         self.logger.info("Auto-dictation: taken over by the record hotkey - a hotkey dictation now")
         print("   🎤 Yours now: keep talking, let go of the keys to finish")
         self.audio_feedback.play_start_sound()
+        self._publish_state('recording')   # the bar shows a hotkey recording now, even before you speak
 
     # Typing means "I'll write it myself": the audio is dropped, quietly.
     def cancel_auto_recording(self, reason: str = '') -> bool:
@@ -1347,7 +1358,9 @@ class StateManager:
             # sure is speech. A hotkey recording only had the short-clip check.
             if unprompted:
                 forced = bool(getattr(self.whisper_engine, 'language', None))
-                kept, why = confident_speech(transcribed_text, info, language_forced=forced)
+                # A phrase after words this session already pasted continues them.
+                continuing = auto_session and bool(self._auto_pasted)
+                kept, why = confident_speech(transcribed_text, info, language_forced=forced, continuing=continuing)
                 if why:
                     self.logger.info(f"{'Auto-dictation' if auto_session else 'Continuous dictation'}: {why}")
                 if not kept:
@@ -1726,13 +1739,16 @@ class StateManager:
         self._publish_state(state)
 
     # The UI's view of the state: the pipeline state plus which kind of
-    # recording it is and whether hotkeys are paused.
+    # recording it is and whether hotkeys are paused. `heard` is false only
+    # while an auto recording waits for you to speak (the bar stays at rest).
     def _publish_state(self, state: str):
         mode = 'command' if self._command_mode else ('rephrase' if self._rephrase_mode else 'dictate')
-        if state == 'recording' and self._auto_started:
+        auto = state == 'recording' and self._auto_started
+        if auto:
             mode = 'auto'  # the floating bar shows "Listening" instead of the hotkey hints
         payload = {'state': state, 'mode': mode, 'paused': bool(self.is_paused),
-                   'model_loading': bool(self.is_model_loading)}
+                   'model_loading': bool(self.is_model_loading),
+                   'heard': not auto or bool(self._auto_heard)}
         if state != 'recording':
             payload['hands_free'] = False  # a lock only lasts one recording
         publish('state', payload)

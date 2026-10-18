@@ -70,7 +70,11 @@ def unsure_short_clip(info: dict, min_logprob: float = HOTKEY_SHORT_MIN_LOGPROB)
 # (segment) its text and numbers when the backend gives them.
 # With "Languages I speak" the language's share of the list is always high, so
 # the guard reads Whisper's raw score for the language it picked.
-def confident_speech(text: str, info: dict, language_forced: bool) -> tuple:
+#
+# `continuing`: words of this session were already pasted, so this clip is the
+# rest of what you are saying, cut at a pause. A short ending ("You can hold
+# it.", 1.9 s) is not a click or a breath then: the short-clip bar is skipped.
+def confident_speech(text: str, info: dict, language_forced: bool, continuing: bool = False) -> tuple:
     info = info or {}
     probability = info.get('language_raw_probability', info.get('language_probability'))
     if not language_forced and probability is not None and probability < MIN_LANGUAGE_CONFIDENCE:
@@ -79,7 +83,7 @@ def confident_speech(text: str, info: dict, language_forced: bool) -> tuple:
     if not pieces:
         return text, ''
     seconds = info.get('audio_seconds')
-    if seconds is not None and seconds < SHORT_CLIP_S \
+    if not continuing and seconds is not None and seconds < SHORT_CLIP_S \
             and any(p.get('avg_logprob', 0) < SHORT_CLIP_MIN_LOGPROB for p in pieces):
         return '', f'{seconds:.1f} s clip Whisper was not clearly sure of'
     kept = [p for p in pieces if not unsure_piece(p)]

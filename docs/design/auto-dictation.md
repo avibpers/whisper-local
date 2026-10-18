@@ -13,7 +13,8 @@ gets out of the way the moment you type.
 
 | Situation | What Koli does |
 |-----------|----------------|
-| A text field gets keyboard focus, feature on | Starts a recording silently. The floating bar shows "Listening". No start sound. |
+| A text field gets keyboard focus, feature on | Starts a recording silently. No start sound, and the floating bar stays at rest: you may have clicked only to scroll or read. |
+| You start talking (the VAD's `SPEECH_START`: a quarter second of speech at your own level) | The floating bar shows "Listening". A hotkey taking over shows it at once. |
 | No speech for `silence_timeout_seconds` (default 5) since the start | Cancels quietly: no transcription, no sound. |
 | Speech, then `silence_timeout_seconds` of silence | Stops and delivers like any recording (paste, complete sound, history). With phrase delivery on, anything not yet pasted is pasted; if everything was already pasted, the session just ends quietly. |
 | You pause for `phrase_pause_seconds` (default 1) after speaking | Pastes what you said so far, with a trailing space, silently, and keeps listening. The 5 s limit then counts from that pause. |
@@ -179,8 +180,10 @@ editor).
 ### UI
 
 Floating bar: while `state.mode === 'auto'`, the recording bubble shows a
-"Listening" badge instead of the lock or command badge. Live screen label:
-"Listening (focused field)". Nothing else changes.
+"Listening" badge instead of the lock or command badge. Until you speak the
+state event carries `heard: false` and the bar stays the resting tab; the
+state manager publishes `heard: true` on the first `SPEECH_START`. Live
+screen label: "Listening (focused field)", from the start.
 
 ### Wiring and shutdown
 
