@@ -7999,8 +7999,12 @@ class LearningRecentTests(unittest.TestCase):
         self.assertEqual(svc.recent(limit=1)['total'], 2)
 
     def test_audio_comes_back_as_a_data_url(self):
+        import base64
         url = self._service().audio(self.typed['id'])['url']
-        self.assertTrue(url.startswith('data:audio/flac;base64,'))
+        self.assertTrue(url.startswith('data:audio/wav;base64,'), 'the window plays WAV, not FLAC')
+        wav = base64.b64decode(url.split(',', 1)[1])
+        self.assertEqual(wav[:4], b'RIFF')
+        self.assertEqual(len(wav), 44 + 16000 * 2, 'one second of 16 kHz, 16-bit mono')
 
     # A typed clip is compared word by word; a dropped one is judged speech
     # or noise by the night model's confidence. Nothing is saved.
@@ -8021,3 +8025,12 @@ class LearningRecentTests(unittest.TestCase):
         self.store.drop_audio([self.typed['id']])
         with self.assertRaises(ValueError):
             self._service().test(self.typed['id'])
+
+
+class AppWindowAudioPolicyTests(unittest.TestCase):
+    # Training's Play hands the player a data: URL. Without media-src the
+    # page's policy falls back to default-src 'self' and every clip fails
+    # with "no supported source was found".
+    def test_the_app_window_lets_clips_play(self):
+        page = (ROOT / 'src' / 'koli' / 'ui' / 'web' / 'index.html').read_text(encoding='utf-8')
+        self.assertIn("media-src 'self' data:", page)

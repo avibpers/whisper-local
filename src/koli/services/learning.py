@@ -99,15 +99,16 @@ class LearningService:
             'test': self._tests.get(r['id']),
         }
 
-    # The clip's audio for the page's player, as a data URL.
+    # The clip's audio for the page's player, as a WAV data URL (the file on
+    # disk stays FLAC; the window's player can't play FLAC).
     def audio(self, clip_id: str) -> dict:
         import base64
+        from ..learning.clips import wav_bytes
         record = self._record(clip_id)
         path = self.store.audio_path(record)
         if path is None or not path.exists():
             raise ValueError('The audio of this clip was deleted to save space')
-        mime = 'audio/flac' if path.suffix == '.flac' else 'audio/wav'
-        return {'url': f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"}
+        return {'url': f"data:audio/wav;base64,{base64.b64encode(wav_bytes(path)).decode('ascii')}"}
 
     # How the night pass would hear this clip, now. Nothing is saved or
     # learned; the result is remembered only for this screen. When the night

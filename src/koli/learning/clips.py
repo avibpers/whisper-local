@@ -92,6 +92,20 @@ def write_audio(audio: np.ndarray, path: Path, rate: int = SAMPLE_RATE) -> Path:
     return path
 
 
+# The clip as WAV bytes, for the app window's player: WebView2 refuses FLAC
+# in an <audio> data URL ("no supported source"), and every engine plays WAV.
+def wav_bytes(path: Path) -> bytes:
+    import io
+    import wave
+    buf = io.BytesIO()
+    with wave.open(buf, 'wb') as f:
+        f.setnchannels(1)
+        f.setsampwidth(2)
+        f.setframerate(SAMPLE_RATE)
+        f.writeframes(_pcm16(read_audio(path)).tobytes())
+    return buf.getvalue()
+
+
 # The clip back as float32 at 16 kHz, for the night re-listen and replay.
 # Read with PyAV directly: faster-whisper's decode_audio passes an option
 # PyAV 19 no longer takes. Clips are written mono at 16 kHz, so no resampling.
