@@ -18,7 +18,7 @@ from typing import Callable, Iterable, List, Optional
 
 import numpy as np
 
-from .dictation_cleanup import unsure_piece
+from .dictation_cleanup import MAX_NO_SPEECH
 from .utils import get_user_app_data_path, normalize_spoken
 
 logger = logging.getLogger(__name__)
@@ -245,7 +245,7 @@ class WakeVoices:
     # Adds more recordings to your voiceprint on `mic` instead of replacing
     # it: the average grows by how many recordings each side holds, so three
     # more in today's noise move it as much as the first three set it.
-    # Returns False when nothing is saved on `mic` yet.
+    # The level keeps the louder one. Returns False when nothing is saved on `mic` yet.
     def add(self, mic: str, vectors: List[np.ndarray], level_db: Optional[float] = None) -> bool:
         units = _unit_vectors(vectors)
         if not units:
@@ -260,10 +260,12 @@ class WakeVoices:
             centroid = (old * count + np.sum(units, axis=0)) / (count + len(units))
             entry.update(centroid=[round(float(x), 6) for x in centroid], count=count + len(units),
                          saved=time.strftime('%Y-%m-%dT%H:%M:%S'))
+            # The level only rises: recordings from further away (-24 dB
+            # against -16, 2026-10-16) lowered the gate and let the room in.
             if level_db is not None:
                 old_level = entry.get('level_db')
                 entry['level_db'] = round(float(level_db) if old_level is None else
-                                          (float(old_level) * count + float(level_db) * len(units)) / (count + len(units)), 1)
+                                          max(float(old_level), float(level_db)), 1)
             self.path.write_text(json.dumps(data), encoding='utf-8')
         return True
 
@@ -459,6 +461,17 @@ class WakeListener:
     GATE_MARGIN_DB = 15.0
     GATED_LOG_S = 30.0        # at most one "taken as background" line this often
     DEFAULT_VOICE_MATCH = 0.45
+    # How sure Whisper must be of the wake word (its log-prob). A backstop
+    # only: your real "Viush" scored -0.60 to -1.18 and noise read as it
+    # -0.99 to -1.31 (2026-10-16), so this can't tell them apart; your
+    # voice does (you 0.63-0.75, the noise 0.01-0.27 once well recorded).
+    WAKE_MIN_LOGPROB = -1.5
+    # The command is read again in your language, so the wake word at its
+    # start can come out another way than the wake check heard it ("¡Dios!"
+    # woke Koli, the command read "Views increase volume…", 0.60 like
+    # "viush"). When the command's burst is known to start with the word,
+    # this looser match drops it.
+    WAKE_IN_COMMAND_RATIO = 0.5
     # The console shows tries that are probably you: a voice this close under
     # "Sounds like you", or (with "Hey Koli", where every burst reaches
     # Whisper) text this much like the wake word. Other voices and a TV
@@ -496,6 +509,8 @@ class WakeListener:
         self._quick_command = quick_command or self._state_manager_quick
         self._sentence = False       # this command may be a sentence for the AI
         self._last_pieces = None     # Whisper's pieces with its numbers, from the last wake check
+        self._wake_heard = ''        # the wake word as the last wake check wrote it ("dios")
+        self._wake_in_command = False   # the command being run starts with the wake word
         self._recent_power = collections.deque(maxlen=max(1, int(round(self.LEVEL_WINDOW_S / FRAME_S))))
         self._window_db = -200.0
         self._gated_frames, self._gated_peak = 0, -200.0
@@ -861,7 +876,7 @@ class WakeListener:
             else:
                 self.cutter.cut_after(self.COMMAND_AFTER_WAKE_S)
         elif rest:
-            self._run(audio=burst.audio(), first=True)   # "Hey Koli next", read in your language
+            self._run(audio=burst.audio(), first=True, has_wake=True)   # "Hey Koli next", read in your language
         else:
             self._enter(WAITING, self._seconds('command_timeout_seconds', 5))
 
@@ -880,11 +895,14 @@ class WakeListener:
         # A command after a pause wasn't voice-checked as part of the wake word.
         if not burst.is_wake and not self._sounds_like_you(burst.audio()):
             return
+        self._wake_in_command = burst.is_wake
         try:
             outcome = self._quick_command(burst.audio())
         except Exception as e:
             self.logger.debug(f"Wake word: quick command check failed ({e})")
             return
+        finally:
+            self._wake_in_command = False
         if outcome == RAN:
             self.cutter.drop()
             self._enter(FOLLOW_UP, self._seconds('follow_up_seconds', 5))
@@ -894,7 +912,7 @@ class WakeListener:
             if self.state == AWAKE:
                 said_more = burst.speech_frames - burst.wake_frames >= self.MIN_SPEECH_S / FRAME_S
                 if burst.wake_rest or said_more:
-                    self._run(audio=burst.audio(), first=True)
+                    self._run(audio=burst.audio(), first=True, has_wake=True)
                 else:
                     # Only the wake word, already read: wait for the command.
                     self._enter(WAITING, self._seconds('command_timeout_seconds', 5))
@@ -978,19 +996,40 @@ class WakeListener:
         else:
             self.logger.info(f"{said}: woke")
             _console(f"👂 Heard “{text}”{voice}: woke, listening for the command")
+            words = normalize_spoken(text).split()
+            self._wake_heard = ' '.join(words[:len(words) - len(rest.split())])
+        return rest
+
+    # `text` (a command as read in your language) without the wake word at
+    # its start. Your spellings first; when the command's audio is known to
+    # start with the word, also what the wake check heard, more loosely.
+    def strip_wake(self, text: str) -> str:
+        rest = match_wake(text, self.spellings(), self.match_ratio())
+        if rest is None and self._wake_in_command:
+            heard = [self._wake_heard] if self._wake_heard else []
+            rest = match_wake(text, self.spellings() + heard, self.WAKE_IN_COMMAND_RATIO)
+            if rest is not None:
+                self.logger.info("Wake word: dropped from the start of the command (read another way)")
+        if rest is None:
+            return text
+        # The command keeps its own words ("30%"); match_wake's are normalised.
+        tokens = text.split()
+        for start in range(len(tokens) + 1):
+            if normalize_spoken(' '.join(tokens[start:])) == rest:
+                return ' '.join(tokens[start:])
         return rest
 
     # Whisper's own numbers for the last wake check: (sure enough, the numbers
     # for the log), or None when the engine gave none (whisper.cpp, tests).
-    # Unsure is the meeting and auto-dictation rule: every piece rated more
-    # likely silence, guessed word by word, or repeating itself.
+    # Sure enough: some piece above WAKE_MIN_LOGPROB and not rated silence.
     def _whisper_sure(self) -> Optional[tuple]:
         pieces = self._last_pieces
         if not pieces:
             return None
         no_speech = max(p.get('no_speech_prob', 0) for p in pieces)
         log_prob = min(p.get('avg_logprob', 0) for p in pieces)
-        sure = not all(unsure_piece(p) for p in pieces)
+        sure = any(p.get('no_speech_prob', 0) <= MAX_NO_SPEECH and p.get('avg_logprob', 0) >= self.WAKE_MIN_LOGPROB
+                   for p in pieces)
         return sure, f"no-speech {no_speech:.2f} / log-prob {log_prob:.2f}"
 
     def _log_text(self) -> bool:
@@ -1084,15 +1123,20 @@ class WakeListener:
     # A first command that matches nothing gets one more try without the wake
     # word ("Didn't catch that - say it again"); only one, so a TV that keeps
     # talking can't hold Koli awake.
-    def _run(self, audio=None, text=None, first: bool = True) -> None:
+    # `has_wake`: the audio starts with the wake word (said in one breath), so
+    # strip_wake may drop it more loosely.
+    def _run(self, audio=None, text=None, first: bool = True, has_wake: bool = False) -> None:
         only_media = not first and not self.personal()
         can_retry = first and self._retry_left
+        self._wake_in_command = has_wake
         try:
             outcome = self._run_command(audio=audio, text=text, only_media=only_media, report_miss=first,
                                         can_retry=can_retry)
         except Exception as e:
             self.logger.warning(f"Wake word: the command failed ({e})")
             outcome, can_retry = MISSED, False
+        finally:
+            self._wake_in_command = False
         if outcome == RAN:
             self._enter(FOLLOW_UP, self._seconds('follow_up_seconds', 5))
         elif outcome == EMPTY and first:

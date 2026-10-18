@@ -204,6 +204,7 @@ class ListenerTestCase(unittest.TestCase):
         self.sm = FakeStateManager()
         self.transcribed = []
         self.runs = []
+        self.wake_flags = []      # per run: did its audio start with the wake word
         self.retries = []
         self.run_times = []
         self.events = []
@@ -222,8 +223,8 @@ class ListenerTestCase(unittest.TestCase):
         def run_command(audio=None, text=None, only_media=False, report_miss=True, can_retry=False):
             said = text if text is not None else (fake_transcribe(audio) or '')
             # Like StateManager.run_wake_command: the listener's own word is dropped.
-            rest = wake_word.match_wake(said, self.listener.spellings(), self.listener.match_ratio())
-            said = said if rest is None else rest
+            self.wake_flags.append(self.listener._wake_in_command)
+            said = self.listener.strip_wake(said)
             self.runs.append({'text': said, 'audio': audio is not None, 'only_media': only_media,
                               'report_miss': report_miss})
             self.retries.append(can_retry)
@@ -387,10 +388,25 @@ class WakeListenerTests(ListenerTestCase):
 
     def test_the_word_whisper_wasnt_sure_of_doesnt_wake(self):
         listener = self.make()
-        self.unsure_whisper(listener, no_speech=0.8, log_prob=-1.3)
+        self.unsure_whisper(listener, no_speech=0.1, log_prob=-1.8)
         self.say(1)
         self.quiet(1.0)
         self.assertEqual((self.sounds, listener.state), (0, self.ww.SLEEPING))
+
+    # Your real word scored as low as -1.18 (2026-10-16): only clear guessing is dropped.
+    def test_a_word_whisper_was_somewhat_unsure_of_still_wakes(self):
+        listener = self.make()
+        self.unsure_whisper(listener, no_speech=0.0, log_prob=-1.18)
+        self.say(1)
+        self.quiet(1.0)
+        self.assertEqual(self.sounds, 1)
+
+    def test_a_word_whisper_rated_silence_doesnt_wake(self):
+        listener = self.make()
+        self.unsure_whisper(listener, no_speech=0.8, log_prob=-0.3)
+        self.say(1)
+        self.quiet(1.0)
+        self.assertEqual(self.sounds, 0)
 
     def test_the_word_whisper_was_sure_of_wakes(self):
         listener = self.make()
@@ -398,6 +414,29 @@ class WakeListenerTests(ListenerTestCase):
         self.say(1)
         self.quiet(1.0)
         self.assertEqual((self.sounds, listener.state), (1, self.ww.WAITING))
+
+    # 2026-10-16: "¡Dios!" woke Koli, and the command, read again in your
+    # language, came out "Views increase volume in 30%": "views" is only 0.60
+    # like "viush", so it went to the AI with the command.
+    def test_the_wake_word_read_another_way_is_dropped_from_the_command(self):
+        listener = self.make(phrases=['viush', 'bios'], only_my_voice=True)
+        listener._wake_heard = 'dios'
+        self.assertEqual(listener.strip_wake('Views increase volume in 30%'), 'Views increase volume in 30%',
+                         'a command said after a pause keeps its words')
+        listener._wake_in_command = True
+        self.assertEqual(listener.strip_wake('Views increase volume in 30%'), 'increase volume in 30%')
+        self.assertEqual(listener.strip_wake('increase volume'), 'increase volume', 'nothing like the word stays')
+
+    def test_only_a_command_in_the_wake_breath_starts_with_the_word(self):
+        self.make()
+        self.say(1, 2, seconds=0.6)           # one breath
+        self.quiet(6)                         # past the follow-up window
+        self.say(1)                           # a new wake, then a pause
+        self.quiet(1.0)
+        self.say(2)
+        self.quiet(0.8)
+        self.assertEqual(self.wake_flags, [True, False])
+        self.assertFalse(self.listener._wake_in_command, 'reset after the run')
 
     def test_one_long_breath_runs_the_whole_burst(self):
         listener = self.make()
@@ -913,6 +952,11 @@ class WakeCommandStateManagerTests(unittest.TestCase):
         listener.spellings.return_value = ['hey koli']
         listener.match_ratio.return_value = 0.9
         listener.personal.return_value = False
+        # The real stripping, over the mock's spellings.
+        from koli.wake_word import WakeListener
+        listener._wake_in_command, listener._wake_heard = False, ''
+        listener.WAKE_IN_COMMAND_RATIO = WakeListener.WAKE_IN_COMMAND_RATIO
+        listener.strip_wake.side_effect = lambda text: WakeListener.strip_wake(listener, text)
         sm._wake_listener = listener
         return sm
 
@@ -920,6 +964,16 @@ class WakeCommandStateManagerTests(unittest.TestCase):
         import unittest.mock as mock
         with mock.patch('builtins.print'), mock.patch('koli.state_manager.publish'):
             return sm.run_wake_command(**kwargs)
+
+    # "¡Dios!" woke Koli; the command read "Views next song" in one breath.
+    def test_the_wake_word_read_another_way_is_dropped_too(self):
+        from koli.wake_word import RAN
+        sm = self._sm(heard='Views next song')
+        sm._wake_listener.spellings.return_value = ['viush', 'bios']
+        sm._wake_listener.match_ratio.return_value = 0.65
+        sm._wake_listener._wake_in_command, sm._wake_listener._wake_heard = True, 'dios'
+        self.assertEqual(self.run_(sm, audio=np.zeros(16000, dtype=np.float32)), RAN)
+        self.assertEqual(sm.voice_command_manager.execute_command.call_args[0][0]['hotkey'], 'media_next')
 
     def test_the_wake_word_is_dropped_and_the_command_runs(self):
         from koli.wake_word import RAN
@@ -1285,7 +1339,9 @@ class WakeVoicesTests(unittest.TestCase):
             got = voices.get('Jabra')
             self.assertAlmostEqual(float(got[0]), float(got[1]), places=5)
             self.assertEqual(voices.count('Jabra'), 6)
-            self.assertAlmostEqual(voices.level('Jabra'), -25.0)
+            self.assertAlmostEqual(voices.level('Jabra'), -20.0, msg='quieter recordings never lower the gate')
+            voices.add('Jabra', [np.array([1.0, 0.0])], level_db=-15.0)
+            self.assertAlmostEqual(voices.level('Jabra'), -15.0)
 
     def test_each_recording_is_scored_without_itself(self):
         from koli.wake_word import leave_one_out_scores

@@ -108,16 +108,16 @@ mic ──► TEN VAD ──► speech burst ──► [personal word: is it you
    high = 0.8. "hey cool" (0.86) only wakes at high; "hey kelly" never. A
    personal word gets 0.15 more (it must sound like you too, and has only
    three recordings' spellings), so "coli" for "koli" passes at medium.
-   A match Whisper wasn't sure of doesn't wake: every piece rated more
-   likely silence (no-speech over 0.6), guessed word by word (log-prob
-   under -1.0) or repeating itself, the rule meetings and auto-dictation
-   use. Told to expect your word, Whisper writes it for noise too
-   (2026-10-16: nothing said, "Viush" heard, voice 0.26 against 0.24). The
-   log line of every check ends with the two numbers, to tune this by, and
-   **Test** shows them. The bar stays at -1.0, not the -0.6 of a short
-   hotkey clip: real commands after the wake word scored -0.13 to -1.03 in
-   app.log (2026-10-15/16), noise read as a command -1.36 to -2.9. Wake
-   clips themselves weren't logged before this.
+   A match Whisper clearly guessed doesn't wake: every piece rated more
+   likely silence (no-speech over 0.6) or under -1.5 log-prob
+   (`WAKE_MIN_LOGPROB`). Told to expect your word, Whisper writes it for
+   noise too (2026-10-16: nothing said, "Viush" heard, voice 0.26 against
+   0.24). It is a backstop, not the filter: measured the same day, your
+   real "Viush" scored -0.60 to -1.18 and noise read as it -0.99 to -1.31,
+   so a bar at -1.0 (the first try) dropped two of your five. Your voice
+   is what tells them apart once the word is recorded well: you 0.63-0.75,
+   the noise 0.01-0.27, against a "Sounds like you" of 0.45. The log line
+   of every check ends with the two numbers, and **Test** shows them.
 6. **Command.** Recording continues until a 0.45 s pause (shorter than the
    0.6 s that ends a burst while asleep: you were just asked for it), Koli
    transcribes the whole burst in the language from Settings (the wake
@@ -178,7 +178,9 @@ time, one at least:
 
 - Each recording joins your voiceprint on this microphone: the average
   grows by count (`WakeVoices.add`), so three more in today's noise move it
-  as much as the first three set it. The level grows the same way.
+  as much as the first three set it. The level only rises: ten
+  recordings from further away took it from -16.1 to -24.4 dB
+  (2026-10-16), and the gate let the room's noise through.
 - Each one shows what Whisper wrote, whether that is a new spelling, and
   its score against your saved voice.
 - A new spelling ("Deus" for "Viush") is kept when the recording sounds

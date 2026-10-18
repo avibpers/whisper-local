@@ -621,7 +621,7 @@ class StateManager:
     def run_wake_command(self, audio=None, text=None, only_media: bool = False, report_miss: bool = True,
                          can_retry: bool = False) -> str:
         from .voice_commands import is_media_command
-        from .wake_word import BUSY, EMPTY, MISSED, RAN, match_wake
+        from .wake_word import BUSY, EMPTY, MISSED, RAN
         from .utils import normalize_spoken
         # Checked and claimed together, so a hotkey pressed in between can't
         # start a dictation alongside the command.
@@ -639,11 +639,11 @@ class StateManager:
                 text = self.whisper_engine.transcribe_audio(
                     audio, language=self.wake_language(), use_prompt=False, beam_size=1, task='transcribe',
                     quiet=not report_miss) or ''
+            # The wake word at the start is dropped, even read another way
+            # than the wake check heard it ("Views" for "Viush").
             listener = self._wake_listener
             if listener is not None:
-                rest = match_wake(text, listener.spellings(), listener.match_ratio())
-                if rest is not None:
-                    text = rest
+                text = listener.strip_wake(text)
             if not normalize_spoken(text):
                 return EMPTY
             # "Hey Koli" is anyone's (a TV, a video): a command that runs a
@@ -676,7 +676,7 @@ class StateManager:
     # Quiet otherwise (no bubble, no console), since you may still be talking.
     # Only your own word gets here, so nothing asks first.
     def run_quick_command(self, audio) -> str:
-        from .wake_word import BUSY, EMPTY, MISSED, RAN, match_wake
+        from .wake_word import BUSY, EMPTY, MISSED, RAN
         from .utils import normalize_spoken
         with self._state_lock:
             if self.is_processing or self.is_model_loading or self.is_paused \
@@ -691,9 +691,7 @@ class StateManager:
                 quiet=True) or ''
             listener = self._wake_listener
             if listener is not None:
-                rest = match_wake(text, listener.spellings(), listener.match_ratio())
-                if rest is not None:
-                    text = rest
+                text = listener.strip_wake(text)
             if not normalize_spoken(text):
                 return EMPTY
             matched = self.voice_command_manager.match_command(text, exact=True)

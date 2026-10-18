@@ -258,7 +258,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
   Told to expect your word, Whisper wrote it for noise ("Viush" with
   nothing said), and the noise after it became a command. A wake Whisper
   wasn't sure of no longer counts, and with your own word the command after
-  a pause must sound like you too, as follow-ups already had to.
+  a pause must sound like you too, as follow-ups already had to. Whisper's
+  doubt only drops clear guesses: your real word scored as low as noise did.
+- **Your wake word no longer ends up in the command.** Said in one breath,
+  the command is read again in your language and the word can come out
+  another way ("Views increase volume in 30%" after "Viush"): it is dropped
+  anyway, and the command keeps its own text ("30%" stays "30%").
+- **Adding recordings no longer makes the wake word take quieter sound for
+  you.** Recordings from further away lowered your saved level; it now only
+  rises.
 - **The record hotkey takes over auto-dictation instead of fighting it.**
   Clicking into a field and then pressing the record keys used to cut you off
   mid-sentence: the press was ignored, Ctrl (the stop key, and the first key
