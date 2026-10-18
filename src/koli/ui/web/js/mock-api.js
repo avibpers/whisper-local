@@ -95,6 +95,15 @@ export function createMock(emit) {
   let practiceIntake = { languages: ['en', 'he'], accent: '', work: 'software', work_other: '', words: [] };
   let practiceRound = null;
   let agentPassword = false;
+  let learningClips = 3420;   // the Training screen's sample clips
+  const learningRecent = [
+    { id: 'c3', ts: '2026-10-16T10:15:40', app: 'discord.exe', kind: 'auto', seconds: 1.9, language: 'en', outcome: 'dropped: unsure: 1.9 s clip Whisper was not clearly sure of',
+      why: 'unsure: 1.9 s clip Whisper was not clearly sure of', heard: 'You can hold it.', typed: '', signals: {}, has_audio: true, test: null },
+    { id: 'c2', ts: '2026-10-16T10:15:31', app: 'discord.exe', kind: 'auto', seconds: 4.9, language: 'en', outcome: 'typed', why: '',
+      heard: 'And I would say, if you can touch it.', typed: 'And I would say, if you can touch it.', signals: {}, has_audio: true, test: null },
+    { id: 'c1', ts: '2026-10-16T10:12:05', app: 'discord.exe', kind: 'hotkey', seconds: 3.4, language: 'en', outcome: 'typed', why: '',
+      heard: 'I see ster everything is okay', typed: 'I see ster everything is okay', signals: { repeats: 'c0' }, has_audio: true, test: null },
+  ];
   let learnedItems = [];
   let profile = 'dictation';
   const frame = { custom: true, maximized: false };   // the page draws the window buttons
@@ -463,6 +472,32 @@ export function createMock(emit) {
     learned_list: () => ok({ items: learnedItems, notes: learnedItems.length ? { he: 'The k sound of כ is often heard as ב.' } : {}, sessions: learnedItems.length ? [{ id: 'r1' }] : [] }),
     learned_delete: (ids) => { const before = learnedItems.length; learnedItems = learnedItems.filter((i) => !ids.includes(i.id)); return ok(before - learnedItems.length); },
     learned_delete_all: () => { learnedItems = []; return ok(null); },
+    learning_state: () => ok({ enabled: !!getPath(data.settings, 'learning.enabled'), folder: 'C:\Users\you\AppData\Roaming\koli\learning',
+      used_bytes: learningClips ? 412e6 : 0, cap_bytes: (getPath(data.settings, 'learning.disk_cap_gb') || 2) * 1e9,
+      clips: learningClips, records: learningClips + 40, audio_hours: learningClips ? 6.3 : 0,
+      oldest: learningClips ? '2026-09-02T09:14:00' : null, newest: learningClips ? '2026-10-16T11:20:00' : null,
+      week: { kept: 96, typed: 81, dropped: 15, said_again: 6, after_drop: 4, hotkey: 70, auto: 26 },
+      by_language: learningClips ? { he: 2130, en: 1290 } : {} }),
+    learning_recent: (limit = 20, offset = 0, show = 'all') => {
+      const rows = learningRecent.filter((c) => show === 'all' || (show === 'typed' && c.outcome === 'typed')
+        || (show === 'dropped' && c.outcome.startsWith('dropped')) || (show === 'again' && (c.signals.repeats || c.signals.after_drop)));
+      return ok({ total: rows.length, items: rows.slice(offset, offset + limit) });
+    },
+    learning_audio: () => Promise.resolve({ ok: false, error: 'Playing needs the app (the preview has no clips)' }),
+    learning_test: (id) => {
+      const c = learningRecent.find((x) => x.id === id);
+      const test = c.outcome.startsWith('dropped')
+        ? { text: 'You can hold it.', words: [{ text: 'You', changed: false }, { text: 'can', changed: false }, { text: 'hold', changed: false }, { text: 'it.', changed: false }],
+          verdict: 'speech', model: 'large', language: 'en', seconds: 2.1, mean_prob: 0.82 }
+        : { text: 'Hi sister, everything is okay', words: [{ text: 'Hi', changed: true }, { text: 'sister,', changed: true }, { text: 'everything', changed: false }, { text: 'is', changed: false }, { text: 'okay', changed: false }],
+          verdict: 'different', model: 'large', language: 'en', seconds: 2.4, mean_prob: 0.91 };
+      c.test = test;
+      return ok(test);
+    },
+    learning_delete_recent: () => { const n = Math.min(learningClips, 12); learningClips -= n; return ok(n); },
+    learning_delete_range: () => { const n = Math.min(learningClips, 140); learningClips -= n; return ok(n); },
+    learning_delete_all: () => { const n = learningClips; learningClips = 0; return ok(n); },
+    learning_open_folder: () => ok('C:\Users\you\AppData\Roaming\koli\learning'),
     ai_login_cancel: () => ok(null),
     server_status: () => ok({ running: false, url: 'http://127.0.0.1:7777' }),
     diag_checks: () => ok([

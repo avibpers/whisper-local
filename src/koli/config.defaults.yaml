@@ -263,6 +263,16 @@ auto_dictation: # Start listening when a text field gets focus (Windows)
     # so far are pasted and listening continues. 0 pastes only at the end.
     phrase_pause_seconds: 1
 
+learning: # Koli learns your voice from your own dictations
+    # Keeps each dictation's audio and what happened to it in
+    # %APPDATA%\koli\learning, so Koli can learn your voice by itself.
+    # Never voice commands, and never apps whose rule says keep_audio: false.
+    # Nothing leaves this computer. Off by default.
+    enabled: false
+    # Disk space for the clips. When it's full, the clips Koli needs least
+    # are deleted first; what it learned from them stays. 0.5 to 20.
+    disk_cap_gb: 2
+
 vad: # Voice Activity Detection (VAD)
     # Voice Activity Detection (VAD) Pre-check
     # Uses TEN VAD to detect speech before transcription (prevents hallucinations on silence)

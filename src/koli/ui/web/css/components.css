@@ -129,6 +129,8 @@ button.chip { border: 0; cursor: pointer; }
 .notice.info { background: var(--acc-soft); color: var(--acc); }
 .notice.err { background: var(--rec-soft); color: var(--rec); }
 .empty { padding: 28px 18px; text-align: center; color: var(--mute); }
+/* A word the night model heard differently (Training › Test). */
+.night-diff { background: var(--warn-soft); color: var(--warn); border-radius: 3px; padding: 0 2px; }
 
 /* ── Form controls ───────────────────────────────────────────────────── */
 .sw { appearance: none; -webkit-appearance: none; width: 40px; height: 24px; border-radius: 12px; background: var(--line2); position: relative; cursor: pointer; margin: 0; flex: none; transition: background .15s; }

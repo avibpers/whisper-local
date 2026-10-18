@@ -7651,3 +7651,327 @@ class SettingsSearchPageTests(unittest.TestCase):
         history = (self.WEB / 'js' / 'screens' / 'history.js').read_text(encoding='utf-8')
         self.assertIn('search-field', history)
         self.assertNotIn('border:1px solid var(--line2);border-radius:9px;color:var(--mute)', history)
+
+
+# ── Learning from your dictations (docs/design/self-learning.md) ─────────────
+
+class _LearningConfig:
+    def __init__(self, enabled=True, cap=2.0):
+        self.config = {'learning': {'enabled': enabled, 'disk_cap_gb': cap}}
+
+
+class ClipStoreTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        from koli.learning.clips import ClipStore
+        self.store = ClipStore(Path(self.tmp.name) / 'learning')
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _tone(self, seconds=1.0):
+        import numpy as np
+        t = np.arange(int(16000 * seconds)) / 16000
+        return (0.3 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+
+    # FLAC is about half of WAV and comes back as the same clip.
+    def test_a_clip_is_kept_as_flac_and_reads_back(self):
+        from koli.learning.clips import read_audio
+        record = self.store.add({'outcome': 'typed'}, self._tone(2.0))
+        path = self.store.audio_path(record)
+        self.assertTrue(path.exists())
+        self.assertEqual(path.suffix, '.flac')
+        self.assertLess(record['bytes'], 2 * 16000 * 2, 'smaller than WAV')
+        back = read_audio(path)
+        self.assertEqual(len(back), 32000)
+        self.assertLess(float(abs(back - self._tone(2.0)).max()), 1e-3)
+
+    def test_records_survive_a_restart_and_audio_can_go_alone(self):
+        from koli.learning.clips import ClipStore
+        record = self.store.add({'outcome': 'typed'}, self._tone())
+        self.assertEqual(self.store.drop_audio([record['id']]), 1)
+        again = ClipStore(self.store.folder)
+        kept = again.get(record['id'])
+        self.assertIsNotNone(kept)
+        self.assertIsNone(kept['audio'])
+        self.assertEqual(again.used_bytes(), 0)
+
+    # A clip's side never changes, and about 30% are held back.
+    def test_the_holdout_split_is_fixed_by_the_id(self):
+        from koli.learning.clips import split_for
+        self.assertEqual(split_for('abc'), split_for('abc'))
+        held = sum(split_for(f'clip-{i}') == 'holdout' for i in range(2000))
+        self.assertTrue(450 < held < 750, held)
+
+    def test_delete_since_and_delete_all(self):
+        import datetime
+        self.store.add({'ts': '2026-10-01T10:00:00'}, self._tone())
+        self.store.add({'ts': '2026-10-16T10:00:00'}, self._tone())
+        self.assertEqual(self.store.delete_since(datetime.datetime(2026, 10, 10)), 1)
+        self.assertEqual(len(self.store.records()), 1)
+        self.store.delete_all()
+        self.assertEqual(self.store.records(), [])
+        self.assertFalse(self.store.folder.exists())
+
+
+class RetentionTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        from koli.learning.clips import ClipStore
+        self.store = ClipStore(Path(self.tmp.name) / 'learning')
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _add(self, ts, outcome='typed', split='train'):
+        import numpy as np
+        noise = np.random.default_rng(len(self.store.records())).normal(0, 0.2, 16000).astype(np.float32)
+        return self.store.add({'ts': ts, 'outcome': outcome, 'split': split}, noise)
+
+    # Over the cap: typed train clips go first (oldest first), then dropped
+    # ones, and the held-back test clips last. Records stay.
+    def test_eviction_order_follows_the_ladder(self):
+        import datetime
+        from koli.learning import retention
+        old_train = self._add('2026-10-01T10:00:00')
+        new_train = self._add('2026-10-02T10:00:00')
+        dropped = self._add('2026-10-01T09:00:00', outcome='dropped: unsure')
+        holdout = self._add('2026-09-01T10:00:00', split='holdout')
+        cap_gb = (self.store.used_bytes() - 1) / 1e9      # one byte too many: one clip has to go
+        done = retention.enforce(self.store, cap_gb, now=datetime.datetime(2026, 10, 3))
+        self.assertEqual(done['evicted'], 1)
+        self.assertIsNone(self.store.get(old_train['id'])['audio'])
+        for kept in (new_train, dropped, holdout):
+            self.assertIsNotNone(self.store.get(kept['id'])['audio'])
+        retention.enforce(self.store, 0, now=datetime.datetime(2026, 10, 3))
+        self.assertEqual(self.store.used_bytes(), 0)
+        self.assertEqual(len(self.store.records()), 4, 'records stay when audio goes')
+
+    def test_dropped_clips_lose_their_audio_after_two_weeks(self):
+        import datetime
+        from koli.learning import retention
+        old = self._add('2026-09-01T10:00:00', outcome='dropped: noise')
+        typed = self._add('2026-09-01T10:00:00')
+        retention.enforce(self.store, 2, now=datetime.datetime(2026, 10, 16))
+        self.assertIsNone(self.store.get(old['id'])['audio'])
+        self.assertIsNotNone(self.store.get(typed['id'])['audio'])
+
+
+class ClipRecorderTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.now = [1000.0]
+        self.window = {'exe': 'discord.exe', 'title': '#general', 'hwnd': 7, 'pid': 70}
+        self.rule = None
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _recorder(self, enabled=True):
+        from unittest import mock
+        from koli.learning.clips import ClipStore
+        from koli.learning.recorder import ClipRecorder
+        rules = mock.Mock()
+        rules.match_for_foreground.side_effect = lambda: self.rule
+        return ClipRecorder(_LearningConfig(enabled), rules, store=ClipStore(Path(self.tmp.name) / 'learning'),
+                            get_window=lambda: dict(self.window), run=lambda fn: fn(), clock=lambda: self.now[0])
+
+    @staticmethod
+    def _audio(seconds=1.5):
+        import numpy as np
+        return np.zeros(int(16000 * seconds), dtype=np.float32) + 0.01
+
+    def _dictate(self, rec, events, kind='hotkey', mode='dictate'):
+        clip_id = rec.begin(self._audio(), kind=kind, mode=mode, mic='EMEET')
+        for e in events:
+            rec.on_event('pipeline', e)
+        return clip_id
+
+    def test_nothing_is_kept_while_the_switch_is_off(self):
+        rec = self._recorder(enabled=False)
+        self.assertIsNone(rec.begin(self._audio(), kind='hotkey'))
+        self.assertEqual(rec.store.records(), [])
+
+    def test_a_typed_dictation_keeps_audio_heard_text_and_whispers_numbers(self):
+        rec = self._recorder()
+        info = {'language': 'he', 'language_raw_probability': 0.9, 'audio_seconds': 1.5, 'beam_size': 5,
+                'segments': [{'text': ' shalom', 'start': 0, 'end': 1, 'avg_logprob': -0.2,
+                              'no_speech_prob': 0.01, 'compression_ratio': 1.1, 'tokens': [1, 2]}]}
+        clip_id = self._dictate(rec, [{'stage': 'transcribed', 'raw': 'shalom', 'info': info},
+                                      {'stage': 'delivered', 'outcome': 'pasted', 'text': 'Shalom.'}])
+        r = rec.store.get(clip_id)
+        self.assertEqual(r['outcome'], 'typed')
+        self.assertEqual((r['live']['text'], r['final_text'], r['language']), ('shalom', 'Shalom.', 'he'))
+        self.assertEqual(r['speaker'], 'you')
+        self.assertNotIn('tokens', r['live']['info']['segments'][0])
+        self.assertNotIn('beam_size', r['live']['info'])
+        self.assertTrue(rec.store.audio_path(r).exists())
+
+    # The drop reason is kept, so later phases can tell real speech from noise.
+    def test_a_dropped_dictation_keeps_why(self):
+        rec = self._recorder()
+        clip_id = self._dictate(rec, [{'stage': 'transcribed', 'raw': 'Thank you.', 'info': {}},
+                                      {'stage': 'empty', 'why': 'short clip: unsure'}], kind='auto')
+        r = rec.store.get(clip_id)
+        self.assertEqual(r['outcome'], 'dropped: short clip: unsure')
+        self.assertEqual(r['speaker'], 'unverified')
+
+    def test_commands_and_excluded_apps_are_never_kept(self):
+        rec = self._recorder()
+        self.assertIsNone(rec.begin(self._audio(), mode='command'))
+        self.rule = {'match': 'bank.exe', 'keep_audio': False}
+        self.assertIsNone(rec.begin(self._audio()))
+        self.assertEqual(rec.store.records(), [])
+
+    # Saying the same thing again soon after in the same window marks the
+    # second take; a dictation right after a dropped one marks that too.
+    def test_free_signals_said_again_and_after_a_drop(self):
+        rec = self._recorder()
+        first = self._dictate(rec, [{'stage': 'delivered', 'outcome': 'pasted', 'text': 'I see ster everything is okay'}])
+        self.now[0] += 6
+        second = self._dictate(rec, [{'stage': 'delivered', 'outcome': 'pasted', 'text': 'Hi sister, everything is okay'}])
+        self.assertEqual(rec.store.get(second)['signals'].get('repeats'), first)
+        self.now[0] += 60
+        dropped = self._dictate(rec, [{'stage': 'empty', 'why': 'unsure'}])
+        self.now[0] += 5
+        after = self._dictate(rec, [{'stage': 'delivered', 'outcome': 'pasted', 'text': 'You can hold it.'}])
+        self.assertEqual(rec.store.get(after)['signals'].get('after_drop'), dropped)
+        self.now[0] += 100
+        self.window['hwnd'] = 8
+        elsewhere = self._dictate(rec, [{'stage': 'delivered', 'outcome': 'pasted', 'text': 'You can hold it.'}])
+        self.assertEqual(rec.store.get(elsewhere)['signals'], {}, 'another window, much later')
+
+
+class LearningServiceTests(unittest.TestCase):
+    def test_state_counts_the_week_and_delete_buttons_work(self):
+        import datetime
+        import tempfile
+        import numpy as np
+        from koli.learning.clips import ClipStore
+        from koli.learning.recorder import ClipRecorder
+        from koli.services.learning import LearningService
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ClipStore(Path(tmp) / 'learning')
+            rec = ClipRecorder(_LearningConfig(), None, store=store, get_window=dict, run=lambda fn: fn())
+            audio = np.zeros(16000, dtype=np.float32)
+            store.add({'ts': '2026-10-16T09:00:00', 'outcome': 'typed', 'kind': 'hotkey', 'language': 'he',
+                       'seconds': 1.0, 'signals': {'repeats': 'x'}}, audio)
+            store.add({'ts': '2026-10-15T09:00:00', 'outcome': 'dropped: unsure', 'kind': 'auto', 'seconds': 1.0}, audio)
+            store.add({'ts': '2026-09-01T09:00:00', 'outcome': 'typed', 'seconds': 1.0}, audio)
+            service = LearningService(rec, clock=lambda: datetime.datetime(2026, 10, 16, 9, 30))
+            st = service.state()
+            self.assertEqual((st['clips'], st['week']['typed'], st['week']['dropped'], st['week']['said_again']),
+                             (3, 1, 1, 1))
+            self.assertEqual(st['cap_bytes'], 2_000_000_000)
+            self.assertEqual(service.delete_recent('hour'), 1)
+            self.assertEqual(service.delete_range('2026-09-01', '2026-09-01'), 1)
+            self.assertEqual(len(store.records()), 1)
+            with self.assertRaises(ValueError):
+                service.delete_recent('year')
+
+
+class LearningPipelineHookTests(unittest.TestCase):
+    # The state manager says which kind of dictation it was; no recorder, no clip.
+    def test_begin_clip_names_the_kind(self):
+        import numpy as np
+        from unittest import mock
+        from koli.state_manager import StateManager
+        sm = StateManager.__new__(StateManager)
+        sm.logger = __import__('logging').getLogger('test')
+        sm.audio_recorder = mock.Mock()
+        sm.audio_recorder.raw_for.side_effect = lambda a: a
+        sm.audio_recorder.describe.return_value = {'name': 'EMEET'}
+        sm.clip_recorder = None
+        audio = np.zeros(16000, dtype=np.float32)
+        self.assertIsNone(sm._begin_clip(audio, 'dictate', False, False, False))
+        sm.clip_recorder = mock.Mock()
+        sm._begin_clip(audio, 'dictate', True, False, True)
+        self.assertEqual(sm.clip_recorder.begin.call_args.kwargs['kind'], 'auto')
+        sm._begin_clip(audio, 'dictate', False, True, False)
+        self.assertEqual(sm.clip_recorder.begin.call_args.kwargs['kind'], 'continuous')
+        sm._begin_clip(audio, 'dictate', False, False, False)
+        self.assertEqual(sm.clip_recorder.begin.call_args.kwargs['kind'], 'hotkey')
+        self.assertEqual(sm.clip_recorder.begin.call_args.kwargs['mic'], 'EMEET')
+
+
+class NightModelTests(unittest.TestCase):
+    # Hebrew goes to the Hebrew model, everything else to the official large-v3.
+    def test_teacher_by_language(self):
+        from koli.learning.night import teacher_for
+        self.assertEqual(teacher_for('he'), 'hebrew-large-v3')
+        self.assertEqual(teacher_for('en'), 'large')
+        self.assertEqual(teacher_for(None), 'large')
+
+    # Case and punctuation don't count; changed words are marked.
+    def test_compare_marks_the_words_that_differ(self):
+        from koli.learning.night import compare
+        words, same = compare('I see ster everything is okay', 'Hi sister, everything is okay.')
+        self.assertFalse(same)
+        self.assertEqual([w['text'] for w in words if w['changed']], ['Hi', 'sister,'])
+        self.assertTrue(compare('Hello, world', 'hello world.')[1])
+
+
+class LearningRecentTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        import numpy as np
+        from koli.learning.clips import ClipStore
+        from koli.learning.recorder import ClipRecorder
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = ClipStore(Path(self.tmp.name) / 'learning')
+        self.rec = ClipRecorder(_LearningConfig(), None, store=self.store, get_window=dict, run=lambda fn: fn())
+        audio = np.zeros(16000, dtype=np.float32) + 0.01
+        self.typed = self.store.add({'ts': '2026-10-16T10:12:05', 'outcome': 'typed', 'language': 'en',
+                                     'final_text': 'I see ster everything is okay', 'signals': {'repeats': 'x'},
+                                     'live': {'text': 'I see ster everything is okay'}}, audio)
+        self.dropped = self.store.add({'ts': '2026-10-16T10:15:40', 'outcome': 'dropped: unsure', 'why': 'unsure',
+                                       'language': 'en', 'live': {'text': 'You can hold it.'}}, audio)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _service(self, heard='Hi sister, everything is okay', prob=0.9, missing=()):
+        from koli.services.learning import LearningService
+
+        class FakeNight:
+            def missing(self, language):
+                return list(missing)
+
+            def hear(self, audio, language):
+                return {'text': heard, 'words': [], 'language': language, 'model': 'large',
+                        'seconds': 1.0, 'mean_prob': prob}
+        return LearningService(self.rec, night=FakeNight())
+
+    def test_recent_is_newest_first_and_filters(self):
+        svc = self._service()
+        self.assertEqual([c['id'] for c in svc.recent()['items']], [self.dropped['id'], self.typed['id']])
+        self.assertEqual([c['id'] for c in svc.recent(show='dropped')['items']], [self.dropped['id']])
+        self.assertEqual([c['id'] for c in svc.recent(show='again')['items']], [self.typed['id']])
+        self.assertEqual(svc.recent(limit=1)['total'], 2)
+
+    def test_audio_comes_back_as_a_data_url(self):
+        url = self._service().audio(self.typed['id'])['url']
+        self.assertTrue(url.startswith('data:audio/flac;base64,'))
+
+    # A typed clip is compared word by word; a dropped one is judged speech
+    # or noise by the night model's confidence. Nothing is saved.
+    def test_test_compares_typed_and_judges_dropped(self):
+        svc = self._service()
+        r = svc.test(self.typed['id'])
+        self.assertEqual(r['verdict'], 'different')
+        self.assertEqual(svc.recent()['items'][1]['test']['verdict'], 'different', 'shown again after reload')
+        self.assertEqual(self._service(heard='You can hold it.').test(self.dropped['id'])['verdict'], 'speech')
+        self.assertEqual(self._service(heard='Thank you.', prob=0.2).test(self.dropped['id'])['verdict'], 'noise')
+        self.assertNotIn('test', self.store.get(self.typed['id']), 'a test is never saved to the clip')
+
+    def test_test_asks_for_the_download_when_the_night_model_is_missing(self):
+        r = self._service(missing=['large']).test(self.typed['id'])
+        self.assertEqual(r['needs'][0]['key'], 'large')
+
+    def test_a_clip_without_audio_cant_be_tested(self):
+        self.store.drop_audio([self.typed['id']])
+        with self.assertRaises(ValueError):
+            self._service().test(self.typed['id'])

@@ -20,23 +20,25 @@ import { DiagnosticsScreen } from './screens/diagnostics.js';
 import { WelcomeScreen } from './screens/welcome.js';
 import { MeetingsScreen } from './screens/meetings.js';
 import { PracticeScreen } from './screens/practice.js';
+import { TrainingScreen } from './screens/training.js';
 
 const ADVANCED_NAV = [
   ['live', 'Live', 'wave'], ['history', 'History', 'clock'], ['meetings', 'Meetings', 'people'],
-  ['vocabulary', 'Vocabulary', 'book'],
+  ['vocabulary', 'Vocabulary', 'book'], ['training', 'Training', 'refresh'],
   ['commands', 'Commands', 'command'], ['apps', 'Apps', 'grid'],
   ['settings', 'Settings', 'sliders'], ['diagnostics', 'Diagnostics', 'pulse'],
 ];
 const SIMPLE_NAV = [
-  ['home', 'Home', 'home'], ['history', 'History', 'clock'], ['vocabulary', 'My words', 'book'],
+  ['home', 'Home', 'home'], ['history', 'History', 'clock'], ['vocabulary', 'My words', 'book'], ['training', 'Training', 'refresh'],
   ['simple-settings', 'Settings', 'sliders'],
 ];
 const SCREENS = {
   live: LiveScreen, home: HomeScreen, history: HistoryScreen, meetings: MeetingsScreen, vocabulary: VocabularyScreen,
   commands: CommandsScreen, apps: AppsScreen, settings: SettingsScreen, 'simple-settings': SimpleSettingsScreen,
   diagnostics: DiagnosticsScreen, welcome: WelcomeScreen, practice: PracticeScreen,
+  training: TrainingScreen,
 };
-const SIMPLE_ROUTES = new Set(['home', 'history', 'vocabulary', 'simple-settings', 'welcome', 'practice']);
+const SIMPLE_ROUTES = new Set(['home', 'history', 'vocabulary', 'simple-settings', 'welcome', 'practice', 'training']);
 
 // A page asked for from outside (tray, --settings) in Simple mode goes to the
 // Simple screen for the same thing; Advanced-only pages switch to Advanced.

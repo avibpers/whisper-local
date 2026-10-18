@@ -32,8 +32,10 @@ _write_lock = threading.Lock()
 # usually names the chat, channel, tab or file ("@Efrat - Discord"), and the
 # window id + pid separate two windows of the same app. Windows reuses window
 # ids after a window closes, so the pid is kept alongside to tell them apart.
+# `clip_id`: the kept clip of this dictation ("Learn from my dictations"), so
+# History can find its audio.
 def record_transcript(text: str, window: dict | None = None, duration_s: float = 0.0,
-                      language: str = ''):
+                      language: str = '', clip_id: str | None = None):
     if not text:
         return
     window = window or {}
@@ -46,6 +48,8 @@ def record_transcript(text: str, window: dict | None = None, duration_s: float =
     }
     if language:
         entry['language'] = language
+    if clip_id:
+        entry['clip_id'] = clip_id
     # Window identity — only what this platform reports (macOS has no window id,
     # and its "title" is the app name until a per-window probe exists).
     if window.get('title'):
