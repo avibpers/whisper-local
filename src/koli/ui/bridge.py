@@ -893,6 +893,55 @@ class Bridge:
     def learned_delete_all(self):
         self._practice.delete_all()
 
+    # ── Training (Koli learns from your dictations) ──────────────────────────
+    # What is kept and how much disk it takes, and the delete buttons. The
+    # switch and the cap are ordinary settings (learning.*).
+
+    @property
+    def _learning(self):
+        recorder = getattr(self._sm, 'clip_recorder', None)
+        if recorder is None:
+            raise ValueError("Learning from dictations isn't running")
+        from ..services import learning
+        return learning.get(recorder, engine=lambda: getattr(self._sm, 'whisper_engine', None))
+
+    @_api
+    def learning_state(self):
+        return self._learning.state()
+
+    @_api
+    def learning_recent(self, limit=20, offset=0, show='all'):
+        return self._learning.recent(int(limit), int(offset), str(show))
+
+    @_api
+    def learning_audio(self, clip_id):
+        return self._learning.audio(str(clip_id))
+
+    # Blocks while the night model hears the clip (a few seconds on a GPU).
+    @_api
+    def learning_test(self, clip_id):
+        return self._learning.test(str(clip_id))
+
+    @_api
+    def learning_delete_recent(self, span):
+        return self._learning.delete_recent(str(span))
+
+    @_api
+    def learning_delete_range(self, start, end):
+        return self._learning.delete_range(str(start), str(end))
+
+    @_api
+    def learning_delete_all(self):
+        return self._learning.delete_all()
+
+    @_api
+    def learning_open_folder(self):
+        from ..utils import open_file
+        folder = self._learning.store.folder
+        folder.mkdir(parents=True, exist_ok=True)
+        open_file(str(folder))
+        return str(folder)
+
     # ── AI actions ───────────────────────────────────────────────────────────
     # The bubble's buttons (cancel, approve, undo, save as a command) and the
     # Commands screen's card (password, activity). See agent/runner.py.

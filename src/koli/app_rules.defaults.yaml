@@ -17,6 +17,9 @@
 #                                 focus in this app: true turns it on here
 #                                 even with the Settings switch off, false
 #                                 turns it off here
+#   keep_audio:  false          - never keep this app's dictations for
+#                                 "Learn from my dictations" (banking,
+#                                 passwords, private chats)
 #   meeting:     default | auto | ask | off - this app (or browser tab, by
 #                                 window_title) holds calls Koli can
 #                                 transcribe: default follows the Meetings

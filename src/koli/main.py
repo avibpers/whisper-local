@@ -477,6 +477,21 @@ def setup_wake_word(state_manager: StateManager, config_manager: ConfigManager, 
     return listener
 
 
+# Self-learning: keeps each dictation's clip while "Learn from my dictations"
+# is on (off by default; the recorder checks the switch on every dictation).
+# Design: docs/design/self-learning.md
+def setup_learning(state_manager: StateManager, config_manager: ConfigManager, logger: logging.Logger):
+    try:
+        from .learning.recorder import ClipRecorder
+        recorder = ClipRecorder(config_manager, state_manager.app_rules)
+        recorder.start()
+        state_manager.clip_recorder = recorder
+        return recorder
+    except Exception as e:
+        logger.warning(f"Learning from dictations not started: {e}")
+        return None
+
+
 def shutdown_app(hotkey_listener: HotkeyListener, state_manager: StateManager, logger: logging.Logger):
     try:
         if hotkey_listener and hotkey_listener.is_active():
@@ -498,6 +513,13 @@ def shutdown_app(hotkey_listener: HotkeyListener, state_manager: StateManager, l
             listener.stop()
     except Exception as ex:
         logger.error(f"Error stopping the wake word: {ex}")
+
+    recorder = getattr(state_manager, 'clip_recorder', None) if state_manager else None
+    if recorder is not None:
+        try:
+            recorder.stop()   # the last clip finishes writing
+        except Exception as ex:
+            logger.error(f"Error stopping the clip recorder: {ex}")
 
     meetings = getattr(state_manager, 'meetings', None) if state_manager else None
     if meetings is not None:
@@ -842,6 +864,7 @@ def main():
             state_manager.set_hotkey_listener(hotkey_listener)
             setup_auto_dictation(state_manager, config_manager, logger)
             setup_wake_word(state_manager, config_manager, logger)
+            setup_learning(state_manager, config_manager, logger)
         except Exception as hotkey_error:
             logger.error(f"Hotkey registration failed: {hotkey_error}")
             print(f"\n❌ Could not register hotkeys ({hotkey_error}).")

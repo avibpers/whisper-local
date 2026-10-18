@@ -158,6 +158,9 @@ class StateManager:
         self._wake_listener = None   # wake_word.WakeListener, set by main
         # MeetingService, set by main when the app window runs (meeting mode).
         self.meetings = None
+        # learning.recorder.ClipRecorder, set by main: keeps each dictation's
+        # clip when "Learn from my dictations" is on (docs/design/self-learning.md).
+        self.clip_recorder = None
         # How loud you speak per microphone, learned from hotkey dictations
         # ("Only my voice"; see voice_filter.py).
         self.voice_levels = VoiceLevels(Path(get_user_app_data_path()) / 'voice_levels.json')
@@ -775,6 +778,20 @@ class StateManager:
             return audio
         return raw if raw is not None else audio
 
+    # Hands the raw microphone audio to the clip recorder ("Learn from my
+    # dictations"); the rest of the clip comes from the pipeline events.
+    # Returns the clip id, or None when the clip isn't kept.
+    def _begin_clip(self, audio, mode: str, auto_session: bool, hands_free: bool, phrase: bool):
+        recorder = getattr(self, 'clip_recorder', None)
+        if recorder is None:
+            return None
+        kind = 'auto' if auto_session else 'continuous' if hands_free else 'hotkey'
+        try:
+            return recorder.begin(self._raw_audio(audio), kind=kind, mode=mode, mic=self._mic_key(), phrase=phrase)
+        except Exception as e:
+            self.logger.debug(f"Learning: clip not kept ({e})")
+            return None
+
     def _learn_my_voiceprint(self, audio) -> None:
         if not self._voiceprint_on() or audio is None or len(audio) / 16000 < LEARN_VOICEPRINT_S:
             return
@@ -1241,7 +1258,7 @@ class StateManager:
             return False
         self.logger.info(f"Auto-dictation: a phrase was dropped - {why}")
         print(f"   ✗ Phrase not typed: {why}")
-        self._emit_pipeline('empty', mode=mode)
+        self._emit_pipeline('empty', mode=mode, why=f'phrase not typed: {why}')
         return True
 
     def _transcription_pipeline_locked(self, audio_data, use_auto_enter: bool = False, phrase: bool = False,
@@ -1282,6 +1299,7 @@ class StateManager:
                 return
 
             duration = self.audio_recorder.get_audio_duration(audio_data)
+            clip_id = self._begin_clip(audio_data, mode, auto_session, hands_free, phrase)
             self._emit_pipeline('captured', mode=mode, duration=round(duration, 2))
 
             # Commit-on-endpoint streaming: if finalized phrases were already typed
@@ -1307,7 +1325,7 @@ class StateManager:
             info = dict(getattr(self.whisper_engine, 'last_info', None) or {})
 
             if not transcribed_text:
-                self._emit_pipeline('empty', mode=mode, info=info)
+                self._emit_pipeline('empty', mode=mode, info=info, why='Whisper heard no words')
                 if phrase:
                     return  # a pause with nothing in it; keep listening
                 self.system_tray.notify("Transcription was empty (silence or noise only).")
@@ -1321,7 +1339,7 @@ class StateManager:
             if is_prompt_echo(transcribed_text, getattr(self.whisper_engine, 'initial_prompt', None)):
                 self.logger.info(f"Dropped an echo of the prompt, not speech: {transcribed_text!r}")
                 print("   ✗ Heard only noise (Whisper repeated its prompt) - nothing typed")
-                self._emit_pipeline('empty', mode=mode, info=info)
+                self._emit_pipeline('empty', mode=mode, info=info, why='echo of the prompt')
                 return
 
             # Nobody pressed a key for this one: auto-dictation, or a
@@ -1336,7 +1354,7 @@ class StateManager:
                 if why:
                     self.logger.info(f"Hotkey dictation: {why} - nothing typed")
                     print(f"   ✗ Didn't catch that ({why}) - nothing typed")
-                    self._emit_pipeline('empty', mode=mode, info=info)
+                    self._emit_pipeline('empty', mode=mode, info=info, why=f'short clip: {why}')
                     if self.level_overlay:
                         self.level_overlay.flash_failure("Didn't catch that")
                     return
@@ -1351,7 +1369,7 @@ class StateManager:
             # the room, someone talking in your pauses).
             transcribed_text, info = self._keep_my_voice(transcribed_text, audio_data, info, unprompted)
             if not transcribed_text:
-                self._emit_pipeline('empty', mode=mode, info=info)
+                self._emit_pipeline('empty', mode=mode, info=info, why='quieter than your voice')
                 return
 
             # A recording nobody started on purpose: keep only what Whisper is
@@ -1365,12 +1383,12 @@ class StateManager:
                     self.logger.info(f"{'Auto-dictation' if auto_session else 'Continuous dictation'}: {why}")
                 if not kept:
                     print(f"   ✗ Not sure that was speech ({why}) - nothing typed")
-                    self._emit_pipeline('empty', mode=mode, info=info)
+                    self._emit_pipeline('empty', mode=mode, info=info, why=f'unsure: {why}')
                     return
                 # Only my voice, step 2: it must sound like you on this microphone.
                 if not self._sounds_like_me(audio_data):
                     print("   ✗ Doesn't sound like you on this microphone - nothing typed")
-                    self._emit_pipeline('empty', mode=mode, info=info)
+                    self._emit_pipeline('empty', mode=mode, info=info, why="doesn't sound like you")
                     return
                 if why:
                     print(f"   ✓ Kept what was clearly speech ({why})")
@@ -1539,7 +1557,7 @@ class StateManager:
                     app=fg.get('exe', ''),
                 )
                 record_transcript(transcribed_text, window=fg, duration_s=duration,
-                                  language=(info or {}).get('language') or '')
+                                  language=(info or {}).get('language') or '', clip_id=clip_id)
                 audit_enabled = (self.config_manager.config.get('audit') or {}).get('enabled', False)
                 audit_record('delivered', transcribed_text, fg.get('exe', ''), audit_enabled)
                 self._maybe_restart_continuous()

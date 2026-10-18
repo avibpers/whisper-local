@@ -62,7 +62,7 @@ SECTIONS = [
 ]
 
 # Edited on their own screens rather than in Settings.
-OTHER_SECTIONS = ('vocabulary', 'commands', 'internal')
+OTHER_SECTIONS = ('vocabulary', 'commands', 'learning', 'internal')
 
 LANGUAGES = [
     ['auto', 'Auto-detect'], ['en', 'English'], ['he', 'Hebrew · עברית'], ['ar', 'Arabic'],
@@ -115,6 +115,14 @@ SCHEMA = [
     _S('auto_dictation.phrase_pause_seconds', 'Paste after each pause of', 'general', 'number',
        apply=NEXT_RECORDING, min=0, max=10, step=0.5, unit='seconds',
        help='While auto-listening, a pause this long pastes what you said and keeps listening. 0 pastes only at the end.'),
+
+    # ── Learning (its own Training screen) ──────────────────────────────────
+    _S('learning.enabled', 'Learn from my dictations', 'learning', 'toggle',
+       help='Keeps the audio of each dictation on this computer so Koli can learn your voice by itself. '
+       'Never voice commands, and never apps whose rule says not to. Nothing leaves this computer.'),
+    _S('learning.disk_cap_gb', 'Disk space for clips', 'learning', 'number',
+       min=0.5, max=20, step=0.5, unit='GB',
+       help='When it is full, the clips Koli needs least are deleted first. What it learned from them stays.'),
 
     # ── Microphone & audio ───────────────────────────────────────────────────
     _S('audio.input_device', 'Microphone', 'audio', 'microphone', apply=BACKGROUND, mode=SIMPLE,

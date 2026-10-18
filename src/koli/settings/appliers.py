@@ -456,6 +456,14 @@ class Appliers:
         if coordinator is not None and path == 'auto_dictation.enabled':
             coordinator.apply_settings()
 
+    # The switch is read on every dictation; a smaller disk cap deletes
+    # clips at once, so the space is free the moment you lower it.
+    def learning(self, path, value, old):
+        recorder = getattr(self.sm, 'clip_recorder', None)
+        if recorder is not None and path == 'learning.disk_cap_gb':
+            import threading
+            threading.Thread(target=recorder.cleanup, daemon=True, name='clips-cleanup').start()
+
     # The switch starts or stops listening at once; the other wake-word
     # settings are read at each check.
     def wake_word(self, path, value, old):
@@ -525,6 +533,7 @@ _PREFIX_HANDLERS = [
     ('overlay.', Appliers.overlay),
     ('meeting.', Appliers.meeting),
     ('auto_dictation.', Appliers.auto_dictation),
+    ('learning.', Appliers.learning),
     ('wake_word.', Appliers.wake_word),
     ('server.', Appliers.server),
 ]
