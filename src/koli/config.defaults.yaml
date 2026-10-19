@@ -244,6 +244,11 @@ hotkey: # Hotkey Configuration
     # Leave empty to disable.
     meeting_mute_hotkey: ""
 
+    # Snip a screenshot into the running meeting: opens the Windows snip
+    # overlay (like Win+Shift+S); the snip joins the meeting at that moment.
+    # Does nothing outside a meeting. Leave empty to disable.
+    meeting_screenshot_hotkey: ""
+
     # Hands-free: in push-to-talk mode, double-tap the record hotkey to keep
     # recording without holding it, then tap it once more to stop. A single
     # hold works exactly as before. Off by default.
@@ -602,6 +607,12 @@ meeting: # Meetings: calls in Discord, Zoom, Teams and the browser
     # tune how speakers are told apart. Everyone's voice is stored on this
     # computer, so only with their consent. Deleting the meeting deletes it.
     keep_audio: false
+    # Screenshots during a meeting (docs/design/meeting-screenshots.md):
+    #   key: only snips started by Koli (its hotkey or its button) join
+    #   all: every Win+Shift+S snip taken while the meeting runs joins
+    #   off: never; no button, no key
+    # The PNGs live in "<id>.shots" beside the meeting; deleting it deletes them.
+    screenshots: key
     # Save every voice heard on a call (its voiceprint, never the audio)
     # with a permanent id in voices.json beside the meetings folder, so
     # later meetings recognise the same person, named or not. Stays on this

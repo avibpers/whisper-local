@@ -4129,6 +4129,20 @@ class InstanceIpcTests(unittest.TestCase):
 
 
 class SettingsSchemaTests(unittest.TestCase):
+    # Meeting screenshots: the mode and its hotkey are wired through every
+    # table the listener and the settings service read.
+    def test_meeting_screenshot_settings_are_in_the_schema(self):
+        from koli.settings import schema
+        s = schema.get('meeting.screenshots')
+        self.assertEqual([c[0] for c in s.choices], ['key', 'all', 'off'])
+        self.assertIsNotNone(schema.get('hotkey.meeting_screenshot_hotkey'))
+        from koli.settings.appliers import _LISTENER_KEYS
+        self.assertEqual(_LISTENER_KEYS['hotkey.meeting_screenshot_hotkey'], 'meeting_screenshot_hotkey')
+        from koli.settings.service import HOTKEY_PATHS
+        self.assertIn('hotkey.meeting_screenshot_hotkey', HOTKEY_PATHS)
+        from koli.hotkey_listener import HotkeyListener
+        self.assertIn('meeting_screenshot_hotkey', HotkeyListener.__init__.__code__.co_varnames)
+
     # Fails if a new key is added to config.defaults.yaml without a schema
     # entry (it would be missing from the app's Settings screen).
     def test_every_default_setting_has_a_schema_entry(self):

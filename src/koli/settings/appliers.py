@@ -21,6 +21,7 @@ _LISTENER_KEYS = {
     'hotkey.pause_hotkey': 'pause_hotkey', 'hotkey.paste_last_hotkey': 'paste_last_hotkey',
     'hotkey.recording_mode': 'recording_mode', 'hotkey.meeting_hotkey': 'meeting_hotkey',
     'hotkey.meeting_mute_hotkey': 'meeting_mute_hotkey',
+    'hotkey.meeting_screenshot_hotkey': 'meeting_screenshot_hotkey',
 }
 
 # Settings that are simply read from the config whenever they are used.
