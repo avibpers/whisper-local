@@ -325,6 +325,159 @@ class LoginTests(DriveCase):
             self.account.start_login(port=self.port)
 
 
+# ── Drive file calls ─────────────────────────────────────────────────────────
+
+FILE = {'id': 'F1', 'name': 'a.txt', 'mimeType': 'text/plain', 'webViewLink': 'https://drive/x'}
+
+
+class ApiTests(DriveCase):
+    def setUp(self):
+        super().setUp()
+        from koli.drive import api
+        self.api = api
+        auth.set_client('id-1', 'secret-1')
+        self.connected()
+
+    # The fake answers Drive, the upload host and the token endpoint alike.
+    def drive(self, routes: dict) -> FakeGoogle:
+        google = self.serve(routes)
+        for name, base in (('API_BASE', '/drive/v3'), ('UPLOAD_BASE', '/upload/drive/v3')):
+            self.patches.append(mock.patch.object(self.api, name, google.url + base))
+            self.patches[-1].start()
+        return google
+
+    def test_upload_bytes_opens_session_then_puts(self):
+        google = self.drive({'/upload/drive/v3/files': (200, '', 'text/plain', {'Location': 'SESSION'}),
+                             '/session': as_json(FILE)})
+        google.routes['/upload/drive/v3/files'] = (200, '', 'text/plain', {'Location': f"{google.url}/session"})
+        result = self.api.upload_bytes(b'hello', 'a.txt', 'text/plain', folder_id='folder9')
+        self.assertEqual(result['id'], 'F1')
+        opened = google.of('POST', '/upload/drive/v3/files')[0]
+        self.assertEqual(json.loads(opened['body']), {'name': 'a.txt', 'parents': ['folder9']})
+        self.assertEqual(opened['query']['uploadType'], ['resumable'])
+        self.assertEqual(opened['query']['supportsAllDrives'], ['true'])
+        self.assertEqual(opened['headers']['x-upload-content-type'], 'text/plain')
+        self.assertEqual(opened['headers']['x-upload-content-length'], '5')
+        self.assertEqual(opened['headers']['authorization'], 'Bearer A1')
+        put = google.of('PUT', '/session')[0]
+        self.assertEqual(put['body'], b'hello')
+        self.assertEqual(put['headers']['content-type'], 'text/plain')
+
+    def test_upload_reads_the_file_and_guesses_name_and_type(self):
+        google = self.drive({'/session': as_json(FILE)})
+        google.routes['/upload/drive/v3/files'] = (200, '', 'text/plain', {'Location': f"{google.url}/session"})
+        path = Path(self.tmp.name) / 'notes.md'
+        path.write_text('# hi', encoding='utf-8')
+        self.api.upload(path)
+        opened = google.of('POST', '/upload/drive/v3/files')[0]
+        self.assertEqual(json.loads(opened['body']), {'name': 'notes.md'})
+        self.assertEqual(opened['headers']['x-upload-content-type'], 'text/markdown')
+        self.assertEqual(google.of('PUT', '/session')[0]['body'], b'# hi')
+
+    def test_upload_with_file_id_patches_instead_of_creating(self):
+        google = self.drive({'/session': as_json(FILE)})
+        google.routes['/upload/drive/v3/files/F1'] = (200, '', 'text/plain', {'Location': f"{google.url}/session"})
+        self.api.upload_bytes(b'v2', 'a.txt', 'text/plain', folder_id='folder9', file_id='F1')
+        opened = google.of('PATCH', '/upload/drive/v3/files/F1')[0]
+        self.assertEqual(json.loads(opened['body']), {'name': 'a.txt'})
+
+    def test_download_uses_alt_media(self):
+        google = self.drive({'/drive/v3/files/F1': lambda req: (200, b'bytes', 'text/plain', {})
+                             if req['query'].get('alt') == ['media'] else as_json(FILE)})
+        self.assertEqual(self.api.download('F1'), b'bytes')
+
+    def test_download_exports_google_docs_as_text(self):
+        google = self.drive({'/drive/v3/files/D1': as_json({'id': 'D1', 'mimeType': 'application/vnd.google-apps.document'}),
+                             '/drive/v3/files/D1/export': (200, b'doc text', 'text/plain', {})})
+        self.assertEqual(self.api.download('D1'), b'doc text')
+        self.assertEqual(google.of('GET', '/drive/v3/files/D1/export')[0]['query']['mimeType'], ['text/plain'])
+
+    def test_download_to_writes_the_file(self):
+        self.drive({'/drive/v3/files/F1': lambda req: (200, b'bytes', 'text/plain', {})
+                    if req['query'].get('alt') == ['media'] else as_json(FILE)})
+        target = Path(self.tmp.name) / 'out' / 'a.txt'
+        self.assertEqual(self.api.download_to('F1', target), target)
+        self.assertEqual(target.read_bytes(), b'bytes')
+
+    def test_list_files_pages_to_the_end(self):
+        def files(req):
+            if req['query'].get('pageToken') == ['p2']:
+                return as_json({'files': [{'id': 'B'}]})
+            return as_json({'files': [{'id': 'A'}], 'nextPageToken': 'p2'})
+        google = self.drive({'/drive/v3/files': files})
+        self.assertEqual([f['id'] for f in self.api.list_files()], ['A', 'B'])
+        first = google.of('GET', '/drive/v3/files')[0]['query']
+        self.assertEqual(first['q'], ["'root' in parents and trashed=false"])
+        self.assertEqual(first['pageSize'], ['200'])
+        self.assertEqual(first['includeItemsFromAllDrives'], ['true'])
+
+    def test_ensure_folder_walks_and_creates(self):
+        def files(req):
+            if req['method'] == 'POST':
+                return as_json({'id': 'NEW', 'webViewLink': 'https://drive/new'})
+            if "name='Koli'" in req['query']['q'][0]:
+                return as_json({'files': [{'id': 'K1', 'name': 'Koli'}]})
+            return as_json({'files': []})
+        google = self.drive({'/drive/v3/files': files})
+        self.assertEqual(self.api.ensure_folder('Koli/Meetings'), 'NEW')
+        created = json.loads(google.of('POST', '/drive/v3/files')[0]['body'])
+        self.assertEqual(created, {'name': 'Meetings', 'mimeType': 'application/vnd.google-apps.folder', 'parents': ['K1']})
+        queries = [r['query']['q'][0] for r in google.of('GET', '/drive/v3/files')]
+        self.assertIn("'root' in parents", queries[0])
+        self.assertIn("'K1' in parents", queries[1])
+        self.assertIn("mimeType='application/vnd.google-apps.folder'", queries[1])
+
+    def test_query_escapes_quotes(self):
+        google = self.drive({'/drive/v3/files': lambda req: as_json({'files': [{'id': 'Q', 'name': "Avi's"}]})})
+        self.assertEqual(self.api.ensure_folder("Avi's"), 'Q')
+        self.assertIn("name='Avi\\'s'", google.of('GET', '/drive/v3/files')[0]['query']['q'][0])
+        self.assertEqual(self.api.escape_query("a\\b'c"), "a\\\\b\\'c")
+
+    def test_share_link_adds_anyone_reader_and_returns_link(self):
+        google = self.drive({'/drive/v3/files/F1/permissions': as_json({'id': 'anyone'}),
+                             '/drive/v3/files/F1': as_json(FILE)})
+        self.assertEqual(self.api.share_link('F1'), 'https://drive/x')
+        sent = json.loads(google.of('POST', '/drive/v3/files/F1/permissions')[0]['body'])
+        self.assertEqual(sent, {'role': 'reader', 'type': 'anyone'})
+
+    def test_unshare_removes_the_anyone_permission(self):
+        google = self.drive({'/drive/v3/files/F1/permissions': as_json({'permissions': [
+            {'id': 'owner1', 'type': 'user'}, {'id': 'anyoneWithLink', 'type': 'anyone'}]}),
+            '/drive/v3/files/F1/permissions/anyoneWithLink': (204, '', 'text/plain', {})})
+        self.api.unshare('F1')
+        self.assertEqual(len(google.of('DELETE', '/drive/v3/files/F1/permissions/anyoneWithLink')), 1)
+
+    def test_delete_moves_to_trash(self):
+        google = self.drive({'/drive/v3/files/F1': as_json({'id': 'F1', 'trashed': True})})
+        self.api.delete('F1')
+        req = google.of('PATCH', '/drive/v3/files/F1')[0]
+        self.assertEqual(json.loads(req['body']), {'trashed': True})
+
+    def test_401_refreshes_once_and_retries(self):
+        calls = []
+
+        def files(req):
+            calls.append(req['headers']['authorization'])
+            return as_json({'error': 'expired'}, status=401) if len(calls) == 1 else as_json(FILE)
+        google = self.drive({'/drive/v3/files/F1': files, '/token': as_json({'access_token': 'A2', 'expires_in': 3600})})
+        self.assertEqual(self.api.info('F1')['id'], 'F1')
+        self.assertEqual(calls, ['Bearer A1', 'Bearer A2'])
+
+    def test_second_401_is_raised_not_looped(self):
+        google = self.drive({'/drive/v3/files/F1': as_json({'error': 'expired'}, status=401),
+                             '/token': as_json({'access_token': 'A2', 'expires_in': 3600})})
+        with self.assertRaises(http.HttpError):
+            self.api.info('F1')
+        self.assertEqual(len(google.of('GET', '/drive/v3/files/F1')), 2)
+
+    def test_not_connected_raises_before_any_request(self):
+        google = self.drive({})
+        credentials.delete(auth.ACCOUNT_RECORD)
+        with self.assertRaises(auth.DriveNotConnected):
+            self.api.info('F1')
+        self.assertEqual(google.requests, [])
+
+
 # ── Raw HTTP helper ──────────────────────────────────────────────────────────
 
 class RawHttpTests(DriveCase):
