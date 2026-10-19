@@ -2730,6 +2730,19 @@ class UserReportedSeptemberTests(unittest.TestCase):
         self.assertIn('code.exe', said)
         self.assertIn('app_rules.yaml', said, 'tell them where to change it')
 
+    # Meeting screenshots (docs/design/meeting-screenshots.md): the snip
+    # overlay and the clipboard, mirrored on both platforms.
+    def test_screenshots_platform_module_has_the_contract(self):
+        try:
+            from koli.platform import app as platform_app  # noqa: F401
+        except Exception:
+            self.skipTest('platform backend not importable in this env')
+        from koli.platform import screenshots
+        for name in ('available', 'open_overlay', 'clipboard_sequence', 'overlay_open', 'grab_snip', 'clipboard_owner_is_snip'):
+            self.assertTrue(callable(getattr(screenshots, name, None)), name)
+        self.assertIsInstance(screenshots.clipboard_sequence(), int)
+        self.assertIsInstance(screenshots.overlay_open(), bool)
+
     # --- #13: macOS 27 SIGTRAP from off-main-thread tray writes ---
     def test_platform_exposes_ui_thread_marshal(self):
         # Importing the platform package loads the OS backend (win32api /
