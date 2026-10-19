@@ -4,9 +4,15 @@
 # the token refresh. Secrets live in the encrypted credential files, never in
 # the settings file. The refresh rules mirror the AI subscriptions (llm/oauth.py).
 
+import base64
+import hashlib
+import html
+import http.server as http_server
 import logging
+import secrets
 import threading
 import time
+import urllib.parse
 
 from ..llm import credentials, http
 
@@ -172,10 +178,140 @@ class GoogleAccount:
             except Exception as e:
                 logger.warning(f"Google Drive: keep-alive refresh failed: {e}")
 
-    # ── Browser login (Task 2) ──────────────────────────────────────────────
+    # ── Browser login ───────────────────────────────────────────────────────
+    # Google doesn't allow the Drive scope on a device-code login, so the
+    # sign-in is the web flow: the browser opens the consent page and Google
+    # sends the code back to a one-page server on 127.0.0.1:PORT. The page
+    # polls login_state() like the AI logins; there's no code to type.
+
+    # `port` is for tests; the consent URL always carries the registered
+    # REDIRECT_URI.
+    def start_login(self, port: int = None) -> dict:
+        client = get_client()
+        if not client['client_id'] or not client['client_secret']:
+            raise RuntimeError(f"Paste the Google client id and secret first ({SETTINGS_HINT}).")
+        with self._login_lock:
+            if self._login and not self._login['done']:
+                return self.login_state()
+            self._login = None
+            port = PORT if port is None else port
+            state = secrets.token_hex(16)
+            verifier = secrets.token_urlsafe(64)
+            challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b'=').decode()
+            url = AUTH_URL + '?' + urllib.parse.urlencode({
+                'client_id': client['client_id'], 'redirect_uri': REDIRECT_URI, 'response_type': 'code',
+                'scope': SCOPES, 'access_type': 'offline', 'prompt': 'consent', 'state': state,
+                'code_challenge': challenge, 'code_challenge_method': 'S256',
+            })
+            login = {'url': url, 'state': state, 'verifier': verifier, 'started': time.time(),
+                     'done': False, 'error': '', 'email': '', 'listener': None}
+            login['listener'] = _Listener(port, login, self._finish_login)
+            self._login = login
+        return self.login_state()
+
+    def login_state(self) -> dict:
+        login = self._login
+        if not login:
+            return {'pending': False, 'url': '', 'error': '', 'connected': False, 'email': ''}
+        if not login['done'] and time.time() - login['started'] > LOGIN_GIVE_UP_SECONDS:
+            self._end_login(login, 'The sign-in timed out. Press Connect to start again.')
+        return {'pending': not login['done'], 'url': login['url'], 'error': login['error'],
+                'connected': login['done'] and not login['error'], 'email': login['email']}
 
     def cancel_login(self):
+        login = self._login
+        if login:
+            self._end_login(login, login['error'] if login['done'] else 'Cancelled.')
         self._login = None
+
+    def _end_login(self, login: dict, error: str):
+        login['error'] = error
+        login['done'] = True
+        login['listener'].close()
+
+    # The callback arrived with a good state: trade the code for tokens and
+    # read who signed in. Raises with the text the page should show.
+    def _finish_login(self, login: dict, query: dict) -> str:
+        if query.get('error'):
+            raise RuntimeError(f"Google refused the sign-in ({query['error']}).")
+        if not query.get('code'):
+            raise RuntimeError('Google sent no code. Press Connect again.')
+        client = get_client()
+        tokens = http.post_form(TOKEN_URL, {
+            'code': query['code'], 'client_id': client['client_id'], 'client_secret': client['client_secret'],
+            'redirect_uri': REDIRECT_URI, 'grant_type': 'authorization_code', 'code_verifier': login['verifier'],
+        })
+        if not tokens.get('access_token') or not tokens.get('refresh_token'):
+            raise RuntimeError('Google did not hand out a refresh token. Press Connect again.')
+        info = http.get_json(USERINFO_URL, {'Authorization': f"Bearer {tokens['access_token']}"})
+        tokens['email'] = str(info.get('email') or '')
+        self._store(tokens)
+        login['email'] = tokens['email']
+        logger.info(f"Google Drive: connected as {tokens['email']}")
+        return tokens['email']
+
+
+# One-request HTTP server on the loopback port, serving only /callback.
+# A wrong or missing state (a stale tab) gets a 400 and the login keeps
+# waiting; a good state ends the login, for better or worse.
+class _Listener:
+    def __init__(self, port: int, login: dict, finish):
+        outer = self
+        self.login = login
+        self.finish = finish
+
+        class Handler(http_server.BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                parsed = urllib.parse.urlparse(self.path)
+                query = {k: v[0] for k, v in urllib.parse.parse_qs(parsed.query).items()}
+                if parsed.path != '/callback' or query.get('state') != outer.login['state'] or outer.login['done']:
+                    outer._reply(self, 400, 'This sign-in link is stale. Go back to Koli and press Connect again.')
+                    return
+                try:
+                    email = outer.finish(outer.login, query)
+                    outer._reply(self, 200, f"Connected {email}. You can close this tab.")
+                    outer.login['error'] = ''
+                except Exception as e:
+                    outer.login['error'] = str(e) or e.__class__.__name__
+                    logger.warning(f"Google Drive sign-in failed: {outer.login['error']}")
+                    outer._reply(self, 200, f"Koli couldn't finish the sign-in: {outer.login['error']}")
+                outer.login['done'] = True
+                outer.close()
+
+        try:
+            self.httpd = http_server.HTTPServer(('127.0.0.1', port), Handler)
+        except OSError as e:
+            raise RuntimeError(f"Port {port} is in use; close the other program or wait a minute, "
+                               f"then press Connect again ({e.strerror or e})") from None
+        self.thread = threading.Thread(target=self.httpd.serve_forever, kwargs={'poll_interval': 0.2},
+                                       daemon=True, name='google-login')
+        self.thread.start()
+
+    @staticmethod
+    def _reply(handler, status: int, text: str):
+        body = (f"<!doctype html><meta charset='utf-8'><p style='font-family:sans-serif;padding:2em'>"
+                f"{html.escape(text)}</p>").encode('utf-8')
+        handler.send_response(status)
+        handler.send_header('Content-Type', 'text/html; charset=utf-8')
+        handler.send_header('Content-Length', str(len(body)))
+        handler.end_headers()
+        handler.wfile.write(body)
+
+    # Safe to call twice and from the handler's own thread (shutdown is
+    # deferred to another thread there, or serve_forever would deadlock).
+    def close(self):
+        httpd = getattr(self, 'httpd', None)
+        if httpd is None:
+            return
+        self.httpd = None
+        if threading.current_thread() is self.thread:
+            threading.Thread(target=lambda: (httpd.shutdown(), httpd.server_close()), daemon=True).start()
+        else:
+            httpd.shutdown()
+            httpd.server_close()
 
 
 ACCOUNT = GoogleAccount()

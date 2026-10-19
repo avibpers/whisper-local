@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -208,6 +209,120 @@ class RefreshTests(DriveCase):
         self.assertEqual(credentials.load(auth.ACCOUNT_RECORD), {})
         self.assertEqual(google.requests, [])
         self.assertEqual(auth.get_client()['client_id'], 'id-1')
+
+
+# ── Browser login on the loopback port ──────────────────────────────────────
+
+def callback(port: int, query: str):
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/callback?{query}", timeout=5) as resp:
+            return resp.status, resp.read().decode()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode()
+
+
+def wait_until(predicate, seconds=5.0):
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.05)
+    return predicate()
+
+
+class LoginTests(DriveCase):
+    def setUp(self):
+        super().setUp()
+        auth.set_client('id-1', 'secret-1')
+        self.account = auth.GoogleAccount()
+        self.port = free_port()
+
+    def tearDown(self):
+        self.account.cancel_login()
+        super().tearDown()
+
+    def test_start_login_returns_consent_url_with_pkce_and_state(self):
+        st = self.account.start_login(port=self.port)
+        q = parse_qs(urlparse(st['url']).query)
+        self.assertTrue(st['url'].startswith(auth.AUTH_URL))
+        self.assertEqual(q['client_id'], ['id-1'])
+        self.assertEqual(q['redirect_uri'], [auth.REDIRECT_URI])
+        self.assertEqual(q['access_type'], ['offline'])
+        self.assertEqual(q['prompt'], ['consent'])
+        self.assertEqual(q['code_challenge_method'], ['S256'])
+        self.assertEqual(q['scope'], [auth.SCOPES])
+        self.assertEqual(len(q['state'][0]), 32)
+        self.assertTrue(st['pending'])
+
+    def test_callback_exchanges_code_and_saves_email(self):
+        google = self.serve({
+            '/token': as_json({'access_token': 'A', 'refresh_token': 'R', 'expires_in': 3600, 'scope': auth.SCOPES}),
+            '/userinfo': as_json({'email': 'studio@perspective-media.me'}),
+        })
+        st = self.account.start_login(port=self.port)
+        state = parse_qs(urlparse(st['url']).query)['state'][0]
+        status, page = callback(self.port, f"code=C1&state={state}")
+        self.assertEqual(status, 200)
+        self.assertIn('Connected studio@perspective-media.me', page)
+        self.assertTrue(wait_until(lambda: self.account.login_state()['connected']))
+        sent = form(google.of('POST', '/token')[0])
+        self.assertEqual(sent['code'], 'C1')
+        self.assertEqual(sent['client_secret'], 'secret-1')
+        self.assertEqual(sent['redirect_uri'], auth.REDIRECT_URI)
+        self.assertEqual(sent['grant_type'], 'authorization_code')
+        self.assertTrue(sent['code_verifier'])
+        self.assertEqual(google.of('GET', '/userinfo')[0]['headers']['authorization'], 'Bearer A')
+        rec = credentials.load(auth.ACCOUNT_RECORD)
+        self.assertEqual((rec['access'], rec['refresh'], rec['email']), ('A', 'R', 'studio@perspective-media.me'))
+        self.assertEqual(self.account.login_state()['email'], 'studio@perspective-media.me')
+
+    def test_wrong_state_is_refused_and_login_keeps_waiting(self):
+        google = self.serve({})
+        self.account.start_login(port=self.port)
+        status, page = callback(self.port, 'code=C1&state=' + 'f' * 32)
+        self.assertEqual(status, 400)
+        self.assertIn('stale', page)
+        self.assertTrue(self.account.login_state()['pending'])
+        self.assertEqual(credentials.load(auth.ACCOUNT_RECORD), {})
+        self.assertEqual(google.requests, [])
+
+    def test_missing_refresh_token_is_an_error(self):
+        self.serve({'/token': as_json({'access_token': 'A', 'expires_in': 3600}),
+                    '/userinfo': as_json({'email': 'x@perspective-media.me'})})
+        st = self.account.start_login(port=self.port)
+        state = parse_qs(urlparse(st['url']).query)['state'][0]
+        callback(self.port, f"code=C1&state={state}")
+        self.assertTrue(wait_until(lambda: not self.account.login_state()['pending']))
+        self.assertEqual(self.account.login_state()['error'],
+                         'Google did not hand out a refresh token. Press Connect again.')
+        self.assertEqual(credentials.load(auth.ACCOUNT_RECORD), {})
+
+    def test_google_error_in_callback_is_shown(self):
+        st = self.account.start_login(port=self.port)
+        state = parse_qs(urlparse(st['url']).query)['state'][0]
+        callback(self.port, f"error=access_denied&state={state}")
+        self.assertTrue(wait_until(lambda: not self.account.login_state()['pending']))
+        self.assertIn('access_denied', self.account.login_state()['error'])
+
+    def test_port_in_use_names_the_port(self):
+        with socket.socket() as taken:
+            taken.bind(('127.0.0.1', self.port))
+            taken.listen(1)
+            with self.assertRaisesRegex(RuntimeError, f"{self.port}.*in use"):
+                self.account.start_login(port=self.port)
+        self.assertFalse(self.account.login_state()['pending'])
+
+    def test_cancel_frees_the_port(self):
+        self.account.start_login(port=self.port)
+        self.account.cancel_login()
+        self.assertFalse(self.account.login_state()['pending'])
+        with socket.socket() as s:
+            s.bind(('127.0.0.1', self.port))   # would raise if the listener still held it
+
+    def test_start_login_without_client_raises(self):
+        credentials.delete(auth.CLIENT_RECORD)
+        with self.assertRaisesRegex(RuntimeError, 'client id'):
+            self.account.start_login(port=self.port)
 
 
 # ── Raw HTTP helper ──────────────────────────────────────────────────────────
