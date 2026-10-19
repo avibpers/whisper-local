@@ -779,8 +779,8 @@ class MeetingService:
             raise ValueError("End the meeting before deleting it")
         return self.store.delete(meeting_id)
 
-    def export(self, meeting_id: str, fmt: str) -> str:
-        return self.store.export(meeting_id, fmt)
+    def export(self, meeting_id: str, fmt: str, shots_folder: str = '') -> str:
+        return self.store.export(meeting_id, fmt, shots_folder)
 
     # A detector tick can land while this runs; `_closed` keeps it from
     # opening a listener nothing would close.

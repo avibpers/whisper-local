@@ -8106,3 +8106,46 @@ class AppWindowAudioPolicyTests(unittest.TestCase):
     def test_the_app_window_lets_clips_play(self):
         page = (ROOT / 'src' / 'koli' / 'ui' / 'web' / 'index.html').read_text(encoding='utf-8')
         self.assertIn("media-src 'self' data:", page)
+
+
+# Meeting screenshots reach the pages through the bridge, and an md export
+# carries its PNGs in a folder next to the file.
+class MeetingScreenshotBridgeTests(unittest.TestCase):
+    def test_bridge_has_the_screenshot_calls(self):
+        from koli.ui.bridge import Bridge
+        for name in ('meeting_screenshot', 'meeting_caption', 'meeting_image'):
+            self.assertTrue(callable(getattr(Bridge, name, None)), name)
+
+    def test_md_export_copies_the_shots_next_to_the_file(self):
+        import tempfile
+        from pathlib import Path
+        from PIL import Image
+        from koli.meeting.store import MeetingStore, new_meeting
+        from koli.ui.bridge import Bridge
+        import datetime
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        store = MeetingStore(Path(tmp.name) / 'meetings')
+        m = new_meeting('2026-10-11-143012', 'Sync', {'app': '', 'kind': 'manual', 'title': '', 'code': ''},
+                        datetime.datetime(2026, 10, 11, 14, 30, 12, tzinfo=datetime.timezone.utc))
+        store.save(m)
+        name = store.save_shot(m['id'], 12.0, Image.new('RGB', (2, 2)))
+        m['screenshots'].append({'at': 12.0, 'image': name, 'caption': 'dash', 'description': None})
+        store.save(m)
+
+        class Svc:
+            def __init__(self):
+                self.store = store
+            def get(self, mid):
+                return store.load(mid)
+            def export(self, mid, fmt, shots_folder=''):
+                return store.export(mid, fmt, shots_folder)
+        out = Path(tmp.name) / 'notes' / 'sync.md'
+        out.parent.mkdir()
+        host = type('H', (), {'ctx': type('C', (), {'meetings': Svc()})(), 'pick': lambda self, *a, **k: str(out)})()
+        bridge = Bridge(host)
+        result = bridge.meeting_export(m['id'], 'md')
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['data'], str(out))
+        self.assertIn('![dash](sync-shots/0012.00.png)', out.read_text(encoding='utf-8'))
+        self.assertTrue((out.parent / 'sync-shots' / '0012.00.png').exists())

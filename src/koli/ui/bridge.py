@@ -657,16 +657,47 @@ class Bridge:
     def meeting_delete(self, meeting_id):
         return self._meetings.delete(meeting_id)
 
-    # Writes the export where the user picks; returns the path or None.
+    # Writes the export where the user picks; returns the path or None. An
+    # md export with screenshots gets its PNGs copied into "<name>-shots/"
+    # next to the file, where its image links point.
     @_api
     def meeting_export(self, meeting_id, fmt='txt'):
-        text = self._meetings.export(meeting_id, fmt)
+        svc = self._meetings
         path = self._host.pick('save', 'Export meeting', filename=f'{meeting_id}.{fmt}')
         if not path:
             return None
+        shots = svc.get(meeting_id).get('screenshots', []) if fmt == 'md' else []
+        folder = ''
+        if shots:
+            import shutil
+            folder = os.path.splitext(os.path.basename(path))[0] + '-shots'
+            target = os.path.join(os.path.dirname(path), folder)
+            os.makedirs(target, exist_ok=True)
+            for shot in shots:
+                try:
+                    shutil.copy2(svc.store.shot_path(meeting_id, shot['image']), os.path.join(target, shot['image']))
+                except FileNotFoundError:
+                    logger.warning(f"Screenshot {shot['image']} is missing; the export links it anyway")
+        text = svc.export(meeting_id, fmt, shots_folder=folder)
         with open(path, 'w', encoding='utf-8') as f:
             f.write(text)
         return path
+
+    # ── Meeting screenshots (docs/design/meeting-screenshots.md) ─────────────
+
+    # The camera button: snip into the running meeting. {'ok', 'reason'}.
+    @_api
+    def meeting_screenshot(self):
+        return self._meetings.screenshot()
+
+    @_api
+    def meeting_caption(self, meeting_id, image, caption):
+        return self._meetings.set_caption(str(meeting_id), str(image), str(caption or ''))
+
+    # A screenshot as a data URL for an <img>.
+    @_api
+    def meeting_image(self, meeting_id, image):
+        return self._meetings.image(str(meeting_id), str(image))
 
     @_api
     def meeting_resize(self, width, height):
