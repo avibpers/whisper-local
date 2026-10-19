@@ -2424,3 +2424,135 @@ class ServiceVoicesTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+# Screenshots in the service (docs/design/meeting-screenshots.md): the key
+# flow (overlay, wait for the clipboard), the every-snip watcher, captions
+# and images, with a fake platform module instead of Windows.
+class FakeShots:
+    def __init__(self):
+        self.sequence = 0
+        self.image = None       # what grab_snip returns
+        self.overlay = True     # overlay_open() while a snip is expected
+        self.opened = 0
+
+    def available(self): return True
+    def open_overlay(self): self.opened += 1
+    def clipboard_sequence(self): return self.sequence
+    def overlay_open(self): return self.overlay
+    def grab_snip(self): return self.image
+    def clipboard_owner_is_snip(self): return self.image is not None
+
+
+class ScreenshotFlowTests(unittest.TestCase):
+    def setUp(self):
+        from koli.services.meetings import MeetingService
+        from koli.meeting.store import MeetingStore
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.settings = {'meeting.enabled': False, 'meeting.detect': 'auto', 'meeting.include_me': True,
+                         'meeting.gap_minutes': 10, 'meeting.start_speech_seconds': 3, 'meeting.countdown_seconds': 0,
+                         'meeting.language': 'auto', 'meeting.model': '', 'meeting.speaker_model': 'eres2net',
+                         'meeting.screenshots': 'key'}
+        ctx = type('Ctx', (), {})()
+        ctx.state_manager = FakeStateManager()
+        ctx.config_manager = FakeConfig(self.settings)
+        ctx.model_registry = None
+        self.events = []
+        self.shots = FakeShots()
+        fake_loopback = type('L', (), {'start': lambda s: None, 'stop': lambda s: None})
+        self.svc = MeetingService(ctx, store=MeetingStore(Path(self.tmp.name)),
+                                  publish=lambda t, p: self.events.append((t, p)),
+                                  loopback_factory=lambda on_block, on_error, device=None: fake_loopback(),
+                                  embedder_factory=lambda: None, loopback_available=lambda: True,
+                                  sessions_fn=lambda: [], shots=self.shots, autostart=False)
+        self.addCleanup(self.svc.shutdown)
+
+    def png(self):
+        from PIL import Image
+        return Image.new('RGB', (2, 2))
+
+    def start_live(self):
+        self.svc.start()
+        return self.svc.session.current()
+
+    def wait_until(self, cond, timeout=2.0):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if cond():
+                return True
+            time.sleep(0.02)
+        self.fail('timed out waiting')
+
+    def shots_of(self, m):
+        return self.svc.session.current()['screenshots'] if self.svc.session.current() else self.svc.store.load(m['id'])['screenshots']
+
+    def test_key_flow_records_the_snip_once(self):
+        m = self.start_live()
+        self.assertEqual(self.svc.screenshot(), {'ok': True})
+        self.assertEqual(self.shots.opened, 1)
+        self.assertEqual(self.svc.screenshot(), {'ok': False, 'reason': 'busy'})
+        self.shots.sequence += 1
+        self.shots.image = self.png()
+        self.wait_until(lambda: self.shots_of(m))
+        self.wait_until(lambda: self.svc._expecting is None)
+        time.sleep(0.3)
+        self.assertEqual(len(self.shots_of(m)), 1)
+        self.assertEqual(self.events[-1][0], 'meeting_shot')
+
+    def test_esc_clears_expecting_and_a_later_snip_stays_private(self):
+        m = self.start_live()
+        self.svc.screenshot()
+        self.shots.overlay = False
+        self.wait_until(lambda: self.svc._expecting is None)
+        self.shots.sequence += 1
+        self.shots.image = self.png()
+        time.sleep(0.4)
+        self.assertEqual(self.shots_of(m), [])
+
+    def test_all_mode_watcher_records_a_plain_snip_and_ignores_non_snips(self):
+        self.settings['meeting.screenshots'] = 'all'
+        m = self.start_live()
+        self.shots.sequence += 1
+        self.shots.image = self.png()
+        self.wait_until(lambda: self.shots_of(m))
+        self.shots.sequence += 1
+        self.shots.image = None            # grab_snip says: not a snip
+        time.sleep(0.4)
+        self.assertEqual(len(self.shots_of(m)), 1)
+        self.svc.end()
+        self.wait_until(lambda: self.svc._watcher is None)
+
+    def test_switching_to_all_during_a_meeting_starts_the_watcher(self):
+        self.start_live()
+        self.assertIsNone(self.svc._watcher)
+        self.settings['meeting.screenshots'] = 'all'
+        self.svc.apply_setting('meeting.screenshots', 'all')
+        self.assertIsNotNone(self.svc._watcher)
+        self.settings['meeting.screenshots'] = 'key'
+        self.svc.apply_setting('meeting.screenshots', 'key')
+        self.wait_until(lambda: self.svc._watcher is None)
+
+    def test_off_and_no_meeting_do_nothing(self):
+        self.settings['meeting.screenshots'] = 'off'
+        self.assertEqual(self.svc.screenshot(), {'ok': False, 'reason': 'no meeting'})
+        self.start_live()
+        self.assertEqual(self.svc.screenshot(), {'ok': False, 'reason': 'no meeting'})
+        self.assertEqual(self.shots.opened, 0)
+
+    def test_snip_after_end_lands_in_the_meeting_pressed_in(self):
+        m = self.start_live()
+        self.svc.screenshot()
+        self.svc.end()
+        self.shots.sequence += 1
+        self.shots.image = self.png()
+        self.wait_until(lambda: self.svc.store.load(m['id'])['screenshots'])
+
+    def test_image_returns_a_data_url_and_caption_saves(self):
+        m = self.start_live()
+        shot = self.svc.session.add_screenshot(m['id'], self.png(), time.time())
+        self.assertTrue(self.svc.image(m['id'], shot['image'])['url'].startswith('data:image/png;base64,'))
+        self.assertTrue(self.svc.set_caption(m['id'], shot['image'], 'hi'))
+        self.assertEqual(self.svc.get(m['id'])['screenshots'][0]['caption'], 'hi')
+        with self.assertRaises(FileNotFoundError):
+            self.svc.image(m['id'], 'nope.png')

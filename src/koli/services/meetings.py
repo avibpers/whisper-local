@@ -23,6 +23,7 @@ from ..meeting.speakers import SAME_VOICE, SpeakerTracker, make_embedder
 from ..meeting.store import MeetingStore
 from ..meeting.transcriber import YOU_FIRM, MeetingTranscriber
 from ..meeting.voices import FILE as VOICES_FILE, VoiceBook
+from ..platform import screenshots as platform_shots
 from ..ui.events import publish as publish_event, report_problem
 from ..ui.tasks import get_task_manager
 
@@ -50,8 +51,14 @@ class MeetingService:
                  speech_prob_factory: Callable = None, loopback_available: Callable[[], bool] = None,
                  report: Callable[[str], None] = None, sessions_fn: Callable[[], list] = None,
                  autostart: bool = True, mic_stream_factory: Callable = None,
-                 splitter_factory: Callable = None, voices: Optional[VoiceBook] = None):
+                 splitter_factory: Callable = None, voices: Optional[VoiceBook] = None,
+                 shots=None):
         self.ctx = ctx
+        # Screenshots: the platform's snip overlay and clipboard (a fake in tests).
+        self._shots = shots or platform_shots
+        self._expecting: Optional[str] = None   # meeting id while a snip of ours is awaited
+        self._watcher: Optional[threading.Thread] = None   # "every snip" mode's clipboard watcher
+        self._watch_stop = threading.Event()
         self.store = store or MeetingStore()
         # Saved voices live next to the meetings folder (beside it, so the
         # meeting list never reads them as a meeting).
@@ -115,6 +122,11 @@ class MeetingService:
                 self.stop_detector()
         elif path == 'meeting.segmentation_model':
             self.transcriber.split = None
+        elif path == 'meeting.screenshots':
+            if value == 'all' and self.is_running():
+                self._start_watcher()
+            else:
+                self._watch_stop.set()
 
     # The loopback package was installed while the app runs: detection can
     # start now, without a restart.
@@ -212,6 +224,8 @@ class MeetingService:
 
         def submit(chunk):
             self.transcriber.submit({**chunk, 'meeting_id': meeting_id})
+        if self._screenshot_mode() == 'all':
+            self._start_watcher()
         loopbacks, loop_chunkers = [], []
         for device in self._output_devices(meeting):
             chunker = Chunker('loopback', self._speech_prob_factory(), submit)
@@ -296,6 +310,113 @@ class MeetingService:
     def _keep_audio(self, chunk: dict):
         if chunk.get('meeting_id') and self._setting('meeting.keep_audio', False):
             self.store.save_audio(chunk['meeting_id'], chunk)
+
+    # ── Screenshots (docs/design/meeting-screenshots.md) ─────────────────────
+    # A snip you start (the hotkey, the camera button) opens the Windows
+    # overlay; the image lands on the clipboard and joins the meeting that was
+    # live when you pressed. In "all" mode a watcher also takes every snip
+    # the Snipping Tool puts on the clipboard while the meeting runs.
+
+    SNIP_WAIT_S = 90.0      # backstop when the overlay can't be seen
+    SNIP_POLL_S = 0.15
+    WATCH_POLL_S = 0.25
+
+    def _screenshot_mode(self) -> str:
+        return str(self._setting('meeting.screenshots', 'key') or 'key')
+
+    def screenshot(self) -> dict:
+        if self._closed or not self.is_running() or self._screenshot_mode() == 'off':
+            return {'ok': False, 'reason': 'no meeting'}
+        with self._lock:
+            if self._expecting is not None:
+                return {'ok': False, 'reason': 'busy'}
+            meeting_id = self.session.meeting['id']
+            self._expecting = meeting_id
+        # The user's own chord must not leak into the overlay.
+        wait = getattr(self.ctx.state_manager, '_wait_for_modifiers_released', None)
+        if wait:
+            wait()
+        seq0 = self._shots.clipboard_sequence()
+        try:
+            self._shots.open_overlay()
+        except Exception as e:
+            self._expecting = None
+            logger.warning(f"Couldn't open the snip overlay: {e}")
+            return {'ok': False, 'reason': 'overlay'}
+        threading.Thread(target=self._await_snip, args=(meeting_id, seq0), daemon=True, name='meeting-snip').start()
+        return {'ok': True}
+
+    # Waits for the snip: the clipboard changing to an image from the
+    # Snipping Tool. The overlay disappearing with no image is Esc, and ends
+    # the wait at once, so a plain Win+Shift+S right after stays private.
+    def _await_snip(self, meeting_id: str, seq0: int):
+        opened = time.monotonic()
+        deadline = opened + self.SNIP_WAIT_S
+        try:
+            while time.monotonic() < deadline and not self._closed:
+                seq = self._shots.clipboard_sequence()
+                if seq != seq0:
+                    seq0 = seq
+                    image = self._shots.grab_snip()
+                    if image is not None:
+                        self._record_shot(meeting_id, image)
+                        return
+                if time.monotonic() - opened > 0.5 and not self._shots.overlay_open():
+                    logger.info("Snip overlay closed without a screenshot")
+                    return
+                time.sleep(self.SNIP_POLL_S)
+            logger.info("Gave up waiting for a screenshot")
+        finally:
+            self._expecting = None
+
+    def _record_shot(self, meeting_id: str, image):
+        try:
+            entry = self.session.add_screenshot(meeting_id, image, time.time())
+        except Exception as e:
+            logger.error(f"Couldn't keep the screenshot: {e}")
+            return
+        if entry:
+            logger.info(f"Screenshot {entry['image']} added to meeting {meeting_id}")
+
+    # "all" mode: every snip while the meeting runs (through a pause too).
+    # It yields while the key flow expects a snip, so one snip is never two
+    # entries, and stops by itself when the meeting ends.
+    def _start_watcher(self):
+        with self._lock:
+            if self._watcher is not None and self._watcher.is_alive():
+                return
+            self._watch_stop = threading.Event()
+            self._watcher = threading.Thread(target=self._watch_clipboard, args=(self._watch_stop,),
+                                             daemon=True, name='meeting-snip-watch')
+            self._watcher.start()
+
+    def _watch_clipboard(self, stop: threading.Event):
+        seq = self._shots.clipboard_sequence()
+        try:
+            while not stop.is_set() and not self._closed and self.is_running():
+                now = self._shots.clipboard_sequence()
+                if now != seq:
+                    seq = now
+                    if self._expecting is None:
+                        image = self._shots.grab_snip()
+                        m = self.session.meeting
+                        if image is not None and m is not None:
+                            self._record_shot(m['id'], image)
+                stop.wait(self.WATCH_POLL_S)
+        finally:
+            with self._lock:
+                if self._watcher is threading.current_thread():
+                    self._watcher = None
+
+    def set_caption(self, meeting_id: str, image: str, caption: str) -> bool:
+        return self.session.set_caption(meeting_id, image, caption)
+
+    # The PNG as a data URL, the way the pages can show it (they are served
+    # from the package folder, not from the data folder).
+    def image(self, meeting_id: str, name: str) -> dict:
+        import base64
+        path = self.store.shot_path(meeting_id, name)
+        return {'url': f"data:image/png;base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"}
 
     # The chunk being transcribed, so the panel can show a placeholder.
     def _on_pending(self, stream):
@@ -665,6 +786,7 @@ class MeetingService:
     # opening a listener nothing would close.
     def shutdown(self):
         self._closed = True
+        self._watch_stop.set()
         self.stop_detector()
         if self.session.state in ('live', 'paused'):
             self.session.end()

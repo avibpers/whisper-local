@@ -30,6 +30,7 @@ TOPICS = (
     'problem',        # {'id', 'message', 'time'} something you must see, see report_problem
     'meeting',        # the meeting panel's whole state, see SessionManager.state_payload
     'meeting_turn',   # {'id', 'turn'} a transcribed turn; {'id', 'pending'} one in progress; {'id', 'reload': True}
+    'meeting_shot',   # {'id', 'shot'} a screenshot joined the meeting; with 'caption': True its caption changed
     'wake',           # {'phase': awake|follow_up|sleeping} the wake word, see wake_word.py
     'agent',          # {'phase', 'text', ...} an AI action, see agent/runner.py
 )
