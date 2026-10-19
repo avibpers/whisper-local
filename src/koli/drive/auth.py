@@ -33,6 +33,8 @@ ACCOUNT_RECORD = 'google_drive'                 # the signed-in account's tokens
 REFRESH_SKEW_SECONDS = 5 * 60                   # refresh when the token expires within this
 STALE_REFRESH_SECONDS = 6 * 24 * 3600           # or when it was last refreshed this long ago
 LOGIN_GIVE_UP_SECONDS = 15 * 60
+LISTENER_TIMEOUT = 5                            # a browser preconnect that sends nothing is dropped after this
+DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive'
 
 SETTINGS_HINT = 'Settings › Google Drive'
 DEAD_ERRORS = ('invalid_grant', 'invalid_client', 'unauthorized_client')
@@ -243,8 +245,14 @@ class GoogleAccount:
         })
         if not tokens.get('access_token') or not tokens.get('refresh_token'):
             raise RuntimeError('Google did not hand out a refresh token. Press Connect again.')
+        # Google's consent screen lets you untick Drive and still sign in; a
+        # login without it would look connected while every call fails.
+        if DRIVE_SCOPE not in str(tokens.get('scope') or '').split():
+            raise RuntimeError("Google Drive access wasn't granted. Press Connect and keep the Drive box ticked.")
         info = http.get_json(USERINFO_URL, {'Authorization': f"Bearer {tokens['access_token']}"})
         tokens['email'] = str(info.get('email') or '')
+        if login['done']:   # cancelled (or timed out) while Google was answering
+            raise RuntimeError('Cancelled.')
         self._store(tokens)
         login['email'] = tokens['email']
         logger.info(f"Google Drive: connected as {tokens['email']}")
@@ -261,13 +269,17 @@ class _Listener:
         self.finish = finish
 
         class Handler(http_server.BaseHTTPRequestHandler):
+            timeout = LISTENER_TIMEOUT   # the server is single-threaded: an idle connection must not hold it
+
             def log_message(self, *args):
                 pass
 
             def do_GET(self):
                 parsed = urllib.parse.urlparse(self.path)
                 query = {k: v[0] for k, v in urllib.parse.parse_qs(parsed.query).items()}
-                if parsed.path != '/callback' or query.get('state') != outer.login['state'] or outer.login['done']:
+                stale = (parsed.path != '/callback' or query.get('state') != outer.login['state'] or outer.login['done']
+                         or not (query.get('code') or query.get('error')))
+                if stale:
                     outer._reply(self, 400, 'This sign-in link is stale. Go back to Koli and press Connect again.')
                     return
                 try:

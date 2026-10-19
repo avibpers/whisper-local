@@ -15,10 +15,12 @@ API_BASE = 'https://www.googleapis.com/drive/v3'
 UPLOAD_BASE = 'https://www.googleapis.com/upload/drive/v3'
 FIELDS = 'id,name,mimeType,size,modifiedTime,webViewLink,parents,shared'
 FOLDER_MIME = 'application/vnd.google-apps.folder'
-# Google's own document types can't be downloaded as they are; they're
-# exported as plain text.
-EXPORT_AS_TEXT = ('application/vnd.google-apps.document', 'application/vnd.google-apps.spreadsheet',
-                  'application/vnd.google-apps.presentation')
+# Google's own document types can't be downloaded as they are; these are
+# exported (Sheets has no plain-text export, so it comes as CSV). Other
+# Google types (forms, drawings, sites) have no file form at all.
+GOOGLE_APPS = 'application/vnd.google-apps.'
+EXPORT_AS = {GOOGLE_APPS + 'document': 'text/plain', GOOGLE_APPS + 'presentation': 'text/plain',
+             GOOGLE_APPS + 'spreadsheet': 'text/csv'}
 
 
 # ── One call, with a retry after a dead token ────────────────────────────────
@@ -107,9 +109,13 @@ def upload(path, name: str = None, mime: str = None, folder_id: str = None, file
 
 def download(file_id: str) -> bytes:
     quoted = urllib.parse.quote(file_id, safe='')
-    if info(file_id).get('mimeType') in EXPORT_AS_TEXT:
-        _, _, data = _call('GET', f"/files/{quoted}/export", params={'mimeType': 'text/plain'})
+    mime = str(info(file_id).get('mimeType') or '')
+    if mime in EXPORT_AS:
+        _, _, data = _call('GET', f"/files/{quoted}/export", params={'mimeType': EXPORT_AS[mime]})
         return data
+    if mime.startswith(GOOGLE_APPS) and mime != FOLDER_MIME:
+        kind = mime[len(GOOGLE_APPS):].title()
+        raise RuntimeError(f"A Google {kind} can't be downloaded as a file")
     _, _, data = _call('GET', f"/files/{quoted}", params={'alt': 'media'})
     return data
 

@@ -304,6 +304,58 @@ class LoginTests(DriveCase):
         self.assertTrue(wait_until(lambda: not self.account.login_state()['pending']))
         self.assertIn('access_denied', self.account.login_state()['error'])
 
+    def test_good_state_without_code_keeps_waiting(self):
+        st = self.account.start_login(port=self.port)
+        state = parse_qs(urlparse(st['url']).query)['state'][0]
+        status, page = callback(self.port, f"state={state}")
+        self.assertEqual(status, 400)
+        self.assertTrue(self.account.login_state()['pending'])
+
+    def test_missing_drive_scope_is_an_error(self):
+        self.serve({'/token': as_json({'access_token': 'A', 'refresh_token': 'R', 'expires_in': 3600,
+                                       'scope': 'openid https://www.googleapis.com/auth/userinfo.email'}),
+                    '/userinfo': as_json({'email': 'x@perspective-media.me'})})
+        st = self.account.start_login(port=self.port)
+        state = parse_qs(urlparse(st['url']).query)['state'][0]
+        callback(self.port, f"code=C1&state={state}")
+        self.assertTrue(wait_until(lambda: not self.account.login_state()['pending']))
+        self.assertEqual(self.account.login_state()['error'],
+                         "Google Drive access wasn't granted. Press Connect and keep the Drive box ticked.")
+        self.assertEqual(credentials.load(auth.ACCOUNT_RECORD), {})
+
+    # A browser's speculative connection that sends nothing must not block
+    # the real callback behind it.
+    def test_idle_connection_does_not_block_the_callback(self):
+        self.serve({'/token': as_json({'access_token': 'A', 'refresh_token': 'R', 'expires_in': 3600, 'scope': auth.SCOPES}),
+                    '/userinfo': as_json({'email': 'studio@perspective-media.me'})})
+        with mock.patch.object(auth, 'LISTENER_TIMEOUT', 0.5):
+            st = self.account.start_login(port=self.port)
+        state = parse_qs(urlparse(st['url']).query)['state'][0]
+        idle = socket.create_connection(('127.0.0.1', self.port))
+        try:
+            time.sleep(0.2)   # let the server accept the idle one first
+            started = time.time()
+            status, _ = callback(self.port, f"code=C1&state={state}")
+            self.assertEqual(status, 200)
+            self.assertLess(time.time() - started, 4)
+        finally:
+            idle.close()
+
+    def test_cancel_during_exchange_does_not_connect(self):
+        def slow(req):
+            time.sleep(0.6)
+            return as_json({'access_token': 'A', 'refresh_token': 'R', 'expires_in': 3600, 'scope': auth.SCOPES})
+        self.serve({'/token': slow, '/userinfo': as_json({'email': 'x@perspective-media.me'})})
+        st = self.account.start_login(port=self.port)
+        state = parse_qs(urlparse(st['url']).query)['state'][0]
+        worker = threading.Thread(target=callback, args=(self.port, f"code=C1&state={state}"), daemon=True)
+        worker.start()
+        time.sleep(0.2)
+        self.account.cancel_login()
+        worker.join(5)
+        self.assertEqual(credentials.load(auth.ACCOUNT_RECORD), {})
+        self.assertFalse(self.account.login_state()['pending'])
+
     def test_port_in_use_names_the_port(self):
         with socket.socket() as taken:
             taken.bind(('127.0.0.1', self.port))
@@ -391,6 +443,17 @@ class ApiTests(DriveCase):
                              '/drive/v3/files/D1/export': (200, b'doc text', 'text/plain', {})})
         self.assertEqual(self.api.download('D1'), b'doc text')
         self.assertEqual(google.of('GET', '/drive/v3/files/D1/export')[0]['query']['mimeType'], ['text/plain'])
+
+    def test_download_exports_spreadsheet_as_csv(self):
+        google = self.drive({'/drive/v3/files/S1': as_json({'id': 'S1', 'mimeType': 'application/vnd.google-apps.spreadsheet'}),
+                             '/drive/v3/files/S1/export': (200, b'a,b', 'text/csv', {})})
+        self.assertEqual(self.api.download('S1'), b'a,b')
+        self.assertEqual(google.of('GET', '/drive/v3/files/S1/export')[0]['query']['mimeType'], ['text/csv'])
+
+    def test_download_of_other_google_types_says_why(self):
+        self.drive({'/drive/v3/files/G1': as_json({'id': 'G1', 'mimeType': 'application/vnd.google-apps.form'})})
+        with self.assertRaisesRegex(RuntimeError, 'Google Form'):
+            self.api.download('G1')
 
     def test_download_to_writes_the_file(self):
         self.drive({'/drive/v3/files/F1': lambda req: (200, b'bytes', 'text/plain', {})
