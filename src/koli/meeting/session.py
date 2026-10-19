@@ -512,7 +512,9 @@ class SessionManager:
     # clipboard. `meeting_id` is the meeting that was live when the key was
     # pressed, so a snip finished after the meeting ended still lands in it.
     def add_screenshot(self, meeting_id: str, image, at_ts: float) -> Optional[dict]:
-        with self._transition():
+        # The PNG is written outside the lock: a 4K snip takes a while to
+        # encode, and turns keep arriving meanwhile.
+        with self._lock:
             m = self.meeting
             if m and m['id'] == meeting_id and self.state in ('live', 'paused'):
                 target, live = m, True
@@ -521,7 +523,8 @@ class SessionManager:
                 if target is None:
                     return None
             offset = round(max(0.0, float(at_ts) - started_ts(target)), 2)
-            name = self.store.save_shot(target['id'], offset, image)
+        name = self.store.save_shot(target['id'], offset, image)
+        with self._transition():
             entry = {'at': offset, 'image': name, 'caption': '', 'description': None}
             target.setdefault('screenshots', []).append(entry)
             if live:

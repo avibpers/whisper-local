@@ -2556,3 +2556,66 @@ class ScreenshotFlowTests(unittest.TestCase):
         self.assertEqual(self.svc.get(m['id'])['screenshots'][0]['caption'], 'hi')
         with self.assertRaises(FileNotFoundError):
             self.svc.image(m['id'], 'nope.png')
+
+
+# Found in the final review of feat/meeting-screenshots: the key flow and
+# the watcher must agree on one snip, a slow overlay must not lose a snip,
+# switching to Never must take the button away, and a slow PNG save must
+# not hold the session lock.
+class ScreenshotReviewFixTests(ScreenshotFlowTests):
+    def test_all_mode_with_a_key_snip_records_exactly_once(self):
+        self.settings['meeting.screenshots'] = 'all'
+        m = self.start_live()
+        self.assertEqual(self.svc.screenshot(), {'ok': True})
+        self.shots.sequence += 1
+        self.shots.image = self.png()
+        self.wait_until(lambda: self.shots_of(m))
+        self.wait_until(lambda: self.svc._expecting is None)
+        time.sleep(0.7)
+        self.assertEqual(len(self.shots_of(m)), 1)
+
+    def test_an_overlay_slow_to_appear_still_keeps_the_snip(self):
+        m = self.start_live()
+        self.shots.overlay = False          # ScreenClippingHost not up yet
+        self.svc.screenshot()
+        time.sleep(0.8)
+        self.assertIsNotNone(self.svc._expecting)
+        self.shots.overlay = True
+        self.shots.sequence += 1
+        self.shots.image = self.png()
+        self.wait_until(lambda: self.shots_of(m))
+
+    def test_clipboard_written_just_after_the_overlay_hides_is_kept(self):
+        m = self.start_live()
+        self.svc.screenshot()
+        time.sleep(0.7)
+        self.shots.overlay = False          # the tool hides, then writes the clipboard
+        time.sleep(0.3)
+        self.shots.sequence += 1
+        self.shots.image = self.png()
+        self.wait_until(lambda: self.shots_of(m))
+
+    def test_switching_to_never_sends_a_fresh_state_without_the_button(self):
+        self.start_live()
+        self.settings['meeting.screenshots'] = 'off'
+        self.svc.apply_setting('meeting.screenshots', 'off')
+        self.assertEqual(self.events[-1][0], 'meeting')
+        self.assertEqual(self.events[-1][1]['screenshots'], 'off')
+
+    def test_a_slow_png_save_does_not_hold_the_session_lock(self):
+        import threading
+        m = self.start_live()
+
+        class SlowImage:
+            def save(self, path, format=None):
+                time.sleep(0.6)
+                self.png().save(path, format=format)
+            png = staticmethod(self.png)
+        done = threading.Thread(target=lambda: self.svc.session.add_screenshot(m['id'], SlowImage(), time.time()))
+        done.start()
+        time.sleep(0.1)
+        t0 = time.monotonic()
+        self.svc.session.state_payload()
+        self.assertLess(time.monotonic() - t0, 0.3)
+        done.join(2)
+        self.assertEqual(len(self.shots_of(m)), 1)

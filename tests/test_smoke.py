@@ -8167,3 +8167,16 @@ class MeetingScreenshotPagesTests(unittest.TestCase):
         mock = (self.WEB / 'mock-api.js').read_text(encoding='utf-8')
         for name in ('meeting_screenshot', 'meeting_caption', 'meeting_image'):
             self.assertIn(name, mock)
+
+
+# The bubble's meeting handler keeps its "Not starting" branch; the
+# screenshot handler is its own, small thing (a review found the two merged).
+class BarMeetingHandlerTests(unittest.TestCase):
+    def test_bar_meeting_handlers_are_separate(self):
+        import re
+        src = (ROOT / "src" / "koli" / "ui" / "web" / "js" / "bar.js").read_text(encoding='utf-8')
+        meeting = re.search(r"on\('meeting', \(m\) => \{(.*?)\n  \}\);", src, re.S).group(1)
+        shot = re.search(r"on\('meeting_shot', \(p\) => \{(.*?)\n  \}\);", src, re.S).group(1)
+        self.assertIn('auto_paused', meeting)
+        self.assertNotIn('auto_paused', shot)
+        self.assertNotIn('prev', shot)

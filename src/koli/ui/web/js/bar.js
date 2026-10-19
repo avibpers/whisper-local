@@ -129,12 +129,13 @@ function wire() {
     const prev = bar.get().meeting;
     bar.set({ meeting: m });
     if (m.state === 'ended') flash('ok', 'Meeting saved', {}, 2600);
-  });
-  on('meeting_shot', (p) => {
-    if (!p.caption) flash('ok', 'Screenshot added', {}, 2000);
     else if (m.state === 'idle' && m.auto_paused && !prev.auto_paused && prev.state === 'offered') {
       flash('info', "Not starting · it waits until the call is quiet", {}, 3500);
     }
+  });
+  // A screenshot joined the meeting (a caption change is quiet).
+  on('meeting_shot', (p) => {
+    if (!p.caption) flash('ok', 'Screenshot added', {}, 2000);
   });
 }
 

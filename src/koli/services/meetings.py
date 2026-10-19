@@ -57,6 +57,7 @@ class MeetingService:
         # Screenshots: the platform's snip overlay and clipboard (a fake in tests).
         self._shots = shots or platform_shots
         self._expecting: Optional[str] = None   # meeting id while a snip of ours is awaited
+        self._handled_seq = -1                  # the clipboard number the key flow last recorded
         self._watcher: Optional[threading.Thread] = None   # "every snip" mode's clipboard watcher
         self._watch_stop = threading.Event()
         self.store = store or MeetingStore()
@@ -127,6 +128,8 @@ class MeetingService:
                 self._start_watcher()
             else:
                 self._watch_stop.set()
+            # The bubble and the panel show the camera button from this state.
+            self._publish('meeting', self.session.state_payload())
 
     # The loopback package was installed while the app runs: detection can
     # start now, without a restart.
@@ -319,6 +322,7 @@ class MeetingService:
 
     SNIP_WAIT_S = 90.0      # backstop when the overlay can't be seen
     SNIP_POLL_S = 0.15
+    SNIP_GRACE_S = 1.0      # the tool hides its overlay, then writes the clipboard
     WATCH_POLL_S = 0.25
 
     def _screenshot_mode(self) -> str:
@@ -330,7 +334,10 @@ class MeetingService:
         with self._lock:
             if self._expecting is not None:
                 return {'ok': False, 'reason': 'busy'}
-            meeting_id = self.session.meeting['id']
+            m = self.session.meeting
+            if m is None:
+                return {'ok': False, 'reason': 'no meeting'}
+            meeting_id = m['id']
             self._expecting = meeting_id
         # The user's own chord must not leak into the overlay.
         wait = getattr(self.ctx.state_manager, '_wait_for_modifiers_released', None)
@@ -347,27 +354,47 @@ class MeetingService:
         return {'ok': True}
 
     # Waits for the snip: the clipboard changing to an image from the
-    # Snipping Tool. The overlay disappearing with no image is Esc, and ends
-    # the wait at once, so a plain Win+Shift+S right after stays private.
+    # Snipping Tool. Once the overlay has been seen, its disappearing with
+    # no image is Esc: the wait ends after a short grace (the tool hides
+    # before it writes the clipboard), so a plain Win+Shift+S right after
+    # stays private. An overlay never seen (slow to start, a process whose
+    # name can't be read) gets the full backstop.
     def _await_snip(self, meeting_id: str, seq0: int):
         opened = time.monotonic()
         deadline = opened + self.SNIP_WAIT_S
+        seen, gone_at = False, None
         try:
             while time.monotonic() < deadline and not self._closed:
                 seq = self._shots.clipboard_sequence()
                 if seq != seq0:
                     seq0 = seq
-                    image = self._shots.grab_snip()
+                    image = self._grab_with_retry()
                     if image is not None:
+                        self._handled_seq = seq
                         self._record_shot(meeting_id, image)
                         return
-                if time.monotonic() - opened > 0.5 and not self._shots.overlay_open():
+                if self._shots.overlay_open():
+                    seen, gone_at = True, None
+                elif seen and gone_at is None:
+                    gone_at = time.monotonic()
+                if gone_at is not None and time.monotonic() - gone_at > self.SNIP_GRACE_S:
                     logger.info("Snip overlay closed without a screenshot")
                     return
                 time.sleep(self.SNIP_POLL_S)
             logger.info("Gave up waiting for a screenshot")
         finally:
             self._expecting = None
+
+    # The tool can still hold the clipboard open right after it writes it.
+    def _grab_with_retry(self, tries: int = 3):
+        for i in range(tries):
+            image = self._shots.grab_snip()
+            if image is not None:
+                return image
+            if self._shots.clipboard_owner_is_snip() is False:
+                return None          # someone else's image: not a snip
+            time.sleep(0.05)
+        return None
 
     def _record_shot(self, meeting_id: str, image):
         try:
@@ -397,7 +424,8 @@ class MeetingService:
                 now = self._shots.clipboard_sequence()
                 if now != seq:
                     seq = now
-                    if self._expecting is None:
+                    # The key flow's own snip: it recorded this number already.
+                    if self._expecting is None and now != self._handled_seq:
                         image = self._shots.grab_snip()
                         m = self.session.meeting
                         if image is not None and m is not None:
