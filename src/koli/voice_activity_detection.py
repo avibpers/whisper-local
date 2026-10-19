@@ -6,6 +6,7 @@
 # SILENCE_TIMEOUT (once) when they stop.
 # Hysteresis smooths on/off flapping.
 
+import heapq
 import logging
 import threading
 import time
@@ -200,7 +201,15 @@ class Hysteresis:
         return False
 
 class ContinuousVoiceDetector:
-    LEVEL_WINDOW_SECONDS = 0.3   # how much sound the "as loud as you" line is judged on
+    LEVEL_WINDOW_SECONDS = 0.3   # how much sound each level is averaged over
+    # The line is compared with the loud end of the last LOUD_END_SECONDS:
+    # the level LOUD_END_SHARE of them reach. Your learned level is the loud
+    # end of a whole dictation (voice_filter.speech_level_db, its 90th
+    # percentile), and plain 0.3 s levels sit about 7 dB under it while you
+    # talk: with a margin of 4 dB your own speech counted as silence and the
+    # silence stop cut you off mid-sentence (app.log 2026-10-19).
+    LOUD_END_SECONDS = 1.0
+    LOUD_END_SHARE = 0.1
 
     def __init__(self, ten_vad, vad_onset_threshold, vad_offset_threshold,
                  vad_silence_timeout_seconds, frame_duration_sec,
@@ -234,6 +243,10 @@ class ContinuousVoiceDetector:
         # crossed it every few seconds and 5 s of "silence" never came; on
         # average they don't, and a word of yours still lifts it at once.
         self._recent_power = deque(maxlen=max(1, int(round(self.LEVEL_WINDOW_SECONDS / frame_duration_sec))))
+        self._recent_levels = deque(maxlen=max(1, int(round(self.LOUD_END_SECONDS / frame_duration_sec))))
+        # False in a hotkey recording: it is always you, so speech under the
+        # line still keeps it going; the line only decides SPEECH_START.
+        self.quieter_speech_ends_recording = True
         self._voice_frames = 0
         self._speech_announced = False
         # Phrase delivery: after `phrase_pause_sec` of silence following speech,
@@ -273,6 +286,13 @@ class ContinuousVoiceDetector:
         with self._lock:
             self.voice_start_db = None if min_db is None else float(min_db)
 
+    # Whether speech under that line counts as silence for the phrase pause
+    # and the silence timeout (auto-dictation: a TV mustn't keep it going),
+    # or only for SPEECH_START (a hotkey recording, where it is always you).
+    def set_quieter_speech_ends_recording(self, on: bool):
+        with self._lock:
+            self.quieter_speech_ends_recording = bool(on)
+
     def _dispatch_event(self, event: VadEvent):
         if self.event_callback:
             threading.Thread(target=self.event_callback, args=(event,), daemon=True).start()
@@ -304,16 +324,21 @@ class ContinuousVoiceDetector:
             self._replace_ten_vad()
             return VadEvent.NO_EVENT
 
-    # The level (dBFS) of the last LEVEL_WINDOW_SECONDS, this chunk included:
-    # the mean of the sound energy, with the time before the recording counted
-    # as silent. A word of yours lifts it within a few frames; a TV's short
-    # bursts average out, even one in the very first frame.
+    # The loud end (dBFS) of the last LOUD_END_SECONDS, this chunk included.
+    # Each level is the mean sound energy of LEVEL_WINDOW_SECONDS, so a TV's
+    # short bursts average out, even one in the very first frame; the time
+    # before the recording counts as silent. A word of yours lifts it within
+    # about 0.1 s and it stays up through your pauses between words.
     def _recent_level_db(self, audio_chunk: np.ndarray) -> float:
         rms = 10 ** (chunk_level_db(audio_chunk) / 20)
         with self._lock:
             self._recent_power.append(rms * rms)
             power = sum(self._recent_power) / self._recent_power.maxlen
-        return 10 * np.log10(max(power, 1e-20))
+            self._recent_levels.append(10 * np.log10(max(power, 1e-20)))
+            rank = max(1, int(np.ceil(self.LOUD_END_SHARE * self._recent_levels.maxlen)))
+            if len(self._recent_levels) < rank:
+                return -200.0
+            return heapq.nlargest(rank, self._recent_levels)[-1]
 
     def _replace_ten_vad(self):
         if self._vad_factory is None:
@@ -330,16 +355,19 @@ class ContinuousVoiceDetector:
             event = VadEvent.NO_EVENT
 
             # With your level known, speech quieter than you (a TV behind you)
-            # is silence: it neither starts anything nor keeps a recording
-            # going, so the phrase pause and the end come when you stop.
-            if speech_detected and self.voice_start_db is not None \
-                    and (level_db is None or level_db < self.voice_start_db):
-                speech_detected = False
+            # is not you: it never starts anything, and in auto-dictation it
+            # doesn't keep the recording going either, so the phrase pause and
+            # the end come when you stop.
+            yours = speech_detected and not (self.voice_start_db is not None
+                                             and (level_db is None or level_db < self.voice_start_db))
+            if self.quieter_speech_ends_recording:
+                speech_detected = yours
 
             if speech_detected:
                 self.had_speech = True
                 self.speech_since_phrase = True
                 self._phrase_fired = False
+            if yours:
                 if not self._speech_announced:
                     self._voice_frames += 1
                     if self._voice_frames >= self.frames_for_speech_start:
@@ -387,6 +415,7 @@ class ContinuousVoiceDetector:
             self._phrase_fired = False
             self.probability_buffer.clear()
             self._recent_power.clear()
+            self._recent_levels.clear()
             self.hysteresis.speech_detected = False
 
     def get_state(self) -> VadState:

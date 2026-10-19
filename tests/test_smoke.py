@@ -5538,7 +5538,8 @@ class AutoDictationVadTests(unittest.TestCase):
 
     # A TV behind you is speech to TEN VAD: with your level known, speech
     # quieter than you counts as silence, so the phrase pause and the end of
-    # the recording come when you stop, not when the TV does.
+    # the recording come when you stop, not when the TV does (about a second
+    # later: your loud end is held that long, through your own pauses).
     def test_speech_quieter_than_you_counts_as_silence(self):
         import numpy as np
         from koli.voice_activity_detection import VadEvent
@@ -5549,7 +5550,7 @@ class AutoDictationVadTests(unittest.TestCase):
         tv = np.full(256, 0.01, dtype=np.float32)      # -40 dBFS
         self.vad.probability = 0.9                      # both are speech to TEN VAD
         [det.process_chunk(you) for _ in range(10)]     # a short word
-        events = [det.process_chunk(tv) for _ in range(40)]
+        events = [det.process_chunk(tv) for _ in range(120)]
         self.assertEqual(events.count(VadEvent.PHRASE_PAUSE), 1, 'you stopped: your phrase is delivered')
         self.assertIn(VadEvent.SILENCE_TIMEOUT, events, 'the TV alone ends the recording')
         det.reset()
@@ -5570,6 +5571,45 @@ class AutoDictationVadTests(unittest.TestCase):
         events = [det.process_chunk(burst if i % 6 == 0 else tv) for i in range(40)]
         self.assertIn(VadEvent.SILENCE_TIMEOUT, events)
         self.assertFalse(det.had_speech)
+
+    # Measured 2026-10-19: your 0.3 s level sits well under your learned level
+    # (the loud end of a dictation) between words, and with a small margin the
+    # silence stop cut you off mid-sentence. The line is met by the loud end
+    # of the last second, so softer stretches between your words count.
+    def test_your_softer_stretches_between_words_keep_the_recording_going(self):
+        import numpy as np
+        from koli.voice_activity_detection import VadEvent
+        det = self._detector(timeout=0.16)        # ten frames
+        det.set_voice_start_level(-20.0)
+        word = np.full(256, 0.3, dtype=np.float32)     # about -10 dBFS
+        soft = np.full(256, 0.01, dtype=np.float32)    # -40 dBFS, still speech to TEN VAD
+        self.vad.probability = 0.9
+        events = []
+        for _ in range(3):                              # ~1 s each: a word, then a soft stretch
+            events += [det.process_chunk(word) for _ in range(20)]
+            events += [det.process_chunk(soft) for _ in range(40)]
+        self.assertNotIn(VadEvent.SILENCE_TIMEOUT, events)
+
+    # A hotkey recording is always you: speech under the line still keeps it
+    # going (the line only decides SPEECH_START), so a quiet day, a far mic or
+    # a small margin never stops you mid-sentence.
+    def test_in_a_hotkey_recording_quieter_speech_keeps_it_going(self):
+        import numpy as np
+        from koli.voice_activity_detection import VadEvent
+        det = self._detector(timeout=0.16)        # ten frames
+        det.set_voice_start_level(-20.0)
+        det.set_quieter_speech_ends_recording(False)
+        quiet = np.full(256, 0.01, dtype=np.float32)   # -40 dBFS
+        self.vad.probability = 0.9
+        events = [det.process_chunk(quiet) for _ in range(40)]
+        self.assertNotIn(VadEvent.SILENCE_TIMEOUT, events)
+        self.assertNotIn(VadEvent.SPEECH_START, events, 'still not you starting to talk')
+        self.assertTrue(det.had_speech)
+        self.vad.probability = 0.0
+        self.assertIn(VadEvent.SILENCE_TIMEOUT, [det.process_chunk(quiet) for _ in range(12)],
+                      'real silence still ends it')
+        det.reset()
+        self.assertFalse(det.quieter_speech_ends_recording, 'set per recording, kept across reset')
 
     def test_without_your_level_any_speech_keeps_the_recording_going(self):
         import numpy as np
@@ -5611,9 +5651,9 @@ class AutoDictationVadTests(unittest.TestCase):
         self.vad.probability = 0.9
         far_off = [det.process_chunk(quiet) for _ in range(10)]
         self.assertNotIn(VadEvent.SPEECH_START, far_off, 'speech, but much quieter than you')
-        # Loudness is judged on the last 0.3 s, so your first words count a
-        # few frames (tens of milliseconds) after they start.
-        you = [det.process_chunk(loud) for _ in range(8)]
+        # Loudness is the loud end of the last second, so your first words
+        # count about 0.1 s after they start.
+        you = [det.process_chunk(loud) for _ in range(12)]
         self.assertEqual(you.count(VadEvent.SPEECH_START), 1)
         det.reset()
         self.assertEqual(det.voice_start_db, -20.0)
@@ -5734,6 +5774,10 @@ class AutoDictationStateManagerTests(unittest.TestCase):
         sm.voice_levels.my_level.return_value = -18.0
         sm._maybe_pause_media()
         detector.set_voice_start_level.assert_called_with(-28.0)
+        # Only auto-dictation ends on it; a hotkey recording is always you.
+        detector.set_quieter_speech_ends_recording.assert_called_with(False)
+        sm._maybe_pause_media(auto_started=True)
+        detector.set_quieter_speech_ends_recording.assert_called_with(True)
         # "Ignore voices quieter than mine" off: any speech counts again.
         sm.config_manager.config['audio']['voice_filter']['quieter_than_me'] = False
         sm._maybe_pause_media()
@@ -6162,6 +6206,7 @@ class AutoDictationStateManagerTests(unittest.TestCase):
         detector = sm.audio_recorder.continuous_vad
         detector.set_phrase_pause.assert_called_with(0)   # no pastes while you hold the keys
         detector.set_silence_timeout.assert_called_with(30.0)
+        detector.set_quieter_speech_ends_recording.assert_called_with(False)   # it's you now
         self.assertEqual(sm._live_session, 3)             # a phrase already on its way is still typed
         sm.handle_vad_event(VadEvent.PHRASE_PAUSE)
         sm._transcription_pipeline.assert_not_called()

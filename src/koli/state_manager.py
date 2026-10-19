@@ -516,7 +516,7 @@ class StateManager:
     # _hands_free above).
     def _begin_recording(self, auto_started: bool = False, hands_free: bool = False):
         self._apply_recording_context()
-        self._maybe_pause_media()
+        self._maybe_pause_media(auto_started)
         silence_timeout = self._auto_silence_timeout() if auto_started else None
         phrase_pause = self._auto_phrase_pause() if auto_started else None
         success = self.audio_recorder.start_recording(silence_timeout=silence_timeout, phrase_pause=phrase_pause)
@@ -581,7 +581,7 @@ class StateManager:
     # now, a hotkey dictation like any other. No pastes at pauses (a Ctrl+V
     # with your Ctrl+Win still down is Win+Ctrl+V, Windows' sound panel), no
     # cancel when focus moves, the hotkey's silence stop instead of the auto
-    # one, and it ends when you let go (app.log 2026-10-14 10:34:43). The
+    # one (your quieter speech keeps it going), and it ends when you let go (app.log 2026-10-14 10:34:43). The
     # session number stays, so a phrase already being prepared is still typed.
     def _take_over_auto_session(self):
         with self._state_lock:
@@ -591,6 +591,7 @@ class StateManager:
         detector = getattr(self.audio_recorder, 'continuous_vad', None)
         if detector is not None:
             detector.set_phrase_pause(0)
+            detector.set_quieter_speech_ends_recording(False)
             configured = getattr(self.vad_manager, 'vad_silence_timeout_seconds', None)
             if configured:
                 detector.set_silence_timeout(configured)
@@ -1139,15 +1140,18 @@ class StateManager:
     # detection running they wait until you actually speak, at your own level,
     # so a field that starts auto-dictation or a noise in the room doesn't
     # quiet the computer for nothing.
-    def _maybe_pause_media(self):
+    def _maybe_pause_media(self, auto_started: bool = False):
         audio_cfg = self.config_manager.config.get('audio', {})
         detector = getattr(self.audio_recorder, 'continuous_vad', None)
         try:
             if detector is not None:
-                # Your level less the margin: quieter speech is silence to the
-                # detector. "Ignore voices quieter than mine" off: any speech.
+                # Your level less the margin: quieter speech is not you starting
+                # to talk. "Ignore voices quieter than mine" off: any speech.
                 gate = self._my_voice_floor_db() if self._voice_filter_config().get('quieter_than_me', True) else None
                 detector.set_voice_start_level(gate)
+                # Only auto-dictation ends on it: a hotkey recording is you, on
+                # a quiet day too (app.log 2026-10-19, cut off mid-sentence).
+                detector.set_quieter_speech_ends_recording(auto_started)
             self.media_control.on_recording_start(audio_cfg, hears_voice=detector is not None)
         except Exception as e:
             self.logger.warning(f"Media control skipped: {e}")
