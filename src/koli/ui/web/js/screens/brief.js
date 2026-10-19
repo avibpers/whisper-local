@@ -229,6 +229,7 @@ export async function printBrief(node, meetingId, title) {
   copy.querySelectorAll('details').forEach((d) => { d.open = true; });
   root.append(copy);
   document.body.appendChild(root);
+  document.documentElement.classList.add('print-brief');
   document.body.classList.add('print-brief');
   try {
     const path = await call('meeting_export_pdf', meetingId, title);
@@ -237,6 +238,7 @@ export async function printBrief(node, meetingId, title) {
     toast(e.message, { kind: 'err' });
   } finally {
     document.body.classList.remove('print-brief');
+    document.documentElement.classList.remove('print-brief');
     root.remove();
   }
 }

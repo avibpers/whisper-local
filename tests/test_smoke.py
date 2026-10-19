@@ -8220,7 +8220,7 @@ class MeetingBriefBridgeTests(unittest.TestCase):
     def test_pdf_name_has_no_path_characters(self):
         b = self.make()
         b.meeting_export_pdf('m1', 'a/b: c?')
-        self.assertEqual(self.printed[0][2], 'a-b- c-.pdf')
+        self.assertEqual(self.printed[0][2], 'a-b - c-.pdf')
 
 
 # The Summary tab: its page module exists, the Meetings screen uses it, and
@@ -8239,3 +8239,12 @@ class MeetingBriefPageTests(unittest.TestCase):
         self.assertIn('body.print-brief > *:not(#print-root)', css)
         mock = (self.WEB / 'js' / 'mock-api.js').read_text(encoding='utf-8')
         self.assertIn('meeting_brief:', mock)
+
+
+class MeetingExportNameTests(unittest.TestCase):
+    def test_export_files_are_named_by_date_and_title(self):
+        from koli.ui.bridge import _export_name
+        self.assertEqual(_export_name({'id': 'x', 'started_at': '2026-10-19T12:47:11+03:00',
+                                       'title': 'JumboMail dev sync: integrations, public API, SEO'}),
+                         '2026-10-19 JumboMail dev sync - integrations, public API, SEO')
+        self.assertEqual(_export_name({'id': '2026-10-19-124711', 'started_at': '', 'title': ''}), '2026-10-19-124711')

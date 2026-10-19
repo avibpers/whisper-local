@@ -149,6 +149,15 @@ class StoreTests(unittest.TestCase):
         self.store.delete(m['id'])
         self.assertFalse(self.store.brief_path(m['id']).exists())
 
+    def test_saving_a_brief_gives_the_meeting_its_title(self):
+        m = self._manual()
+        self.store.save(m)
+        self.store.save_brief(m['id'], {'version': 1, 'title': 'Dev sync: integrations and SEO', 'tldr': []})
+        self.assertEqual(self.store.load(m['id'])['title'], 'Dev sync: integrations and SEO')
+        self.assertEqual(self.store.list()[0]['title'], 'Dev sync: integrations and SEO')
+        self.store.save_brief(m['id'], {'version': 1, 'title': '', 'tldr': []})
+        self.assertEqual(self.store.load(m['id'])['title'], 'Dev sync: integrations and SEO')
+
     def test_unreadable_brief_reads_as_none(self):
         m = self._manual()
         self.store.save(m)

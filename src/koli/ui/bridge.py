@@ -16,6 +16,19 @@ from .tasks import get_task_manager
 
 logger = logging.getLogger(__name__)
 
+
+# A file name a save dialog accepts: characters Windows refuses become "-".
+def _safe_name(text: str, fallback: str = 'Meeting') -> str:
+    import re
+    text = re.sub(r'\s*:\s*', ' - ', str(text or ''))
+    return re.sub(r'[\\/*?"<>|]', '-', text).strip() or fallback
+
+
+# "2026-10-19 Dev sync - integrations" for a meeting's export files.
+def _export_name(meeting: dict) -> str:
+    day = str(meeting.get('started_at') or '')[:10]
+    return _safe_name(f"{day} {meeting.get('title') or ''}".strip(), str(meeting.get('id') or 'Meeting'))
+
 # Links the app may open in the default browser.
 _URL_ALLOW = ('https://github.com/drajb/whisper-local', 'https://ollama.com', 'https://huggingface.co',
               'https://developer.microsoft.com/microsoft-edge/webview2', 'https://go.microsoft.com',
@@ -663,10 +676,11 @@ class Bridge:
     @_api
     def meeting_export(self, meeting_id, fmt='txt'):
         svc = self._meetings
-        path = self._host.pick('save', 'Export meeting', filename=f'{meeting_id}.{fmt}')
+        meeting = svc.get(meeting_id)
+        path = self._host.pick('save', 'Export meeting', filename=f'{_export_name(meeting)}.{fmt}')
         if not path:
             return None
-        shots = svc.get(meeting_id).get('screenshots', []) if fmt == 'md' else []
+        shots = meeting.get('screenshots', []) if fmt == 'md' else []
         folder = ''
         if shots:
             import shutil
@@ -694,8 +708,7 @@ class Bridge:
     # sections and applies its print styles before calling. None = cancelled.
     @_api
     def meeting_export_pdf(self, meeting_id, title=''):
-        import re
-        name = re.sub(r'[\\/:*?"<>|]', '-', str(title or meeting_id)).strip() or str(meeting_id)
+        name = _safe_name(title, str(meeting_id))
         path = self._host.pick('save', 'Export the summary as PDF', types=('PDF (*.pdf)',), filename=f'{name}.pdf')
         if not path:
             return None

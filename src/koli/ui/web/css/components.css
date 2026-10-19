@@ -270,7 +270,14 @@ textarea.inp { height: auto; padding: 8px 10px; resize: vertical; line-height: 1
     --bg: #FFFFFF; --panel: #FFFFFF; --sunk: #F4F7F8; --line: #D7DEE1; --line2: #C7CFD3; --ink: #1E252B; --ink2: #3F4648; --mute: #5C6466;
     --acc: #0A6E82; --acc-soft: #E3F6FA; --ok: #0F7A33; --ok-soft: #E4F6EA; --warn: #8A5A00; --warn-soft: #FFF4DB;
     background: #FFFFFF; color: var(--ink); }
+  /* The app pins html and body to the window; the PDF needs the whole
+     summary, so they grow with it and the browser splits it into pages. */
+  html.print-brief, html.print-brief body.print-brief { height: auto !important; overflow: visible !important; }
   body.print-brief { background: #FFFFFF; }
+  @page { size: A4; margin: 14mm 12mm; }
+  #print-root h2 { break-after: avoid; }
+  #print-root h3 { break-after: avoid; }
+  #print-root section { break-inside: auto; }
   #print-root .brief { max-width: none; }
   #print-root .bf-topic, #print-root .bf-shotfig, #print-root .bf-fig, #print-root tr, #print-root .bf-card { break-inside: avoid; }
   #print-root .bf-at { border: 0; color: var(--mute); }

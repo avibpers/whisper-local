@@ -103,7 +103,9 @@ function Transcript({ id, live, onDeleted }) {
   // The PDF is the Summary tab printed, so it opens that tab first.
   const exportPdf = () => {
     setTab('summary');
-    requestAnimationFrame(() => requestAnimationFrame(() => printBrief(briefBox.current, id, m.title)));
+    // The file is named by the date and the summary's title.
+    const name = `${(m.started_at || '').slice(0, 10)} ${(brief && brief.title) || m.title}`.trim();
+    requestAnimationFrame(() => requestAnimationFrame(() => printBrief(briefBox.current, id, name)));
   };
   const exportAs = (fmt) => (fmt === 'pdf' ? exportPdf()
     : call('meeting_export', id, fmt).then((p) => p && toast(`Exported to ${p}`)).catch((e) => toast(e.message, { kind: 'err' })));
