@@ -200,17 +200,44 @@ class Hysteresis:
 
         return False
 
-class ContinuousVoiceDetector:
-    LEVEL_WINDOW_SECONDS = 0.3   # how much sound each level is averaged over
-    # The line is compared with the loud end of the last LOUD_END_SECONDS:
-    # the level LOUD_END_SHARE of them reach. Your learned level is the loud
-    # end of a whole dictation (voice_filter.speech_level_db, its 90th
-    # percentile), and plain 0.3 s levels sit about 7 dB under it while you
-    # talk: with a margin of 4 dB your own speech counted as silence and the
-    # silence stop cut you off mid-sentence (app.log 2026-10-19).
+# How loud the sound around now is, to compare with your learned level less
+# a margin (the detector below, wake_word.py). Each level is the mean sound
+# energy of AVERAGE_SECONDS, so a TV's short bursts average out, even one in
+# the very first frame; the time before counts as silent. The result is the
+# higher of that level now and the loud end of the last LOUD_END_SECONDS
+# (the level LOUD_END_SHARE of them reach). Your learned level is the loud end
+# of a whole recording (voice_filter.speech_level_db, its 90th percentile) and
+# the 0.3 s level sits about 7 dB under it between your words: with a 4 dB
+# margin your own speech counted as silence and the silence stop cut you off
+# mid-sentence (app.log 2026-10-19). The loud end carries your level through
+# those dips; the level now keeps the first word as quick as before. A caller
+# whose bursts must end quickly (the wake word) passes a shorter hold.
+class RecentLoudness:
+    AVERAGE_SECONDS = 0.3
     LOUD_END_SECONDS = 1.0
     LOUD_END_SHARE = 0.1
 
+    def __init__(self, frame_seconds: float, loud_end_seconds: Optional[float] = None):
+        self._power = deque(maxlen=max(1, int(round(self.AVERAGE_SECONDS / frame_seconds))))
+        self._levels = deque(maxlen=max(1, int(round((loud_end_seconds or self.LOUD_END_SECONDS) / frame_seconds))))
+        self._rank = max(1, int(np.ceil(self.LOUD_END_SHARE * self._levels.maxlen)))
+
+    # Adds one frame's level (dBFS) and returns the loudness now (dBFS).
+    def add(self, frame_db: float) -> float:
+        rms = 10 ** (frame_db / 20)
+        self._power.append(rms * rms)
+        now = 10 * np.log10(max(sum(self._power) / self._power.maxlen, 1e-20))
+        self._levels.append(now)
+        if len(self._levels) < self._rank:
+            return now
+        return max(now, heapq.nlargest(self._rank, self._levels)[-1])
+
+    def clear(self):
+        self._power.clear()
+        self._levels.clear()
+
+
+class ContinuousVoiceDetector:
     def __init__(self, ten_vad, vad_onset_threshold, vad_offset_threshold,
                  vad_silence_timeout_seconds, frame_duration_sec,
                  event_callback: Optional[Callable[[VadEvent], None]] = None,
@@ -238,12 +265,10 @@ class ContinuousVoiceDetector:
         # isn't learned yet). The level is set per recording and survives reset().
         self.frames_for_speech_start = max(1, int(round(speech_start_seconds / frame_duration_sec)))
         self.voice_start_db = None
-        # The loudness that line is compared with: the sound energy of about
-        # the last LEVEL_WINDOW_SECONDS. Per frame, a TV's short loud bursts
-        # crossed it every few seconds and 5 s of "silence" never came; on
-        # average they don't, and a word of yours still lifts it at once.
-        self._recent_power = deque(maxlen=max(1, int(round(self.LEVEL_WINDOW_SECONDS / frame_duration_sec))))
-        self._recent_levels = deque(maxlen=max(1, int(round(self.LOUD_END_SECONDS / frame_duration_sec))))
+        # The loudness that line is compared with (RecentLoudness). Per frame,
+        # a TV's short loud bursts crossed it every few seconds and 5 s of
+        # "silence" never came; on average they don't.
+        self._loudness = RecentLoudness(frame_duration_sec)
         # False in a hotkey recording: it is always you, so speech under the
         # line still keeps it going; the line only decides SPEECH_START.
         self.quieter_speech_ends_recording = True
@@ -324,21 +349,11 @@ class ContinuousVoiceDetector:
             self._replace_ten_vad()
             return VadEvent.NO_EVENT
 
-    # The loud end (dBFS) of the last LOUD_END_SECONDS, this chunk included.
-    # Each level is the mean sound energy of LEVEL_WINDOW_SECONDS, so a TV's
-    # short bursts average out, even one in the very first frame; the time
-    # before the recording counts as silent. A word of yours lifts it within
-    # about 0.1 s and it stays up through your pauses between words.
+    # The loudness (dBFS) around this chunk, see RecentLoudness.
     def _recent_level_db(self, audio_chunk: np.ndarray) -> float:
-        rms = 10 ** (chunk_level_db(audio_chunk) / 20)
+        level = chunk_level_db(audio_chunk)
         with self._lock:
-            self._recent_power.append(rms * rms)
-            power = sum(self._recent_power) / self._recent_power.maxlen
-            self._recent_levels.append(10 * np.log10(max(power, 1e-20)))
-            rank = max(1, int(np.ceil(self.LOUD_END_SHARE * self._recent_levels.maxlen)))
-            if len(self._recent_levels) < rank:
-                return -200.0
-            return heapq.nlargest(rank, self._recent_levels)[-1]
+            return self._loudness.add(level)
 
     def _replace_ten_vad(self):
         if self._vad_factory is None:
@@ -414,8 +429,7 @@ class ContinuousVoiceDetector:
             self.speech_since_phrase = False
             self._phrase_fired = False
             self.probability_buffer.clear()
-            self._recent_power.clear()
-            self._recent_levels.clear()
+            self._loudness.clear()
             self.hysteresis.speech_detected = False
 
     def get_state(self) -> VadState:

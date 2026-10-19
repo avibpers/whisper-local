@@ -14,6 +14,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
   among the turns with a caption you can write, the md export carries them
   in a folder next to the file. Windows only (design:
   `docs/design/meeting-screenshots.md`).
+- **Google Drive.** Settings › Google Drive signs Koli in to one Google
+  account: paste a Google OAuth client id and secret, press Connect, sign in
+  in the browser. Koli can now put files in Drive, read them back and make a
+  link anyone can open; the first use is meeting files, coming next. The
+  login is stored encrypted, never in the settings file, and `--doctor`
+  shows who is connected.
 - **Wake word: add recordings.** Commands → Wake word has **Add
   recordings** for your own word: say it again, in the noise around you or
   from further away, as many times as you like (up to 10 at a time). Each

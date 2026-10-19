@@ -70,6 +70,15 @@ def post_form(url: str, fields: dict, headers: dict = None, timeout: float = 20)
         return _decode(resp)
 
 
+# Any method with raw bytes in and out, for calls that aren't JSON: a file
+# upload, a download, or an answer whose headers matter (Google's resumable
+# upload hands back the session in `Location`). Header names come back
+# lower-cased.
+def raw(method: str, url: str, headers: dict = None, body: bytes = None, timeout: float = 60) -> tuple:
+    with _request(method, url, headers or {}, body, timeout) as resp:
+        return resp.status, {k.lower(): v for k, v in resp.headers.items()}, resp.read()
+
+
 # A POST whose answer is read as it arrives. The caller must close it
 # (use it in a `with`). The timeout applies to each read, not the whole answer.
 def post_stream(url: str, payload: dict, headers: dict = None, timeout: float = 60):
