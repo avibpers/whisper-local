@@ -261,6 +261,14 @@ textarea.inp { height: auto; padding: 8px 10px; resize: vertical; line-height: 1
 .bf-json { margin: 0; max-height: 360px; overflow: auto; background: var(--sunk); border-radius: var(--r-sm); padding: 12px; font-family: var(--mono);
   font-size: 11.5px; line-height: 1.45; color: var(--ink2); white-space: pre; }
 .flash-row { background: var(--acc-soft); border-radius: var(--r-sm); transition: background .6s; }
+/* The Google Drive control in a meeting's header: one joined group once saved. */
+.drv-mark { width: 16px; height: 16px; flex: none; }
+.btn.drv { min-height: 34px; padding: 0 12px; }
+.btn.drv.icon { width: 34px; min-height: 34px; padding: 0; }
+.drv-group { display: inline-flex; }
+.drv-group .btn { border-radius: 0; margin-inline-start: -1.5px; }
+.drv-group .btn:first-child { border-start-start-radius: var(--r); border-end-start-radius: var(--r); margin-inline-start: 0; }
+.drv-group .btn:last-child { border-start-end-radius: var(--r); border-end-end-radius: var(--r); }
 @media (max-width: 640px) { .bf-shotfig { grid-template-columns: 1fr; } }
 #print-root { display: none; }
 /* The PDF: only the summary copy, on light paper whatever the theme. */

@@ -5,10 +5,11 @@
 // meeting went topic by topic, and the data an agent can read. Every time is a
 // link into the transcript. printBrief() turns the same view into a PDF.
 
-import { html, useState } from '../../vendor/preact-htm.module.js';
+import { html, useEffect, useState } from '../../vendor/preact-htm.module.js';
 import { call } from '../api.js';
-import { textDir, toast } from '../store.js';
+import { navigate, textDir, toast } from '../store.js';
 import { Thumb } from '../shots.js';
+import { Icon } from '../ui.js';
 
 export const COLOURS = ['#0A6E82', '#B45309', '#6D28D9', '#15803D', '#BE185D', '#0369A1', '#C2410C', '#4D7C0F'];
 const STATUS = { do_now: ['ok', 'Do now'], plan_only: ['warn', 'Plan only'], waiting: ['warn', 'Waiting'], done: ['acc', 'Done'],
@@ -216,6 +217,60 @@ export function Brief({ m, brief, onJump, onOpenShot }) {
 
     ${(brief.notes || []).length > 0 && html`<p class="bf-foot">Transcription notes: ${brief.notes.join('; ')}.</p>`}
     ${brief.generator && html`<p class="bf-foot">Written by: ${brief.generator}</p>`}
+  </div>`;
+}
+
+// ── Google Drive ──────────────────────────────────────────────────────────
+
+// Google Drive's mark, in its own colours.
+function DriveMark() {
+  return html`<svg class="drv-mark" viewBox="0 0 87.3 78" aria-hidden="true">
+    <path d="M6.6 66.85l3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3L27.5 53H0c0 1.55.4 3.1 1.2 4.5z" fill="#0066DA" />
+    <path d="M43.65 25L29.9 1.2c-1.35.8-2.5 1.9-3.3 3.3L1.2 48.5A9.06 9.06 0 000 53h27.5z" fill="#00AC47" />
+    <path d="M73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5H59.8l5.85 11.5z" fill="#EA4335" />
+    <path d="M43.65 25L57.4 1.2C56.05.4 54.5 0 52.9 0H34.4c-1.6 0-3.15.45-4.5 1.2z" fill="#00832D" />
+    <path d="M59.8 53H27.5L13.75 76.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2z" fill="#2684FC" />
+    <path d="M73.4 26.5l-12.7-22c-.8-1.4-1.95-2.5-3.3-3.3L43.65 25 59.8 53h27.45c0-1.55-.4-3.1-1.2-4.5z" fill="#FFBA00" /></svg>`;
+}
+
+// Saving the meeting to Google Drive: Connect while signed out, Save once
+// connected, then Open and Share (Google's own Share, in the doc) with copy
+// link and save again beside them.
+export function DriveButton({ m, brief, onSaved }) {
+  const [st, setSt] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const reload = () => call('drive_status').then(setSt).catch(() => setSt({ connected: false, configured: false }));
+  useEffect(() => { reload(); }, []);
+  if (!st || !brief) return null;
+  const saved = m.drive && m.drive.doc_id;
+  if (!st.connected) {
+    const connect = () => {
+      if (!st.configured) { toast('Set up Google Drive first: paste the Google client, then Connect'); navigate('settings/drive'); return; }
+      import('./settings.js').then((mod) => mod.openDriveLogin(reload));
+    };
+    return html`<button type="button" class="btn drv" title="Sign Koli in to Google Drive to save meetings there" onClick=${connect}>
+      <${DriveMark} />${st.reconnect ? 'Reconnect Google Drive' : 'Connect Google Drive'}</button>`;
+  }
+  const save = () => {
+    setBusy(true);
+    call('meeting_drive_export', m.id).then((info) => {
+      onSaved(info);
+      toast(saved ? 'Saved again to Google Drive' : 'Saved to Google Drive', { action: { label: 'Open', run: () => call('meeting_drive_open', m.id) } });
+    }).catch((e) => toast(e.message, { kind: 'err' })).finally(() => setBusy(false));
+  };
+  if (busy) return html`<button type="button" class="btn drv" disabled><${DriveMark} />Saving to Drive…</button>`;
+  if (!saved) {
+    return html`<button type="button" class="btn drv" title=${`Saves a Google Doc with a Quick summary, the report and the transcript to Koli › Meetings in ${st.email}'s Drive`}
+      onClick=${save}><${DriveMark} />Save to Google Drive</button>`;
+  }
+  const open = () => call('meeting_drive_open', m.id).catch((e) => toast(e.message, { kind: 'err' }));
+  const share = () => open().then(() => toast('Opened in Google Docs: press Share at the top right to choose who can see it'));
+  const copy = () => call('copy_text', m.drive.doc_url).then(() => toast('Link copied. Who can open it follows the doc\'s Share settings'));
+  return html`<div class="drv-group" role="group" aria-label="Google Drive">
+    <button type="button" class="btn drv" title="Open the Google Doc" onClick=${open}><${DriveMark} />Open</button>
+    <button type="button" class="btn drv" title="Opens the doc; Google's Share button decides who can see it" onClick=${share}>Share</button>
+    <button type="button" class="btn drv icon" aria-label="Copy link" title="Copy the doc's link" onClick=${copy}><${Icon} name="copy" /></button>
+    <button type="button" class="btn drv icon" aria-label="Save again" title="Save again (replaces the doc in the same folder)" onClick=${save}><${Icon} name="refresh" /></button>
   </div>`;
 }
 

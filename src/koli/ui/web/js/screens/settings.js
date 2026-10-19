@@ -277,7 +277,7 @@ function driveDetail(st) {
 }
 
 // The sign-in popup: opens Google's page, polls until Koli hears back.
-function openDriveLogin(onDone) {
+export function openDriveLogin(onDone) {
   let timer = null;
   const stop = () => { clearInterval(timer); timer = null; };
   const cancel = () => { stop(); call('drive_login_cancel').catch(() => {}); closeModal(); };

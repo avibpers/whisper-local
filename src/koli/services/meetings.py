@@ -440,6 +440,15 @@ class MeetingService:
     def brief(self, meeting_id: str):
         return self.store.load_brief(meeting_id)
 
+    # The meeting as a Google Doc in Drive (meeting/gdoc.py). Not while it
+    # runs: the session keeps writing that file.
+    def export_to_drive(self, meeting_id: str) -> dict:
+        m = self.session.meeting
+        if m and m['id'] == meeting_id:
+            raise ValueError("End the meeting before saving it to Google Drive")
+        from ..meeting import gdoc
+        return gdoc.export(self.store, meeting_id)
+
     def set_caption(self, meeting_id: str, image: str, caption: str) -> bool:
         return self.session.set_caption(meeting_id, image, caption)
 

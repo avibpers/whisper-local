@@ -592,6 +592,14 @@ export function createMock(emit) {
       roles: { s2: 'Fixed the bridge', you: 'Asked about the state of the bridge' },
     } : null),
     meeting_export_pdf: () => ok('C:\\Users\\you\\Desktop\\Discord.pdf'),
+    // Google Drive: a short wait, then the doc is "saved" on the meeting.
+    meeting_drive_export: (id) => new Promise((resolve) => setTimeout(() => {
+      const info = { doc_id: 'mock-doc', doc_url: 'https://docs.google.com/document/d/mock-doc/edit', folder_id: 'mock-folder',
+        folder_url: 'https://drive.google.com/drive/folders/mock-folder', exported_at: new Date().toISOString() };
+      if (saved[id]) saved[id].drive = info;
+      resolve(ok(info));
+    }, 1200)),
+    meeting_drive_open: (id) => ok((saved[id] && saved[id].drive && saved[id].drive.doc_url) || ''),
     meeting_caption: (id, image, caption) => {
       const list = id === 'live-mock' ? liveShots : (saved[id] ? saved[id].screenshots : []);
       const shot = list.find((s) => s.image === image);

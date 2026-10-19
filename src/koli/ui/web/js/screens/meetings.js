@@ -11,7 +11,7 @@ import { app, confirmModal, promptModal, textDir, toast } from '../store.js';
 import { Icon, Select } from '../ui.js';
 import { ExtraInstall } from './shared.js';
 import { Lightbox, Thumb, rowsByTime } from '../shots.js';
-import { Brief, BriefData, COLOURS, printBrief } from './brief.js';
+import { Brief, BriefData, COLOURS, DriveButton, printBrief } from './brief.js';
 
 const RUNNING = new Set(['live', 'paused', 'offered']);
 function clock(s) { s = Math.max(0, Math.floor(s || 0)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; }
@@ -116,6 +116,7 @@ function Transcript({ id, live, onDeleted }) {
       <div class="grow"><div style="font-weight:600">${m.title}</div>
         <div class="small muted">${when(m.started_at)} · ${clock(last)} · ${m.source && m.source.app ? m.source.app.replace('.exe', '') : 'started by hand'}</div></div>
       <div class="row-flex">${m.speakers.map((sp) => html`<button type="button" class="chip" style=${`color:${COLOURS[sp.colour % 8]}`} title="Rename" onClick=${() => renameSpeaker(sp)}>${sp.name}</button>`)}</div>
+      ${!live && html`<${DriveButton} m=${m} brief=${brief} onSaved=${(info) => setM((cur) => cur && { ...cur, drive: info })} />`}
       <${Select} label="Export" value="" options=${[['', 'Export…'], ['txt', 'As .txt'], ['md', 'As .md'], ...(brief ? [['pdf', 'Summary as .pdf']] : [])]} onChange=${(v) => v && exportAs(v)} />
       ${!live && html`<button type="button" class="btn ghost icon danger" aria-label="Delete" onClick=${async () => {
         if (await confirmModal({ title: 'Delete this meeting?', body: 'The transcript is removed from this computer.', confirm: 'Delete', danger: true })) {

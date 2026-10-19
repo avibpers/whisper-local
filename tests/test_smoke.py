@@ -8301,3 +8301,52 @@ class MeetingExportNameTests(unittest.TestCase):
                                        'title': 'JumboMail dev sync: integrations, public API, SEO'}),
                          '2026-10-19 JumboMail dev sync - integrations, public API, SEO')
         self.assertEqual(_export_name({'id': '2026-10-19-124711', 'started_at': '', 'title': ''}), '2026-10-19-124711')
+
+
+# Saving a meeting to Google Drive from the Meetings screen, and opening it.
+class MeetingDriveBridgeTests(unittest.TestCase):
+    def make(self, drive=None):
+        from koli.ui.bridge import Bridge
+        self.opened = []
+        state = {'drive': drive}
+
+        class Svc:
+            def get(self, mid):
+                return {'id': mid, 'drive': state['drive']} if state['drive'] else {'id': mid}
+            def export_to_drive(self, mid):
+                state['drive'] = {'doc_id': 'D1', 'doc_url': 'https://docs.google.com/document/d/D1/edit',
+                                  'folder_url': 'https://drive.google.com/drive/folders/F1'}
+                return state['drive']
+        host = type('H', (), {'ctx': type('C', (), {'meetings': Svc()})()})()
+        bridge = Bridge(host)
+        import koli.ui.bridge as mod
+        self._orig = mod.webbrowser.open
+        mod.webbrowser.open = lambda url: self.opened.append(url)
+        self.addCleanup(setattr, mod.webbrowser, 'open', self._orig)
+        return bridge
+
+    def test_export_then_open_doc_and_folder(self):
+        b = self.make()
+        self.assertEqual(b.meeting_drive_export('m1')['data']['doc_id'], 'D1')
+        self.assertTrue(b.meeting_drive_open('m1')['ok'])
+        self.assertTrue(b.meeting_drive_open('m1', 'folder')['ok'])
+        self.assertEqual(self.opened, ['https://docs.google.com/document/d/D1/edit', 'https://drive.google.com/drive/folders/F1'])
+
+    def test_open_refuses_a_link_that_is_not_google(self):
+        b = self.make(drive={'doc_url': 'https://evil.example/x'})
+        self.assertFalse(b.meeting_drive_open('m1')['ok'])
+        self.assertEqual(self.opened, [])
+
+    def test_open_before_export_says_so(self):
+        r = self.make().meeting_drive_open('m1')
+        self.assertFalse(r['ok'])
+
+
+class MeetingDrivePageTests(unittest.TestCase):
+    def test_drive_button_is_wired(self):
+        web = ROOT / "src" / "koli" / "ui" / "web" / "js"
+        brief = (web / 'screens' / 'brief.js').read_text(encoding='utf-8')
+        for part in ("call('meeting_drive_export'", "call('meeting_drive_open'", "call('drive_status'", 'openDriveLogin', "navigate('settings/drive')"):
+            self.assertIn(part, brief)
+        self.assertIn('DriveButton', (web / 'screens' / 'meetings.js').read_text(encoding='utf-8'))
+        self.assertIn('export function openDriveLogin', (web / 'screens' / 'settings.js').read_text(encoding='utf-8'))

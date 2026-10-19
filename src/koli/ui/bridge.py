@@ -718,6 +718,27 @@ class Bridge:
             raise RuntimeError("Couldn't write the PDF")
         return path
 
+    # ── Meeting in Google Drive ──────────────────────────────────────────────
+
+    # Saves the meeting as a Google Doc (Quick summary, Report, Transcript)
+    # in "Koli/Meetings/<name>/"; a second save replaces the doc there.
+    @_api
+    def meeting_drive_export(self, meeting_id):
+        return self._meetings.export_to_drive(str(meeting_id))
+
+    # Opens the saved doc (or its folder) in the browser, where Google's own
+    # Share button decides who can see it. Only Google links ever open.
+    @_api
+    def meeting_drive_open(self, meeting_id, which='doc'):
+        saved = self._meetings.get(str(meeting_id)).get('drive') or {}
+        url = str(saved.get('folder_url' if which == 'folder' else 'doc_url') or '')
+        if not url:
+            raise ValueError("This meeting isn't in Google Drive yet")
+        if not url.startswith(('https://docs.google.com/', 'https://drive.google.com/')):
+            raise ValueError("That isn't a Google Drive link")
+        webbrowser.open(url)
+        return url
+
     # ── Meeting screenshots (docs/design/meeting-screenshots.md) ─────────────
 
     # The camera button: snip into the running meeting. {'ok', 'reason'}.

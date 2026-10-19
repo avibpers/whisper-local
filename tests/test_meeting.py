@@ -2647,3 +2647,114 @@ class ScreenshotReviewFixTests(ScreenshotFlowTests):
         self.assertLess(time.monotonic() - t0, 0.3)
         done.join(2)
         self.assertEqual(len(self.shots_of(m)), 1)
+
+
+# A meeting saved to Google Drive as one Google Doc with three tabs (Quick
+# summary first, then Report and Transcript) in "Koli/Meetings/<name>/".
+BRIEF = {'version': 1, 'title': 'Dev sync: SEO', 'tldr': ['We agreed on SEO first.'],
+         'decisions': [{'id': 'D1', 'text': 'SEO starts now.', 'at': 65}],
+         'action_items': [{'id': 'A1', 'task': 'Fix titles.', 'owner': 'David', 'status': 'do_now', 'due': None, 'at': 70},
+                          {'id': 'A2', 'task': 'Plan DLP.', 'owner': None, 'status': 'plan_only', 'due': None, 'at': 90}],
+         'open_questions': [{'id': 'Q1', 'text': 'One API or two?', 'at': 30}], 'parked': [{'id': 'P1', 'text': 'VDR.'}],
+         'topics': [{'id': 'T1', 'title': 'SEO', 'start': 0, 'end': 120, 'lead': 'Quick wins first.', 'points': ['Home page.'],
+                     'quotes': [{'text': 'נתחיל עם דף הבית', 'who': 'Eran', 'at': 60}]}],
+         'roles': {'s1': 'Led'}}
+
+
+def brief_meeting():
+    from koli.meeting.store import new_meeting
+    m = new_meeting('2026-10-19-124711', 'Dev sync: SEO', {'app': '', 'kind': 'manual', 'title': '', 'code': ''},
+                    datetime.datetime(2026, 10, 19, 12, 47, 11, tzinfo=TZ))
+    m['speakers'].append({'id': 's1', 'name': 'Eran', 'colour': 1})
+    m['turns'] = [{'start': 0.5, 'end': 9.0, 'stream': 'loopback', 'speaker': 's1', 'text': 'נתחיל עם דף הבית', 'lang': 'he'},
+                  {'start': 10.0, 'end': 14.0, 'stream': 'mic', 'speaker': 'you', 'text': 'Agreed.', 'lang': 'en'}]
+    m['ended_at'] = '2026-10-19T13:10:36+03:00'
+    return m
+
+
+class GoogleDocTests(unittest.TestCase):
+    def test_quick_summary_is_bottom_lines(self):
+        from koli.meeting import gdoc
+        text = ''.join(r['insertText']['text'] for r in gdoc.quick_requests(brief_meeting(), BRIEF, 't.q') if 'insertText' in r)
+        for line in ('We agreed on SEO first.', 'SEO starts now.', 'Fix titles. · David · Do now',
+                     'Plan DLP. · Owner not set · Plan only', 'One API or two?', 'VDR.', '00:00–02:00 SEO: Quick wins first.'):
+            self.assertIn(line, text)
+        self.assertNotIn('Talk time', text)
+
+    def test_transcript_requests_write_every_turn_right_to_left(self):
+        from koli.meeting import gdoc
+        reqs = gdoc.transcript_requests(brief_meeting(), BRIEF, 't.t')
+        text = reqs[0]['insertText']['text']
+        self.assertIn('[00:00] Eran: נתחיל עם דף הבית', text)
+        self.assertIn('[00:10] You: Agreed.', text)
+        rtl = [r for r in reqs if r.get('updateParagraphStyle', {}).get('paragraphStyle', {}).get('direction') == 'RIGHT_TO_LEFT']
+        self.assertEqual(len(rtl), 2)
+        self.assertTrue(all(r['insertText']['location']['tabId'] == 't.t' for r in reqs if 'insertText' in r))
+
+    def test_report_html_has_the_sections_and_charts(self):
+        from koli.meeting import gdoc
+        page = gdoc.report_html(brief_meeting(), BRIEF, {})
+        for part in ('<h2>Summary</h2>', '<h2>Decisions</h2>', '<h2>Action items</h2>', '<h2>Who spoke</h2>',
+                     '<h2>How the meeting went</h2>', 'data:image/png;base64,', "dir='rtl'"):
+            self.assertIn(part, page)
+
+    def test_folder_name_is_date_and_title(self):
+        from koli.meeting import gdoc
+        self.assertEqual(gdoc.folder_name(brief_meeting(), BRIEF), '2026-10-19 Dev sync - SEO')
+
+    def test_export_builds_the_doc_and_remembers_it(self):
+        from koli.meeting import gdoc
+        from koli.meeting.store import MeetingStore
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        store = MeetingStore(Path(tmp.name))
+        m = brief_meeting()
+        store.save(m)
+        store.save_brief(m['id'], BRIEF)
+        calls = []
+
+        class FakeDrive:
+            def ensure_folder(self, path):
+                calls.append(('folder', path)); return 'F1'
+            def upload_bytes(self, data, name, mime, folder_id=None, file_id=None, convert_to=None):
+                calls.append(('upload', name, mime, folder_id, convert_to)); return {'id': 'D1'}
+            def delete(self, file_id):
+                calls.append(('trash', file_id))
+            def info(self, file_id):
+                return {'webViewLink': f'https://docs.google.com/document/d/{file_id}/edit'}
+
+        class FakeDocs:
+            def get(self, doc_id):
+                return {'tabs': [{'tabProperties': {'tabId': 't.0', 'title': 'Tab 1'}}]}
+            def batch_update(self, doc_id, requests):
+                calls.append(('batch', len(requests), [next(iter(r)) for r in requests][:3]))
+                replies = []
+                for r in requests:
+                    if 'addDocumentTab' in r:
+                        title = r['addDocumentTab']['tabProperties']['title']
+                        replies.append({'addDocumentTab': {'tabProperties': {'tabId': 't.' + title[0].lower(), 'title': title}}})
+                    else:
+                        replies.append({})
+                return {'replies': replies}
+
+        out = gdoc.export(store, m['id'], drive=FakeDrive(), docs=FakeDocs())
+        self.assertEqual(calls[0], ('folder', 'Koli/Meetings/2026-10-19 Dev sync - SEO'))
+        self.assertEqual(calls[1], ('upload', '2026-10-19 Dev sync - SEO', 'text/html', 'F1', 'application/vnd.google-apps.document'))
+        self.assertEqual(out['doc_id'], 'D1')
+        self.assertEqual(store.load(m['id'])['drive']['doc_id'], 'D1')
+        self.assertEqual(store.load(m['id'])['drive']['folder_id'], 'F1')
+        # A second export replaces the doc in the same folder.
+        calls.clear()
+        gdoc.export(store, m['id'], drive=FakeDrive(), docs=FakeDocs())
+        self.assertIn(('trash', 'D1'), calls)
+
+    def test_export_needs_a_brief(self):
+        from koli.meeting import gdoc
+        from koli.meeting.store import MeetingStore
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        store = MeetingStore(Path(tmp.name))
+        m = brief_meeting()
+        store.save(m)
+        with self.assertRaises(ValueError):
+            gdoc.export(store, m['id'], drive=object(), docs=object())
