@@ -3,28 +3,38 @@
 // auto mode with a countdown, Stop and Start now; in "ask" mode Not now and
 // Start), the live transcript with speaker colours and a Stop button, the
 // paused and excluded states, the resumed/new notices with their undo, and
-// "Saved" at the end. The header drags the window; the corner handle resizes
-// it; collapse shrinks it to a pill and reports the pill's size.
+// "Saved" at the end. Screenshots taken during the meeting sit among the
+// turns at their moment, with a camera button to snip one. The header drags
+// the window; the corner handle resizes it; collapse shrinks it to a pill
+// and reports the pill's size.
 
 import { html, render, useEffect, useLayoutEffect, useRef, useState } from '../vendor/preact-htm.module.js';
 import { call, on } from './api.js';
 import { createStore } from './store.js';
 import { Icon } from './ui.js';
+import { Lightbox, Thumb, rowsByTime } from './shots.js';
 
 const panel = createStore({
-  settings: null, meeting: { state: 'idle' }, turns: [], pending: null, menu: false, collapsed: false,
+  settings: null, meeting: { state: 'idle' }, turns: [], screenshots: [], pending: null, menu: false, collapsed: false,
   shownInSharing: false, stuck: true,   // stuck: the list follows new turns
+  open: null,      // the screenshot shown full size
 });
 
 function dir(text) { return /[֐-׿؀-ۿ]/.test(text || '') ? 'rtl' : 'ltr'; }
 function clock(s) { s = Math.max(0, Math.floor(s)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; }
-function loadTurns(id) { call('meeting_get', id).then((d) => panel.set({ turns: d.turns })).catch(() => {}); }
+function loadTurns(id) { call('meeting_get', id).then((d) => panel.set({ turns: d.turns, screenshots: d.screenshots || [] })).catch(() => {}); }
+
+// A screenshot joined (or its caption changed): keyed by its file name.
+function mergeShot(list, shot) {
+  const i = list.findIndex((s) => s.image === shot.image);
+  return i < 0 ? [...list, shot] : list.map((s, j) => (j === i ? shot : s));
+}
 
 function wire() {
   on('meeting', (m) => {
     const prev = panel.get().meeting;
     const patch = { meeting: m };
-    if (m.id !== prev.id) { patch.turns = []; patch.pending = null; }
+    if (m.id !== prev.id) { patch.turns = []; patch.screenshots = []; patch.pending = null; patch.open = null; }
     panel.set(patch);
     if (m.id && m.id !== prev.id) loadTurns(m.id);
   });
@@ -34,6 +44,11 @@ function wire() {
     if (p.reload) { loadTurns(p.id); return; }
     if ('pending' in p) { panel.set({ pending: p.pending }); return; }
     panel.set({ turns: [...s.turns, p.turn], pending: null });
+  });
+  on('meeting_shot', (p) => {
+    const s = panel.get();
+    if (p.id !== s.meeting.id) return;
+    panel.set({ screenshots: mergeShot(s.screenshots, p.shot) });
   });
   on('settings', (p) => {
     const s = panel.get().settings;
@@ -114,6 +129,7 @@ function Who({ speaker }) {
 
 function Turns() {
   const turns = panel.use((s) => s.turns);
+  const screenshots = panel.use((s) => s.screenshots);
   const pending = panel.use((s) => s.pending);
   const meeting = panel.use((s) => s.meeting);
   const stuck = panel.use((s) => s.stuck);
@@ -122,10 +138,13 @@ function Turns() {
   const who = (id) => speakers[id] || { id, name: id === '?' ? 'Speaker ?' : id, colour: 7 };
   useLayoutEffect(() => { if (stuck && box.current) box.current.scrollTop = box.current.scrollHeight; });
   const onScroll = (e) => { const el = e.currentTarget; panel.set({ stuck: el.scrollHeight - el.scrollTop - el.clientHeight < 24 }); };
-  const last = turns.slice(-200);
+  const last = rowsByTime(turns, screenshots).slice(-200);
   return html`<div class="turns" ref=${box} onScroll=${onScroll} aria-live="polite">
     ${last.length === 0 && !pending && html`<div class="empty">Listening…</div>`}
-    ${last.map((t) => html`<div class="turn"><${Who} speaker=${who(t.speaker)} /><p dir=${dir(t.text)}>${t.text}</p></div>`)}
+    ${last.map((t) => (t.kind === 'shot'
+      ? html`<div class="turn shot"><span class="who" title=${clock(t.at)}>Screenshot</span>
+          <div><${Thumb} meetingId=${meeting.id} shot=${t} onOpen=${(shot) => panel.set({ open: shot })} />${t.caption && html`<p class="sub" dir=${dir(t.caption)}>${t.caption}</p>`}</div></div>`
+      : html`<div class="turn"><${Who} speaker=${who(t.speaker)} /><p dir=${dir(t.text)}>${t.text}</p></div>`))}
     ${pending && html`<div class="turn pending"><span class="who" style=${`color:var(--sp${pending.stream === 'mic' ? 0 : 7})`}>${pending.stream === 'mic' ? 'You' : '…'}</span><p>…</p></div>`}
   </div>`;
 }
@@ -148,6 +167,7 @@ function Panel() {
   const m = panel.use((s) => s.meeting);
   const menu = panel.use((s) => s.menu);
   const collapsed = panel.use((s) => s.collapsed);
+  const open = panel.use((s) => s.open);
   const drag = useDrag('meeting_drag');
   const pillRef = useRef(null);
   useLayoutEffect(() => {
@@ -184,11 +204,14 @@ function Panel() {
       <button type="button" class=${'btn' + (m.excluded ? ' on' : '')} onClick=${() => call('meeting_exclude', !m.excluded)}><${Icon} name="mic" />${m.excluded ? 'Include me' : 'Exclude me'}</button>
       <button type="button" class="btn" onClick=${() => call(paused ? 'meeting_resume' : 'meeting_pause')}><${Icon} name=${paused ? 'play' : 'pause'} />${paused ? 'Resume' : 'Pause'}</button>
       <span class="grow"></span>
+      ${m.screenshots !== 'off' && html`<button type="button" class="btn icon" aria-label="Screenshot" title="Snip a screenshot into the meeting"
+        onClick=${() => call('meeting_screenshot')}><${Icon} name="camera" /></button>`}
       <button type="button" class="btn icon" aria-label="Open in Koli" title="Open in Koli" onClick=${() => call('window_open', 'meetings')}><${Icon} name="doc" /></button>
       <button type="button" class="btn" title="Stop and save. It won't start again by itself until the call is quiet for a while."
         onClick=${() => call('meeting_end')}><${Icon} name="x" />Stop</button>
     </div>
     <${Grip} />
+    ${open && html`<${Lightbox} meetingId=${m.id} shot=${open} onClose=${() => panel.set({ open: null })} />`}
   </div>`;
 }
 
@@ -196,7 +219,7 @@ async function boot() {
   wire();
   render(html`<${Panel} />`, document.getElementById('root'));
   const data = await call('app_bootstrap', 'meeting');
-  panel.set({ settings: data.settings, meeting: data.meeting || { state: 'idle' }, turns: data.turns || [],
+  panel.set({ settings: data.settings, meeting: data.meeting || { state: 'idle' }, turns: data.turns || [], screenshots: data.screenshots || [],
               collapsed: !!(data.settings.meeting && data.settings.meeting.panel.collapsed) });
 }
 boot();

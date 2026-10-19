@@ -120,11 +120,26 @@ export function createMock(emit) {
     ['s1', 'On Friday they hit one or two bridges.'], ['you', 'שלום, אני אגיע מחר בבוקר.']];
   const emptyMeeting = () => ({ state: 'idle', id: null, title: '', source: {}, started_at: null, elapsed_s: 0, paused_by_user: false,
     excluded: false, behind_s: 0, speakers: [], notice: null, turns: 0, can_continue: false, can_split: false, offer: null,
-    auto_paused: false });
+    auto_paused: false, screenshots: 'key' });
+  // A screenshot stands in for the PNGs the real app keeps beside a meeting.
+  let mockPngUrl = null;
+  const mockPng = () => {
+    if (mockPngUrl) return mockPngUrl;
+    const c = document.createElement('canvas'); c.width = 320; c.height = 200;
+    const g = c.getContext('2d');
+    g.fillStyle = '#1f2a33'; g.fillRect(0, 0, 320, 200);
+    g.fillStyle = '#3b4a58'; g.fillRect(0, 0, 320, 24);
+    g.fillStyle = '#9fb3c8'; for (let i = 0; i < 6; i++) g.fillRect(20, 44 + i * 24, 120 + (i * 37) % 160, 8);
+    g.fillStyle = '#F5A623'; g.fillRect(200, 60, 90, 60);
+    mockPngUrl = c.toDataURL('image/png');
+    return mockPngUrl;
+  };
+  let liveShots = [];
   let meeting = emptyMeeting();
   const saved = { '2026-10-10-150000': { id: '2026-10-10-150000', title: 'Discord', source: { app: 'discord.exe', kind: 'native', title: '', code: '' },
     started_at: '2026-10-10T15:00:00+03:00', ended_at: '2026-10-10T15:42:00+03:00', language: 'auto', speakers: SPEAKERS,
-    turns: LINES.map(([sp, text], i) => ({ start: i * 9, end: i * 9 + 6, stream: sp === 'you' ? 'mic' : 'loopback', speaker: sp, text, lang: /[\u0590-\u05FF]/.test(text) ? 'he' : 'en' })), gaps: [] } };
+    turns: LINES.map(([sp, text], i) => ({ start: i * 9, end: i * 9 + 6, stream: sp === 'you' ? 'mic' : 'loopback', speaker: sp, text, lang: /[\u0590-\u05FF]/.test(text) ? 'he' : 'en' })),
+    screenshots: [{ at: 12, image: '0012.00.png', caption: 'The bridge dashboard', description: null }], gaps: [] } };
   let liveTurns = [];
   let liveTimer = null;
   const emitMeeting = () => emit('meeting', { ...meeting, turns: liveTurns.length, speakers: SPEAKERS });
@@ -132,6 +147,7 @@ export function createMock(emit) {
     meeting = { ...emptyMeeting(), state: 'live', id: 'live-mock', title: 'Discord', source: { app: 'discord.exe', kind: 'native' },
       started_at: new Date().toISOString(), notice: 'new', can_continue: true };
     liveTurns = [];
+    liveShots = [];
     emitMeeting();
     let i = 0;
     clearInterval(liveTimer);
@@ -238,7 +254,7 @@ export function createMock(emit) {
       log('INFO', 'Mock backend ready', 'koli.ui.host');
       return ok({ version: '0.0.0-mock', platform: 'nt', settings: data.settings, state, tasks: Object.values(tasks),
         pipeline: [], recent: RECENT.slice(0, 5), foreground: { exe: 'slack.exe', title: 'Slack', rule: null }, profile, dev: true,
-        meeting: { ...meeting, speakers: SPEAKERS }, turns: liveTurns.slice(),
+        meeting: { ...meeting, speakers: SPEAKERS }, turns: liveTurns.slice(), screenshots: liveShots.slice(),
         ...(which === 'main' ? { schema: data.schema, logs: [], webview2: '154.0.0.0 (mock)', undo: false, frame: { ...frame } } : {}) });
     },
     // The window buttons have no window to act on here; maximize just swaps its icon.
@@ -540,7 +556,27 @@ export function createMock(emit) {
     meetings_list: () => ok(Object.values(saved).map((m) => ({ id: m.id, title: m.title, source: m.source, started_at: m.started_at,
       ended_at: m.ended_at, duration_s: 2520, speakers: m.speakers.map((s) => s.name), turns: m.turns.length }))),
     meeting_get: (id) => ok(id === 'live-mock' ? { id, title: meeting.title, source: meeting.source, started_at: meeting.started_at,
-      speakers: SPEAKERS, turns: liveTurns.slice(), gaps: [] } : saved[id]),
+      speakers: SPEAKERS, turns: liveTurns.slice(), screenshots: liveShots.slice(), gaps: [] } : saved[id]),
+    // The camera button: the "snip" lands 800 ms later, as if the overlay closed.
+    meeting_screenshot: () => {
+      if (meeting.state !== 'live' && meeting.state !== 'paused') return ok({ ok: false, reason: 'no meeting' });
+      setTimeout(() => {
+        const at = Math.round((Date.now() - new Date(meeting.started_at).getTime()) / 10) / 100;
+        const shot = { at, image: `${String(Math.floor(at)).padStart(4, '0')}.${String(Math.round((at % 1) * 100)).padStart(2, '0')}.png`, caption: '', description: null };
+        liveShots.push(shot);
+        emit('meeting_shot', { id: 'live-mock', shot });
+      }, 800);
+      return ok({ ok: true });
+    },
+    meeting_caption: (id, image, caption) => {
+      const list = id === 'live-mock' ? liveShots : (saved[id] ? saved[id].screenshots : []);
+      const shot = list.find((s) => s.image === image);
+      if (!shot) return ok(false);
+      shot.caption = caption;
+      emit('meeting_shot', { id, shot: { ...shot }, caption: true });
+      return ok(true);
+    },
+    meeting_image: () => ok({ url: mockPng() }),
     meeting_delete: (id) => { delete saved[id]; return ok(true); },
     meeting_export: () => ok('C:\\Users\\you\\Desktop\\meeting.txt'),
     meeting_resize: () => ok(),

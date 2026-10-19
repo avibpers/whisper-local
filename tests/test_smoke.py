@@ -8149,3 +8149,21 @@ class MeetingScreenshotBridgeTests(unittest.TestCase):
         self.assertEqual(result['data'], str(out))
         self.assertIn('![dash](sync-shots/0012.00.png)', out.read_text(encoding='utf-8'))
         self.assertTrue((out.parent / 'sync-shots' / '0012.00.png').exists())
+
+
+# The pages show screenshots: a shared helper orders them among the turns,
+# and every page that shows a meeting offers the camera button.
+class MeetingScreenshotPagesTests(unittest.TestCase):
+    WEB = ROOT / "src" / "koli" / "ui" / "web" / "js"
+
+    def test_pages_wire_the_screenshot_button_and_events(self):
+        for rel in ('meeting.js', 'screens/meetings.js', 'bar.js'):
+            src = (self.WEB / rel).read_text(encoding='utf-8')
+            self.assertTrue("meeting_screenshot" in src, rel)
+            self.assertTrue("meeting_shot" in src, rel)
+        shots = (self.WEB / 'shots.js').read_text(encoding='utf-8')
+        self.assertIn('export function rowsByTime', shots)
+        self.assertIn('meeting_image', shots)
+        mock = (self.WEB / 'mock-api.js').read_text(encoding='utf-8')
+        for name in ('meeting_screenshot', 'meeting_caption', 'meeting_image'):
+            self.assertIn(name, mock)

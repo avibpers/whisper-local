@@ -129,6 +129,9 @@ function wire() {
     const prev = bar.get().meeting;
     bar.set({ meeting: m });
     if (m.state === 'ended') flash('ok', 'Meeting saved', {}, 2600);
+  });
+  on('meeting_shot', (p) => {
+    if (!p.caption) flash('ok', 'Screenshot added', {}, 2000);
     else if (m.state === 'idle' && m.auto_paused && !prev.auto_paused && prev.state === 'offered') {
       flash('info', "Not starting · it waits until the call is quiet", {}, 3500);
     }
@@ -272,6 +275,7 @@ function Menu() {
       class=${lang === v ? 'on' : ''} style="text-transform:none" onClick=${() => set('whisper.language', v)}>${t}</button>`)}
       ${!['auto', 'en', 'he'].includes(lang) && html`<button type="button" class="on" style="text-transform:none">${lang}</button>`}</div>
     <div class="sep"></div>
+    ${MEETING_ON.has(meeting.state) && meeting.screenshots !== 'off' && html`<button type="button" class="mi" onClick=${() => { close(); call('meeting_screenshot'); }}><${Badge} tone="acc" icon="camera" />Screenshot into the meeting</button>`}
     ${MEETING_ON.has(meeting.state)
       ? html`<button type="button" class="mi" onClick=${() => { close(); call('meeting_end'); }}><${Badge} tone="warn" icon="x" />Stop meeting</button>`
       : html`<button type="button" class="mi" onClick=${() => { close(); call('meeting_start'); }}><${Badge} tone="acc" icon="mic" />Start a meeting</button>`}
@@ -377,6 +381,8 @@ function Status() {
     const inMeeting = MEETING_ON.has(meeting.state);
     return html`<div class="bub" style="cursor:pointer" onClick=${openMenu} title="Quick actions">
       <${KoliMark} size=${40} />${settings.hotkey.recording_mode === 'toggle' ? 'Press' : 'Hold'} <span class="keys">${keys}</span>
+      ${inMeeting && meeting.screenshots !== 'off' && html`<button type="button" class="btn round" aria-label="Screenshot" title="Snip a screenshot into the meeting" style="width:34px;height:34px"
+        onClick=${(e) => { e.stopPropagation(); call('meeting_screenshot'); }}><${Icon} name="camera" /></button>`}
       ${inMeeting && html`<button type="button" class="btn" title="Stop the meeting and save it"
         onClick=${(e) => { e.stopPropagation(); call('meeting_end'); }}><${Icon} name="x" />Stop meeting</button>`}
       <button type="button" class="btn round" aria-label="Quick actions" style="width:34px;height:34px"><${Icon} name="dots" /></button></div>`;
