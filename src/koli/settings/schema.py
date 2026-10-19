@@ -55,6 +55,8 @@ SECTIONS = [
     {'id': 'smart', 'title': 'Smart editing', 'desc': 'Offline rules, no AI. Each one is off until you turn it on.'},
     {'id': 'ai', 'title': 'AI', 'desc': 'Models that polish and rewrite your text. Local ones run on this '
      'computer; cloud ones send the text to that provider. Logins and keys are stored encrypted, never in the settings file.'},
+    {'id': 'drive', 'title': 'Google Drive', 'desc': 'One Google account Koli can keep files in and share them from. '
+     'The login is stored encrypted, never in the settings file.'},
     {'id': 'overlay', 'title': 'Bubble & sounds', 'desc': 'What you see and hear when the window is closed.'},
     {'id': 'meetings', 'title': 'Meetings', 'desc': 'Calls in Discord, Zoom, Teams and the browser: when Koli listens, who said what, and the panel.'},
     {'id': 'privacy', 'title': 'Privacy & logs', 'desc': 'Everything stays on this computer. Here is what gets written to disk.'},

@@ -335,6 +335,7 @@ def _section_postprocess_and_rules() -> int:
             Check("Text filters").info("none enabled").print()
 
         failures += _check_ai(cfg)
+        _check_drive()
     except Exception as e:
         Check("Post-process config").warn(str(e)).print()
 
@@ -384,6 +385,23 @@ def _check_ai(cfg) -> int:
         return 0
     Check("AI model").fail(f"{label}: {status.get('detail') or status.get('error') or 'not available'}").print()
     return 1
+
+
+# The Google Drive login, read without refreshing it (never a failure: Drive
+# is optional).
+def _check_drive():
+    from . import drive
+    status = drive.ACCOUNT.status()
+    check = Check("Google Drive")
+    if not status['configured']:
+        check.info("not set up")
+    elif status['reconnect']:
+        check.warn(f"connect again in Settings › Google Drive: {status['error'] or 'the login lapsed'}")
+    elif not status['connected']:
+        check.warn("connect in Settings › Google Drive")
+    else:
+        check.ok(f"connected as {status['email']}")
+    check.print()
 
 
 def _section_logs() -> int:

@@ -247,6 +247,82 @@ function AiProviders() {
     ${!list ? html`<div class="empty">Checking providers…</div>` : list.map((p) => html`<${ProviderRow} key=${p.id} p=${p} reload=${reload} />`)}`;
 }
 
+// ── Google Drive ──────────────────────────────────────────────────────────
+// One Google account: paste the OAuth client id and secret, then Connect
+// opens Google's sign-in in the browser and the popup waits for it to come
+// back (no code to type). The secret only ever shows masked.
+
+const DRIVE_CONSOLE_URL = 'https://console.cloud.google.com/auth/clients';
+
+function driveTone(st) {
+  if (st.reconnect) return 'warn';
+  return st.connected ? 'ok' : '';
+}
+
+function driveDetail(st) {
+  if (st.reconnect) return 'Connect again';
+  if (st.connected) return `Connected as ${st.email}`;
+  return st.configured ? 'Not connected' : 'Not set up';
+}
+
+// The sign-in popup: opens Google's page, polls until Koli hears back.
+function openDriveLogin(onDone) {
+  let timer = null;
+  const stop = () => { clearInterval(timer); timer = null; };
+  const cancel = () => { stop(); call('drive_login_cancel').catch(() => {}); closeModal(); };
+  const render = (st) => () => html`<div class="modal"><div class="modal-head"><h2>Connect Google Drive</h2></div>
+    <div class="modal-body">
+      <p style="margin:0">Sign in with the Google account Koli should use. The browser comes back here by itself.</p>
+      <button type="button" class="btn pri" style="align-self:center" onClick=${() => call('drive_login_open')}>Open the sign-in page</button>
+      <span class="small muted" role="status" style="text-align:center">${st.error ? html`<b style="color:var(--rec)">${st.error}</b>` : 'Waiting for Google…'}</span>
+    </div>
+    <div class="modal-foot"><button type="button" class="btn" onClick=${cancel}>${st.error ? 'Close' : 'Cancel'}</button></div></div>`;
+  call('drive_login_start').then((st) => {
+    openModal(render(st));
+    call('drive_login_open').catch(() => {});
+    timer = setInterval(() => {
+      call('drive_login_status').then((now) => {
+        if (now.connected) { stop(); closeModal(); toast(`Google Drive connected as ${now.email}`); onDone(); }
+        else if (now.error) { stop(); openModal(render(now)); }
+        else if (!now.pending) { stop(); }
+      }).catch(() => {});
+    }, LOGIN_POLL_MS);
+  }).catch((e) => toast(e.message, { kind: 'err' }));
+}
+
+function GoogleDrive() {
+  const [st, setSt] = useState(null);
+  const reload = () => call('drive_status').then(setSt).catch((e) => toast(e.message, { kind: 'err' }));
+  useEffect(() => { reload(); }, []);
+  if (!st) return html`<div class="empty">Checking Google Drive…</div>`;
+  const act = (promise, ok) => promise.then(() => { if (ok) toast(ok); reload(); }).catch((e) => toast(e.message, { kind: 'err' }));
+  const changeSecret = async () => {
+    const secret = await promptModal({ title: 'Google client secret', secret: true, confirm: 'Save',
+      label: 'From the OAuth client in Google Cloud Console. Stored encrypted on this computer.' });
+    if (secret) act(call('drive_set_client', st.client_id, secret), 'Client secret saved');
+  };
+  const disconnect = async () => {
+    if (!(await confirmModal({ title: 'Disconnect Google Drive?', body: 'Signs Koli out of this Google account on this computer. Nothing changes at Google. You can connect again any time.', confirm: 'Disconnect', danger: true }))) return;
+    act(call('drive_disconnect'), 'Google Drive disconnected');
+  };
+  return html`<div class="srow"><div class="slabel"><b>Account</b>
+      <small><span class=${'chip sm ' + driveTone(st)}><span class="dot"></span>${driveDetail(st)}</span>${st.error && !st.connected ? ` ${st.error}` : ''}</small></div>
+    <div class="sctl" style="flex-wrap:wrap;justify-content:flex-end">
+      ${st.connected || st.reconnect
+        ? html`<button type="button" class="btn ghost sm" onClick=${disconnect}>Disconnect</button>` : null}
+      ${!st.connected && html`<button type="button" class="btn sm pri" disabled=${!st.configured} onClick=${() => openDriveLogin(reload)}>${st.reconnect ? 'Connect again' : 'Connect'}</button>`}
+    </div></div>
+    <div class="srow"><div class="slabel"><b>Google OAuth client</b>
+      <small>A "Web application" client in Google Cloud Console. Add <span class="mono">${st.redirect_uri}</span> to its Authorized redirect URIs.${' '}
+        <a href="#" onClick=${(e) => { e.preventDefault(); call('app_open_url', DRIVE_CONSOLE_URL); }}>Open the console</a></small></div>
+    <div class="sctl" style="flex-wrap:wrap;justify-content:flex-end">
+      <${TextField} label="Client id" mono width="260px" value=${st.client_id} placeholder="….apps.googleusercontent.com"
+        onCommit=${(v) => act(call('drive_set_client', v.trim(), ''), 'Client id saved')} />
+      ${st.client_hint && html`<span class="mono small muted">${st.client_hint}</span>`}
+      <button type="button" class="btn ghost sm" onClick=${changeSecret}>${st.client_hint ? 'Change secret…' : 'Client secret…'}</button>
+    </div></div>`;
+}
+
 // Test on a model row: one short question, then how long it took.
 function AiTest({ path }) {
   const own = useSetting(path);
@@ -456,6 +532,7 @@ const SECTION_EXTRAS = {
     voicecheck: 'Does Koli recognize you voice check voiceprint only my voice TV test' },
   hotkeys: { transforms: 'Transform shortcuts polish prompt engineer keys' },
   ai: { providers: 'Providers Ollama LM Studio ChatGPT Codex SuperGrok Grok Gemini OpenRouter OpenAI API key connect login subscription' },
+  drive: { drive: 'Google Drive connect account client id secret share upload files cloud' },
   privacy: { privacy: 'Transcript history delete clear export privacy' },
   system: { system: 'Local API address server settings backup export import model offline computer reset all uninstall' },
 };
@@ -501,6 +578,7 @@ function SectionCard({ section, schema, highlight, terms }) {
     ${extras.has('autostart') && html`<${Autostart} />`}
     ${extras.has('mic') && html`<div class="srow"><div class="slabel"><b>Check your microphone</b><small>Shows the level while you talk.</small></div><div class="sctl"><${MicTest} /></div></div>`}
     ${extras.has('providers') && html`<${AiProviders} />`}
+    ${extras.has('drive') && html`<${GoogleDrive} />`}
     ${groups.map((g) => html`${g.name && html`<div class="subhead"><div class="eyebrow">${g.name}</div></div>`}${g.items.map(renderRow)}
       ${g.name === VOICE_GROUP && extras.has('voicecheck') && html`<${VoiceCheck} />`}`)}
     ${extras.has('voicecheck') && !groups.some((g) => g.name === VOICE_GROUP) && html`<${VoiceCheck} />`}

@@ -22,7 +22,9 @@ _URL_ALLOW = ('https://github.com/drajb/whisper-local', 'https://ollama.com', 'h
               # AI providers: sites, key pages and the device-login pages
               'https://lmstudio.ai', 'https://chatgpt.com', 'https://auth.openai.com', 'https://grok.com',
               'https://accounts.x.ai', 'https://auth.x.ai', 'https://aistudio.google.com', 'https://openrouter.ai',
-              'https://platform.openai.com')
+              'https://platform.openai.com',
+              # Google Drive: where the redirect URI is added to the OAuth client
+              'https://console.cloud.google.com')
 
 
 def _api(fn):
@@ -825,6 +827,52 @@ class Bridge:
     def ai_login_cancel(self, provider):
         from ..llm.oauth import SUBSCRIPTIONS
         SUBSCRIPTIONS[provider].cancel_login()
+
+    # ── Google Drive ─────────────────────────────────────────────────────────
+    # One Google account, signed in through the browser (design:
+    # docs/design/google-drive.md). The pasted client id and secret and the
+    # login are stored encrypted; the page only ever sees a masked secret.
+
+    @_api
+    def drive_status(self):
+        from .. import drive
+        from ..drive import auth
+        return {**drive.ACCOUNT.status(), 'client_id': drive.get_client()['client_id'],
+                'client_hint': drive.client_hint(), 'redirect_uri': auth.REDIRECT_URI}
+
+    @_api
+    def drive_set_client(self, client_id, client_secret):
+        from .. import drive
+        drive.set_client(client_id, client_secret)
+
+    @_api
+    def drive_login_start(self):
+        from .. import drive
+        return drive.ACCOUNT.start_login()
+
+    @_api
+    def drive_login_status(self):
+        from .. import drive
+        return drive.ACCOUNT.login_state()
+
+    # Opens Google's consent page for the login in progress.
+    @_api
+    def drive_login_open(self):
+        from .. import drive
+        url = str(drive.ACCOUNT.login_state().get('url') or '')
+        if not url.startswith('https://'):
+            raise ValueError("There's no sign-in page to open; press Connect again")
+        webbrowser.open(url)
+
+    @_api
+    def drive_login_cancel(self):
+        from .. import drive
+        drive.ACCOUNT.cancel_login()
+
+    @_api
+    def drive_disconnect(self):
+        from .. import drive
+        drive.ACCOUNT.disconnect()
 
     # ── Practice and Learned vocabulary ──────────────────────────────────────
     # A round: intake → sentences (two batches) → paragraph → results → apply.
