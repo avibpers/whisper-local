@@ -478,6 +478,79 @@ class ApiTests(DriveCase):
         self.assertEqual(google.requests, [])
 
 
+# ── Bridge, doctor and keep-alive wiring ────────────────────────────────────
+
+class WiringTests(DriveCase):
+    def _bridge(self):
+        from koli.ui.bridge import Bridge
+        return Bridge(host=mock.Mock())
+
+    def test_drive_status_includes_client_and_redirect(self):
+        auth.set_client('id-1', 'GOCSPX-abcd1234')
+        self.connected()
+        data = self._bridge().drive_status()['data']
+        self.assertEqual(data['client_id'], 'id-1')
+        self.assertEqual(data['client_hint'], 'GOCSPX-••••1234')
+        self.assertEqual(data['redirect_uri'], auth.REDIRECT_URI)
+        self.assertTrue(data['connected'])
+        self.assertEqual(data['email'], 'studio@perspective-media.me')
+
+    def test_drive_set_client_and_disconnect_through_the_bridge(self):
+        bridge = self._bridge()
+        self.assertTrue(bridge.drive_set_client('id-9', 'sec')['ok'])
+        self.assertEqual(auth.get_client(), {'client_id': 'id-9', 'client_secret': 'sec'})
+        self.connected()
+        self.assertTrue(bridge.drive_disconnect()['ok'])
+        self.assertFalse(bridge.drive_status()['data']['connected'])
+
+    def test_drive_login_through_the_bridge(self):
+        auth.set_client('id-1', 'secret-1')
+        bridge = self._bridge()
+        with mock.patch.object(auth.ACCOUNT, 'start_login', wraps=lambda port=None: auth.ACCOUNT.__class__.start_login(auth.ACCOUNT, port=free_port())):
+            st = bridge.drive_login_start()['data']
+        try:
+            self.assertTrue(st['pending'])
+            self.assertTrue(bridge.drive_login_status()['data']['pending'])
+            with mock.patch('koli.ui.bridge.webbrowser.open') as opened:
+                bridge.drive_login_open()
+            self.assertTrue(opened.call_args[0][0].startswith(auth.AUTH_URL))
+        finally:
+            bridge.drive_login_cancel()
+        self.assertFalse(bridge.drive_login_status()['data']['pending'])
+
+    def test_doctor_line_for_each_state(self):
+        import io
+        from contextlib import redirect_stdout
+        from koli import doctor
+
+        def line():
+            out = io.StringIO()
+            with redirect_stdout(out):
+                doctor._check_drive()
+            return out.getvalue()
+        self.assertIn('not set up', line())
+        auth.set_client('id-1', 's')
+        self.assertIn('Settings › Google Drive', line())
+        self.connected()
+        self.assertIn('connected as studio@perspective-media.me', line())
+        self.connected(dead=True, last_error='Refresh failed (HTTP 400)')
+        self.assertIn('connect again', line())
+        self.assertIn('HTTP 400', line())
+
+    def test_upkeep_calls_drive_keep_alive_when_connected(self):
+        from koli import llm
+        self.connected()
+        with mock.patch.object(auth.ACCOUNT, 'keep_alive') as keep, \
+                mock.patch('koli.llm.time.sleep', side_effect=StopIteration), \
+                mock.patch('koli.llm.threading.Thread') as thread, \
+                mock.patch.object(llm, '_background_started', False):
+            llm.start_background()
+            loop = thread.call_args.kwargs['target']
+            with self.assertRaises(StopIteration):
+                loop()
+        keep.assert_called_once()
+
+
 # ── Raw HTTP helper ──────────────────────────────────────────────────────────
 
 class RawHttpTests(DriveCase):

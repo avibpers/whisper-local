@@ -206,7 +206,8 @@ _background_started = False
 
 
 # At start and once a day: keep subscription logins fresh and the client
-# versions current. Only for subscriptions that are connected.
+# versions current. Only for subscriptions that are connected. The Google
+# Drive login rides along: same rule, same day.
 def start_background():
     global _background_started
     if _background_started:
@@ -215,11 +216,14 @@ def start_background():
 
     def loop():
         from . import client_version
+        from ..drive import ACCOUNT as drive_account
         while True:
             for account in SUBSCRIPTIONS.values():
                 if account.status()['connected']:
                     client_version.current(account.name)
                     account.keep_alive()
+            if drive_account.status()['connected']:
+                drive_account.keep_alive()
             time.sleep(24 * 3600)
 
     threading.Thread(target=loop, daemon=True, name='ai-upkeep').start()
