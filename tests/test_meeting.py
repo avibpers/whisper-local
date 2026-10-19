@@ -318,6 +318,75 @@ class SessionTests(unittest.TestCase):
         self.assertEqual([t['text'] for t in self.store.load(m['id'])['turns']], ['first'])
         self.assertIsNotNone(self.store.load(m['id'])['ended_at'])
 
+    # ── Screenshots (docs/design/meeting-screenshots.md) ─────────────────────
+
+    def _png(self):
+        from PIL import Image
+        return Image.new('RGB', (2, 2))
+
+    def test_add_screenshot_lands_in_the_live_meeting_and_publishes(self):
+        m = self.live()
+        self.clock.advance(100)
+        shot = self.sm.add_screenshot(m['id'], self._png(), self.clock.now().timestamp())
+        self.assertEqual(shot, {'at': 100.0, 'image': '0100.00.png', 'caption': '', 'description': None})
+        self.assertEqual(self.sm.current()['screenshots'], [shot])
+        self.assertIn(('meeting_shot', {'id': m['id'], 'shot': shot}), self.events)
+        self.assertEqual(self.sm.state_payload()['screenshots'], 'key')
+        self.assertTrue(self.store.shot_path(m['id'], shot['image']).exists())
+
+    def test_screenshot_after_end_goes_to_that_meeting_file(self):
+        m = self.live()
+        self.sm.end()
+        self.sm.add_screenshot(m['id'], self._png(), self.clock.now().timestamp() + 1)
+        self.assertEqual(len(self.store.load(m['id'])['screenshots']), 1)
+        self.assertIsNone(self.sm.add_screenshot('2000-01-01-000000', self._png(), 0.0))
+
+    def test_caption_by_image_name_survives_turn_removal(self):
+        m = self.live()
+        shot = self.sm.add_screenshot(m['id'], self._png(), self.clock.now().timestamp() + 5)
+        self.assertTrue(self.sm.set_caption(m['id'], shot['image'], 'S3 docs'))
+        self.assertEqual(self.sm.current()['screenshots'][0]['caption'], 'S3 docs')
+        self.assertEqual(self.events[-1], ('meeting_shot', {'id': m['id'], 'shot': self.sm.current()['screenshots'][0], 'caption': True}))
+        self.assertFalse(self.sm.set_caption(m['id'], 'nope.png', 'x'))
+        self.sm.end()
+        self.assertTrue(self.sm.set_caption(m['id'], shot['image'], 'later'))
+        self.assertEqual(self.store.load(m['id'])['screenshots'][0]['caption'], 'later')
+
+    def test_continue_previous_moves_screenshots_and_files(self):
+        first = self.live(meet('abc-defg-hij'))
+        self.sm.add_screenshot(first['id'], self._png(), started_at(first) + 10)
+        self.sm.on_sources([])
+        self.clock.advance(60)
+        self.sm.on_sources([meet('zzz-zzzz-zzz')])
+        self.sm.on_speech(4.0)
+        second = self.sm.current()
+        self.assertNotEqual(second['id'], first['id'])
+        self.sm.add_screenshot(second['id'], self._png(), started_at(second) + 10)
+        self.sm.continue_previous()
+        cur = self.sm.current()
+        self.assertEqual(cur['id'], first['id'])
+        offset = started_at(second) - started_at(first)
+        self.assertEqual([s['at'] for s in cur['screenshots']], [10.0, round(offset + 10, 2)])
+        self.assertEqual([s['image'] for s in cur['screenshots']], ['0010.00.png', '0010.00-2.png'])
+        self.assertTrue(all(self.store.shot_path(first['id'], s['image']).exists() for s in cur['screenshots']))
+        self.assertFalse(self.store.shots_dir(second['id']).exists())
+
+    def test_split_resumed_carries_later_screenshots(self):
+        m = self.live()
+        base = started_at(m)
+        self.sm.add_screenshot(m['id'], self._png(), base + 1)
+        self.sm.on_sources([])
+        self.clock.advance(60)
+        self.sm.on_sources([discord()])
+        self.sm.add_screenshot(m['id'], self._png(), base + 70)
+        self.sm.split_resumed()
+        fresh = self.sm.current()
+        self.assertNotEqual(fresh['id'], m['id'])
+        self.assertEqual([s['at'] for s in fresh['screenshots']], [10.0])
+        self.assertEqual([s['at'] for s in self.store.load(m['id'])['screenshots']], [1.0])
+        self.assertTrue(self.store.shot_path(fresh['id'], fresh['screenshots'][0]['image']).exists())
+        self.assertTrue(self.store.shot_path(m['id'], '0001.00.png').exists())
+
     def test_manual_start_without_source_and_end(self):
         self.sm.start()
         self.assertEqual(self.sm.state, 'live')
