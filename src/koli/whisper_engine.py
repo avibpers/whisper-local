@@ -237,9 +237,15 @@ class WhisperEngine:
     # On 2026-10-12 a 47 s English dictation scored Hebrew 0.45 and half of it
     # came out in Hebrew; real Hebrew dictations scored 0.8-1.0.
     SECOND_MODEL_MIN_CONFIDENCE = 0.6
+    # Small models guess languages too badly to hand speech to the second
+    # model: on 2026-10-19 `base` said Hebrew (0.83) for a minute of English,
+    # which the Hebrew model then translated; large-v3-turbo read it as
+    # English at 1.00.
+    SMALL_MODELS = ('tiny', 'base', 'small')
 
     def _route(self, audio: np.ndarray, language: Optional[str] = None) -> tuple:
         self._raw_language_probability = None
+        self._raw_top_language = None
         second = getattr(self, 'language_model', None)
         allowed = getattr(self, 'allowed_languages', None) or []
         forced = self.language if language is None else (None if language == 'auto' else language)
@@ -252,13 +258,27 @@ class WhisperEngine:
             detected = True
         if second is not None and language == self.language_model_lang:
             sure = getattr(self, '_raw_language_probability', None)
-            if not detected or (sure is not None and sure >= self.SECOND_MODEL_MIN_CONFIDENCE):
+            small = self._main_model_is_small()
+            if not detected or (sure is not None and sure >= self.SECOND_MODEL_MIN_CONFIDENCE and not small):
                 return second, self.language_model_key, language, None, probability
+            lead = (f"{self.model_key} guessed {language} ({sure or 0:.2f}), too small a model to trust" if small
+                    else f"Only {sure or 0:.2f} sure it's {language}")
+            # Whisper's top guess is outside your languages (Arabic for
+            # Hebrew speech, 2026-10-19): left to decide, the main model wrote
+            # Arabic. It writes the best of your languages instead.
+            top = getattr(self, '_raw_top_language', None)
+            if allowed and top and top not in allowed:
+                self.logger.info(f"{lead}, and {top} isn't one of your languages: the main model writes {language}")
+                return self.model, self.model_key, language, self.initial_prompt, probability
             # Unsure: the main model, not told a language, writes each one as spoken.
-            self.logger.info(f"Only {sure or 0:.2f} sure it's {language}: the main model writes it as spoken "
+            self.logger.info(f"{lead}: the main model writes it as spoken "
                              f"(the {language} model would translate other speech)")
             return self.model, self.model_key, None, self.initial_prompt, probability
         return self.model, self.model_key, language, self.initial_prompt, probability
+
+    def _main_model_is_small(self) -> bool:
+        name = str(getattr(self, 'model_key', '') or '').lower()
+        return name.split('.')[0].split('-')[0] in self.SMALL_MODELS
 
     # Your prompt and favored words with what practice taught Koli for this
     # language (`vocabulary_extras`, set by the state manager; every language
@@ -334,6 +354,7 @@ class WhisperEngine:
         if not getattr(getattr(self.model, 'model', None), 'is_multilingual', True):
             return 'en', None
         detected, probability, all_probs = self.model.detect_language(audio)
+        self._raw_top_language = detected
         if not allowed:
             self.logger.info(f"Detected {detected} ({probability:.2f})")
             self._raw_language_probability = probability

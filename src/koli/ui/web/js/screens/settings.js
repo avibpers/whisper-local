@@ -34,6 +34,17 @@ function ModelsTable() {
     if (!(await confirmModal({ title: `Delete ${m.label}?`, body: `Frees ${fmtBytes(m.size_bytes)}. You can download it again any time.`, confirm: 'Delete', danger: true }))) return;
     call('model_delete', m.key).then(() => { toast(`Deleted ${m.label}`); reload(); }).catch((e) => toast(e.message, { kind: 'err' }));
   };
+  // Switching the model asks first: a stray arrow key or click on these
+  // radios swapped large-v3-turbo for base unnoticed (2026-10-19). Cancelled,
+  // the reload re-renders the radios back onto the model in use.
+  const pick = async (m) => {
+    const now = data.models.find((x) => x.key === current);
+    const ok = await confirmModal({ title: `Switch to ${m.label}?`,
+      body: `Dictation uses ${now ? now.label : current} now. ${m.label} loads in the background and takes over when it is ready.`,
+      confirm: 'Switch' });
+    if (ok) saveSetting('whisper.model', m.key);
+    else reload();
+  };
   const addHf = async () => {
     const repo = await promptModal({ title: 'Add a model from Hugging Face', label: 'Repository (owner/name)', placeholder: 'ivrit-ai/whisper-large-v3-turbo-ct2', confirm: 'Add' });
     if (repo) call('model_add', 'hf', repo).then((k) => { toast(`Added ${k}`); reload(); }).catch((e) => toast(e.message, { kind: 'err' }));
@@ -53,7 +64,7 @@ function ModelsTable() {
             const p = progressFor(m.key);
             return html`<tr>
               <td><input type="radio" name="model" checked=${m.key === current} aria-label=${`Use ${m.label}`}
-                onChange=${() => saveSetting('whisper.model', m.key)} /></td>
+                onChange=${() => pick(m)} /></td>
               <td><span style=${m.in_use ? 'font-weight:600' : ''}>${m.label}</span>${m.in_use && html` <span class="chip acc sm">In use</span>`}
                 <div class="small muted mono">${m.source}</div></td>
               <td class="mono">${m.cached ? fmtBytes(m.size_bytes) : m.size_hint || ''}</td>

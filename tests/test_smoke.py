@@ -4216,6 +4216,17 @@ class SettingsServiceTests(unittest.TestCase):
         self.assertTrue(self.cm.get_path('clipboard.auto_paste'))
         self.assertIsNone(self.svc.undo())
 
+    # Each change is logged by name (the model went back to base unnoticed,
+    # 2026-10-19); lists like your words only as a count.
+    def test_each_change_is_logged_by_name_without_list_contents(self):
+        with self.assertLogs('koli.settings.service', level='INFO') as logs:
+            self.svc.set('whisper.model', 'large-v3-turbo')
+            self.svc.set('whisper.hotwords', ['Koli', 'private word'])
+        said = '\n'.join(logs.output)
+        self.assertIn("whisper.model 'base' -> 'large-v3-turbo' (ui)", said)
+        self.assertIn('whisper.hotwords', said)
+        self.assertNotIn('private word', said)
+
     def test_several_settings_undo_together(self):
         self.svc.set_many({'clipboard.auto_paste': False, 'audio_feedback.enabled': False}, label='Profile')
         self.svc.undo()
@@ -7318,11 +7329,34 @@ class LanguageModelRoutingTests(unittest.TestCase):
         self.assertNotIn('initial_prompt', engine.language_model.calls[-1][1])
 
     def test_an_unsure_hebrew_guess_stays_on_the_main_model_undecided(self):
-        for detected in (('he', 0.45, [('he', 0.45), ('en', 0.25)]), self._ICELANDIC_FIRST):
+        engine = self._engine(detected=('he', 0.45, [('he', 0.45), ('en', 0.25)]), allowed=['en', 'he'])
+        self.assertEqual(self._run(engine), 'main text')
+        self.assertIsNone(engine.model.calls[-1][1]['language'], 'not told Hebrew: it would translate')
+        self.assertEqual(engine.language_model.calls, [])
+
+    # Unsure, with Whisper's top guess outside your languages: left to decide,
+    # the main model wrote Arabic for Hebrew speech (2026-10-19). It writes
+    # the best of your languages instead, still on the main model.
+    def test_an_unsure_guess_outside_your_languages_is_written_in_one_of_yours(self):
+        arabic_first = ('ar', 0.18, [('ar', 0.18), ('he', 0.12), ('en', 0.07)])
+        for detected in (arabic_first, self._ICELANDIC_FIRST):
             engine = self._engine(detected=detected, allowed=['en', 'he'])
             self.assertEqual(self._run(engine), 'main text', detected[:2])
-            self.assertIsNone(engine.model.calls[-1][1]['language'], 'not told Hebrew: it would translate')
+            self.assertEqual(engine.model.calls[-1][1]['language'], 'he')
             self.assertEqual(engine.language_model.calls, [])
+
+    # A small main model guesses languages too badly to hand speech to the
+    # second model: `base` said Hebrew 0.83 for a minute of English.
+    def test_a_small_models_guess_never_reaches_the_second_model(self):
+        sure_hebrew = ('he', 0.83, [('he', 0.83), ('en', 0.08)])
+        for key in ('base', 'small.en', 'tiny'):
+            engine = self._engine(detected=sure_hebrew, allowed=['en', 'he'])
+            engine.model_key = key
+            self.assertEqual(self._run(engine), 'main text', key)
+            self.assertIsNone(engine.model.calls[-1][1]['language'], 'written as spoken')
+            self.assertEqual(engine.language_model.calls, [])
+        engine = self._engine(detected=sure_hebrew, allowed=['en', 'he'])
+        self.assertEqual(self._run(engine), 'hebrew text', 'large-v3-turbo is trusted')
 
     # Meeting mode asks for no prompt: the app's style hint stays out.
     def test_use_prompt_false_leaves_the_prompt_out(self):

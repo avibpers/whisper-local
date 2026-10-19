@@ -36,6 +36,15 @@ def _unsupported_keys(value) -> list:
     return list(hotkeys.unsupported_keys(value))
 
 
+# A setting's value for the log: lists and maps (your words, snippets,
+# corrections) as a count, so their contents stay out of it.
+def _brief(value) -> str:
+    if isinstance(value, (list, tuple, dict)):
+        return f"<{len(value)} items>"
+    text = repr(value)
+    return text if len(text) <= 60 else text[:57] + '...'
+
+
 def _norm_hotkey(value) -> frozenset:
     if not value:
         return frozenset()
@@ -118,6 +127,9 @@ class SettingsService:
                     raise SettingsError(f"That shortcut couldn't be registered, so your previous "
                                         f"one is kept. ({e})")
                 warnings.append(f"Saved, but could not apply it right now: {e}")
+        # Every change by name, so a surprise is traceable: on 2026-10-19 the
+        # model went back to base and the log only said "overrides saved".
+        logger.info(f"Setting changed: {path} {_brief(old)} -> {_brief(value)} ({source})")
         out = {'ok': True, 'path': path, 'value': value, 'old': old, 'warnings': warnings,
                'label': setting.label, **result}
         publish('settings', {'path': path, 'old': old, 'new': value, 'source': source,
@@ -250,6 +262,7 @@ class SettingsService:
         if setting is None:
             return
         value = self.cm.get_path(setting.path)
+        logger.info(f"Setting changed: {setting.path} -> {_brief(value)} (user_settings.yaml edited)")
         if self.appliers is not None:
             try:
                 self.appliers.apply(setting.path, value, None)
