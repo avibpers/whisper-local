@@ -199,10 +199,15 @@ timer), and once more on end. `list()` reads only the header of each file.
   "turns": [
     {"start": 3.2, "end": 7.9, "stream": "loopback", "speaker": "s1", "text": "...", "lang": "en"}
   ],
+  "screenshots": [
+    {"at": 279.4, "image": "0279.40.png", "caption": "S3 docs", "description": null}
+  ],
   "gaps": [{"start": 600.0, "end": 660.0, "reason": "excluded"}]
 }
 ```
-Times in `turns` and `gaps` are seconds from `started_at`.
+Times in `turns`, `screenshots` and `gaps` are seconds from `started_at`.
+Screenshots are PNGs in `<id>.shots/` beside the file; a view merges them
+with the turns by time (`rows_by_time`). Design: `meeting-screenshots.md`.
 
 **Platform modules** (mirrored; macOS stubs return empty lists or do nothing):
 - `platform/windows/audio_sessions.py`: `active() -> [{pid, exe, state}]`
@@ -299,6 +304,8 @@ Simple mode gets one question, "Transcribe my calls automatically?", mapping
 to `meeting.detect`.
 
 ## Out of scope (later steps)
+
+Screenshots taken during a meeting are in: see `meeting-screenshots.md`.
 
 LLM questions during a call, summaries and notes; reading speaker names
 from the meeting app; per-app loopback

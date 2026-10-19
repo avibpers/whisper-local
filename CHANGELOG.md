@@ -5,6 +5,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 ## [Unreleased]
 
 ### Added
+- **Screenshots in meetings.** A snip you take during a meeting joins the
+  transcript at that moment: Settings → Meetings → **Screenshots in
+  meetings** chooses *Only with my key* (a new **Screenshot into the
+  meeting** hotkey, plus a camera button in the bubble and the panel open
+  the Windows snip overlay), *Every Win+Shift+S snip*, or *Never*. The PNGs
+  live beside the meeting; the panel and the Meetings screen show them
+  among the turns with a caption you can write, the md export carries them
+  in a folder next to the file. Windows only (design:
+  `docs/design/meeting-screenshots.md`).
 - **Wake word: add recordings.** Commands → Wake word has **Add
   recordings** for your own word: say it again, in the noise around you or
   from further away, as many times as you like (up to 10 at a time). Each
