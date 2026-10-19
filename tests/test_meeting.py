@@ -76,6 +76,66 @@ class StoreTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             export_text(m, 'pdf')
 
+    # ── Screenshots (docs/design/meeting-screenshots.md) ─────────────────────
+
+    def _manual(self, mid='2026-10-11-143012'):
+        from koli.meeting.store import new_meeting
+        return new_meeting(mid, 'Sync', {'app': '', 'kind': 'manual', 'title': '', 'code': ''}, at(30, 12))
+
+    def test_new_meeting_has_empty_screenshots(self):
+        self.assertEqual(self._manual()['screenshots'], [])
+
+    def test_save_shot_names_by_offset_and_delete_removes_folder(self):
+        from PIL import Image
+        from koli.meeting.store import shot_name
+        m = self._manual()
+        self.store.save(m)
+        self.assertEqual(shot_name(279.4), '0279.40.png')
+        name = self.store.save_shot(m['id'], 279.4, Image.new('P', (4, 4)))
+        self.assertEqual(name, '0279.40.png')
+        self.assertEqual(self.store.save_shot(m['id'], 279.4, Image.new('RGB', (4, 4))), '0279.40-2.png')
+        self.assertTrue(self.store.shot_path(m['id'], name).exists())
+        with self.assertRaises(FileNotFoundError):
+            self.store.shot_path(m['id'], '../x.png')
+        self.store.delete(m['id'])
+        self.assertFalse(self.store.shots_dir(m['id']).exists())
+
+    def test_rows_by_time_places_a_screenshot_before_later_speech(self):
+        from koli.meeting.store import rows_by_time
+        m = self._manual()
+        m['turns'] = [{'start': 120.0, 'end': 125.0, 'stream': 'loopback', 'speaker': 's1', 'text': 'late', 'lang': 'en'},
+                      {'start': 90.0, 'end': 95.0, 'stream': 'mic', 'speaker': 'you', 'text': 'early', 'lang': 'en'}]
+        m['screenshots'] = [{'at': 100.0, 'image': '0100.00.png', 'caption': 'docs', 'description': None}]
+        kinds = [(r['kind'], r.get('text') or r.get('image')) for r in rows_by_time(m)]
+        self.assertEqual(kinds, [('turn', 'early'), ('shot', '0100.00.png'), ('turn', 'late')])
+
+    def test_export_prints_screenshot_lines(self):
+        from koli.meeting.store import duration_s, export_text, header
+        m = self._manual()
+        m['turns'] = [{'start': 3.0, 'end': 7.0, 'stream': 'mic', 'speaker': 'you', 'text': 'hi', 'lang': 'en'}]
+        m['screenshots'] = [{'at': 279.4, 'image': '0279.40.png', 'caption': 'S3 docs', 'description': None},
+                            {'at': 300.0, 'image': '0300.00.png', 'caption': '', 'description': None}]
+        txt = export_text(m, 'txt')
+        self.assertIn('[04:39] Screenshot: S3 docs', txt)
+        self.assertIn('[05:00] Screenshot: 0300.00.png', txt)
+        md = export_text(m, 'md', shots_folder='sync-shots')
+        self.assertIn('![S3 docs](sync-shots/0279.40.png)', md)
+        self.assertEqual(header(m)['screenshots'], 2)
+        self.assertEqual(duration_s(m), 300.0)
+
+    def test_move_shots_renames_on_clash(self):
+        from PIL import Image
+        a, b = self._manual(), self._manual('2026-10-11-150000')
+        self.store.save(a)
+        self.store.save(b)
+        self.store.save_shot(a['id'], 10.0, Image.new('RGB', (2, 2)))
+        self.store.save_shot(b['id'], 10.0, Image.new('RGB', (2, 2)))
+        entries = [{'at': 10.0, 'image': '0010.00.png', 'caption': '', 'description': None}]
+        self.store.move_shots(b['id'], a['id'], entries)
+        self.assertEqual(entries[0]['image'], '0010.00-2.png')
+        self.assertTrue(self.store.shot_path(a['id'], '0010.00-2.png').exists())
+        self.assertFalse(self.store.shots_dir(b['id']).exists())
+
     def test_throttled_saver_writes_once_until_flushed(self):
         from koli.meeting.store import ThrottledSaver, new_meeting
         m = new_meeting('2026-10-11-143012', 'x', {'app': 'zoom.exe', 'kind': 'native', 'title': '', 'code': ''}, at(0))
