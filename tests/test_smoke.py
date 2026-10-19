@@ -5590,6 +5590,25 @@ class AutoDictationVadTests(unittest.TestCase):
             events += [det.process_chunk(soft) for _ in range(40)]
         self.assertNotIn(VadEvent.SILENCE_TIMEOUT, events)
 
+    # The loudness the line is met by: the 0.3 s level now, held up by its loud
+    # end. Never under the plain 0.3 s level (the first word is as quick as
+    # before), it carries your level through a dip and lets go once the hold
+    # has passed; a shorter hold (the wake word's) lets go sooner.
+    def test_recent_loudness_holds_your_level_through_dips(self):
+        from koli.voice_activity_detection import RecentLoudness
+        loud, soft = -10.0, -60.0
+        held, short = RecentLoudness(0.016), RecentLoudness(0.016, 0.3)
+        first = held.add(loud)
+        self.assertAlmostEqual(first, loud - 10 * __import__('math').log10(19), places=1, msg='0.3 s mean, as before')
+        for _ in range(30):
+            held.add(loud)
+            short.add(loud)
+        dip = [(held.add(soft), short.add(soft)) for _ in range(40)]   # 0.64 s of a soft stretch
+        self.assertGreater(dip[-1][0], -15.0, 'your level holds through the dip')
+        self.assertLess(dip[-1][1], -40.0, 'the short hold already let go')
+        after = [held.add(soft) for _ in range(40)]
+        self.assertLess(after[-1], -40.0, 'and the long one lets go after a second')
+
     # A hotkey recording is always you: speech under the line still keeps it
     # going (the line only decides SPEECH_START), so a quiet day, a far mic or
     # a small margin never stops you mid-sentence.
@@ -5651,9 +5670,9 @@ class AutoDictationVadTests(unittest.TestCase):
         self.vad.probability = 0.9
         far_off = [det.process_chunk(quiet) for _ in range(10)]
         self.assertNotIn(VadEvent.SPEECH_START, far_off, 'speech, but much quieter than you')
-        # Loudness is the loud end of the last second, so your first words
-        # count about 0.1 s after they start.
-        you = [det.process_chunk(loud) for _ in range(12)]
+        # Loudness is judged on the last 0.3 s, so your first words count a
+        # few frames (tens of milliseconds) after they start.
+        you = [det.process_chunk(loud) for _ in range(8)]
         self.assertEqual(you.count(VadEvent.SPEECH_START), 1)
         det.reset()
         self.assertEqual(det.voice_start_db, -20.0)

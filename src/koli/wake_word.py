@@ -451,12 +451,18 @@ class WakeListener:
     RECHECK_MAX_S = 3.0
     # Sound quieter than your voice by more than GATE_MARGIN_DB is silence:
     # music from the speakers reads as speech to TEN VAD and would hold every
-    # burst open. Judged on the last LEVEL_WINDOW_S. The margin is the wake
+    # burst open. Judged like the dictation detector (RecentLoudness: the 0.3 s
+    # level, held up by its loud end over LOUD_END_S). The margin is the wake
     # word's own, and wide: your level is the loud end of your recordings
     # (-13.5 dB on a real EMEET), the 0.3 s average of normal speech sits
     # 5-13 dB under it, and speaker music 25+ dB. "Only my voice"'s margin
-    # (set to 4 dB there) took every try for background.
-    LEVEL_WINDOW_S = 0.3
+    # (set to 4 dB there) took every try for background. On the plain 0.3 s
+    # level a third to two thirds of normal speech still fell under the line
+    # (BY-V20, 2026-10-19: 580 "taken as background" lines); a 0.3 s hold lets
+    # half to four fifths of it through. The hold is short: over music a burst
+    # ends only once it runs out, and a longer one (0.4 s and up) made "next
+    # song" wait over a second after you stopped.
+    LOUD_END_S = 0.3
     FLOOR_CACHE_S = 5.0
     GATE_MARGIN_DB = 15.0
     GATED_LOG_S = 30.0        # at most one "taken as background" line this often
@@ -511,7 +517,8 @@ class WakeListener:
         self._last_pieces = None     # Whisper's pieces with its numbers, from the last wake check
         self._wake_heard = ''        # the wake word as the last wake check wrote it ("dios")
         self._wake_in_command = False   # the command being run starts with the wake word
-        self._recent_power = collections.deque(maxlen=max(1, int(round(self.LEVEL_WINDOW_S / FRAME_S))))
+        from .voice_activity_detection import RecentLoudness
+        self._loudness = RecentLoudness(FRAME_S, self.LOUD_END_S)
         self._window_db = -200.0
         self._gated_frames, self._gated_peak = 0, -200.0
         self._gated_summary = (0, 0.0, -200.0, -1e9)   # (stretches, seconds, peak dB, last logged)
@@ -751,14 +758,11 @@ class WakeListener:
         if self.state in (WAITING, FOLLOW_UP) and self.cutter.burst is None and now >= self._deadline:
             self._sleep()
 
-    # Whether the last LEVEL_WINDOW_S is loud enough to be you: the mean of
-    # its energy (time before counts as silent) against your level less the
-    # margin. True when your level on this microphone isn't known.
+    # Whether the sound around now is loud enough to be you (RecentLoudness)
+    # against your level less the margin. True when your level on this
+    # microphone isn't known.
     def _loud_enough(self, frame: np.ndarray) -> bool:
-        rms = 10 ** (self._frame_level(frame) / 20)
-        self._recent_power.append(rms * rms)
-        power = sum(self._recent_power) / self._recent_power.maxlen
-        self._window_db = 10 * np.log10(max(power, 1e-20))
+        self._window_db = self._loudness.add(self._frame_level(frame))
         floor = self.voice_floor_db()
         return floor is None or self._window_db >= floor
 
