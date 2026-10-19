@@ -4,7 +4,8 @@
 # speaker labels stable when a meeting resumes. Written throttled while a
 # meeting runs, so a crash loses seconds, not the meeting. With
 # meeting.keep_audio on, the call's audio is kept beside it in "<id>.audio/";
-# screenshots are PNGs in "<id>.shots/".
+# screenshots are PNGs in "<id>.shots/". The brief (the summary written from
+# the meeting: decisions, action items, topics) is "<id>.brief.json".
 
 import datetime
 import json
@@ -26,6 +27,7 @@ logger = logging.getLogger(__name__)
 FOLDER = 'meetings'
 SAVE_INTERVAL = 5.0
 EXPORT_FORMATS = ('txt', 'md')
+BRIEF_SUFFIX = '.brief.json'
 
 
 # ── Shapes ───────────────────────────────────────────────────────────────────
@@ -172,8 +174,12 @@ class MeetingStore:
         with self._lock:
             files = sorted(self.folder.glob('*.json'), reverse=True) if self.folder.exists() else []
             for path in files:
+                if path.name.endswith(BRIEF_SUFFIX):
+                    continue
                 try:
-                    out.append(header(json.loads(path.read_text(encoding='utf-8'))))
+                    head = header(json.loads(path.read_text(encoding='utf-8')))
+                    head['brief'] = (self.folder / f"{head['id']}{BRIEF_SUFFIX}").exists()
+                    out.append(head)
                 except Exception as e:
                     logger.warning(f"Skipping unreadable meeting {path.name}: {e}")
         return out
@@ -183,6 +189,7 @@ class MeetingStore:
         with self._lock:
             shutil.rmtree(self.audio_dir(meeting_id), ignore_errors=True)
             shutil.rmtree(self.shots_dir(meeting_id), ignore_errors=True)
+            self.brief_path(meeting_id).unlink(missing_ok=True)
             try:
                 self.path(meeting_id).unlink()
                 return True
@@ -207,6 +214,32 @@ class MeetingStore:
             w.setsampwidth(2)
             w.setframerate(16000)
             w.writeframes((samples * 32767).astype(np.int16).tobytes())
+        return path
+
+    # ── The brief: "<id>.brief.json" ─────────────────────────────────────────
+    # Written by the summary step (the AI, later), read by the Meetings
+    # screen's Summary tab and the exports. A missing or broken file reads as
+    # "no summary yet", never as an error.
+
+    def brief_path(self, meeting_id: str) -> Path:
+        return self.folder / f"{meeting_id}{BRIEF_SUFFIX}"
+
+    def load_brief(self, meeting_id: str) -> Optional[dict]:
+        try:
+            return json.loads(self.brief_path(meeting_id).read_text(encoding='utf-8'))
+        except FileNotFoundError:
+            return None
+        except Exception as e:
+            logger.warning(f"Unreadable brief for {meeting_id}: {e}")
+            return None
+
+    def save_brief(self, meeting_id: str, brief: dict) -> Path:
+        path = self.brief_path(meeting_id)
+        with self._lock:
+            self.folder.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix('.tmp')
+            tmp.write_text(json.dumps(brief, ensure_ascii=False, indent=1), encoding='utf-8')
+            os.replace(tmp, path)
         return path
 
     # ── Screenshots: PNGs in "<id>.shots/" ───────────────────────────────────

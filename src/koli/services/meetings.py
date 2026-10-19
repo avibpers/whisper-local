@@ -436,6 +436,10 @@ class MeetingService:
                 if self._watcher is threading.current_thread():
                     self._watcher = None
 
+    # The summary written from the meeting ("<id>.brief.json"), or None.
+    def brief(self, meeting_id: str):
+        return self.store.load_brief(meeting_id)
+
     def set_caption(self, meeting_id: str, image: str, caption: str) -> bool:
         return self.session.set_caption(meeting_id, image, caption)
 

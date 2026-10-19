@@ -136,6 +136,25 @@ class StoreTests(unittest.TestCase):
         self.assertTrue(self.store.shot_path(a['id'], '0010.00-2.png').exists())
         self.assertFalse(self.store.shots_dir(b['id']).exists())
 
+    # ── The brief (the summary the AI writes; docs/design/meeting-brief.md) ──
+
+    def test_brief_beside_the_meeting_is_not_a_meeting(self):
+        m = self._manual()
+        self.store.save(m)
+        self.assertIsNone(self.store.load_brief(m['id']))
+        self.store.save_brief(m['id'], {'version': 1, 'tldr': ['Short.'], 'topics': []})
+        self.assertEqual(self.store.load_brief(m['id'])['tldr'], ['Short.'])
+        self.assertEqual([h['id'] for h in self.store.list()], [m['id']])
+        self.assertTrue(self.store.list()[0]['brief'])
+        self.store.delete(m['id'])
+        self.assertFalse(self.store.brief_path(m['id']).exists())
+
+    def test_unreadable_brief_reads_as_none(self):
+        m = self._manual()
+        self.store.save(m)
+        self.store.brief_path(m['id']).write_text('{broken', encoding='utf-8')
+        self.assertIsNone(self.store.load_brief(m['id']))
+
     def test_throttled_saver_writes_once_until_flushed(self):
         from koli.meeting.store import ThrottledSaver, new_meeting
         m = new_meeting('2026-10-11-143012', 'x', {'app': 'zoom.exe', 'kind': 'native', 'title': '', 'code': ''}, at(0))

@@ -8180,3 +8180,62 @@ class BarMeetingHandlerTests(unittest.TestCase):
         self.assertIn('auto_paused', meeting)
         self.assertNotIn('auto_paused', shot)
         self.assertNotIn('prev', shot)
+
+
+# The meeting brief reaches the Summary tab through the bridge, and the PDF
+# export writes where the user picks through the host's print-to-PDF.
+class MeetingBriefBridgeTests(unittest.TestCase):
+    def make(self, pdf_ok=True, picked='C:/tmp/brief.pdf'):
+        from koli.ui.bridge import Bridge
+        self.printed = []
+
+        class Svc:
+            def brief(self, mid):
+                return {'version': 1, 'tldr': ['x']} if mid == 'm1' else None
+        printed = self.printed
+
+        class Host:
+            ctx = type('C', (), {'meetings': Svc()})()
+            def pick(self, kind, title, types=None, filename=''):
+                printed.append(('pick', kind, filename, types))
+                return picked
+            def print_pdf(self, path):
+                printed.append(('print', path))
+                return pdf_ok
+        return Bridge(Host())
+
+    def test_brief_and_pdf(self):
+        b = self.make()
+        self.assertEqual(b.meeting_brief('m1'), {'ok': True, 'data': {'version': 1, 'tldr': ['x']}})
+        self.assertEqual(b.meeting_brief('nope'), {'ok': True, 'data': None})
+        r = b.meeting_export_pdf('m1', 'JumboMail dev sync')
+        self.assertEqual(r, {'ok': True, 'data': 'C:/tmp/brief.pdf'})
+        self.assertEqual(self.printed[0][:3], ('pick', 'save', 'JumboMail dev sync.pdf'))
+        self.assertEqual(self.printed[1], ('print', 'C:/tmp/brief.pdf'))
+
+    def test_pdf_cancelled_or_failed(self):
+        self.assertEqual(self.make(picked=None).meeting_export_pdf('m1', 'x'), {'ok': True, 'data': None})
+        self.assertFalse(self.make(pdf_ok=False).meeting_export_pdf('m1', 'x')['ok'])
+
+    def test_pdf_name_has_no_path_characters(self):
+        b = self.make()
+        b.meeting_export_pdf('m1', 'a/b: c?')
+        self.assertEqual(self.printed[0][2], 'a-b- c-.pdf')
+
+
+# The Summary tab: its page module exists, the Meetings screen uses it, and
+# the PDF prints only the summary copy.
+class MeetingBriefPageTests(unittest.TestCase):
+    WEB = ROOT / "src" / "koli" / "ui" / "web"
+
+    def test_summary_tab_is_wired(self):
+        brief = (self.WEB / 'js' / 'screens' / 'brief.js').read_text(encoding='utf-8')
+        self.assertIn('export function Brief', brief)
+        self.assertIn("call('meeting_export_pdf'", brief)
+        screen = (self.WEB / 'js' / 'screens' / 'meetings.js').read_text(encoding='utf-8')
+        self.assertIn("call('meeting_brief'", screen)
+        self.assertIn('printBrief(', screen)
+        css = (self.WEB / 'css' / 'components.css').read_text(encoding='utf-8')
+        self.assertIn('body.print-brief > *:not(#print-root)', css)
+        mock = (self.WEB / 'js' / 'mock-api.js').read_text(encoding='utf-8')
+        self.assertIn('meeting_brief:', mock)

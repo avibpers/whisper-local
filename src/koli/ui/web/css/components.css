@@ -191,6 +191,92 @@ textarea.inp { height: auto; padding: 8px 10px; resize: vertical; line-height: 1
 .tbl tr.off td { opacity: .55; }
 .tbl .end { text-align: end; white-space: nowrap; }
 
+/* ── Meeting summary (screens/brief.js) and its PDF ──────────────────── */
+/* The shared brief's layout on the app's theme: outcomes first, framed
+   charts, topic cards that open, quotes in tinted boxes. */
+.brief { display: flex; flex-direction: column; gap: 28px; max-width: 900px; line-height: 1.5; }
+.brief h2 { margin: 0; font-size: 22px; font-weight: 700; text-wrap: balance; }
+.brief h3 { margin: 0 0 10px; font-size: 16px; font-weight: 600; display: flex; align-items: baseline; gap: 10px; }
+.brief h4 { margin: 0; font-size: 13.5px; font-weight: 600; }
+.bf-head { display: flex; flex-direction: column; gap: 8px; }
+.bf-eyebrow { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--mute); font-weight: 600; }
+.bf-meta { display: flex; flex-wrap: wrap; gap: 4px 18px; color: var(--ink2); font-size: 13px; }
+.bf-meta b { color: var(--ink); font-weight: 500; }
+.bf-count { font-size: 12px; color: var(--mute); font-weight: 400; }
+.bf-tldr { font-size: 15.5px; border-inline-start: 3px solid var(--acc); padding-inline-start: 16px; max-width: 70ch; }
+.bf-tldr p { margin: 0; } .bf-tldr p + p { margin-top: 8px; }
+.bf-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
+.bf-list li { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; align-items: baseline; }
+.bf-id { color: var(--mute); font-family: var(--mono); font-size: 11.5px; white-space: nowrap; }
+.bf-at { border: 0; background: none; padding: 0; margin-inline-start: 2px; color: var(--acc); font-family: var(--mono); font-size: 11.5px;
+  cursor: pointer; border-bottom: 1px dotted var(--acc); white-space: nowrap; }
+.bf-at:hover, .bf-at:focus-visible { border-bottom-style: solid; outline: none; }
+.bf-who { display: inline-flex; align-items: center; gap: 6px; font-weight: 500; white-space: nowrap; }
+.bf-who i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; background: var(--line2); }
+.bf-status { display: inline-flex; align-items: center; gap: 5px; padding: 1px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 500;
+  white-space: nowrap; background: var(--sunk); color: var(--mute); }
+.bf-status::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.bf-status.ok { background: var(--ok-soft); color: var(--ok); } .bf-status.warn { background: var(--warn-soft); color: var(--warn); }
+.bf-status.acc { background: var(--acc-soft); color: var(--acc); }
+.bf-tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); }
+.bf-table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+.bf-table th { text-align: start; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--mute); font-weight: 600;
+  padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.bf-table td { padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.bf-table tr:last-child td { border-bottom: 0; }
+.bf-table td.bf-id { width: 1%; }
+.bf-note { display: block; color: var(--ink2); font-size: 12.5px; margin-top: 2px; }
+.bf-foot { margin: 8px 0 0; color: var(--mute); font-size: 12.5px; max-width: 75ch; }
+.bf-two { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 24px; }
+.bf-charts { display: grid; gap: 16px; margin-bottom: 14px; }
+.bf-fig.bf-share .bf-chart { max-width: 460px; }
+.bf-fig { position: relative; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); padding: 14px 16px; display: grid; gap: 6px; min-width: 0; }
+.bf-sub { color: var(--mute); font-size: 12px; }
+.bf-chart { width: 100%; height: auto; display: block; }
+.bf-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--ink2); }
+.bf-tip { position: absolute; pointer-events: none; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: var(--r-sm);
+  padding: 5px 9px; font-size: 12px; box-shadow: var(--shadow); white-space: nowrap; z-index: 2; }
+.bf-strip { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; margin-top: 10px; }
+.bf-card { display: grid; gap: 6px; }
+.bf-cap { font-size: 12px; color: var(--ink2); line-height: 1.35; }
+.bf-cap .mono { color: var(--mute); margin-inline-end: 4px; }
+.bf-topics { display: grid; gap: 10px; }
+.bf-topic { border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); }
+.bf-topic > summary { cursor: pointer; list-style: none; padding: 12px 16px; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 14px; align-items: baseline; }
+.bf-topic > summary::-webkit-details-marker { display: none; }
+.bf-topic > summary:focus-visible { outline: 2px solid var(--acc); outline-offset: -2px; border-radius: var(--r); }
+.bf-range { font-family: var(--mono); font-size: 11.5px; color: var(--mute); white-space: nowrap; }
+.bf-ttl { font-weight: 600; }
+.bf-ttl::after { content: "+"; float: inline-end; color: var(--mute); font-weight: 400; margin-inline-start: 10px; }
+.bf-topic[open] .bf-ttl::after { content: "2"; }
+.bf-lead { display: block; color: var(--ink2); font-size: 13px; font-weight: 400; }
+.bf-body { padding: 12px 16px 16px; display: grid; gap: 12px; border-top: 1px solid var(--line); }
+.bf-body ul { margin: 0; padding-inline-start: 18px; display: grid; gap: 4px; }
+.bf-quote { margin: 0; padding: 9px 12px; background: var(--acc-soft); border-radius: var(--r-sm); font-size: 14px; }
+.bf-quote p { margin: 0; unicode-bidi: plaintext; }
+.bf-quote cite { display: block; font-style: normal; font-size: 11.5px; color: var(--mute); margin-top: 4px; }
+.bf-shotfig { margin: 0; display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 12px; align-items: start; padding: 10px;
+  border: 1px dashed var(--line2); border-radius: var(--r); }
+.bf-shotfig figcaption { display: grid; gap: 4px; font-size: 13px; }
+.bf-json { margin: 0; max-height: 360px; overflow: auto; background: var(--sunk); border-radius: var(--r-sm); padding: 12px; font-family: var(--mono);
+  font-size: 11.5px; line-height: 1.45; color: var(--ink2); white-space: pre; }
+.flash-row { background: var(--acc-soft); border-radius: var(--r-sm); transition: background .6s; }
+@media (max-width: 640px) { .bf-shotfig { grid-template-columns: 1fr; } }
+#print-root { display: none; }
+/* The PDF: only the summary copy, on light paper whatever the theme. */
+@media print {
+  body.print-brief > *:not(#print-root) { display: none !important; }
+  body.print-brief #print-root { display: block; color-scheme: light;
+    --bg: #FFFFFF; --panel: #FFFFFF; --sunk: #F4F7F8; --line: #D7DEE1; --line2: #C7CFD3; --ink: #1E252B; --ink2: #3F4648; --mute: #5C6466;
+    --acc: #0A6E82; --acc-soft: #E3F6FA; --ok: #0F7A33; --ok-soft: #E4F6EA; --warn: #8A5A00; --warn-soft: #FFF4DB;
+    background: #FFFFFF; color: var(--ink); }
+  body.print-brief { background: #FFFFFF; }
+  #print-root .brief { max-width: none; }
+  #print-root .bf-topic, #print-root .bf-shotfig, #print-root .bf-fig, #print-root tr, #print-root .bf-card { break-inside: avoid; }
+  #print-root .bf-at { border: 0; color: var(--mute); }
+  #print-root .bf-ttl::after { content: none; }
+}
+
 /* ── Toasts, modals, popovers ────────────────────────────────────────── */
 .toasts { position: fixed; inset-inline-end: 18px; bottom: 18px; display: flex; flex-direction: column; gap: 8px; z-index: 60; max-width: 420px; }
 .toast { display: flex; align-items: center; gap: 10px; padding: 10px 10px 10px 16px; border-radius: 14px; background: var(--panel); box-shadow: var(--shadow-pop); font-size: 13.5px; animation: rise .16s ease-out; }

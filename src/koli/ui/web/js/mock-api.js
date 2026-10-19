@@ -568,6 +568,21 @@ export function createMock(emit) {
       }, 800);
       return ok({ ok: true });
     },
+    // A summary for the saved meeting, in the shape the summary step writes.
+    meeting_brief: (id) => ok(id === '2026-10-10-150000' ? {
+      version: 1, generator: 'mock',
+      tldr: ['The bridge failed again on Friday; Ilona fixed it but expects it to break. The team agreed to move the release to next week.'],
+      decisions: [{ id: 'D1', text: 'Move the release to next week.', at: 18 }],
+      action_items: [{ id: 'A1', task: 'Add monitoring to the bridge so a failure pages someone.', owner: 'Ilona', status: 'do_now', due: null, at: 9 },
+        { id: 'A2', task: 'Write the post-mortem for Friday.', owner: null, status: 'plan_only', due: null, at: 18 }],
+      open_questions: [{ id: 'Q1', text: 'Who owns the bridge after the release?', at: 27 }],
+      parked: [{ id: 'P1', text: 'Replacing the bridge altogether.' }],
+      topics: [{ id: 'T1', title: 'The bridge outage', start: 0, end: 20, lead: 'Fixed for now, likely to break again.',
+        points: ['Ilona fixed it on Friday.', 'Nobody knows why it fails.'], quotes: [{ text: 'We fixed it, but if it breaks again, who knows.', who: 'Ilona', at: 0 }] },
+        { id: 'T2', title: 'Next steps', start: 20, end: 40, lead: 'Release moves; monitoring first.', points: ['Release next week.'], quotes: [] }],
+      roles: { s2: 'Fixed the bridge', you: 'Asked about the state of the bridge' },
+    } : null),
+    meeting_export_pdf: () => ok('C:\\Users\\you\\Desktop\\Discord.pdf'),
     meeting_caption: (id, image, caption) => {
       const list = id === 'live-mock' ? liveShots : (saved[id] ? saved[id].screenshots : []);
       const shot = list.find((s) => s.image === image);

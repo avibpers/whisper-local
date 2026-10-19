@@ -683,6 +683,26 @@ class Bridge:
             f.write(text)
         return path
 
+    # ── Meeting brief: the summary the AI writes, and its PDF ────────────────
+
+    # The meeting's brief, or None when there is no summary yet.
+    @_api
+    def meeting_brief(self, meeting_id):
+        return self._meetings.brief(str(meeting_id))
+
+    # The Summary tab as a PDF where the user picks; the page opens its
+    # sections and applies its print styles before calling. None = cancelled.
+    @_api
+    def meeting_export_pdf(self, meeting_id, title=''):
+        import re
+        name = re.sub(r'[\\/:*?"<>|]', '-', str(title or meeting_id)).strip() or str(meeting_id)
+        path = self._host.pick('save', 'Export the summary as PDF', types=('PDF (*.pdf)',), filename=f'{name}.pdf')
+        if not path:
+            return None
+        if not self._host.print_pdf(path):
+            raise RuntimeError("Couldn't write the PDF")
+        return path
+
     # ── Meeting screenshots (docs/design/meeting-screenshots.md) ─────────────
 
     # The camera button: snip into the running meeting. {'ok', 'reason'}.
