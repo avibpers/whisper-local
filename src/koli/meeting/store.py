@@ -72,6 +72,34 @@ def duration_s(meeting: dict) -> float:
 
 
 # What the list shows: never the turns or the voiceprints.
+# All the words of a summary, for search: titles, lists, agenda, topics.
+def _brief_text(brief: dict) -> str:
+    parts = []
+
+    def walk(value):
+        if isinstance(value, str):
+            parts.append(value)
+        elif isinstance(value, list):
+            for v in value:
+                walk(v)
+        elif isinstance(value, dict):
+            for k, v in value.items():
+                if k not in ('id', 'at', 'start', 'end', 'version', 'generator', 'template', 'written', 'language', 'status'):
+                    walk(v)
+    walk(brief)
+    return ' '.join(parts)
+
+
+# About 70 characters around the first place the term appears.
+def _snippet(text: str, term: str, width: int = 70) -> str:
+    i = text.lower().find(term)
+    if i < 0:
+        return text[:width]
+    start = max(0, i - width // 3)
+    piece = text[start:start + width].strip()
+    return ('…' if start > 0 else '') + piece + ('…' if start + width < len(text) else '')
+
+
 def header(meeting: dict) -> dict:
     return {
         'id': meeting['id'], 'title': meeting['title'], 'source': meeting['source'],
@@ -182,6 +210,46 @@ class MeetingStore:
                     out.append(head)
                 except Exception as e:
                     logger.warning(f"Skipping unreadable meeting {path.name}: {e}")
+        return out
+
+    # Meetings that hold every word of the query, in their title, speakers,
+    # summary, screenshot captions or transcript; newest first. Each result
+    # says where it matched, with a short snippet and, for the transcript, the
+    # second of the first matching turn so the page can open it there.
+    def search(self, query: str, limit: int = 50) -> list:
+        terms = [w for w in str(query or '').lower().split() if w]
+        if not terms:
+            return []
+        out = []
+        for head in self.list():
+            try:
+                m = self.load(head['id'])
+            except Exception:
+                continue
+            brief = self.load_brief(head['id']) or {}
+            title = str(m.get('title') or '')
+            speakers = ' '.join(str(s.get('name') or '') for s in m.get('speakers', []))
+            summary = _brief_text(brief)
+            captions = ' '.join(str(s.get('caption') or '') for s in m.get('screenshots', []))
+            turns = [(t.get('start', 0), str(t.get('text') or '')) for t in m.get('turns', [])]
+            everything = ' '.join([title, speakers, summary, captions] + [text for _, text in turns]).lower()
+            if not all(term in everything for term in terms):
+                continue
+            hits = sum(everything.count(term) for term in terms)
+            hit = {'id': head['id'], 'title': title, 'started_at': head.get('started_at'), 'hits': hits,
+                   'where': 'title', 'snippet': title, 'at': None}
+            if not all(term in (title + ' ' + speakers).lower() for term in terms):
+                first = terms[0]
+                turn = next(((at, text) for at, text in turns if first in text.lower()), None)
+                if turn:
+                    hit.update(where='transcript', snippet=_snippet(turn[1], first), at=turn[0])
+                elif first in summary.lower():
+                    hit.update(where='summary', snippet=_snippet(summary, first))
+                elif first in captions.lower():
+                    hit.update(where='screenshot', snippet=_snippet(captions, first))
+            out.append(hit)
+            if len(out) >= limit:
+                break
         return out
 
     # Deleting a meeting deletes its kept audio and its screenshots too.

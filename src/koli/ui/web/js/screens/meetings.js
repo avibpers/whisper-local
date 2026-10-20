@@ -14,6 +14,7 @@ import { ExtraInstall } from './shared.js';
 import { Lightbox, Thumb, rowsByTime } from '../shots.js';
 import { Brief, BriefData, COLOURS, DriveButton, SummaryBar, printBrief } from './brief.js';
 import { TemplatesView } from './templates.js';
+import { openSettingsSection } from './settings.js';
 
 const RUNNING = new Set(['live', 'paused', 'offered']);
 function clock(s) { s = Math.max(0, Math.floor(s || 0)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; }
@@ -55,7 +56,7 @@ function Caption({ meetingId, shot, onSaved }) {
     onKeyDown=${(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }} />`;
 }
 
-function Transcript({ id, live, onDeleted }) {
+function Transcript({ id, live, onDeleted, focus }) {
   const [m, setM] = useState(null);
   const [open, setOpen] = useState(null);
   const [brief, setBrief] = useState(null);
@@ -66,9 +67,11 @@ function Transcript({ id, live, onDeleted }) {
   const jumpTo = useRef(null);
   const load = () => call('meeting_get', id).then(setM).catch((e) => toast(e.message, { kind: 'err' }));
   // The summary and the layout of the template it was written with.
+  const focusAt = useRef(null);
   const loadBrief = (show) => call('meeting_brief', id).then((b) => {
     setBrief(b);
-    if (show) setTab(b && !live ? 'summary' : 'transcript');
+    // A search hit in the transcript keeps the transcript open.
+    if (show && focusAt.current == null) setTab(b && !live ? 'summary' : 'transcript');
     if (b) call('summary_template_layout', b.template || 'standard').then(setLayout).catch(() => setLayout(null));
   });
   useEffect(() => {
@@ -80,14 +83,21 @@ function Transcript({ id, live, onDeleted }) {
     if (p.id !== id) return;
     load(); loadBrief(false).then(() => setTab('summary')).catch(() => {});
   }), [id]);
+  // A search hit opens the transcript at the turn that matched.
+  useEffect(() => {
+    if (!focus) return;
+    focusAt.current = focus.at;
+    jumpTo.current = focus.at;
+    setTab('transcript');
+  }, [focus]);
   // A time in the summary opens the transcript at that moment.
   useEffect(() => {
     if (tab !== 'transcript' || jumpTo.current == null || !box.current) return;
-    const at = jumpTo.current; jumpTo.current = null;
+    const at = jumpTo.current; jumpTo.current = null; focusAt.current = null;
     const rows = [...box.current.querySelectorAll('[data-at]')];
     const row = rows.find((r) => Number(r.dataset.at) >= at - 0.5) || rows[rows.length - 1];
     if (row) { row.scrollIntoView({ block: 'center' }); row.classList.add('flash-row'); setTimeout(() => row.classList.remove('flash-row'), 1600); }
-  }, [tab]);
+  }, [tab, m]);
   const jump = (at) => { jumpTo.current = at; setTab('transcript'); };
   useEffect(() => on('meeting_turn', (p) => {
     if (p.id !== id) return;
@@ -196,6 +206,17 @@ export function MeetingsScreen() {
   const [list, setList] = useState([]);
   const [selected, setSelected] = useState(null);
   const [view, setView] = useState('meetings');
+  // Search: every saved meeting's title, speakers, summary, captions and words.
+  const [query, setQuery] = useState('');
+  const [hits, setHits] = useState(null);
+  const [focus, setFocus] = useState(null);
+  useEffect(() => {
+    const q = query.trim();
+    if (!q) { setHits(null); return undefined; }
+    const timer = setTimeout(() => call('meetings_search', q).then(setHits).catch(() => setHits([])), 200);
+    return () => clearTimeout(timer);
+  }, [query]);
+  const openHit = (h) => { setSelected(h.id); setFocus(h.at != null ? { at: h.at, n: Date.now() } : null); };
   const reload = () => call('meetings_list').then(setList).catch(() => {});
   useEffect(() => { reload(); }, [live.state]);
   // A new summary can rename the meeting.
@@ -207,6 +228,7 @@ export function MeetingsScreen() {
     <div class="page-head">
       <div><h1 class="page-title">Meetings</h1><p class="page-sub">Calls transcribed as they happen, with who said what. Stored only on this computer.</p></div>
       <div class="row-flex">
+        <button type="button" class="btn" title="Meetings settings: when Koli listens, summaries, the panel" onClick=${() => openSettingsSection('meetings')}><${Icon} name="sliders" />Meeting settings</button>
         <button type="button" class="btn" title="The templates the AI writes summaries from" onClick=${() => setView('templates')}><${Icon} name="doc" />Summary templates</button>
         ${!RUNNING.has(live.state) && html`<button type="button" class="btn pri" onClick=${() => call('meeting_start').catch((e) => toast(e.message, { kind: 'err' }))}>Start a meeting now</button>`}
       </div>
@@ -215,15 +237,29 @@ export function MeetingsScreen() {
     <${LiveCard} m=${live} />
     <div style="display:grid;grid-template-columns:minmax(260px,320px) minmax(0,1fr);gap:16px;align-items:start">
       <div class="stack">
-        <section class="card" style="overflow:hidden" aria-label="Past meetings">
+        <label class="search-field">
+          <${Icon} name="search" />
+          <input aria-label="Search meetings" placeholder="Search meetings" value=${query} dir="auto"
+            onInput=${(e) => setQuery(e.currentTarget.value)}
+            onKeyDown=${(e) => { if (e.key === 'Escape') setQuery(''); }} />
+          ${query && html`<button type="button" class="btn ghost icon" aria-label="Clear search" onClick=${() => setQuery('')}><${Icon} name="x" size="sm" /></button>`}
+        </label>
+        ${hits && html`<section class="card" style="overflow:hidden" aria-label="Search results">
+          ${hits.length === 0 && html`<div class="empty">No meeting mentions “${query.trim()}”.</div>`}
+          ${hits.map((h) => html`<button type="button" class="menu-item" style=${`display:block;width:100%;text-align:start;padding:12px 16px;border-top:1px solid var(--line)${current === h.id ? ';background:var(--sunk)' : ''}`} onClick=${() => openHit(h)}>
+            <div style="font-weight:600" dir="auto">${h.title}</div>
+            <div class="small muted">${when(h.started_at)} · <span class="mt-hit-where">${h.where}</span>${h.at != null ? ` · ${clock(h.at)}` : ''}</div>
+            ${h.where !== 'title' && html`<span class="mt-hit-snip" dir="auto">${h.snippet}</span>`}</button>`)}
+        </section>`}
+        ${!hits && html`<section class="card" style="overflow:hidden" aria-label="Past meetings">
           ${list.length === 0 && html`<div class="empty">No meetings yet.</div>`}
           ${list.map((h) => html`<button type="button" class="menu-item" style=${`display:block;width:100%;text-align:start;padding:12px 16px;border-top:1px solid var(--line)${current === h.id ? ';background:var(--sunk)' : ''}`} onClick=${() => setSelected(h.id)}>
             <div style="font-weight:600">${h.title}${liveId === h.id ? html` <span class="chip rec">Live</span>` : ''}</div>
             <div class="small muted">${when(h.started_at)} · ${clock(h.duration_s)} · ${h.speakers.join(', ')}</div></button>`)}
-        </section>
+        </section>`}
         <${KnownVoices} />
       </div>
-      ${current ? html`<${Transcript} id=${current} live=${liveId === current} onDeleted=${() => { setSelected(null); reload(); }} />` : html`<div class="empty">Pick a meeting.</div>`}
+      ${current ? html`<${Transcript} id=${current} live=${liveId === current} focus=${focus} onDeleted=${() => { setSelected(null); reload(); }} />` : html`<div class="empty">Pick a meeting.</div>`}
     </div>
   </div>`;
 }

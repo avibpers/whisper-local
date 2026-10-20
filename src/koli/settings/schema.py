@@ -345,11 +345,6 @@ SCHEMA = [
             'model; with no model at all, built-in texts are used.'),
     _S('ai.practice.timeout', 'Give up after', 'ai', 'number', group='Practice', min=10, max=600, step=5,
        unit='seconds'),
-    _S('ai.meetings.model', 'Summarize meetings with', 'ai', 'ai_model', group='Meetings',
-       help='Writes each meeting\'s summary from its template, and drafts new templates. Long meetings need a '
-            'model with a large context. Empty uses the default model.'),
-    _S('ai.meetings.timeout', 'Give up after', 'ai', 'number', group='Meetings', min=30, max=900, step=10,
-       unit='seconds'),
     _S('ai.commands.enabled', 'Do what I ask when no command matches', 'ai', 'toggle', group='AI actions',
        help='Your own wake word or the command shortcut, then any request ("move today\'s photos to Pictures"). '
             'Deleting and big changes ask for your password; the rest can be undone.'),
@@ -419,14 +414,23 @@ SCHEMA = [
        'this long. Starting by hand always works.'),
     _S('meeting.language', 'Meeting language', 'meetings', 'select', choices=LANGUAGES, apply=NEXT_RECORDING,
        help='Auto-detect handles Hebrew and English in one call.'),
+    # Summaries the AI writes (docs/design/meeting-summary.md). The model and
+    # its timeout live in the ai: part of the settings file, shown here.
     _S('meeting.summary.auto', 'Summarize each meeting when it ends', 'meetings', 'toggle', group='Summary',
        help='The AI writes the summary from your default template once the meeting ends and the transcript has '
-            'caught up. Needs an AI model (Settings › AI). You can always summarize by hand.'),
+            'caught up. You can always summarize by hand on the Summary tab.'),
+    _S('meeting.summary.min_minutes', 'Only meetings longer than', 'meetings', 'number', group='Summary',
+       min=0, max=180, step=1, unit='min',
+       help='Shorter meetings are not summarized by themselves, so a quick 5-minute call stays a transcript. '
+            'Summarize by hand works for any length.'),
+    _S('ai.meetings.model', 'Summarize with', 'meetings', 'ai_model', group='Summary',
+       help='The AI model that writes the summaries and drafts new templates. Long meetings need a model with a '
+            'large context. Empty uses the default model (Settings › AI).'),
     _S('meeting.summary.language', 'Write summaries in', 'meetings', 'select', group='Summary',
        choices=[['meeting', 'The meeting\'s language']] + [c for c in LANGUAGES if c[0] != 'auto'],
        help='A template can set its own language; picking one when you summarize wins over both.'),
-    _S('meeting.summary.min_minutes', 'Summarize meetings longer than', 'meetings', 'number', group='Summary',
-       min=0, max=60, unit='min', help='Shorter meetings are summarized only when you ask.'),
+    _S('ai.meetings.timeout', 'Give up after', 'meetings', 'number', group='Summary', min=30, max=900, step=10,
+       unit='seconds', help='How long the AI may take to write one summary.'),
     # The default template is chosen in Meetings › Templates.
     _S('meeting.summary.template', 'Default summary template', 'meetings', 'text', apply=INTERNAL, mode=HIDDEN),
     # Reserved: a separate model for meetings is not wired yet, so it stays out of the page.
