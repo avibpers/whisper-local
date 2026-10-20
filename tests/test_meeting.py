@@ -250,6 +250,21 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(self.sm.state, 'live')
         self.assertEqual(self.captures, [('start', self.sm.current()['id'])])
 
+    # Discord playing a sound outside a call: it doesn't hold the mic, so no
+    # meeting, whatever the loopback hears.
+    def test_native_render_only_is_not_offered(self):
+        self.sm.on_sources([{**discord(), 'mic': False}])
+        self.sm.on_speech(5)
+        self.assertEqual(self.sm.state, 'idle')
+        self.assertIsNone(self.sm._pending)
+
+    # In a call, muting yourself may release the mic: the meeting goes on as
+    # long as Discord is still there.
+    def test_ongoing_meeting_keeps_native_source_without_mic(self):
+        self.live({**discord(), 'mic': True})
+        self.sm.on_sources([{**discord(), 'mic': False}])
+        self.assertEqual(self.sm.state, 'live')
+
     def test_auto_start_names_and_saves_the_meeting(self):
         m = self.live()
         self.assertEqual(m['title'], 'Discord')
@@ -650,7 +665,37 @@ class DetectorTests(unittest.TestCase):
         from koli.meeting.detector import find_sources
         sources = find_sources([{'pid': 1, 'exe': 'discord.exe', 'state': 1}], [], RULES, 'auto')
         self.assertEqual(sources, [{'key': 'discord.exe', 'app': 'discord.exe', 'kind': 'native', 'title': '', 'code': '',
-                                    'mode': 'auto', 'device': ''}])
+                                    'mode': 'auto', 'device': '', 'mic': None}])
+
+    # Discord in a call: an output session and a microphone session. The
+    # loopback records the output device, never the microphone.
+    def test_native_source_holds_mic(self):
+        from koli.meeting.detector import find_sources
+        sessions = [{'pid': 1, 'exe': 'discord.exe', 'state': 1, 'flow': 'render', 'device': 'Speakers'},
+                    {'pid': 2, 'exe': 'discord.exe', 'state': 1, 'flow': 'capture', 'device': 'Mic'}]
+        [source] = find_sources(sessions, [], RULES, 'auto')
+        self.assertIs(source['mic'], True)
+        self.assertEqual(source['device'], 'Speakers')
+
+    def test_native_capture_only_is_a_source(self):
+        from koli.meeting.detector import find_sources
+        sessions = [{'pid': 2, 'exe': 'discord.exe', 'state': 1, 'flow': 'capture', 'device': 'Mic'}]
+        [source] = find_sources(sessions, [], RULES, 'auto')
+        self.assertIs(source['mic'], True)
+        self.assertEqual(source['device'], '')
+
+    # A ping or a join sound: Discord plays sound without holding the mic.
+    def test_native_render_only_reports_no_mic(self):
+        from koli.meeting.detector import find_sources
+        sessions = [{'pid': 1, 'exe': 'discord.exe', 'state': 1, 'flow': 'render', 'device': 'Speakers'},
+                    {'pid': 2, 'exe': 'discord.exe', 'state': 0, 'flow': 'capture', 'device': 'Mic'}]
+        [source] = find_sources(sessions, [], RULES, 'auto')
+        self.assertIs(source['mic'], False)
+
+    def test_no_capture_data_reports_unknown_mic(self):
+        from koli.meeting.detector import find_sources
+        [source] = find_sources([{'pid': 1, 'exe': 'discord.exe', 'state': 1, 'device': 'Speakers'}], [], RULES, 'auto')
+        self.assertIsNone(source['mic'])
 
     def test_inactive_session_and_unlisted_app_are_ignored(self):
         from koli.meeting.detector import find_sources
@@ -672,7 +717,8 @@ class DetectorTests(unittest.TestCase):
                 {'exe': 'chrome.exe', 'title': 'Meet - abc-defg-hij', 'media': 'Camera and microphone in use', 'hwnd': 9}]
         sources = find_sources(sessions, tabs, RULES, 'auto')
         self.assertEqual(sources, [{'key': 'chrome.exe|Meet - abc-defg-hij', 'app': 'chrome.exe', 'kind': 'browser',
-                                    'title': 'Meet - abc-defg-hij', 'code': 'abc-defg-hij', 'mode': 'auto', 'device': ''}])
+                                    'title': 'Meet - abc-defg-hij', 'code': 'abc-defg-hij', 'mode': 'auto', 'device': '',
+                                    'mic': None}])
 
     def test_browser_tab_without_audio_session_is_not_a_source(self):
         from koli.meeting.detector import find_sources

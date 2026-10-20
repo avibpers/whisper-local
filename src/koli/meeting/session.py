@@ -270,8 +270,11 @@ class SessionManager:
                     self._emit()
                 return
             # Idle: pick a source to wait for speech on. The same source
-            # staying keeps the speech heard so far.
-            candidates = [s for s in sources if s['key'] not in self._declined and s.get('mode') != 'off']
+            # staying keeps the speech heard so far. A native app that only
+            # plays sound (mic False) hasn't joined a call; once a meeting
+            # runs, sound alone keeps it going (muting may release the mic).
+            candidates = [s for s in sources if s['key'] not in self._declined and s.get('mode') != 'off'
+                          and s.get('mic') is not False]
             if self._pending and any(c['key'] == self._pending['key'] for c in candidates):
                 return
             self._pending = candidates[0] if candidates else None
