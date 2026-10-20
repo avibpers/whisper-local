@@ -1719,7 +1719,8 @@ class StateManager:
             complete=lambda feature, messages, json=False: llm.complete(feature, messages, json=json),
             publish=lambda payload: publish('agent', payload), approval=approval,
             commands=lambda: vcm.plain_phrases() if vcm is not None and vcm.enabled else [],
-            run_fixed=lambda phrase: bool(vcm and vcm.run_plain(phrase)), hear=hear)
+            run_fixed=lambda phrase: bool(vcm and vcm.run_plain(phrase)),
+            has_fixed=lambda phrase: bool(vcm and vcm.enabled and vcm.plain_command(phrase)), hear=hear)
         if vcm is not None:
             vcm.agent_runner = runner
         return runner

@@ -1507,8 +1507,32 @@ class VoiceCommandNumberAndTargetTests(unittest.TestCase):
             self.assertEqual(matched['hotkey'], f'ctrl+shift+{number}', said)
 
     def test_other_phrases_do_not_match_a_number_trigger(self):
-        for said in ('D 12', 'dog 1', 'and 1', 'D', 'D something'):
+        for said in ('D 12', 'dog 1', 'and 1', 'D', 'D something', 'D tomorrow', 'D form'):
             self.assertIsNone(self.manager.match_command(said), said)
+
+    # Whisper wrote "Desk tu" and "desktu" for "Desk two" (2026-10-20).
+    def test_a_misheard_or_hebrew_number_still_matches(self):
+        self.manager.commands = [{'trigger': 'Desk{n}', 'other_triggers': ['דסק {n}'], 'hotkey': 'ctrl+alt+{n}'}]
+        for said, number in (('Desk tu', '2'), ('desktu', '2'), ('desk to', '2'), ('desk for', '4'),
+                             ('Desk won', '1'), ('דסק 2', '2'), ('דסק שתיים', '2'), ('דסק שלוש', '3')):
+            matched = self.manager.match_command(said)
+            self.assertIsNotNone(matched, said)
+            self.assertEqual(matched['hotkey'], f'ctrl+alt+{number}', said)
+        self.assertIsNone(self.manager.match_command('desktop'))
+
+    # An AI script's run_command("Desk2") names "Desk{n}" and fills the number.
+    def test_an_ai_script_runs_a_number_command(self):
+        import unittest.mock as mock
+        self.manager.commands = [{'trigger': 'Desk{n}', 'hotkey': 'ctrl+alt+{n}', 'send_to': 'windows'},
+                                 {'trigger': 'photos', 'script': "open(folder('pictures'))"}]
+        self.manager.execute_command = mock.Mock()
+        for phrase in ('Desk2', 'Desk 2', 'desk two'):
+            self.assertEqual(self.manager.plain_command(phrase)['hotkey'], 'ctrl+alt+2', phrase)
+        self.assertTrue(self.manager.run_plain('Desk2'))
+        self.assertEqual(self.manager.execute_command.call_args[0][0]['hotkey'], 'ctrl+alt+2')
+        self.assertIsNone(self.manager.plain_command('Desk'))
+        self.assertIsNone(self.manager.plain_command('photos'))       # an AI script, not a plain command
+        self.assertIsNone(self.manager.plain_command('go to Desk2 now'))
 
     def test_the_number_fills_every_step_and_leaves_the_command_alone(self):
         matched = self.manager.match_command('D 3')
