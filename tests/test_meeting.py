@@ -2753,6 +2753,71 @@ class MeetingSummaryServiceTests(unittest.TestCase):
         self.assertIn('Agenda', rows['board-meeting']['sections'])
         self.assertEqual(svc.template_layout('board-meeting')['labels']['agenda'], 'Meeting Agenda')
 
+
+class GoogleDocTemplateTests(unittest.TestCase):
+    BOARD = {'version': 1, 'template': 'board-meeting', 'title': 'Board Meeting Summary', 'date': '2026-10-19', 'language': 'he',
+             'attendees': [{'name': 'Dana', 'role': 'CEO'}],
+             'agenda': [{'id': '1', 'title': 'Budget', 'discussion': ['Over plan.'],
+                         'decisions': [{'id': 'D1', 'text': 'Cut marketing.', 'at': 5}],
+                         'action_items': [{'id': 'A1', 'task': 'Send forecast.', 'owner': 'Omer', 'status': 'do_now', 'due': None, 'at': 9}]}],
+             'next_meeting': [{'id': 'N1', 'text': 'Second office.'}]}
+
+    def layout(self):
+        from koli.meeting.summary_templates import TemplateLibrary, layout
+        return layout(TemplateLibrary(Path(tempfile.gettempdir()) / 'koli-no-such-dir', skill_dir=None).get('board-meeting'))
+
+    def test_a_board_report_follows_its_template(self):
+        from koli.meeting import gdoc
+        page = gdoc.report_html(brief_meeting(), self.BOARD, {}, self.layout())
+        for part in ('<h2>Participants</h2>', '<li>Dana — CEO</li>', '<h2>Meeting Agenda</h2>',
+                     '<h2>Key Points, Decisions, and Action Items</h2>', '<h3>1. Budget</h3>', 'Cut marketing.',
+                     'Send forecast.', '<h2>Points for Discussion at the Next Meeting</h2>', "<body dir='rtl'>",
+                     "<p style='color:#666'>2026-10-19</p>"):
+            self.assertIn(part, page)
+        self.assertNotIn('Who spoke', page)
+        self.assertNotIn('Quick summary', page)
+
+    def test_a_board_doc_has_no_quick_summary_tab_and_a_folder_with_the_meeting_name(self):
+        from koli.meeting import gdoc
+        from koli.meeting.store import MeetingStore
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        store = MeetingStore(Path(tmp.name))
+        m = brief_meeting()
+        store.save(m)
+        store.save_brief(m['id'], self.BOARD, rename_meeting=False)
+        tabs, folders = [], []
+
+        class FakeDrive:
+            def ensure_folder(self, path):
+                folders.append(path); return 'F1'
+            def upload_bytes(self, *a, **k):
+                return {'id': 'D1'}
+            def delete(self, file_id):
+                pass
+            def info(self, file_id):
+                return {}
+
+        class FakeDocs:
+            def get(self, doc_id):
+                return {'tabs': [{'tabProperties': {'tabId': 't.0'}}]}
+            def batch_update(self, doc_id, requests):
+                replies = []
+                for r in requests:
+                    if 'updateDocumentTabProperties' in r:
+                        tabs.append(r['updateDocumentTabProperties']['tabProperties']['title'])
+                    if 'addDocumentTab' in r:
+                        title = r['addDocumentTab']['tabProperties']['title']
+                        tabs.append(title)
+                        replies.append({'addDocumentTab': {'tabProperties': {'tabId': 't.' + title[0].lower()}}})
+                    else:
+                        replies.append({})
+                return {'replies': replies}
+
+        gdoc.export(store, m['id'], drive=FakeDrive(), docs=FakeDocs(), layout=self.layout())
+        self.assertEqual(tabs, ['Summary', 'Transcript'])
+        self.assertEqual(folders, ['Koli/Meetings/2026-10-19 Board Meeting Summary - Dev sync - SEO'])
+
 if __name__ == '__main__':
     unittest.main()
 

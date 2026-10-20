@@ -3,7 +3,8 @@
 // and a transcript view with speaker colours, rename, export and delete.
 // Screenshots sit among the turns at their moment, with a caption you can
 // write and a click to see them full size. A saved meeting opens on its
-// Summary tab (screens/brief.js) when it has one, with a PDF export.
+// Summary tab (screens/brief.js) when it has one, with a PDF export; the AI
+// writes the summary from a template (Summary templates, screens/templates.js).
 
 import { html, useEffect, useRef, useState } from '../../vendor/preact-htm.module.js';
 import { call, on } from '../api.js';
@@ -11,7 +12,8 @@ import { app, confirmModal, promptModal, textDir, toast } from '../store.js';
 import { Icon, Select } from '../ui.js';
 import { ExtraInstall } from './shared.js';
 import { Lightbox, Thumb, rowsByTime } from '../shots.js';
-import { Brief, BriefData, COLOURS, DriveButton, printBrief } from './brief.js';
+import { Brief, BriefData, COLOURS, DriveButton, SummaryBar, printBrief } from './brief.js';
+import { TemplatesView } from './templates.js';
 
 const RUNNING = new Set(['live', 'paused', 'offered']);
 function clock(s) { s = Math.max(0, Math.floor(s || 0)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; }
@@ -57,15 +59,27 @@ function Transcript({ id, live, onDeleted }) {
   const [m, setM] = useState(null);
   const [open, setOpen] = useState(null);
   const [brief, setBrief] = useState(null);
+  const [layout, setLayout] = useState(null);
   const [tab, setTab] = useState('transcript');
   const box = useRef(null);
   const briefBox = useRef(null);
   const jumpTo = useRef(null);
   const load = () => call('meeting_get', id).then(setM).catch((e) => toast(e.message, { kind: 'err' }));
+  // The summary and the layout of the template it was written with.
+  const loadBrief = (show) => call('meeting_brief', id).then((b) => {
+    setBrief(b);
+    if (show) setTab(b && !live ? 'summary' : 'transcript');
+    if (b) call('summary_template_layout', b.template || 'standard').then(setLayout).catch(() => setLayout(null));
+  });
   useEffect(() => {
-    setM(null); setBrief(null); load();
-    call('meeting_brief', id).then((b) => { setBrief(b); setTab(b && !live ? 'summary' : 'transcript'); }).catch(() => setTab('transcript'));
+    setM(null); setBrief(null); setLayout(null); load();
+    loadBrief(true).catch(() => setTab('transcript'));
   }, [id]);
+  // A summary was written (by hand or after the meeting ended): show it.
+  useEffect(() => on('meeting_brief', (p) => {
+    if (p.id !== id) return;
+    load(); loadBrief(false).then(() => setTab('summary')).catch(() => {});
+  }), [id]);
   // A time in the summary opens the transcript at that moment.
   useEffect(() => {
     if (tab !== 'transcript' || jumpTo.current == null || !box.current) return;
@@ -129,8 +143,9 @@ function Transcript({ id, live, onDeleted }) {
     <div style="padding:10px 18px 0"><div class="seg" role="tablist" aria-label="Meeting view">
       ${[['summary', 'Summary'], ['transcript', 'Transcript'], ['data', 'Data']].map(([k, label]) => html`<button type="button" role="tab" aria-selected=${tab === k}
         class=${tab === k ? 'on' : ''} onClick=${() => setTab(k)}>${label}</button>`)}</div></div>
-    ${tab === 'summary' && html`<div ref=${briefBox} class="brief-scroll" style="overflow-y:auto;padding:12px 18px 18px">
-      <${Brief} m=${m} brief=${brief} onJump=${jump} onOpenShot=${setOpen} /></div>`}
+    ${tab === 'summary' && html`<div class="brief-scroll" style="overflow-y:auto;padding:12px 18px 18px">
+      <${SummaryBar} meetingId=${id} brief=${brief} live=${live} />
+      <div ref=${briefBox}><${Brief} m=${m} brief=${brief} layout=${layout} onJump=${jump} onOpenShot=${setOpen} /></div></div>`}
     ${tab === 'data' && html`<div style="overflow-y:auto;padding:12px 18px 18px"><${BriefData} brief=${brief} /></div>`}
     ${tab === 'transcript' && html`<div ref=${box} style="overflow-y:auto;padding:8px 18px 16px">
       ${rows.length === 0 && html`<div class="empty">${live ? 'Listening…' : 'Nothing was said.'}</div>`}
@@ -180,14 +195,21 @@ export function MeetingsScreen() {
   const live = app.use((s) => s.meeting);
   const [list, setList] = useState([]);
   const [selected, setSelected] = useState(null);
+  const [view, setView] = useState('meetings');
   const reload = () => call('meetings_list').then(setList).catch(() => {});
   useEffect(() => { reload(); }, [live.state]);
+  // A new summary can rename the meeting.
+  useEffect(() => on('meeting_brief', reload), []);
+  if (view === 'templates') return html`<${TemplatesView} onBack=${() => setView('meetings')} />`;
   const liveId = live.id && (live.state === 'live' || live.state === 'paused') ? live.id : null;
   const current = selected || liveId || (list[0] && list[0].id);
   return html`<div class="page wide">
     <div class="page-head">
       <div><h1 class="page-title">Meetings</h1><p class="page-sub">Calls transcribed as they happen, with who said what. Stored only on this computer.</p></div>
-      ${!RUNNING.has(live.state) && html`<button type="button" class="btn pri" onClick=${() => call('meeting_start').catch((e) => toast(e.message, { kind: 'err' }))}>Start a meeting now</button>`}
+      <div class="row-flex">
+        <button type="button" class="btn" title="The templates the AI writes summaries from" onClick=${() => setView('templates')}><${Icon} name="doc" />Summary templates</button>
+        ${!RUNNING.has(live.state) && html`<button type="button" class="btn pri" onClick=${() => call('meeting_start').catch((e) => toast(e.message, { kind: 'err' }))}>Start a meeting now</button>`}
+      </div>
     </div>
     <${ExtraInstall} name="loopback" />
     <${LiveCard} m=${live} />

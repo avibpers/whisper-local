@@ -86,6 +86,7 @@ Koli is a fork of `drajb/whisper-local` by Rohit Burani (repo `avibpers/whisper-
 | **Meeting in Google Docs** | `meeting/gdoc.py` + `drive/docs.py` | Saves a meeting to Drive as a Google Doc with Quick summary, Report and Transcript tabs in `Koli/Meetings/<name>/` | Docs API, Pillow |
 | **Console Control** | `platform/windows/console.py` | Show/hide/own the console window (pyapp builds) | ctypes |
 | **Meeting Mode** | `meeting/` + `services/meetings.py` | Detects calls (`detector.py`), runs the session with resume-or-new (`session.py`), captures loopback and mic (`capture.py`), splits each chunk by voice (`diarize.py`), labels speakers (`speakers.py`), remembers named voices across meetings (`voices.py`), transcribes on a low-priority worker (`transcriber.py`), keeps meeting files and screenshots (`store.py`; design: `docs/design/meeting-screenshots.md`) | soundcard, pycaw, ten-vad, sherpa-onnx |
+| **Meeting Summaries** | `meeting/summarize.py` + `meeting/summary_templates.py` | The AI writes each meeting's summary from a template (a Markdown file: YAML layout + the system prompt; built-ins in `meeting/templates/`, yours in `summary_templates/`), automatically when a meeting ends or by hand; drafts new templates from a description or past summaries; the Summary tab, PDF and Google Doc follow the template's blocks (design: `docs/design/meeting-summary.md`) | llm, ruamel.yaml |
 | **Audio Sessions / Browser Tabs** | `platform/*/audio_sessions.py`, `platform/*/browser_tabs.py` | Which apps have sound; which browser tabs are in a call (Windows; macOS stubs) | pycaw, comtypes |
 
 ## App window and floating bar
@@ -110,6 +111,7 @@ window with Simple and Advanced modes. Settings apply the moment they change.
 | **Simple Mode** | `settings/simple_mode.py` | Plain-language answers to and from settings | - |
 | **Services** | `services/*.py` | Models, history, insights, vocabulary, commands, rules and profiles, diagnostics, system | - |
 | **Web pages** | `ui/web/` | `index.html` (app window), `bar.html` (floating bar); Preact + htm, no build step | Preact, htm |
+| **Summary Templates screen** | `ui/web/js/screens/templates.js` | Meetings › Summary templates: list, default, edit the file, duplicate, delete, and New template (describe it, from past summaries, copy) | Preact, htm |
 | **Meeting Panel** | `ui/web/meeting.html` + `js/meeting.js` | The dark panel with the live transcript, hidden from screen sharing by `ui/win32.py`; the Meetings screen is `js/screens/meetings.js` | Preact, htm |
 
 Run `index.html?mock=1` from a static server to work on the pages in a

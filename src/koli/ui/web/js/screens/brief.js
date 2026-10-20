@@ -7,9 +7,9 @@
 
 import { html, useEffect, useState } from '../../vendor/preact-htm.module.js';
 import { call } from '../api.js';
-import { navigate, textDir, toast } from '../store.js';
+import { app, navigate, textDir, toast } from '../store.js';
 import { Thumb } from '../shots.js';
-import { Icon } from '../ui.js';
+import { Icon, Select } from '../ui.js';
 
 export const COLOURS = ['#0A6E82', '#B45309', '#6D28D9', '#15803D', '#BE185D', '#0369A1', '#C2410C', '#4D7C0F'];
 const STATUS = { do_now: ['ok', 'Do now'], plan_only: ['warn', 'Plan only'], waiting: ['warn', 'Waiting'], done: ['acc', 'Done'],
@@ -151,13 +151,46 @@ export function BriefData({ brief }) {
 
 // ── The tab ───────────────────────────────────────────────────────────────
 
-export function Brief({ m, brief, onJump, onOpenShot }) {
-  if (!brief) {
-    return html`<div class="empty">No summary yet. Once the summary step runs, this tab shows the decisions, the action items and what was said about each topic.</div>`;
-  }
+// The visual brief's order, for briefs written before templates existed.
+const STANDARD_BLOCKS = ['header', 'tldr', 'decisions', 'action_items', 'lists', 'speakers', 'screenshots', 'topics', 'notes'];
+const LABELS = {
+  tldr: 'In short', decisions: 'Decisions', action_items: 'Action items', open_questions: 'Open questions', parked: 'Parked',
+  next_meeting: 'Points for the next meeting', speakers: 'Who spoke', screenshots: 'What was on screen',
+  topics: 'How the meeting went', participants: 'Participants', agenda: 'Meeting Agenda',
+  agenda_details: 'Key Points, Decisions, and Action Items', agenda_discussion: 'Discussion', agenda_decisions: 'Decisions',
+  agenda_actions: 'Action items', notes: 'Transcription notes',
+};
+const RTL = ['he', 'ar', 'fa', 'ur', 'yi'];
+export const SUMMARY_LANGUAGES = [['', 'As the template says'], ['he', 'Hebrew · עברית'], ['en', 'English'], ['ar', 'Arabic'],
+  ['ru', 'Russian'], ['fr', 'French'], ['es', 'Spanish'], ['de', 'German']];
+
+// An action items table; owners who spoke get their colour.
+function Actions({ items, byName, onJump }) {
+  return html`<div class="bf-tablewrap"><table class="bf-table"><thead><tr><th></th><th>Task</th><th>Owner</th><th>Status</th><th>Source</th></tr></thead><tbody>
+    ${items.map((a) => { const sp = a.owner && byName(a.owner); return html`<tr>
+      <td class="bf-id">${a.id}</td><td dir=${textDir(a.task)}>${a.task}${a.effort && html`<span class="bf-note">Effort: ${a.effort}</span>`}</td>
+      <td>${a.owner ? (sp ? html`<${Who} sp=${sp} />` : html`<span class="bf-who"><i></i>${a.owner}</span>`) : html`<span class="muted">Not set</span>`}</td>
+      <td><${Status} status=${a.status} />${a.due && html`<span class="bf-note">Due ${a.due}</span>`}</td>
+      <td><${At} at=${a.at} onJump=${onJump} /></td></tr>`; })}
+  </tbody></table></div>`;
+}
+
+function Items({ list, onJump, parked }) {
+  return html`<ul class="bf-list">${list.map((x) => html`<li><span class="bf-id">${x.id}</span>
+    <span dir=${textDir(x.text)}>${parked ? html`<${Status} status="parked" /> ` : ''}${x.text} <${At} at=${x.at} onJump=${onJump} /></span></li>`)}</ul>`;
+}
+
+// The meeting's summary, laid out by the template it was written with:
+// its blocks in its order, with its headings.
+export function Brief({ m, brief, layout, onJump, onOpenShot }) {
+  if (!brief) return null;
   const names = Object.fromEntries(m.speakers.map((s) => [s.id, s]));
-  const who = (id) => names[id] || { id, name: id === '?' ? 'Speaker ?' : id, colour: 7 };
-  const byName = (name) => m.speakers.find((s) => s.name === name || s.name.split(' ')[0] === name);
+  const renamed = brief.participants || {};
+  const who = (id) => {
+    const sp = names[id] || { id, name: id === '?' ? 'Speaker ?' : id, colour: 7 };
+    return renamed[id] && /^(You|Speaker \d+)$/.test(sp.name) ? { ...sp, name: renamed[id] } : sp;
+  };
+  const byName = (name) => m.speakers.map((s) => who(s.id)).find((s) => s.name === name || s.name.split(' ')[0] === String(name).split(' ')[0]);
   const stats = talkStats(m);
   const order = stats.shown.map((s) => s.id);
   const shots = (m.screenshots || []).slice().sort((a, b) => a.at - b.at);
@@ -165,58 +198,116 @@ export function Brief({ m, brief, onJump, onOpenShot }) {
   const roles = brief.roles || {};
   const length = m.ended_at ? (new Date(m.ended_at) - new Date(m.started_at)) / 1000 : Math.max(0, ...m.turns.map((t) => t.end));
   const count = (list, word) => list && list.length > 0 && html`<span class="bf-count">${list.length}${word ? ` ${word}` : ''}</span>`;
-  return html`<div class="brief" dir="ltr">
-    <header class="bf-head">
-      <div class="bf-eyebrow">Meeting brief</div>
-      <h2>${brief.title || m.title}</h2>
+  const lay = layout || {};
+  const label = (k) => (brief.labels && brief.labels[k]) || (lay.labels && lay.labels[k]) || LABELS[k] || k;
+  const agenda = brief.agenda || [];
+  const decisions = (brief.decisions && brief.decisions.length) ? brief.decisions : agenda.flatMap((a) => a.decisions || []);
+  const actions = (brief.action_items && brief.action_items.length) ? brief.action_items : agenda.flatMap((a) => a.action_items || []);
+  const dateOnly = lay.date === 'date';
+  const attendees = (brief.attendees && brief.attendees.length) ? brief.attendees
+    : stats.shown.map((s) => ({ name: who(s.id).name, role: roles[s.id] || '' }));
+
+  const blocks = {
+    header: () => html`<header class="bf-head">
+      <div class="bf-eyebrow">${lay.name || 'Meeting brief'}</div>
+      <h2 dir=${textDir(brief.title || m.title)}>${brief.title || m.title}</h2>
       <div class="bf-meta">
-        <span>${day(m.started_at)}, <b>${hhmm(m.started_at)}${m.ended_at ? `–${hhmm(m.ended_at)}` : ''}</b></span>
-        <span>Length <b class="mono">${clock(length)}</b></span>
-        <span>Speakers <b>${stats.shown.map((s) => who(s.id).name).join(', ')}</b></span>
-        ${m.source && html`<span>Source <b>${m.source.app ? m.source.app.replace('.exe', '') : 'started by hand'}</b></span>`}
-      </div>
-    </header>
-
-    <div class="bf-tldr">${(brief.tldr || []).map((p) => html`<p dir=${textDir(p)}>${p}</p>`)}</div>
-
-    ${brief.decisions && brief.decisions.length > 0 && html`<section><h3>Decisions ${count(brief.decisions)}</h3>
-      <ul class="bf-list">${brief.decisions.map((d) => html`<li><span class="bf-id">${d.id}</span><span>${d.text} <${At} at=${d.at} onJump=${onJump} /></span></li>`)}</ul></section>`}
-
-    ${brief.action_items && brief.action_items.length > 0 && html`<section><h3>Action items ${count(brief.action_items)}</h3>
-      <div class="bf-tablewrap"><table class="bf-table"><thead><tr><th></th><th>Task</th><th>Owner</th><th>Status</th><th>Source</th></tr></thead><tbody>
-        ${brief.action_items.map((a) => { const sp = a.owner && byName(a.owner); return html`<tr>
-          <td class="bf-id">${a.id}</td><td>${a.task}${a.effort && html`<span class="bf-note">Effort: ${a.effort}</span>`}</td>
-          <td>${a.owner ? (sp ? html`<${Who} sp=${sp} />` : html`<span class="bf-who"><i></i>${a.owner}</span>`) : html`<span class="muted">Not set</span>`}</td>
-          <td><${Status} status=${a.status} />${a.due && html`<span class="bf-note">Due ${a.due}</span>`}</td>
-          <td><${At} at=${a.at} onJump=${onJump} /></td></tr>`; })}
-      </tbody></table></div>
-      ${brief.action_items.every((a) => !a.due) && html`<p class="bf-foot">No deadlines were stated. "Do now" means it was asked to start right away; it is not a date.</p>`}</section>`}
-
-    ${((brief.open_questions || []).length > 0 || (brief.parked || []).length > 0) && html`<section class="bf-two">
-      ${(brief.open_questions || []).length > 0 && html`<div><h3>Open questions ${count(brief.open_questions)}</h3>
-        <ul class="bf-list">${brief.open_questions.map((q) => html`<li><span class="bf-id">${q.id}</span><span>${q.text} <${At} at=${q.at} onJump=${onJump} /></span></li>`)}</ul></div>`}
-      ${(brief.parked || []).length > 0 && html`<div><h3>Parked ${count(brief.parked)}</h3>
-        <ul class="bf-list">${brief.parked.map((p) => html`<li><span class="bf-id">${p.id}</span><span><${Status} status="parked" /> ${p.text}</span></li>`)}</ul></div>`}
-    </section>`}
-
-    ${m.turns.length > 0 && html`<section><h3>Who spoke</h3>
+        ${dateOnly ? html`<span><b>${(brief.date || m.started_at || '').slice(0, 10)}</b></span>` : html`
+          <span>${day(m.started_at)}, <b>${hhmm(m.started_at)}${m.ended_at ? `–${hhmm(m.ended_at)}` : ''}</b></span>
+          <span>Length <b class="mono">${clock(length)}</b></span>
+          <span>Speakers <b>${stats.shown.map((s) => who(s.id).name).join(', ')}</b></span>
+          ${m.source && html`<span>Source <b>${m.source.app ? m.source.app.replace('.exe', '') : 'started by hand'}</b></span>`}`}
+      </div></header>`,
+    tldr: () => (brief.tldr || []).length > 0 && html`<div class="bf-tldr">${brief.tldr.map((p) => html`<p dir=${textDir(p)}>${p}</p>`)}</div>`,
+    participants: () => attendees.length > 0 && html`<section><h3>${label('participants')}</h3>
+      <div class="bf-people">${attendees.map((a) => html`<span class="bf-person" dir="auto">${a.name}${a.role ? html` <span class="muted">· ${a.role}</span>` : ''}</span>`)}</div></section>`,
+    agenda: () => agenda.length > 0 && html`<section><h3>${label('agenda')}</h3>
+      <ol class="bf-agenda">${agenda.map((a) => html`<li dir=${textDir(a.title)}>${a.title} ${a.start != null ? html`<${At} at=${a.start} onJump=${onJump} />` : ''}</li>`)}</ol></section>`,
+    agenda_details: () => agenda.length > 0 && html`<section><h3>${label('agenda_details')}</h3>
+      <div class="bf-items">${agenda.map((a, i) => html`<article class="bf-item">
+        <h4><span class="bf-num">${i + 1}.</span><span dir=${textDir(a.title)}>${a.title}</span></h4>
+        ${(a.discussion || []).length > 0 && html`<div class="bf-grp"><h5>${label('agenda_discussion')}</h5>
+          <ul>${a.discussion.map((x) => html`<li dir=${textDir(x)}>${x}</li>`)}</ul></div>`}
+        ${(a.decisions || []).length > 0 && html`<div class="bf-grp"><h5>${label('agenda_decisions')}</h5><${Items} list=${a.decisions} onJump=${onJump} /></div>`}
+        ${(a.action_items || []).length > 0 && html`<div class="bf-grp"><h5>${label('agenda_actions')}</h5>
+          <${Actions} items=${a.action_items} byName=${byName} onJump=${onJump} /></div>`}
+      </article>`)}</div></section>`,
+    decisions: () => decisions.length > 0 && html`<section><h3>${label('decisions')} ${count(decisions)}</h3><${Items} list=${decisions} onJump=${onJump} /></section>`,
+    action_items: () => actions.length > 0 && html`<section><h3>${label('action_items')} ${count(actions)}</h3>
+      <${Actions} items=${actions} byName=${byName} onJump=${onJump} />
+      ${actions.every((a) => !a.due) && html`<p class="bf-foot">No deadlines were stated. "Do now" means it was asked to start right away; it is not a date.</p>`}</section>`,
+    open_questions: () => (brief.open_questions || []).length > 0 && html`<section><h3>${label('open_questions')} ${count(brief.open_questions)}</h3>
+      <${Items} list=${brief.open_questions} onJump=${onJump} /></section>`,
+    parked: () => (brief.parked || []).length > 0 && html`<section><h3>${label('parked')} ${count(brief.parked)}</h3>
+      <${Items} list=${brief.parked} onJump=${onJump} parked=${true} /></section>`,
+    lists: () => ((brief.open_questions || []).length > 0 || (brief.parked || []).length > 0) && html`<section class="bf-two">
+      ${(brief.open_questions || []).length > 0 && html`<div><h3>${label('open_questions')} ${count(brief.open_questions)}</h3><${Items} list=${brief.open_questions} onJump=${onJump} /></div>`}
+      ${(brief.parked || []).length > 0 && html`<div><h3>${label('parked')} ${count(brief.parked)}</h3><${Items} list=${brief.parked} onJump=${onJump} parked=${true} /></div>`}
+    </section>`,
+    next_meeting: () => (brief.next_meeting || []).length > 0 && html`<section><h3>${label('next_meeting')} ${count(brief.next_meeting)}</h3>
+      <${Items} list=${brief.next_meeting} onJump=${onJump} /></section>`,
+    speakers: () => m.turns.length > 0 && html`<section><h3>${label('speakers')}</h3>
       <div class="bf-charts"><${ShareBars} stats=${stats} who=${who} /><${Timeline} minutes=${perMinute(m)} order=${order} who=${who} /></div>
       <div class="bf-tablewrap"><table class="bf-table"><thead><tr><th>Speaker</th><th>Talk time</th><th>Share</th><th>Turns</th><th>Role in this meeting</th></tr></thead><tbody>
         ${stats.shown.map((s) => html`<tr><td><${Who} sp=${who(s.id)} /></td><td class="mono">${clock(s.seconds)}</td>
           <td class="mono">${Math.round(s.share * 100)}%</td><td class="mono">${s.turns}</td><td>${roles[s.id] || ''}</td></tr>`)}
       </tbody></table></div>
-      ${stats.folded.length > 0 && html`<p class="bf-foot">${stats.folded.map((s) => who(s.id).name).join(', ')}: under 1% of the talk, likely a voice split by mistake; left out of the charts.</p>`}</section>`}
-
-    ${shots.length > 0 && html`<section><h3>What was on screen ${count(shots)}</h3>
-      <p class="bf-foot">Screenshots taken during the meeting, in order. Each one also sits inside its topic below and at its moment in the transcript.</p>
+      ${stats.folded.length > 0 && html`<p class="bf-foot">${stats.folded.map((s) => who(s.id).name).join(', ')}: under 1% of the talk, likely a voice split by mistake; left out of the charts.</p>`}</section>`,
+    screenshots: () => shots.length > 0 && html`<section><h3>${label('screenshots')} ${count(shots)}</h3>
+      <p class="bf-foot">Screenshots taken during the meeting, in order. Each one also sits inside its topic and at its moment in the transcript.</p>
       <div class="bf-strip">${shots.map((s) => html`<div class="bf-card"><${Thumb} meetingId=${m.id} shot=${s} width=${180} onOpen=${onOpenShot} />
-        <div class="bf-cap"><span class="mono">${clock(s.at)}</span> ${s.caption || 'Screenshot'}</div></div>`)}</div></section>`}
-
-    ${brief.topics && brief.topics.length > 0 && html`<section><h3>How the meeting went ${count(brief.topics, 'topics')}</h3>
-      <div class="bf-topics">${brief.topics.map((t) => html`<${Topic} t=${t} shots=${inTopic(t)} meetingId=${m.id} onJump=${onJump} onOpenShot=${onOpenShot} />`)}</div></section>`}
-
-    ${(brief.notes || []).length > 0 && html`<p class="bf-foot">Transcription notes: ${brief.notes.join('; ')}.</p>`}
+        <div class="bf-cap"><span class="mono">${clock(s.at)}</span> ${s.caption || 'Screenshot'}</div></div>`)}</div></section>`,
+    topics: () => (brief.topics || []).length > 0 && html`<section><h3>${label('topics')} ${count(brief.topics, 'topics')}</h3>
+      <div class="bf-topics">${brief.topics.map((t) => html`<${Topic} t=${t} shots=${inTopic(t)} meetingId=${m.id} onJump=${onJump} onOpenShot=${onOpenShot} />`)}</div></section>`,
+    sections: () => (brief.sections || []).map((s) => html`<section><h3 dir=${textDir(s.title)}>${s.title}</h3>
+      ${(s.text || []).map((p) => html`<p dir=${textDir(p)} style="margin:0 0 8px">${p}</p>`)}
+      ${(s.items || []).length > 0 && html`<ul class="bf-bullets">${s.items.map((x) => html`<li dir=${textDir(x)}>${x}</li>`)}</ul>`}</section>`),
+    notes: () => (brief.notes || []).length > 0 && html`<p class="bf-foot">${label('notes')}: ${brief.notes.join('; ')}.</p>`,
+  };
+  const want = (lay.blocks && lay.blocks.length ? lay.blocks : STANDARD_BLOCKS).filter((b) => blocks[b]);
+  const dir = RTL.includes(String(brief.language || '').slice(0, 2)) ? 'rtl' : 'ltr';
+  return html`<div class="brief" dir=${dir}>
+    ${want.map((b) => blocks[b]())}
     ${brief.generator && html`<p class="bf-foot">Written by: ${brief.generator}</p>`}
+  </div>`;
+}
+
+// Asking the AI for a summary: the template and language, then Summarize.
+// With no summary it fills the tab; with one, it sits above it as
+// "Summarize again". While a summary is written it shows the progress.
+export function SummaryBar({ meetingId, brief, live, onStarted }) {
+  const has = !!brief;
+  const [st, setSt] = useState(null);
+  const [templates, setTemplates] = useState([]);
+  const [tpl, setTpl] = useState('');
+  const [lang, setLang] = useState('');
+  const [open, setOpen] = useState(!has);
+  const tasks = app.use((s) => s.tasks);
+  const job = Object.values(tasks || {}).find((t) => t.kind === 'meeting_summary' && t.ref === meetingId && t.status === 'running');
+  useEffect(() => {
+    setOpen(!has);
+    call('meeting_summary_state', meetingId).then((s) => { setSt(s); setTpl(s.template); }).catch(() => {});
+    call('summary_templates').then(setTemplates).catch(() => {});
+  }, [meetingId, brief]);
+  if (live) return has ? null : html`<div class="empty">The summary is written when the meeting ends.</div>`;
+  if (!st) return null;
+  if (job || st.running) {
+    return html`<div class="bf-ask running"><span class="spin" aria-hidden="true"></span>
+      <div><b>Writing the summary…</b><div class="small muted">${(job && job.detail) || 'The AI is reading the transcript'}</div></div></div>`;
+  }
+  const go = () => call('meeting_summarize', meetingId, tpl, lang).then(() => { setSt({ ...st, running: true }); onStarted && onStarted(); })
+    .catch((e) => toast(e.message, { kind: 'err' }));
+  if (has && !open) {
+    return html`<div class="bf-again"><button type="button" class="btn ghost sm" onClick=${() => setOpen(true)}><${Icon} name="refresh" />Summarize again</button></div>`;
+  }
+  return html`<div class="bf-ask">
+    <div class="grow"><b>${has ? 'Summarize again' : 'No summary yet'}</b>
+      <div class="small muted">${st.ai_ready ? 'The AI writes it from the transcript, laid out by the template you pick.'
+        : html`Choose an AI model first in <a href="#" onClick=${(e) => { e.preventDefault(); navigate('settings/ai'); }}>Settings › AI</a>.`}</div></div>
+    <${Select} label="Template" value=${tpl} options=${templates.map((t) => [t.id, t.name + (t.default ? ' (default)' : '')])} onChange=${setTpl} />
+    <${Select} label="Language" value=${lang} options=${SUMMARY_LANGUAGES} onChange=${setLang} />
+    <button type="button" class="btn pri" disabled=${!st.ai_ready} onClick=${go}>Summarize</button>
+    ${has && html`<button type="button" class="btn ghost" onClick=${() => setOpen(false)}>Cancel</button>`}
   </div>`;
 }
 

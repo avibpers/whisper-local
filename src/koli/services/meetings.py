@@ -618,7 +618,8 @@ class MeetingService:
         if m and m['id'] == meeting_id:
             raise ValueError("End the meeting before saving it to Google Drive")
         from ..meeting import gdoc
-        return gdoc.export(self.store, meeting_id)
+        brief = self.store.load_brief(meeting_id) or {}
+        return gdoc.export(self.store, meeting_id, layout=self.template_layout(brief.get('template') or 'standard'))
 
     def set_caption(self, meeting_id: str, image: str, caption: str) -> bool:
         return self.session.set_caption(meeting_id, image, caption)

@@ -7,7 +7,7 @@ title:
   mode: generated
 date: datetime
 blocks: [header, tldr, counts, decisions, action_items, lists, speakers, screenshots, topics, notes, transcript, data]
-doc_blocks: [header, quick, page_break, decisions, action_items, lists, speakers, screenshots, topics, notes, page_break, transcript]
+doc_blocks: [header, quick, page_break, tldr, decisions, action_items, lists, speakers, screenshots, topics, notes, page_break, transcript]
 ---
 You write a visual meeting brief from a meeting transcript. The reader wants the outcomes in one minute and the detail only when they open it. Other AI tools will read your JSON to pick up decisions and tasks.
 

@@ -4,6 +4,57 @@
 // generated from config.defaults.yaml; everything else is made-up sample data.
 // Settings changes are kept in memory, and a fake dictation runs every 12 s.
 
+
+// ── Meeting summaries and templates (mock) ──────────────────────────────
+const summaries = {};
+let templateDefault = 'standard';
+const TEMPLATES = [
+  { id: 'standard', name: 'Visual meeting brief', description: 'Outcomes first, who talked most with charts, topics with quotes.',
+    origin: 'built-in', language: 'meeting', blocks: ['header', 'tldr', 'decisions', 'action_items', 'lists', 'speakers', 'screenshots', 'topics', 'notes'],
+    sections: ['In short', 'Decisions', 'Action items', 'Open questions and parked items', 'Who spoke, with charts', 'What was on screen', 'Topics with quotes'],
+    editable: false, overrides_builtin: false },
+  { id: 'board-meeting', name: 'Board / management meeting', description: 'Formal minutes: participants, the agenda, per item discussion, decisions and action items.',
+    origin: 'built-in', language: 'meeting', blocks: ['header', 'participants', 'agenda', 'agenda_details', 'next_meeting'],
+    sections: ['Participants', 'Agenda', 'Discussion, decisions and action items per agenda item', 'Points for the next meeting'],
+    editable: false, overrides_builtin: false },
+];
+const LAYOUTS = {
+  standard: { id: 'standard', name: 'Visual meeting brief', date: 'datetime', blocks: TEMPLATES[0].blocks },
+  'board-meeting': { id: 'board-meeting', name: 'Board / management meeting', date: 'date', blocks: TEMPLATES[1].blocks,
+    labels: { participants: 'Participants', agenda: 'Meeting Agenda', agenda_details: 'Key Points, Decisions, and Action Items',
+      next_meeting: 'Points for Discussion at the Next Meeting' } },
+};
+function templateText(id) {
+  const t = TEMPLATES.find((x) => x.id === id) || TEMPLATES[0];
+  return `---\nid: ${t.id}\nname: ${t.name}\ndescription: ${t.description}\nlanguage: meeting\ndate: date\nblocks: [${t.blocks.join(', ')}]\n---\nYou write a summary from a meeting transcript.\n\n{{common_rules}}\n\n## What to return\n\n\`\`\`json\n{"version": 1}\n\`\`\`\n`;
+}
+const STANDARD_BRIEF = {
+  version: 1, template: 'standard', generator: 'mock',
+  tldr: ['The bridge failed again on Friday; Ilona fixed it but expects it to break. The team agreed to move the release to next week.'],
+  decisions: [{ id: 'D1', text: 'Move the release to next week.', at: 18 }],
+  action_items: [{ id: 'A1', task: 'Add monitoring to the bridge so a failure pages someone.', owner: 'Ilona', status: 'do_now', due: null, at: 9 },
+    { id: 'A2', task: 'Write the post-mortem for Friday.', owner: null, status: 'plan_only', due: null, at: 18 }],
+  open_questions: [{ id: 'Q1', text: 'Who owns the bridge after the release?', at: 27 }],
+  parked: [{ id: 'P1', text: 'Replacing the bridge altogether.' }],
+  topics: [{ id: 'T1', title: 'The bridge outage', start: 0, end: 20, lead: 'Fixed for now, likely to break again.',
+    points: ['Ilona fixed it on Friday.', 'Nobody knows why it fails.'], quotes: [{ text: 'We fixed it, but if it breaks again, who knows.', who: 'Ilona', at: 0 }] },
+    { id: 'T2', title: 'Next steps', start: 20, end: 40, lead: 'Release moves; monitoring first.', points: ['Release next week.'], quotes: [] }],
+  roles: { s2: 'Fixed the bridge', you: 'Asked about the state of the bridge' },
+};
+const BOARD_BRIEF = {
+  version: 1, template: 'board-meeting', generator: 'codex/gpt-test via Koli (Board / management meeting)', title: 'Management Meeting Summary',
+  date: '2026-10-10', language: 'he',
+  attendees: [{ name: 'אבי', role: 'מנכ"ל' }, { name: 'אילונה', role: 'QA' }],
+  agenda: [
+    { id: '1', title: 'תקלת הגשר', start: 0, discussion: ['הגשר נפל שוב ביום שישי.', 'אילונה תיקנה, אבל הסיבה עדיין לא ידועה.'],
+      decisions: [{ id: 'D1', text: 'מוסיפים ניטור לגשר לפני השחרור.', at: 9 }],
+      action_items: [{ id: 'A1', task: 'להוסיף ניטור שמתריע כשהגשר נופל.', owner: 'Ilona', status: 'do_now', due: 'יום ראשון', at: 9 }] },
+    { id: '2', title: 'מועד השחרור', start: 20, discussion: ['אין ביטחון בגשר לשחרור השבוע.'],
+      decisions: [{ id: 'D2', text: 'השחרור עובר לשבוע הבא.', at: 18 }], action_items: [] },
+  ],
+  next_meeting: [{ id: 'N1', text: 'מי אחראי על הגשר אחרי השחרור.', at: 27 }],
+};
+
 const ok = (data = null) => Promise.resolve({ ok: true, data });
 const fail = (error) => Promise.resolve({ ok: false, error });
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -577,20 +628,40 @@ export function createMock(emit) {
       }, 800);
       return ok({ ok: true });
     },
-    // A summary for the saved meeting, in the shape the summary step writes.
-    meeting_brief: (id) => ok(id === '2026-10-10-150000' ? {
-      version: 1, generator: 'mock',
-      tldr: ['The bridge failed again on Friday; Ilona fixed it but expects it to break. The team agreed to move the release to next week.'],
-      decisions: [{ id: 'D1', text: 'Move the release to next week.', at: 18 }],
-      action_items: [{ id: 'A1', task: 'Add monitoring to the bridge so a failure pages someone.', owner: 'Ilona', status: 'do_now', due: null, at: 9 },
-        { id: 'A2', task: 'Write the post-mortem for Friday.', owner: null, status: 'plan_only', due: null, at: 18 }],
-      open_questions: [{ id: 'Q1', text: 'Who owns the bridge after the release?', at: 27 }],
-      parked: [{ id: 'P1', text: 'Replacing the bridge altogether.' }],
-      topics: [{ id: 'T1', title: 'The bridge outage', start: 0, end: 20, lead: 'Fixed for now, likely to break again.',
-        points: ['Ilona fixed it on Friday.', 'Nobody knows why it fails.'], quotes: [{ text: 'We fixed it, but if it breaks again, who knows.', who: 'Ilona', at: 0 }] },
-        { id: 'T2', title: 'Next steps', start: 20, end: 40, lead: 'Release moves; monitoring first.', points: ['Release next week.'], quotes: [] }],
-      roles: { s2: 'Fixed the bridge', you: 'Asked about the state of the bridge' },
-    } : null),
+    // A summary for the saved meeting, in the shape the summary step writes;
+    // Summarize writes one for the others (the board template's, or this one).
+    meeting_brief: (id) => ok(summaries[id] || (id === '2026-10-10-150000' ? STANDARD_BRIEF : null)),
+    meeting_summary_state: (id) => ok({ ai_ready: true, running: false, template: templateDefault }),
+    meeting_summarize: (id, template) => {
+      const task = { id: 900 + Object.keys(summaries).length, label: 'Summarizing the meeting', kind: 'meeting_summary', ref: id,
+        status: 'running', progress: null, detail: `Writing it with the ${(TEMPLATES.find((x) => x.id === (template || templateDefault)) || {}).name} template` };
+      emit('task', task);
+      setTimeout(() => {
+        summaries[id] = (template || templateDefault) === 'board-meeting' ? BOARD_BRIEF : STANDARD_BRIEF;
+        emit('task', { ...task, status: 'done', progress: 1 });
+        emit('meeting_brief', { id });
+      }, 1500);
+      return ok(task.id);
+    },
+    summary_templates: () => ok(TEMPLATES.map((x) => ({ ...x, default: x.id === templateDefault }))),
+    summary_template: (id) => ok({ ...TEMPLATES.find((x) => x.id === id), text: templateText(id) }),
+    summary_template_layout: (id) => ok(LAYOUTS[id] || LAYOUTS.standard),
+    summary_template_default: (id) => { templateDefault = id; return ok(id); },
+    summary_template_copy: (id, name) => ok({ text: templateText(id).replace(/^id: .*$/m, 'id: my-copy').replace(/^name: .*$/m, `name: ${name || 'My copy'}`) }),
+    summary_template_draft: (kind, text, name) => new Promise((resolve) => setTimeout(() => resolve(ok({
+      text: templateText('board-meeting').replace(/^id: .*$/m, 'id: weekly-sync').replace(/^name: .*$/m, `name: ${name || 'Weekly sync'}`),
+      problems: [] })), 1200)),
+    summary_template_save: (text) => {
+      const id = (text.match(/^id: (.*)$/m) || [])[1] || 'mine';
+      const name = (text.match(/^name: (.*)$/m) || [])[1] || id;
+      const row = { id, name, description: 'Your own template.', origin: 'mine', language: 'meeting', blocks: ['header', 'tldr'],
+        sections: ['In short'], editable: true, overrides_builtin: false };
+      const i = TEMPLATES.findIndex((x) => x.id === id);
+      if (i >= 0) TEMPLATES[i] = row; else TEMPLATES.push(row);
+      return ok(row);
+    },
+    summary_template_delete: (id) => { const i = TEMPLATES.findIndex((x) => x.id === id); if (i >= 0) TEMPLATES.splice(i, 1); return ok(true); },
+    summary_template_read_files: () => ok({ names: ['minutes-september.md'], text: '--- minutes-september.md ---\n# Board Meeting Summary\n## Participants\n...' }),
     meeting_export_pdf: () => ok('C:\\Users\\you\\Desktop\\Discord.pdf'),
     // Google Drive: a short wait, then the doc is "saved" on the meeting.
     meeting_drive_export: (id) => new Promise((resolve) => setTimeout(() => {
