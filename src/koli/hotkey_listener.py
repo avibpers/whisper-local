@@ -18,7 +18,8 @@ class HotkeyListener:
                  pause_hotkey: str = None, transforms_manager=None,
                  recording_mode: str = "push_to_talk", paste_last_hotkey: str = None,
                  double_tap_to_lock: bool = False, double_tap_window_ms: int = 400,
-                 meeting_hotkey: str = None, meeting_mute_hotkey: str = None):
+                 meeting_hotkey: str = None, meeting_mute_hotkey: str = None,
+                 meeting_screenshot_hotkey: str = None):
         self.state_manager = state_manager
         self.recording_hotkey = recording_hotkey
         self.stop_key = stop_key
@@ -32,6 +33,7 @@ class HotkeyListener:
         self.paste_last_hotkey = paste_last_hotkey
         self.meeting_hotkey = meeting_hotkey
         self.meeting_mute_hotkey = meeting_mute_hotkey
+        self.meeting_screenshot_hotkey = meeting_screenshot_hotkey
         # Hands-free double-tap only applies to push-to-talk; toggle mode is
         # already hands-free.
         self.tap_latch = None
@@ -155,6 +157,13 @@ class HotkeyListener:
                 'combination': self.meeting_mute_hotkey,
                 'callback': self._meeting_mute_hotkey_pressed,
                 'name': 'meeting mute'
+            })
+
+        if self.meeting_screenshot_hotkey:
+            hotkey_configs.append({
+                'combination': self.meeting_screenshot_hotkey,
+                'callback': self._meeting_screenshot_hotkey_pressed,
+                'name': 'meeting screenshot'
             })
 
         if self.transforms_manager:
@@ -353,6 +362,13 @@ class HotkeyListener:
         self.logger.info("Meeting mute hotkey pressed")
         threading.Thread(target=self.state_manager.toggle_meeting_mute, daemon=True, name='meeting-mute').start()
 
+    # Snip a screenshot into the running meeting. Off the hotkey thread: it
+    # waits for the keys to be released before the overlay opens.
+    def _meeting_screenshot_hotkey_pressed(self):
+        import threading
+        self.logger.info("Meeting screenshot hotkey pressed")
+        threading.Thread(target=self.state_manager.meeting_screenshot, daemon=True, name='meeting-screenshot').start()
+
     def _arm_keys_on_release(self):
         self.logger.debug("Key released - arming stop/auto-send keys")
         self.keys_armed = True
@@ -383,7 +399,7 @@ class HotkeyListener:
             self.logger.error(f"Error stopping hotkey listener: {e}")
 
     def change_hotkey_config(self, setting: str, value):
-        valid_settings = ['recording_hotkey', 'stop_key', 'auto_send_key', 'cancel_combination', 'command_hotkey', 'rephrase_hotkey', 'pause_hotkey', 'paste_last_hotkey', 'meeting_hotkey', 'meeting_mute_hotkey', 'recording_mode']
+        valid_settings = ['recording_hotkey', 'stop_key', 'auto_send_key', 'cancel_combination', 'command_hotkey', 'rephrase_hotkey', 'pause_hotkey', 'paste_last_hotkey', 'meeting_hotkey', 'meeting_mute_hotkey', 'meeting_screenshot_hotkey', 'recording_mode']
 
         if setting not in valid_settings:
             raise ValueError(f"Invalid setting '{setting}'. Valid options: {valid_settings}")

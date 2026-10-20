@@ -215,6 +215,7 @@ class SessionManager:
                              for s in (m['speakers'] if m else [])],
                 'notice': self.notice,
                 'turns': len(m['turns']) if m else 0,
+                'screenshots': str(self._settings('meeting.screenshots', 'key') or 'key'),
                 'can_continue': self._previous is not None and self.state == 'live',
                 'can_split': self._resumed_turn_index is not None and self.state == 'live',
                 'offer': self._offer_payload(),
@@ -505,6 +506,66 @@ class SessionManager:
         self.store.save(target)
         self._publish('meeting_turn', {'id': meeting_id, 'turn': stored})
 
+    # ── Screenshots ──────────────────────────────────────────────────────────
+    # A snip taken during the meeting: the PNG goes beside the meeting, the
+    # entry into its `screenshots` list at the offset the image landed on the
+    # clipboard. `meeting_id` is the meeting that was live when the key was
+    # pressed, so a snip finished after the meeting ended still lands in it.
+    def add_screenshot(self, meeting_id: str, image, at_ts: float) -> Optional[dict]:
+        # The PNG is written outside the lock: a 4K snip takes a while to
+        # encode, and turns keep arriving meanwhile.
+        with self._lock:
+            m = self.meeting
+            if m and m['id'] == meeting_id and self.state in ('live', 'paused'):
+                target, live = m, True
+            else:
+                target, live = self._saved(meeting_id), False
+                if target is None:
+                    return None
+            offset = round(max(0.0, float(at_ts) - started_ts(target)), 2)
+        name = self.store.save_shot(target['id'], offset, image)
+        with self._transition():
+            entry = {'at': offset, 'image': name, 'caption': '', 'description': None}
+            target.setdefault('screenshots', []).append(entry)
+            if live:
+                self.saver.mark(target)
+            else:
+                self.store.save(target)
+            self._publish('meeting_shot', {'id': target['id'], 'shot': entry})
+            return entry
+
+    # The user's caption for a screenshot, keyed by its file name (list
+    # positions shift; names don't).
+    def set_caption(self, meeting_id: str, image: str, caption: str) -> bool:
+        with self._transition():
+            m = self.meeting
+            live = bool(m and m['id'] == meeting_id)
+            target = m if live else self._saved(meeting_id)
+            if target is None:
+                return False
+            for entry in target.get('screenshots', []):
+                if entry['image'] == image:
+                    entry['caption'] = str(caption)
+                    break
+            else:
+                return False
+            if live:
+                self.saver.mark(target)
+            else:
+                self.store.save(target)
+            self._publish('meeting_shot', {'id': target['id'], 'shot': entry, 'caption': True})
+            return True
+
+    # A meeting that already ended: the one kept for resume, or its file.
+    def _saved(self, meeting_id: str) -> Optional[dict]:
+        if self._previous and self._previous['id'] == meeting_id:
+            return self._previous
+        try:
+            return self.store.load(meeting_id)
+        except Exception as e:
+            logger.warning(f"Unknown meeting {meeting_id}: {e}")
+            return None
+
     # A speaker seen for the first time, or one whose voiceprint moved. The
     # name is the user's to change, so an update never touches it, with one
     # exception: `voice`, a name you gave this voice in an earlier meeting,
@@ -566,6 +627,10 @@ class SessionManager:
             offset = started_ts(new) - started_ts(prev)
             for t in new['turns']:
                 prev['turns'].append({**t, 'start': round(t['start'] + offset, 2), 'end': round(t['end'] + offset, 2)})
+            # The files move before the new meeting's folder is deleted with it.
+            moved_shots = [{**sh, 'at': round(sh['at'] + offset, 2)} for sh in new.get('screenshots', [])]
+            self.store.move_shots(new['id'], prev['id'], moved_shots)
+            prev.setdefault('screenshots', []).extend(moved_shots)
             for s in new['speakers']:
                 if not any(p['id'] == s['id'] for p in prev['speakers']):
                     prev['speakers'].append(s)
@@ -604,6 +669,12 @@ class SessionManager:
             fresh['speakers'] = [dict(s) for s in old['speakers']]
             fresh['turns'] = [{**t, 'start': round(t['start'] - resumed_s, 2), 'end': round(t['end'] - resumed_s, 2)}
                               for t in moved]
+            shots = old.get('screenshots', [])
+            later = [{**sh, 'at': round(sh['at'] - resumed_s, 2)} for sh in shots if sh['at'] >= resumed_s]
+            old['screenshots'] = [sh for sh in shots if sh['at'] < resumed_s]
+            self.store.move_shots(old['id'], fresh['id'], later)
+            fresh['screenshots'] = later
+            self.store.save(old)
             self.meeting = fresh
             self._resumed_turn_index = None
             self._previous = None
@@ -704,7 +775,8 @@ class SessionManager:
         self.excluded = False
         self.paused_by_user = False
         self._paused_at = None
-        logger.info(f"Meeting ended: {m['title']}, {duration_s(m):.0f} s, {len(m['turns'])} turns")
+        logger.info(f"Meeting ended: {m['title']}, {duration_s(m):.0f} s, {len(m['turns'])} turns, "
+                    f"{len(m.get('screenshots', []))} screenshots")
         payload = self.state_payload()
         payload['duration_s'] = round(duration_s(m))
         self._publish('meeting', payload)

@@ -85,8 +85,13 @@ def list_files(folder_id: str = 'root', query: str = '') -> list:
 # Resumable upload: open a session with the metadata, then send the bytes
 # in one PUT. Files here are megabytes, so one PUT is enough. `file_id`
 # replaces that file's content instead of creating a new one.
-def upload_bytes(data: bytes, name: str, mime: str, folder_id: str = None, file_id: str = None) -> dict:
+# `convert_to` (a Google type, e.g. application/vnd.google-apps.document)
+# makes Drive convert the upload, so HTML becomes an editable Google Doc.
+def upload_bytes(data: bytes, name: str, mime: str, folder_id: str = None, file_id: str = None,
+                 convert_to: str = None) -> dict:
     meta = {'name': name}
+    if convert_to:
+        meta['mimeType'] = convert_to
     if folder_id and not file_id:
         meta['parents'] = [folder_id]
     method, path = ('PATCH', f"/files/{urllib.parse.quote(file_id, safe='')}") if file_id else ('POST', '/files')

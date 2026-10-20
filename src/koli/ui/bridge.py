@@ -16,6 +16,19 @@ from .tasks import get_task_manager
 
 logger = logging.getLogger(__name__)
 
+
+# A file name a save dialog accepts: characters Windows refuses become "-".
+def _safe_name(text: str, fallback: str = 'Meeting') -> str:
+    import re
+    text = re.sub(r'\s*:\s*', ' - ', str(text or ''))
+    return re.sub(r'[\\/*?"<>|]', '-', text).strip() or fallback
+
+
+# "2026-10-19 Dev sync - integrations" for a meeting's export files.
+def _export_name(meeting: dict) -> str:
+    day = str(meeting.get('started_at') or '')[:10]
+    return _safe_name(f"{day} {meeting.get('title') or ''}".strip(), str(meeting.get('id') or 'Meeting'))
+
 # Links the app may open in the default browser.
 _URL_ALLOW = ('https://github.com/drajb/whisper-local', 'https://ollama.com', 'https://huggingface.co',
               'https://developer.microsoft.com/microsoft-edge/webview2', 'https://go.microsoft.com',
@@ -659,16 +672,123 @@ class Bridge:
     def meeting_delete(self, meeting_id):
         return self._meetings.delete(meeting_id)
 
-    # Writes the export where the user picks; returns the path or None.
+    # Writes the export where the user picks; returns the path or None. An
+    # md export with screenshots gets its PNGs copied into "<name>-shots/"
+    # next to the file, where its image links point.
     @_api
     def meeting_export(self, meeting_id, fmt='txt'):
-        text = self._meetings.export(meeting_id, fmt)
-        path = self._host.pick('save', 'Export meeting', filename=f'{meeting_id}.{fmt}')
+        svc = self._meetings
+        meeting = svc.get(meeting_id)
+        path = self._host.pick('save', 'Export meeting', filename=f'{_export_name(meeting)}.{fmt}')
         if not path:
             return None
+        shots = meeting.get('screenshots', []) if fmt == 'md' else []
+        folder = ''
+        if shots:
+            import shutil
+            folder = os.path.splitext(os.path.basename(path))[0] + '-shots'
+            target = os.path.join(os.path.dirname(path), folder)
+            os.makedirs(target, exist_ok=True)
+            for shot in shots:
+                try:
+                    shutil.copy2(svc.store.shot_path(meeting_id, shot['image']), os.path.join(target, shot['image']))
+                except FileNotFoundError:
+                    logger.warning(f"Screenshot {shot['image']} is missing; the export links it anyway")
+        text = svc.export(meeting_id, fmt, shots_folder=folder)
         with open(path, 'w', encoding='utf-8') as f:
             f.write(text)
         return path
+
+    # ── Meeting brief: the summary the AI writes, and its PDF ────────────────
+
+    # The meeting's brief, or None when there is no summary yet.
+    @_api
+    def meeting_brief(self, meeting_id):
+        return self._meetings.brief(str(meeting_id))
+
+    # The Summary tab as a PDF where the user picks; the page opens its
+    # sections and applies its print styles before calling. None = cancelled.
+    @_api
+    def meeting_export_pdf(self, meeting_id, title=''):
+        name = _safe_name(title, str(meeting_id))
+        path = self._host.pick('save', 'Export the summary as PDF', types=('PDF (*.pdf)',), filename=f'{name}.pdf')
+        if not path:
+            return None
+        if not self._host.print_pdf(path):
+            raise RuntimeError("Couldn't write the PDF")
+        return path
+
+    # ── Meeting in Google Drive ──────────────────────────────────────────────
+
+    # Saves the meeting as a Google Doc (Quick summary, Report, Transcript)
+    # in "Koli/Meetings/<name>/"; a second save replaces the doc there.
+    @_api
+    def meeting_drive_export(self, meeting_id):
+        return self._meetings.export_to_drive(str(meeting_id))
+
+    # Opens the saved doc (or its folder) in the browser, where Google's own
+    # Share button decides who can see it. Only Google links ever open.
+    @_api
+    def meeting_drive_open(self, meeting_id, which='doc'):
+        saved = self._meetings.get(str(meeting_id)).get('drive') or {}
+        url = str(saved.get('folder_url' if which == 'folder' else 'doc_url') or '')
+        if not url:
+            raise ValueError("This meeting isn't in Google Drive yet")
+        if not url.startswith(('https://docs.google.com/', 'https://drive.google.com/')):
+            raise ValueError("That isn't a Google Drive link")
+        webbrowser.open(url)
+        return url
+
+    # Google's own Share window: Drive for desktop's, for the doc it synced
+    # (platform/*/drive_share.py). Without Drive for desktop, or before the
+    # doc has synced, the doc opens in the browser and its Share button does
+    # the same. {'window': True} when the Share window opened.
+    @_api
+    def meeting_drive_share(self, meeting_id):
+        import os
+        from pathlib import Path
+        svc = self._meetings
+        meeting = svc.get(str(meeting_id))
+        saved = meeting.get('drive') or {}
+        if not saved.get('doc_id'):
+            raise ValueError("This meeting isn't in Google Drive yet")
+        share = getattr(self, '_drive_share', None)
+        if share is None:
+            from ..platform import drive_share as share
+        email = (getattr(self, '_drive_email', None) or self._drive_account_email)()
+        exists = getattr(self, '_file_exists', None) or os.path.exists
+        name = saved.get('name')
+        if not name:
+            from ..meeting.gdoc import folder_name
+            name = folder_name(meeting, svc.brief(str(meeting_id)) or {})
+        root = share.local_root(email) if share.available() else None
+        if root is not None:
+            path = Path(root) / 'My Drive' / 'Koli' / 'Meetings' / name / f"{name}.gdoc"
+            if exists(str(path)) and share.show_share(path):
+                return {'window': True}
+        self.meeting_drive_open(meeting_id)
+        return {'window': False}
+
+    @staticmethod
+    def _drive_account_email() -> str:
+        from .. import drive
+        return str(drive.ACCOUNT.status().get('email') or '')
+
+    # ── Meeting screenshots (docs/design/meeting-screenshots.md) ─────────────
+
+    # The camera button: snip into the running meeting. {'ok', 'reason'}.
+    @_api
+    def meeting_screenshot(self):
+        return self._meetings.screenshot()
+
+    @_api
+    def meeting_caption(self, meeting_id, image, caption):
+        return self._meetings.set_caption(str(meeting_id), str(image), str(caption or ''))
+
+    # A screenshot as a data URL for an <img>.
+    @_api
+    def meeting_image(self, meeting_id, image):
+        return self._meetings.image(str(meeting_id), str(image))
 
     @_api
     def meeting_resize(self, width, height):

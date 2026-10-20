@@ -76,6 +76,94 @@ class StoreTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             export_text(m, 'pdf')
 
+    # ── Screenshots (docs/design/meeting-screenshots.md) ─────────────────────
+
+    def _manual(self, mid='2026-10-11-143012'):
+        from koli.meeting.store import new_meeting
+        return new_meeting(mid, 'Sync', {'app': '', 'kind': 'manual', 'title': '', 'code': ''}, at(30, 12))
+
+    def test_new_meeting_has_empty_screenshots(self):
+        self.assertEqual(self._manual()['screenshots'], [])
+
+    def test_save_shot_names_by_offset_and_delete_removes_folder(self):
+        from PIL import Image
+        from koli.meeting.store import shot_name
+        m = self._manual()
+        self.store.save(m)
+        self.assertEqual(shot_name(279.4), '0279.40.png')
+        name = self.store.save_shot(m['id'], 279.4, Image.new('P', (4, 4)))
+        self.assertEqual(name, '0279.40.png')
+        self.assertEqual(self.store.save_shot(m['id'], 279.4, Image.new('RGB', (4, 4))), '0279.40-2.png')
+        self.assertTrue(self.store.shot_path(m['id'], name).exists())
+        with self.assertRaises(FileNotFoundError):
+            self.store.shot_path(m['id'], '../x.png')
+        self.store.delete(m['id'])
+        self.assertFalse(self.store.shots_dir(m['id']).exists())
+
+    def test_rows_by_time_places_a_screenshot_before_later_speech(self):
+        from koli.meeting.store import rows_by_time
+        m = self._manual()
+        m['turns'] = [{'start': 120.0, 'end': 125.0, 'stream': 'loopback', 'speaker': 's1', 'text': 'late', 'lang': 'en'},
+                      {'start': 90.0, 'end': 95.0, 'stream': 'mic', 'speaker': 'you', 'text': 'early', 'lang': 'en'}]
+        m['screenshots'] = [{'at': 100.0, 'image': '0100.00.png', 'caption': 'docs', 'description': None}]
+        kinds = [(r['kind'], r.get('text') or r.get('image')) for r in rows_by_time(m)]
+        self.assertEqual(kinds, [('turn', 'early'), ('shot', '0100.00.png'), ('turn', 'late')])
+
+    def test_export_prints_screenshot_lines(self):
+        from koli.meeting.store import duration_s, export_text, header
+        m = self._manual()
+        m['turns'] = [{'start': 3.0, 'end': 7.0, 'stream': 'mic', 'speaker': 'you', 'text': 'hi', 'lang': 'en'}]
+        m['screenshots'] = [{'at': 279.4, 'image': '0279.40.png', 'caption': 'S3 docs', 'description': None},
+                            {'at': 300.0, 'image': '0300.00.png', 'caption': '', 'description': None}]
+        txt = export_text(m, 'txt')
+        self.assertIn('[04:39] Screenshot: S3 docs', txt)
+        self.assertIn('[05:00] Screenshot: 0300.00.png', txt)
+        md = export_text(m, 'md', shots_folder='sync-shots')
+        self.assertIn('![S3 docs](sync-shots/0279.40.png)', md)
+        self.assertEqual(header(m)['screenshots'], 2)
+        self.assertEqual(duration_s(m), 300.0)
+
+    def test_move_shots_renames_on_clash(self):
+        from PIL import Image
+        a, b = self._manual(), self._manual('2026-10-11-150000')
+        self.store.save(a)
+        self.store.save(b)
+        self.store.save_shot(a['id'], 10.0, Image.new('RGB', (2, 2)))
+        self.store.save_shot(b['id'], 10.0, Image.new('RGB', (2, 2)))
+        entries = [{'at': 10.0, 'image': '0010.00.png', 'caption': '', 'description': None}]
+        self.store.move_shots(b['id'], a['id'], entries)
+        self.assertEqual(entries[0]['image'], '0010.00-2.png')
+        self.assertTrue(self.store.shot_path(a['id'], '0010.00-2.png').exists())
+        self.assertFalse(self.store.shots_dir(b['id']).exists())
+
+    # ── The brief (the summary the AI writes; docs/design/meeting-brief.md) ──
+
+    def test_brief_beside_the_meeting_is_not_a_meeting(self):
+        m = self._manual()
+        self.store.save(m)
+        self.assertIsNone(self.store.load_brief(m['id']))
+        self.store.save_brief(m['id'], {'version': 1, 'tldr': ['Short.'], 'topics': []})
+        self.assertEqual(self.store.load_brief(m['id'])['tldr'], ['Short.'])
+        self.assertEqual([h['id'] for h in self.store.list()], [m['id']])
+        self.assertTrue(self.store.list()[0]['brief'])
+        self.store.delete(m['id'])
+        self.assertFalse(self.store.brief_path(m['id']).exists())
+
+    def test_saving_a_brief_gives_the_meeting_its_title(self):
+        m = self._manual()
+        self.store.save(m)
+        self.store.save_brief(m['id'], {'version': 1, 'title': 'Dev sync: integrations and SEO', 'tldr': []})
+        self.assertEqual(self.store.load(m['id'])['title'], 'Dev sync: integrations and SEO')
+        self.assertEqual(self.store.list()[0]['title'], 'Dev sync: integrations and SEO')
+        self.store.save_brief(m['id'], {'version': 1, 'title': '', 'tldr': []})
+        self.assertEqual(self.store.load(m['id'])['title'], 'Dev sync: integrations and SEO')
+
+    def test_unreadable_brief_reads_as_none(self):
+        m = self._manual()
+        self.store.save(m)
+        self.store.brief_path(m['id']).write_text('{broken', encoding='utf-8')
+        self.assertIsNone(self.store.load_brief(m['id']))
+
     def test_throttled_saver_writes_once_until_flushed(self):
         from koli.meeting.store import ThrottledSaver, new_meeting
         m = new_meeting('2026-10-11-143012', 'x', {'app': 'zoom.exe', 'kind': 'native', 'title': '', 'code': ''}, at(0))
@@ -257,6 +345,75 @@ class SessionTests(unittest.TestCase):
         self.assertEqual([t['text'] for t in self.sm.current()['turns']], ['second'])
         self.assertEqual([t['text'] for t in self.store.load(m['id'])['turns']], ['first'])
         self.assertIsNotNone(self.store.load(m['id'])['ended_at'])
+
+    # ── Screenshots (docs/design/meeting-screenshots.md) ─────────────────────
+
+    def _png(self):
+        from PIL import Image
+        return Image.new('RGB', (2, 2))
+
+    def test_add_screenshot_lands_in_the_live_meeting_and_publishes(self):
+        m = self.live()
+        self.clock.advance(100)
+        shot = self.sm.add_screenshot(m['id'], self._png(), self.clock.now().timestamp())
+        self.assertEqual(shot, {'at': 100.0, 'image': '0100.00.png', 'caption': '', 'description': None})
+        self.assertEqual(self.sm.current()['screenshots'], [shot])
+        self.assertIn(('meeting_shot', {'id': m['id'], 'shot': shot}), self.events)
+        self.assertEqual(self.sm.state_payload()['screenshots'], 'key')
+        self.assertTrue(self.store.shot_path(m['id'], shot['image']).exists())
+
+    def test_screenshot_after_end_goes_to_that_meeting_file(self):
+        m = self.live()
+        self.sm.end()
+        self.sm.add_screenshot(m['id'], self._png(), self.clock.now().timestamp() + 1)
+        self.assertEqual(len(self.store.load(m['id'])['screenshots']), 1)
+        self.assertIsNone(self.sm.add_screenshot('2000-01-01-000000', self._png(), 0.0))
+
+    def test_caption_by_image_name_survives_turn_removal(self):
+        m = self.live()
+        shot = self.sm.add_screenshot(m['id'], self._png(), self.clock.now().timestamp() + 5)
+        self.assertTrue(self.sm.set_caption(m['id'], shot['image'], 'S3 docs'))
+        self.assertEqual(self.sm.current()['screenshots'][0]['caption'], 'S3 docs')
+        self.assertEqual(self.events[-1], ('meeting_shot', {'id': m['id'], 'shot': self.sm.current()['screenshots'][0], 'caption': True}))
+        self.assertFalse(self.sm.set_caption(m['id'], 'nope.png', 'x'))
+        self.sm.end()
+        self.assertTrue(self.sm.set_caption(m['id'], shot['image'], 'later'))
+        self.assertEqual(self.store.load(m['id'])['screenshots'][0]['caption'], 'later')
+
+    def test_continue_previous_moves_screenshots_and_files(self):
+        first = self.live(meet('abc-defg-hij'))
+        self.sm.add_screenshot(first['id'], self._png(), started_at(first) + 10)
+        self.sm.on_sources([])
+        self.clock.advance(60)
+        self.sm.on_sources([meet('zzz-zzzz-zzz')])
+        self.sm.on_speech(4.0)
+        second = self.sm.current()
+        self.assertNotEqual(second['id'], first['id'])
+        self.sm.add_screenshot(second['id'], self._png(), started_at(second) + 10)
+        self.sm.continue_previous()
+        cur = self.sm.current()
+        self.assertEqual(cur['id'], first['id'])
+        offset = started_at(second) - started_at(first)
+        self.assertEqual([s['at'] for s in cur['screenshots']], [10.0, round(offset + 10, 2)])
+        self.assertEqual([s['image'] for s in cur['screenshots']], ['0010.00.png', '0010.00-2.png'])
+        self.assertTrue(all(self.store.shot_path(first['id'], s['image']).exists() for s in cur['screenshots']))
+        self.assertFalse(self.store.shots_dir(second['id']).exists())
+
+    def test_split_resumed_carries_later_screenshots(self):
+        m = self.live()
+        base = started_at(m)
+        self.sm.add_screenshot(m['id'], self._png(), base + 1)
+        self.sm.on_sources([])
+        self.clock.advance(60)
+        self.sm.on_sources([discord()])
+        self.sm.add_screenshot(m['id'], self._png(), base + 70)
+        self.sm.split_resumed()
+        fresh = self.sm.current()
+        self.assertNotEqual(fresh['id'], m['id'])
+        self.assertEqual([s['at'] for s in fresh['screenshots']], [10.0])
+        self.assertEqual([s['at'] for s in self.store.load(m['id'])['screenshots']], [1.0])
+        self.assertTrue(self.store.shot_path(fresh['id'], fresh['screenshots'][0]['image']).exists())
+        self.assertTrue(self.store.shot_path(m['id'], '0001.00.png').exists())
 
     def test_manual_start_without_source_and_end(self):
         self.sm.start()
@@ -2295,3 +2452,309 @@ class ServiceVoicesTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+# Screenshots in the service (docs/design/meeting-screenshots.md): the key
+# flow (overlay, wait for the clipboard), the every-snip watcher, captions
+# and images, with a fake platform module instead of Windows.
+class FakeShots:
+    def __init__(self):
+        self.sequence = 0
+        self.image = None       # what grab_snip returns
+        self.overlay = True     # overlay_open() while a snip is expected
+        self.opened = 0
+
+    def available(self): return True
+    def open_overlay(self): self.opened += 1
+    def clipboard_sequence(self): return self.sequence
+    def overlay_open(self): return self.overlay
+    def grab_snip(self): return self.image
+    def clipboard_owner_is_snip(self): return self.image is not None
+
+
+class ScreenshotFlowTests(unittest.TestCase):
+    def setUp(self):
+        from koli.services.meetings import MeetingService
+        from koli.meeting.store import MeetingStore
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.settings = {'meeting.enabled': False, 'meeting.detect': 'auto', 'meeting.include_me': True,
+                         'meeting.gap_minutes': 10, 'meeting.start_speech_seconds': 3, 'meeting.countdown_seconds': 0,
+                         'meeting.language': 'auto', 'meeting.model': '', 'meeting.speaker_model': 'eres2net',
+                         'meeting.screenshots': 'key'}
+        ctx = type('Ctx', (), {})()
+        ctx.state_manager = FakeStateManager()
+        ctx.config_manager = FakeConfig(self.settings)
+        ctx.model_registry = None
+        self.events = []
+        self.shots = FakeShots()
+        fake_loopback = type('L', (), {'start': lambda s: None, 'stop': lambda s: None})
+        self.svc = MeetingService(ctx, store=MeetingStore(Path(self.tmp.name)),
+                                  publish=lambda t, p: self.events.append((t, p)),
+                                  loopback_factory=lambda on_block, on_error, device=None: fake_loopback(),
+                                  embedder_factory=lambda: None, loopback_available=lambda: True,
+                                  sessions_fn=lambda: [], shots=self.shots, autostart=False)
+        self.addCleanup(self.svc.shutdown)
+
+    def png(self):
+        from PIL import Image
+        return Image.new('RGB', (2, 2))
+
+    def start_live(self):
+        self.svc.start()
+        return self.svc.session.current()
+
+    def wait_until(self, cond, timeout=2.0):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if cond():
+                return True
+            time.sleep(0.02)
+        self.fail('timed out waiting')
+
+    def shots_of(self, m):
+        return self.svc.session.current()['screenshots'] if self.svc.session.current() else self.svc.store.load(m['id'])['screenshots']
+
+    def test_key_flow_records_the_snip_once(self):
+        m = self.start_live()
+        self.assertEqual(self.svc.screenshot(), {'ok': True})
+        self.assertEqual(self.shots.opened, 1)
+        self.assertEqual(self.svc.screenshot(), {'ok': False, 'reason': 'busy'})
+        self.shots.sequence += 1
+        self.shots.image = self.png()
+        self.wait_until(lambda: self.shots_of(m))
+        self.wait_until(lambda: self.svc._expecting is None)
+        time.sleep(0.3)
+        self.assertEqual(len(self.shots_of(m)), 1)
+        self.assertEqual(self.events[-1][0], 'meeting_shot')
+
+    def test_esc_clears_expecting_and_a_later_snip_stays_private(self):
+        m = self.start_live()
+        self.svc.screenshot()
+        self.shots.overlay = False
+        self.wait_until(lambda: self.svc._expecting is None)
+        self.shots.sequence += 1
+        self.shots.image = self.png()
+        time.sleep(0.4)
+        self.assertEqual(self.shots_of(m), [])
+
+    def test_all_mode_watcher_records_a_plain_snip_and_ignores_non_snips(self):
+        self.settings['meeting.screenshots'] = 'all'
+        m = self.start_live()
+        self.shots.sequence += 1
+        self.shots.image = self.png()
+        self.wait_until(lambda: self.shots_of(m))
+        self.shots.sequence += 1
+        self.shots.image = None            # grab_snip says: not a snip
+        time.sleep(0.4)
+        self.assertEqual(len(self.shots_of(m)), 1)
+        self.svc.end()
+        self.wait_until(lambda: self.svc._watcher is None)
+
+    def test_switching_to_all_during_a_meeting_starts_the_watcher(self):
+        self.start_live()
+        self.assertIsNone(self.svc._watcher)
+        self.settings['meeting.screenshots'] = 'all'
+        self.svc.apply_setting('meeting.screenshots', 'all')
+        self.assertIsNotNone(self.svc._watcher)
+        self.settings['meeting.screenshots'] = 'key'
+        self.svc.apply_setting('meeting.screenshots', 'key')
+        self.wait_until(lambda: self.svc._watcher is None)
+
+    def test_off_and_no_meeting_do_nothing(self):
+        self.settings['meeting.screenshots'] = 'off'
+        self.assertEqual(self.svc.screenshot(), {'ok': False, 'reason': 'no meeting'})
+        self.start_live()
+        self.assertEqual(self.svc.screenshot(), {'ok': False, 'reason': 'no meeting'})
+        self.assertEqual(self.shots.opened, 0)
+
+    def test_snip_after_end_lands_in_the_meeting_pressed_in(self):
+        m = self.start_live()
+        self.svc.screenshot()
+        self.svc.end()
+        self.shots.sequence += 1
+        self.shots.image = self.png()
+        self.wait_until(lambda: self.svc.store.load(m['id'])['screenshots'])
+
+    def test_image_returns_a_data_url_and_caption_saves(self):
+        m = self.start_live()
+        shot = self.svc.session.add_screenshot(m['id'], self.png(), time.time())
+        self.assertTrue(self.svc.image(m['id'], shot['image'])['url'].startswith('data:image/png;base64,'))
+        self.assertTrue(self.svc.set_caption(m['id'], shot['image'], 'hi'))
+        self.assertEqual(self.svc.get(m['id'])['screenshots'][0]['caption'], 'hi')
+        with self.assertRaises(FileNotFoundError):
+            self.svc.image(m['id'], 'nope.png')
+
+
+# Found in the final review of feat/meeting-screenshots: the key flow and
+# the watcher must agree on one snip, a slow overlay must not lose a snip,
+# switching to Never must take the button away, and a slow PNG save must
+# not hold the session lock.
+class ScreenshotReviewFixTests(ScreenshotFlowTests):
+    def test_all_mode_with_a_key_snip_records_exactly_once(self):
+        self.settings['meeting.screenshots'] = 'all'
+        m = self.start_live()
+        self.assertEqual(self.svc.screenshot(), {'ok': True})
+        self.shots.sequence += 1
+        self.shots.image = self.png()
+        self.wait_until(lambda: self.shots_of(m))
+        self.wait_until(lambda: self.svc._expecting is None)
+        time.sleep(0.7)
+        self.assertEqual(len(self.shots_of(m)), 1)
+
+    def test_an_overlay_slow_to_appear_still_keeps_the_snip(self):
+        m = self.start_live()
+        self.shots.overlay = False          # ScreenClippingHost not up yet
+        self.svc.screenshot()
+        time.sleep(0.8)
+        self.assertIsNotNone(self.svc._expecting)
+        self.shots.overlay = True
+        self.shots.sequence += 1
+        self.shots.image = self.png()
+        self.wait_until(lambda: self.shots_of(m))
+
+    def test_clipboard_written_just_after_the_overlay_hides_is_kept(self):
+        m = self.start_live()
+        self.svc.screenshot()
+        time.sleep(0.7)
+        self.shots.overlay = False          # the tool hides, then writes the clipboard
+        time.sleep(0.3)
+        self.shots.sequence += 1
+        self.shots.image = self.png()
+        self.wait_until(lambda: self.shots_of(m))
+
+    def test_switching_to_never_sends_a_fresh_state_without_the_button(self):
+        self.start_live()
+        self.settings['meeting.screenshots'] = 'off'
+        self.svc.apply_setting('meeting.screenshots', 'off')
+        self.assertEqual(self.events[-1][0], 'meeting')
+        self.assertEqual(self.events[-1][1]['screenshots'], 'off')
+
+    def test_a_slow_png_save_does_not_hold_the_session_lock(self):
+        import threading
+        m = self.start_live()
+
+        class SlowImage:
+            def save(self, path, format=None):
+                time.sleep(0.6)
+                self.png().save(path, format=format)
+            png = staticmethod(self.png)
+        done = threading.Thread(target=lambda: self.svc.session.add_screenshot(m['id'], SlowImage(), time.time()))
+        done.start()
+        time.sleep(0.1)
+        t0 = time.monotonic()
+        self.svc.session.state_payload()
+        self.assertLess(time.monotonic() - t0, 0.3)
+        done.join(2)
+        self.assertEqual(len(self.shots_of(m)), 1)
+
+
+# A meeting saved to Google Drive as one Google Doc with three tabs (Quick
+# summary first, then Report and Transcript) in "Koli/Meetings/<name>/".
+BRIEF = {'version': 1, 'title': 'Dev sync: SEO', 'tldr': ['We agreed on SEO first.'],
+         'decisions': [{'id': 'D1', 'text': 'SEO starts now.', 'at': 65}],
+         'action_items': [{'id': 'A1', 'task': 'Fix titles.', 'owner': 'David', 'status': 'do_now', 'due': None, 'at': 70},
+                          {'id': 'A2', 'task': 'Plan DLP.', 'owner': None, 'status': 'plan_only', 'due': None, 'at': 90}],
+         'open_questions': [{'id': 'Q1', 'text': 'One API or two?', 'at': 30}], 'parked': [{'id': 'P1', 'text': 'VDR.'}],
+         'topics': [{'id': 'T1', 'title': 'SEO', 'start': 0, 'end': 120, 'lead': 'Quick wins first.', 'points': ['Home page.'],
+                     'quotes': [{'text': 'נתחיל עם דף הבית', 'who': 'Eran', 'at': 60}]}],
+         'roles': {'s1': 'Led'}}
+
+
+def brief_meeting():
+    from koli.meeting.store import new_meeting
+    m = new_meeting('2026-10-19-124711', 'Dev sync: SEO', {'app': '', 'kind': 'manual', 'title': '', 'code': ''},
+                    datetime.datetime(2026, 10, 19, 12, 47, 11, tzinfo=TZ))
+    m['speakers'].append({'id': 's1', 'name': 'Eran', 'colour': 1})
+    m['turns'] = [{'start': 0.5, 'end': 9.0, 'stream': 'loopback', 'speaker': 's1', 'text': 'נתחיל עם דף הבית', 'lang': 'he'},
+                  {'start': 10.0, 'end': 14.0, 'stream': 'mic', 'speaker': 'you', 'text': 'Agreed.', 'lang': 'en'}]
+    m['ended_at'] = '2026-10-19T13:10:36+03:00'
+    return m
+
+
+class GoogleDocTests(unittest.TestCase):
+    def test_quick_summary_is_bottom_lines(self):
+        from koli.meeting import gdoc
+        text = ''.join(r['insertText']['text'] for r in gdoc.quick_requests(brief_meeting(), BRIEF, 't.q') if 'insertText' in r)
+        for line in ('We agreed on SEO first.', 'SEO starts now.', 'Fix titles. · David · Do now',
+                     'Plan DLP. · Owner not set · Plan only', 'One API or two?', 'VDR.', '00:00–02:00 SEO: Quick wins first.'):
+            self.assertIn(line, text)
+        self.assertNotIn('Talk time', text)
+
+    def test_transcript_requests_write_every_turn_right_to_left(self):
+        from koli.meeting import gdoc
+        reqs = gdoc.transcript_requests(brief_meeting(), BRIEF, 't.t')
+        text = reqs[0]['insertText']['text']
+        self.assertIn('[00:00] Eran: נתחיל עם דף הבית', text)
+        self.assertIn('[00:10] You: Agreed.', text)
+        rtl = [r for r in reqs if r.get('updateParagraphStyle', {}).get('paragraphStyle', {}).get('direction') == 'RIGHT_TO_LEFT']
+        self.assertEqual(len(rtl), 2)
+        self.assertTrue(all(r['insertText']['location']['tabId'] == 't.t' for r in reqs if 'insertText' in r))
+
+    def test_report_html_has_the_sections_and_charts(self):
+        from koli.meeting import gdoc
+        page = gdoc.report_html(brief_meeting(), BRIEF, {})
+        for part in ('<h2>Summary</h2>', '<h2>Decisions</h2>', '<h2>Action items</h2>', '<h2>Who spoke</h2>',
+                     '<h2>How the meeting went</h2>', 'data:image/png;base64,', "dir='rtl'"):
+            self.assertIn(part, page)
+
+    def test_folder_name_is_date_and_title(self):
+        from koli.meeting import gdoc
+        self.assertEqual(gdoc.folder_name(brief_meeting(), BRIEF), '2026-10-19 Dev sync - SEO')
+
+    def test_export_builds_the_doc_and_remembers_it(self):
+        from koli.meeting import gdoc
+        from koli.meeting.store import MeetingStore
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        store = MeetingStore(Path(tmp.name))
+        m = brief_meeting()
+        store.save(m)
+        store.save_brief(m['id'], BRIEF)
+        calls = []
+
+        class FakeDrive:
+            def ensure_folder(self, path):
+                calls.append(('folder', path)); return 'F1'
+            def upload_bytes(self, data, name, mime, folder_id=None, file_id=None, convert_to=None):
+                calls.append(('upload', name, mime, folder_id, convert_to)); return {'id': 'D1'}
+            def delete(self, file_id):
+                calls.append(('trash', file_id))
+            def info(self, file_id):
+                return {'webViewLink': f'https://docs.google.com/document/d/{file_id}/edit'}
+
+        class FakeDocs:
+            def get(self, doc_id):
+                return {'tabs': [{'tabProperties': {'tabId': 't.0', 'title': 'Tab 1'}}]}
+            def batch_update(self, doc_id, requests):
+                calls.append(('batch', len(requests), [next(iter(r)) for r in requests][:3]))
+                replies = []
+                for r in requests:
+                    if 'addDocumentTab' in r:
+                        title = r['addDocumentTab']['tabProperties']['title']
+                        replies.append({'addDocumentTab': {'tabProperties': {'tabId': 't.' + title[0].lower(), 'title': title}}})
+                    else:
+                        replies.append({})
+                return {'replies': replies}
+
+        out = gdoc.export(store, m['id'], drive=FakeDrive(), docs=FakeDocs())
+        self.assertEqual(calls[0], ('folder', 'Koli/Meetings/2026-10-19 Dev sync - SEO'))
+        self.assertEqual(calls[1], ('upload', '2026-10-19 Dev sync - SEO', 'text/html', 'F1', 'application/vnd.google-apps.document'))
+        self.assertEqual(out['doc_id'], 'D1')
+        self.assertEqual(store.load(m['id'])['drive']['doc_id'], 'D1')
+        self.assertEqual(store.load(m['id'])['drive']['folder_id'], 'F1')
+        # A second export replaces the doc in the same folder.
+        calls.clear()
+        gdoc.export(store, m['id'], drive=FakeDrive(), docs=FakeDocs())
+        self.assertIn(('trash', 'D1'), calls)
+
+    def test_export_needs_a_brief(self):
+        from koli.meeting import gdoc
+        from koli.meeting.store import MeetingStore
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        store = MeetingStore(Path(tmp.name))
+        m = brief_meeting()
+        store.save(m)
+        with self.assertRaises(ValueError):
+            gdoc.export(store, m['id'], drive=object(), docs=object())

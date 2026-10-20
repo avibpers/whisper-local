@@ -38,8 +38,8 @@ PANEL_HIDE_DELAY = 2.5
 
 # Topics each page cares about. Latest-wins topics are coalesced per batch.
 BAR_TOPICS = {'state', 'bar', 'pipeline', 'notify', 'task', 'level', 'streaming_text', 'settings',
-              'profile', 'window', 'auto_send', 'problem', 'meeting', 'wake', 'agent'}
-PANEL_TOPICS = {'meeting', 'meeting_turn', 'settings', 'task', 'problem'}
+              'profile', 'window', 'auto_send', 'problem', 'meeting', 'meeting_shot', 'wake', 'agent'}
+PANEL_TOPICS = {'meeting', 'meeting_turn', 'meeting_shot', 'settings', 'task', 'problem'}
 COALESCE = {'level', 'vad', 'foreground', 'streaming_text'}
 PUSH_INTERVAL = 0.05
 
@@ -64,6 +64,9 @@ def ui_available() -> tuple:
 # pywebview imports it (through its WinForms module). True when the wrapper is
 # in place; _drag_regions_applied says whether WebView2 accepted the setting.
 _drag_regions_applied = threading.Event()
+# Each window's WebView2 wrapper, by pywebview window uid, caught in the same
+# hook: print-to-PDF needs the CoreWebView2 that pywebview keeps to itself.
+_chromes = {}
 
 
 def _enable_drag_regions() -> bool:
@@ -80,6 +83,10 @@ def _enable_drag_regions() -> bool:
         return True
 
     def on_webview_ready(chrome, sender, args):
+        try:
+            _chromes[chrome.pywebview_window.uid] = chrome
+        except Exception:
+            pass
         try:
             if args.IsSuccess:
                 sender.CoreWebView2.Settings.IsNonClientRegionSupportEnabled = True
@@ -450,6 +457,32 @@ class UiHost:
         except Exception:
             pass
 
+    # The main window's page as a PDF at `path`, through WebView2's own
+    # print-to-PDF (the page's print styles decide what is in it). Runs the
+    # call on the window's thread and waits for the file. True when written.
+    def print_pdf(self, path, timeout=60.0) -> bool:
+        chrome = _chromes.get(getattr(self.main.window, 'uid', None))
+        if chrome is None:
+            raise RuntimeError('PDF export needs the app window (WebView2)')
+        from System import Action
+        started = {}
+
+        def start():
+            core = chrome.webview.CoreWebView2
+            settings = core.Environment.CreatePrintSettings()
+            settings.ShouldPrintBackgrounds = True
+            settings.ShouldPrintHeaderAndFooter = False
+            started['task'] = core.PrintToPdfAsync(str(path), settings)
+
+        chrome.webview.Invoke(Action(start))
+        task = started.get('task')
+        deadline = time.monotonic() + timeout
+        while task is not None and not task.IsCompleted and time.monotonic() < deadline:
+            time.sleep(0.05)
+        ok = bool(task is not None and task.IsCompleted and not task.IsFaulted and task.Result)
+        logger.info(f"Meeting brief PDF {'written' if ok else 'failed'}: {path}")
+        return ok
+
     def pick(self, kind, title, types=None, filename=''):
         import webview
         dialog = {'folder': webview.FileDialog.FOLDER, 'open': webview.FileDialog.OPEN,
@@ -811,6 +844,7 @@ class UiHost:
             svc = getattr(self.ctx, 'meetings', None)
             data['meeting'] = state
             data['turns'] = svc.turns(state['id']) if svc and state.get('id') else []
+            data['screenshots'] = svc.get(state['id']).get('screenshots', []) if svc and state.get('id') else []
         else:
             # The resting tab's shape where the bubble sits now, and the
             # meeting (a detected call counts down in the bubble too).

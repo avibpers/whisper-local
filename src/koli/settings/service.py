@@ -19,11 +19,23 @@ logger = logging.getLogger(__name__)
 HOTKEY_PATHS = ('hotkey.recording_hotkey', 'hotkey.stop_key', 'hotkey.auto_send_key',
                 'hotkey.cancel_combination', 'hotkey.command_hotkey', 'hotkey.rephrase_hotkey',
                 'hotkey.pause_hotkey', 'hotkey.paste_last_hotkey', 'hotkey.meeting_hotkey',
-                'hotkey.meeting_mute_hotkey')
+                'hotkey.meeting_mute_hotkey', 'hotkey.meeting_screenshot_hotkey')
+
+# Settings that only make sense where the platform can do the thing: hidden
+# from the page elsewhere (has() says no), though the config still has them.
+_NEEDS_SCREENSHOTS = ('meeting.screenshots', 'hotkey.meeting_screenshot_hotkey')
 
 
 class SettingsError(ValueError):
     pass
+
+
+def _screenshots_available() -> bool:
+    try:
+        from ..platform import screenshots
+        return bool(screenshots.available())
+    except Exception:
+        return False
 
 
 # Keys in a shortcut the OS hotkey backend can't register. Without a backend
@@ -68,6 +80,8 @@ class SettingsService:
         return self.cm.get_path(path, default)
 
     def has(self, path: str) -> bool:
+        if path in _NEEDS_SCREENSHOTS and not _screenshots_available():
+            return False
         sentinel = object()
         return self.cm.get_path(path, sentinel) is not sentinel
 

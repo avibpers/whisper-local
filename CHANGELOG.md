@@ -5,6 +5,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 ## [Unreleased]
 
 ### Added
+- **Screenshots in meetings.** A snip you take during a meeting joins the
+  transcript at that moment: Settings → Meetings → **Screenshots in
+  meetings** chooses *Only with my key* (a new **Screenshot into the
+  meeting** hotkey, plus a camera button in the bubble and the panel open
+  the Windows snip overlay), *Every Win+Shift+S snip*, or *Never*. The PNGs
+  live beside the meeting; the panel and the Meetings screen show them
+  among the turns with a caption you can write, the md export carries them
+  in a folder next to the file. Windows only (design:
+  `docs/design/meeting-screenshots.md`).
 - **Google Drive.** Settings › Google Drive signs Koli in to one Google
   account: paste a Google OAuth client id and secret, press Connect, sign in
   in the browser. Koli can now put files in Drive, read them back and make a

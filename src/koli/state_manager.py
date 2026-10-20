@@ -1802,6 +1802,15 @@ class StateManager:
         self.system_tray.notify("Microphone muted for every app" if muted else "Microphone on")
         return True
 
+    # The screenshot hotkey: snip into the running meeting (nothing outside one).
+    def meeting_screenshot(self) -> bool:
+        if self.meetings is None:
+            return False
+        result = self.meetings.screenshot()
+        if not result.get('ok') and result.get('reason') == 'no meeting':
+            self.system_tray.notify("No meeting is running")
+        return bool(result.get('ok'))
+
     def _emit_pipeline(self, stage: str, **data):
         data['stage'] = stage
         data['t'] = time.time()

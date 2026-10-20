@@ -2730,6 +2730,19 @@ class UserReportedSeptemberTests(unittest.TestCase):
         self.assertIn('code.exe', said)
         self.assertIn('app_rules.yaml', said, 'tell them where to change it')
 
+    # Meeting screenshots (docs/design/meeting-screenshots.md): the snip
+    # overlay and the clipboard, mirrored on both platforms.
+    def test_screenshots_platform_module_has_the_contract(self):
+        try:
+            from koli.platform import app as platform_app  # noqa: F401
+        except Exception:
+            self.skipTest('platform backend not importable in this env')
+        from koli.platform import screenshots
+        for name in ('available', 'open_overlay', 'clipboard_sequence', 'overlay_open', 'grab_snip', 'clipboard_owner_is_snip'):
+            self.assertTrue(callable(getattr(screenshots, name, None)), name)
+        self.assertIsInstance(screenshots.clipboard_sequence(), int)
+        self.assertIsInstance(screenshots.overlay_open(), bool)
+
     # --- #13: macOS 27 SIGTRAP from off-main-thread tray writes ---
     def test_platform_exposes_ui_thread_marshal(self):
         # Importing the platform package loads the OS backend (win32api /
@@ -4116,6 +4129,20 @@ class InstanceIpcTests(unittest.TestCase):
 
 
 class SettingsSchemaTests(unittest.TestCase):
+    # Meeting screenshots: the mode and its hotkey are wired through every
+    # table the listener and the settings service read.
+    def test_meeting_screenshot_settings_are_in_the_schema(self):
+        from koli.settings import schema
+        s = schema.get('meeting.screenshots')
+        self.assertEqual([c[0] for c in s.choices], ['key', 'all', 'off'])
+        self.assertIsNotNone(schema.get('hotkey.meeting_screenshot_hotkey'))
+        from koli.settings.appliers import _LISTENER_KEYS
+        self.assertEqual(_LISTENER_KEYS['hotkey.meeting_screenshot_hotkey'], 'meeting_screenshot_hotkey')
+        from koli.settings.service import HOTKEY_PATHS
+        self.assertIn('hotkey.meeting_screenshot_hotkey', HOTKEY_PATHS)
+        from koli.hotkey_listener import HotkeyListener
+        self.assertIn('meeting_screenshot_hotkey', HotkeyListener.__init__.__code__.co_varnames)
+
     # Fails if a new key is added to config.defaults.yaml without a schema
     # entry (it would be missing from the app's Settings screen).
     def test_every_default_setting_has_a_schema_entry(self):
@@ -8132,3 +8159,241 @@ class AppWindowAudioPolicyTests(unittest.TestCase):
     def test_the_app_window_lets_clips_play(self):
         page = (ROOT / 'src' / 'koli' / 'ui' / 'web' / 'index.html').read_text(encoding='utf-8')
         self.assertIn("media-src 'self' data:", page)
+
+
+# Meeting screenshots reach the pages through the bridge, and an md export
+# carries its PNGs in a folder next to the file.
+class MeetingScreenshotBridgeTests(unittest.TestCase):
+    def test_bridge_has_the_screenshot_calls(self):
+        from koli.ui.bridge import Bridge
+        for name in ('meeting_screenshot', 'meeting_caption', 'meeting_image'):
+            self.assertTrue(callable(getattr(Bridge, name, None)), name)
+
+    def test_md_export_copies_the_shots_next_to_the_file(self):
+        import tempfile
+        from pathlib import Path
+        from PIL import Image
+        from koli.meeting.store import MeetingStore, new_meeting
+        from koli.ui.bridge import Bridge
+        import datetime
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        store = MeetingStore(Path(tmp.name) / 'meetings')
+        m = new_meeting('2026-10-11-143012', 'Sync', {'app': '', 'kind': 'manual', 'title': '', 'code': ''},
+                        datetime.datetime(2026, 10, 11, 14, 30, 12, tzinfo=datetime.timezone.utc))
+        store.save(m)
+        name = store.save_shot(m['id'], 12.0, Image.new('RGB', (2, 2)))
+        m['screenshots'].append({'at': 12.0, 'image': name, 'caption': 'dash', 'description': None})
+        store.save(m)
+
+        class Svc:
+            def __init__(self):
+                self.store = store
+            def get(self, mid):
+                return store.load(mid)
+            def export(self, mid, fmt, shots_folder=''):
+                return store.export(mid, fmt, shots_folder)
+        out = Path(tmp.name) / 'notes' / 'sync.md'
+        out.parent.mkdir()
+        host = type('H', (), {'ctx': type('C', (), {'meetings': Svc()})(), 'pick': lambda self, *a, **k: str(out)})()
+        bridge = Bridge(host)
+        result = bridge.meeting_export(m['id'], 'md')
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['data'], str(out))
+        self.assertIn('![dash](sync-shots/0012.00.png)', out.read_text(encoding='utf-8'))
+        self.assertTrue((out.parent / 'sync-shots' / '0012.00.png').exists())
+
+
+# The pages show screenshots: a shared helper orders them among the turns,
+# and every page that shows a meeting offers the camera button.
+class MeetingScreenshotPagesTests(unittest.TestCase):
+    WEB = ROOT / "src" / "koli" / "ui" / "web" / "js"
+
+    def test_pages_wire_the_screenshot_button_and_events(self):
+        for rel in ('meeting.js', 'screens/meetings.js', 'bar.js'):
+            src = (self.WEB / rel).read_text(encoding='utf-8')
+            self.assertTrue("meeting_screenshot" in src, rel)
+            self.assertTrue("meeting_shot" in src, rel)
+        shots = (self.WEB / 'shots.js').read_text(encoding='utf-8')
+        self.assertIn('export function rowsByTime', shots)
+        self.assertIn('meeting_image', shots)
+        mock = (self.WEB / 'mock-api.js').read_text(encoding='utf-8')
+        for name in ('meeting_screenshot', 'meeting_caption', 'meeting_image'):
+            self.assertIn(name, mock)
+
+
+# The bubble's meeting handler keeps its "Not starting" branch; the
+# screenshot handler is its own, small thing (a review found the two merged).
+class BarMeetingHandlerTests(unittest.TestCase):
+    def test_bar_meeting_handlers_are_separate(self):
+        import re
+        src = (ROOT / "src" / "koli" / "ui" / "web" / "js" / "bar.js").read_text(encoding='utf-8')
+        meeting = re.search(r"on\('meeting', \(m\) => \{(.*?)\n  \}\);", src, re.S).group(1)
+        shot = re.search(r"on\('meeting_shot', \(p\) => \{(.*?)\n  \}\);", src, re.S).group(1)
+        self.assertIn('auto_paused', meeting)
+        self.assertNotIn('auto_paused', shot)
+        self.assertNotIn('prev', shot)
+
+
+# The meeting brief reaches the Summary tab through the bridge, and the PDF
+# export writes where the user picks through the host's print-to-PDF.
+class MeetingBriefBridgeTests(unittest.TestCase):
+    def make(self, pdf_ok=True, picked='C:/tmp/brief.pdf'):
+        from koli.ui.bridge import Bridge
+        self.printed = []
+
+        class Svc:
+            def brief(self, mid):
+                return {'version': 1, 'tldr': ['x']} if mid == 'm1' else None
+        printed = self.printed
+
+        class Host:
+            ctx = type('C', (), {'meetings': Svc()})()
+            def pick(self, kind, title, types=None, filename=''):
+                printed.append(('pick', kind, filename, types))
+                return picked
+            def print_pdf(self, path):
+                printed.append(('print', path))
+                return pdf_ok
+        return Bridge(Host())
+
+    def test_brief_and_pdf(self):
+        b = self.make()
+        self.assertEqual(b.meeting_brief('m1'), {'ok': True, 'data': {'version': 1, 'tldr': ['x']}})
+        self.assertEqual(b.meeting_brief('nope'), {'ok': True, 'data': None})
+        r = b.meeting_export_pdf('m1', 'JumboMail dev sync')
+        self.assertEqual(r, {'ok': True, 'data': 'C:/tmp/brief.pdf'})
+        self.assertEqual(self.printed[0][:3], ('pick', 'save', 'JumboMail dev sync.pdf'))
+        self.assertEqual(self.printed[1], ('print', 'C:/tmp/brief.pdf'))
+
+    def test_pdf_cancelled_or_failed(self):
+        self.assertEqual(self.make(picked=None).meeting_export_pdf('m1', 'x'), {'ok': True, 'data': None})
+        self.assertFalse(self.make(pdf_ok=False).meeting_export_pdf('m1', 'x')['ok'])
+
+    def test_pdf_name_has_no_path_characters(self):
+        b = self.make()
+        b.meeting_export_pdf('m1', 'a/b: c?')
+        self.assertEqual(self.printed[0][2], 'a-b - c-.pdf')
+
+
+# The Summary tab: its page module exists, the Meetings screen uses it, and
+# the PDF prints only the summary copy.
+class MeetingBriefPageTests(unittest.TestCase):
+    WEB = ROOT / "src" / "koli" / "ui" / "web"
+
+    def test_summary_tab_is_wired(self):
+        brief = (self.WEB / 'js' / 'screens' / 'brief.js').read_text(encoding='utf-8')
+        self.assertIn('export function Brief', brief)
+        self.assertIn("call('meeting_export_pdf'", brief)
+        screen = (self.WEB / 'js' / 'screens' / 'meetings.js').read_text(encoding='utf-8')
+        self.assertIn("call('meeting_brief'", screen)
+        self.assertIn('printBrief(', screen)
+        css = (self.WEB / 'css' / 'components.css').read_text(encoding='utf-8')
+        self.assertIn('body.print-brief > *:not(#print-root)', css)
+        mock = (self.WEB / 'js' / 'mock-api.js').read_text(encoding='utf-8')
+        self.assertIn('meeting_brief:', mock)
+
+
+class MeetingExportNameTests(unittest.TestCase):
+    def test_export_files_are_named_by_date_and_title(self):
+        from koli.ui.bridge import _export_name
+        self.assertEqual(_export_name({'id': 'x', 'started_at': '2026-10-19T12:47:11+03:00',
+                                       'title': 'JumboMail dev sync: integrations, public API, SEO'}),
+                         '2026-10-19 JumboMail dev sync - integrations, public API, SEO')
+        self.assertEqual(_export_name({'id': '2026-10-19-124711', 'started_at': '', 'title': ''}), '2026-10-19-124711')
+
+
+# Saving a meeting to Google Drive from the Meetings screen, and opening it.
+class MeetingDriveBridgeTests(unittest.TestCase):
+    def make(self, drive=None):
+        from koli.ui.bridge import Bridge
+        self.opened = []
+        state = {'drive': drive}
+
+        class Svc:
+            def get(self, mid):
+                return {'id': mid, 'drive': state['drive']} if state['drive'] else {'id': mid}
+            def export_to_drive(self, mid):
+                state['drive'] = {'doc_id': 'D1', 'doc_url': 'https://docs.google.com/document/d/D1/edit',
+                                  'folder_url': 'https://drive.google.com/drive/folders/F1'}
+                return state['drive']
+        host = type('H', (), {'ctx': type('C', (), {'meetings': Svc()})()})()
+        bridge = Bridge(host)
+        import koli.ui.bridge as mod
+        self._orig = mod.webbrowser.open
+        mod.webbrowser.open = lambda url: self.opened.append(url)
+        self.addCleanup(setattr, mod.webbrowser, 'open', self._orig)
+        return bridge
+
+    def test_export_then_open_doc_and_folder(self):
+        b = self.make()
+        self.assertEqual(b.meeting_drive_export('m1')['data']['doc_id'], 'D1')
+        self.assertTrue(b.meeting_drive_open('m1')['ok'])
+        self.assertTrue(b.meeting_drive_open('m1', 'folder')['ok'])
+        self.assertEqual(self.opened, ['https://docs.google.com/document/d/D1/edit', 'https://drive.google.com/drive/folders/F1'])
+
+    def test_open_refuses_a_link_that_is_not_google(self):
+        b = self.make(drive={'doc_url': 'https://evil.example/x'})
+        self.assertFalse(b.meeting_drive_open('m1')['ok'])
+        self.assertEqual(self.opened, [])
+
+    def test_open_before_export_says_so(self):
+        r = self.make().meeting_drive_open('m1')
+        self.assertFalse(r['ok'])
+
+
+class MeetingDrivePageTests(unittest.TestCase):
+    def test_drive_button_is_wired(self):
+        web = ROOT / "src" / "koli" / "ui" / "web" / "js"
+        brief = (web / 'screens' / 'brief.js').read_text(encoding='utf-8')
+        for part in ("call('meeting_drive_export'", "call('meeting_drive_open'", "call('drive_status'", 'openDriveLogin', "navigate('settings/drive')"):
+            self.assertIn(part, brief)
+        self.assertIn('DriveButton', (web / 'screens' / 'meetings.js').read_text(encoding='utf-8'))
+        self.assertIn('export function openDriveLogin', (web / 'screens' / 'settings.js').read_text(encoding='utf-8'))
+
+
+# Share opens Drive for desktop's own Share window when the doc is synced
+# there; otherwise the doc opens in the browser.
+class MeetingDriveShareTests(unittest.TestCase):
+    def make(self, local_root=None, shown=True, exists=True):
+        from koli.ui.bridge import Bridge
+        import koli.ui.bridge as mod
+        self.calls = []
+
+        class Svc:
+            def get(self, mid):
+                return {'id': mid, 'title': 'Dev sync: SEO', 'started_at': '2026-10-19T12:47:11+03:00',
+                        'drive': {'doc_id': 'D1', 'name': '2026-10-19 Dev sync - SEO',
+                                  'doc_url': 'https://docs.google.com/document/d/D1/edit'}}
+            def brief(self, mid):
+                return {'title': 'Dev sync: SEO'}
+        calls = self.calls
+
+        class Share:
+            def available(self):
+                return True
+            def local_root(self, email):
+                calls.append(('root', email)); return local_root
+            def show_share(self, path):
+                calls.append(('share', str(path))); return shown
+        host = type('H', (), {'ctx': type('C', (), {'meetings': Svc()})()})()
+        b = Bridge(host)
+        orig = mod.webbrowser.open
+        mod.webbrowser.open = lambda url: calls.append(('browser', url))
+        self.addCleanup(setattr, mod.webbrowser, 'open', orig)
+        b._drive_share = Share()
+        b._drive_email = lambda: 'studio@perspective-media.me'
+        b._file_exists = lambda p: exists
+        return b
+
+    def test_share_opens_drive_for_desktop_window(self):
+        r = self.make(local_root='P:/').meeting_drive_share('m1')
+        self.assertEqual(r['data'], {'window': True})
+        share = [c for c in self.calls if c[0] == 'share'][0][1]
+        self.assertTrue(share.replace(chr(92), '/').endswith('My Drive/Koli/Meetings/2026-10-19 Dev sync - SEO/2026-10-19 Dev sync - SEO.gdoc'))
+
+    def test_share_falls_back_to_the_browser(self):
+        for kwargs in ({'local_root': None}, {'local_root': 'P:/', 'exists': False}, {'local_root': 'P:/', 'shown': False}):
+            r = self.make(**kwargs).meeting_drive_share('m1')
+            self.assertEqual(r['data'], {'window': False}, kwargs)
+            self.assertIn(('browser', 'https://docs.google.com/document/d/D1/edit'), self.calls)

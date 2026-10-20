@@ -241,6 +241,9 @@ SCHEMA = [
     _S('hotkey.meeting_mute_hotkey', 'Mute my microphone everywhere', 'hotkeys', 'hotkey', nullable=True,
        help="Mutes your microphone for every app, so the call hears nothing and the meeting leaves you out. "
        "Press again to unmute. The meeting app's own mute keeps the microphone open, so Koli still hears it."),
+    _S('hotkey.meeting_screenshot_hotkey', 'Screenshot into the meeting', 'hotkeys', 'hotkey', nullable=True,
+       help='Opens the Windows snip overlay, like Win+Shift+S; the snip joins the running meeting at that moment. '
+       'Does nothing outside a meeting.'),
     _S('hotkey.double_tap_to_lock', 'Double-tap for hands-free', 'hotkeys', 'toggle',
        help='Double-tap Record to keep recording without holding. Tap again to stop.'),
     _S('hotkey.double_tap_window_ms', 'Double-tap window', 'hotkeys', 'number', min=100, max=2000,
@@ -393,6 +396,11 @@ SCHEMA = [
     _S('meeting.keep_audio', 'Keep the audio', 'meetings', 'toggle',
        help="Saves the call's audio with the transcript, to improve telling speakers apart. Everyone's voice "
        'is stored on this computer, so turn it on only with their consent. Deleting the meeting deletes it.'),
+    _S('meeting.screenshots', 'Screenshots in meetings', 'meetings', 'segmented', mode=SIMPLE,
+       choices=[['key', 'Only with my key'], ['all', 'Every Win+Shift+S snip'], ['off', 'Never']],
+       help='A snip taken during a meeting is kept beside it and shown at its moment in the transcript. '
+       '"Only with my key" takes just the snips you start with the screenshot hotkey or the camera button, '
+       'so a plain Win+Shift+S stays private. Deleting the meeting deletes its screenshots.'),
     _S('meeting.input_device', 'Microphone for meetings', 'meetings', 'microphone', apply=NEXT_RECORDING,
        help='Same as dictation, or another input. Applies to the next meeting; one that won\'t open falls back to the dictation microphone.'),
     _S('meeting.gap_minutes', 'Resume within', 'meetings', 'number', min=1, max=60, unit='min',

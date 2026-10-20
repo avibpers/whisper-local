@@ -1,9 +1,11 @@
 # meeting/store.py
 # One JSON file per meeting under <data>/meetings/: who spoke, what they said
-# and when, plus the voiceprints that keep speaker labels stable when a
-# meeting resumes. Written throttled while a meeting runs, so a crash loses
-# seconds, not the meeting. With meeting.keep_audio on, the call's audio is
-# kept beside it in "<id>.audio/".
+# and when, the screenshots taken during it, plus the voiceprints that keep
+# speaker labels stable when a meeting resumes. Written throttled while a
+# meeting runs, so a crash loses seconds, not the meeting. With
+# meeting.keep_audio on, the call's audio is kept beside it in "<id>.audio/";
+# screenshots are PNGs in "<id>.shots/". The brief (the summary written from
+# the meeting: decisions, action items, topics) is "<id>.brief.json".
 
 import datetime
 import json
@@ -25,6 +27,7 @@ logger = logging.getLogger(__name__)
 FOLDER = 'meetings'
 SAVE_INTERVAL = 5.0
 EXPORT_FORMATS = ('txt', 'md')
+BRIEF_SUFFIX = '.brief.json'
 
 
 # ── Shapes ───────────────────────────────────────────────────────────────────
@@ -49,6 +52,7 @@ def new_meeting(meeting_id: str, title: str, source: dict, started_at: datetime.
         'language': language,
         'speakers': [{'id': 'you', 'name': 'You', 'colour': 0}],
         'turns': [],
+        'screenshots': [],
         'gaps': [],
     }
 
@@ -57,11 +61,14 @@ def started_ts(meeting: dict) -> float:
     return datetime.datetime.fromisoformat(meeting['started_at']).timestamp()
 
 
-# How long the meeting ran: to its end, or to its last turn while it is open.
+# How long the meeting ran: to its end, or to its last turn or screenshot
+# while it is open.
 def duration_s(meeting: dict) -> float:
     if meeting.get('ended_at'):
         return datetime.datetime.fromisoformat(meeting['ended_at']).timestamp() - started_ts(meeting)
-    return float(meeting['turns'][-1]['end']) if meeting['turns'] else 0.0
+    last_turn = float(meeting['turns'][-1]['end']) if meeting['turns'] else 0.0
+    last_shot = max((float(s['at']) for s in meeting.get('screenshots', [])), default=0.0)
+    return max(last_turn, last_shot)
 
 
 # What the list shows: never the turns or the voiceprints.
@@ -72,7 +79,36 @@ def header(meeting: dict) -> dict:
         'duration_s': round(duration_s(meeting)),
         'speakers': [s['name'] for s in meeting['speakers']],
         'turns': len(meeting['turns']),
+        'screenshots': len(meeting.get('screenshots', [])),
     }
+
+
+# ── Screenshots ──────────────────────────────────────────────────────────────
+# A screenshot entry is {'at', 'image', 'caption', 'description'}: the offset
+# it was taken at, its file name in "<id>.shots/", the user's caption and a
+# slot for a later AI description. It is a list of its own, not a turn, so the
+# session's append-only turns stay untouched; every view merges the two by
+# time with rows_by_time().
+
+# "0279.40.png": offsets sort the folder in meeting order.
+def shot_name(offset: float) -> str:
+    return f"{float(offset):07.2f}.png"
+
+
+# Turns and screenshots in time order: a screenshot sits before the first
+# turn that starts after it. The file keeps turns in arrival order (the mic
+# and the call are transcribed apart, and transcription lags), so the order
+# is made when shown, never when stored.
+def rows_by_time(meeting: dict) -> list:
+    shots = sorted(meeting.get('screenshots', []), key=lambda s: float(s['at']))
+    rows, i = [], 0
+    for turn in sorted(meeting['turns'], key=lambda t: float(t['start'])):
+        while i < len(shots) and float(shots[i]['at']) <= float(turn['start']):
+            rows.append({'kind': 'shot', **shots[i]})
+            i += 1
+        rows.append({'kind': 'turn', **turn})
+    rows.extend({'kind': 'shot', **s} for s in shots[i:])
+    return rows
 
 
 def _clock(seconds: float) -> str:
@@ -80,20 +116,30 @@ def _clock(seconds: float) -> str:
     return f"{seconds // 60:02d}:{seconds % 60:02d}"
 
 
-# Speaker-tagged lines, like Read.ai's text view.
-def export_text(meeting: dict, fmt: str) -> str:
+# Speaker-tagged lines, like Read.ai's text view, with screenshots at their
+# moment. `shots_folder` is where the md's image links point (the bridge
+# copies the PNGs there, next to the exported file).
+def export_text(meeting: dict, fmt: str, shots_folder: str = '') -> str:
     if fmt not in EXPORT_FORMATS:
         raise ValueError(f"Unknown export format: {fmt}")
     names = {s['id']: s['name'] for s in meeting['speakers']}
     when = meeting['started_at'][:16].replace('T', ' ')
+    folder = shots_folder or f"{meeting['id']}-shots"
     if fmt == 'md':
         lines = [f"# {meeting['title']}", '', f"{when} · {_clock(duration_s(meeting))}", '']
     else:
         lines = [meeting['title'], when, '']
-    for turn in meeting['turns']:
-        who = names.get(turn['speaker'], turn['speaker'])
+    for row in rows_by_time(meeting):
+        if row['kind'] == 'shot':
+            label = row.get('caption') or row['image']
+            if fmt == 'md':
+                lines.append(f"![{label}]({folder}/{row['image']})")
+            else:
+                lines.append(f"[{_clock(row['at'])}] Screenshot: {label}")
+            continue
+        who = names.get(row['speaker'], row['speaker'])
         who = f"**{who}**" if fmt == 'md' else who
-        lines.append(f"[{_clock(turn['start'])}] {who}: {turn['text']}")
+        lines.append(f"[{_clock(row['start'])}] {who}: {row['text']}")
     return '\n'.join(lines) + '\n'
 
 
@@ -128,16 +174,22 @@ class MeetingStore:
         with self._lock:
             files = sorted(self.folder.glob('*.json'), reverse=True) if self.folder.exists() else []
             for path in files:
+                if path.name.endswith(BRIEF_SUFFIX):
+                    continue
                 try:
-                    out.append(header(json.loads(path.read_text(encoding='utf-8'))))
+                    head = header(json.loads(path.read_text(encoding='utf-8')))
+                    head['brief'] = (self.folder / f"{head['id']}{BRIEF_SUFFIX}").exists()
+                    out.append(head)
                 except Exception as e:
                     logger.warning(f"Skipping unreadable meeting {path.name}: {e}")
         return out
 
-    # Deleting a meeting deletes its kept audio too.
+    # Deleting a meeting deletes its kept audio and its screenshots too.
     def delete(self, meeting_id: str) -> bool:
         with self._lock:
             shutil.rmtree(self.audio_dir(meeting_id), ignore_errors=True)
+            shutil.rmtree(self.shots_dir(meeting_id), ignore_errors=True)
+            self.brief_path(meeting_id).unlink(missing_ok=True)
             try:
                 self.path(meeting_id).unlink()
                 return True
@@ -164,8 +216,94 @@ class MeetingStore:
             w.writeframes((samples * 32767).astype(np.int16).tobytes())
         return path
 
-    def export(self, meeting_id: str, fmt: str) -> str:
-        return export_text(self.load(meeting_id), fmt)
+    # ── The brief: "<id>.brief.json" ─────────────────────────────────────────
+    # Written by the summary step (the AI, later), read by the Meetings
+    # screen's Summary tab and the exports. A missing or broken file reads as
+    # "no summary yet", never as an error.
+
+    def brief_path(self, meeting_id: str) -> Path:
+        return self.folder / f"{meeting_id}{BRIEF_SUFFIX}"
+
+    def load_brief(self, meeting_id: str) -> Optional[dict]:
+        try:
+            return json.loads(self.brief_path(meeting_id).read_text(encoding='utf-8'))
+        except FileNotFoundError:
+            return None
+        except Exception as e:
+            logger.warning(f"Unreadable brief for {meeting_id}: {e}")
+            return None
+
+    # The brief's title becomes the meeting's title ("Meeting" or "Discord"
+    # until then), so the list, the header and the export names say what the
+    # meeting was about. An empty title leaves the meeting's as it is.
+    def save_brief(self, meeting_id: str, brief: dict) -> Path:
+        path = self.brief_path(meeting_id)
+        with self._lock:
+            self.folder.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix('.tmp')
+            tmp.write_text(json.dumps(brief, ensure_ascii=False, indent=1), encoding='utf-8')
+            os.replace(tmp, path)
+        title = str(brief.get('title') or '').strip()
+        if title and self.path(meeting_id).exists():
+            meeting = self.load(meeting_id)
+            if meeting.get('title') != title:
+                meeting['title'] = title
+                self.save(meeting)
+        return path
+
+    # ── Screenshots: PNGs in "<id>.shots/" ───────────────────────────────────
+
+    def shots_dir(self, meeting_id: str) -> Path:
+        return self.folder / f"{meeting_id}.shots"
+
+    # A free name in the folder: the offset's name, or -2, -3 when taken.
+    @staticmethod
+    def _free_name(folder: Path, name: str) -> str:
+        stem, n = name[:-4], 1
+        while (folder / name).exists():
+            n += 1
+            name = f"{stem}-{n}.png"
+        return name
+
+    # Saves the image as PNG, whatever mode Pillow handed over; returns the name.
+    def save_shot(self, meeting_id: str, offset: float, image) -> str:
+        folder = self.shots_dir(meeting_id)
+        with self._lock:
+            folder.mkdir(parents=True, exist_ok=True)
+            name = self._free_name(folder, shot_name(offset))
+            image.save(folder / name, format='PNG')
+        return name
+
+    # The file behind an entry's name; a name that isn't a plain file name
+    # (a path, "..") is treated as missing, so the bridge never reads outside
+    # the folder.
+    def shot_path(self, meeting_id: str, name: str) -> Path:
+        if not name or Path(name).name != name:
+            raise FileNotFoundError(name)
+        path = self.shots_dir(meeting_id) / name
+        if not path.is_file():
+            raise FileNotFoundError(name)
+        return path
+
+    # Moves the entries' files into another meeting's folder (continue
+    # previous, split). A clash gets -2, -3 and the entry's name is updated
+    # in place. An empty source folder is removed.
+    def move_shots(self, from_id: str, to_id: str, entries: list) -> None:
+        src, dst = self.shots_dir(from_id), self.shots_dir(to_id)
+        with self._lock:
+            for entry in entries:
+                path = src / entry['image']
+                if not path.is_file():
+                    continue
+                dst.mkdir(parents=True, exist_ok=True)
+                name = self._free_name(dst, entry['image'])
+                shutil.move(str(path), str(dst / name))
+                entry['image'] = name
+            if src.is_dir() and not any(src.iterdir()):
+                src.rmdir()
+
+    def export(self, meeting_id: str, fmt: str, shots_folder: str = '') -> str:
+        return export_text(self.load(meeting_id), fmt, shots_folder)
 
 
 # The first mark writes at once (so the file exists from the start); later

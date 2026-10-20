@@ -41,6 +41,7 @@ const PATHS = {
   up: '<path d="M7 14l5-5 5 5"/>',
   down: '<path d="M7 10l5 5 5-5"/>',
   doc: '<path d="M6 3.5h8l4 4v13H6z"/><path d="M14 3.5v4h4M9 12h6M9 16h6"/>',
+  camera: '<path d="M4 8.5h3.5l1.5-2.5h6l1.5 2.5H20v10H4z"/><circle cx="12" cy="13.5" r="3"/>',
   people: '<circle cx="9" cy="8" r="3.2"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0"/><circle cx="16.5" cy="9" r="2.6"/><path d="M15 14.2a4.5 4.5 0 0 1 5.5 4.3"/>',
   // Window buttons, drawn thin like the Windows caption buttons.
   'win-min': '<path d="M6.5 12h11"/>',
