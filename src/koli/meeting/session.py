@@ -629,6 +629,41 @@ class SessionManager:
             self.saver.mark(m)
             self._emit()
 
+    # Who is in the call, read from the call app's window ({'with', 'people'};
+    # {} when nothing could be read, which changes nothing). The meeting keeps
+    # it, and a title still named after the app names the other person too:
+    # "Discord" becomes "Discord · Becky". A title from you or the summary stays.
+    def set_call(self, call: dict):
+        if not call:
+            return
+        with self._transition():
+            m = self.meeting
+            if not m:
+                return
+            kept = m.get('call') or {}
+            m['call'] = {'with': call.get('with') or kept.get('with', ''),
+                         'people': list(call.get('people') or kept.get('people', []))}
+            app_title = title_for(m['source'])
+            if m['call']['with'] and m['title'] == app_title:
+                m['title'] = f"{app_title} · {m['call']['with']}"
+            self.saver.mark(m)
+            self._emit()
+
+    # (speaker id, name) when the call's other person can name a voice: no
+    # speaker has that name yet, and the earliest far-end speaker still has
+    # Koli's "Speaker N". One voice only, so a voice split in two stays
+    # visible for you to merge.
+    def call_name_target(self) -> Optional[tuple]:
+        with self._lock:
+            m = self.meeting
+            name = ((m or {}).get('call') or {}).get('with', '')
+            if not name or any(s.get('name') == name for s in m['speakers']):
+                return None
+            for s in m['speakers']:
+                if s['id'] != 'you' and is_default_name(s.get('name')):
+                    return s['id'], name
+            return None
+
     def rename_speaker(self, speaker_id: str, name: str):
         with self._transition():
             m = self.meeting

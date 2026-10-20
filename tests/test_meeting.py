@@ -2216,6 +2216,63 @@ class SessionVoiceNameTests(unittest.TestCase):
         self.assertNotIn('voice', self.sm.meeting['speakers'][1], 'the marker is never stored')
 
 
+# Who is in the call (read from Discord's window) on the meeting: the title
+# names the other person, and in a 1:1 call their voice gets their name.
+class CallNameTests(unittest.TestCase):
+    def setUp(self):
+        from koli.meeting.session import SessionManager
+        from koli.meeting.store import MeetingStore
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.clock = FakeClock(at(30))
+        settings = {'meeting.start_speech_seconds': 3, 'meeting.countdown_seconds': 0}
+        self.sm = SessionManager(MeetingStore(Path(self.tmp.name)), start_capture=lambda m: None,
+                                 stop_capture=lambda: None, publish=lambda t, p: None,
+                                 settings=lambda p, d=None: settings.get(p, d), now=self.clock.now,
+                                 schedule=self.clock.schedule)
+        self.sm.on_sources([discord()])
+        self.sm.on_speech(3.5)
+        self.assertEqual(self.sm.meeting['title'], 'Discord')
+
+    def speakers(self, *names):
+        for i, name in enumerate(names, 1):
+            self.sm.ensure_speaker({'id': f's{i}', 'name': name, 'colour': i, 'centroid': [float(i)], 'count': 1})
+
+    def test_call_retitles_default_title(self):
+        self.sm.set_call({'with': 'Becky', 'people': []})
+        self.assertEqual(self.sm.meeting['title'], 'Discord · Becky')
+        self.assertEqual(self.sm.meeting['call']['with'], 'Becky')
+
+    def test_call_keeps_custom_title(self):
+        self.sm.retitle(self.sm.meeting['id'], 'Planning')
+        self.sm.set_call({'with': 'Becky', 'people': []})
+        self.assertEqual(self.sm.meeting['title'], 'Planning')
+
+    # Discord showing another chat, or minimized: nothing read, nothing lost.
+    def test_empty_call_keeps_previous_call(self):
+        self.sm.set_call({'with': 'Becky', 'people': [{'name': 'v069675', 'muted': False}]})
+        self.sm.set_call({})
+        self.sm.set_call({'with': 'Becky', 'people': []})
+        self.assertEqual(self.sm.meeting['call']['people'], [{'name': 'v069675', 'muted': False}])
+        self.assertEqual(self.sm.meeting['title'], 'Discord · Becky')
+
+    def test_call_name_target_picks_first_default_speaker(self):
+        self.speakers('Speaker 1', 'Speaker 2')
+        self.sm.set_call({'with': 'Becky', 'people': []})
+        self.assertEqual(self.sm.call_name_target(), ('s1', 'Becky'))
+
+    # Diarization split Becky into two voices: only one gets her name.
+    def test_call_name_goes_to_one_speaker_only(self):
+        self.speakers('Becky', 'Speaker 2')
+        self.sm.set_call({'with': 'Becky', 'people': []})
+        self.assertIsNone(self.sm.call_name_target())
+
+    def test_user_name_wins(self):
+        self.speakers('Dana')
+        self.sm.set_call({'with': 'Becky', 'people': []})
+        self.assertIsNone(self.sm.call_name_target())
+
+
 # One loopback chunk with two voices becomes two turns, two speakers.
 class TranscriberSplitTests(unittest.TestCase):
     def test_a_chunk_with_two_voices_becomes_two_turns(self):
