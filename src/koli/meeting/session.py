@@ -23,6 +23,11 @@ logger = logging.getLogger(__name__)
 
 STATES = ('idle', 'offered', 'live', 'paused', 'ended')
 NOTICE_SECONDS = 6.0
+# A live meeting pauses only once its source has been missing for this many
+# detector ticks and this long: Discord moves its session between
+# microphones mid-call, and one read can fall between the two.
+END_CONFIRM_TICKS = 2
+END_CONFIRM_SECONDS = 1.5
 ECHO_SIMILARITY = 0.6    # text match for a short mic turn to count as the call's echo
 ECHO_WORD_SHARE = 0.35   # share of a mic turn's words also heard in the call at that time
 ECHO_MIN_WORDS = 3       # shorter mic turns ("כן") need the strict one-turn match
@@ -153,6 +158,8 @@ class SessionManager:
         self._pending = None             # the source waiting for speech, or offered
         self._speech_s = 0.0             # speech heard since the pending source appeared
         self._declined = set()           # source keys answered "Not now"
+        self._missing_ticks = 0          # detector ticks the live meeting's source has been missing
+        self._missing_since = None       # when it went missing
         self._countdown_until = None     # an auto-detected call starts by itself at this moment
         self._cancel_countdown = None
         self._stopped_at = None          # you stopped a meeting: auto start waits for a quiet call
@@ -284,8 +291,10 @@ class SessionManager:
         m = self.meeting
         match = next((s for s in sources if self._same_meeting(m, s)), None)
         if self.state == 'live' and match is None and m['source'].get('kind') != 'manual':
-            self._pause(by_user=False)
+            if self._source_gone_confirmed():
+                self._pause(by_user=False)
             return
+        self._reset_missing()
         if self.state == 'paused' and not self.paused_by_user:
             if match is not None:
                 self._resume(notice='resumed')
@@ -296,6 +305,23 @@ class SessionManager:
                 self._end()
                 self._pending = other
                 self._speech_s = 0.0
+
+    # One more tick without the live meeting's source; True once it has been
+    # missing for END_CONFIRM_TICKS ticks and END_CONFIRM_SECONDS.
+    def _source_gone_confirmed(self) -> bool:
+        now = self._now()
+        if self._missing_since is None:
+            self._missing_since = now
+        self._missing_ticks += 1
+        waited = (now - self._missing_since).total_seconds()
+        if self._missing_ticks >= END_CONFIRM_TICKS and waited >= END_CONFIRM_SECONDS:
+            self._reset_missing()
+            return True
+        return False
+
+    def _reset_missing(self):
+        self._missing_ticks = 0
+        self._missing_since = None
 
     @staticmethod
     def _same_meeting(meeting: dict, source: dict) -> bool:
@@ -721,6 +747,7 @@ class SessionManager:
         self._speech_s = 0.0
         self._resumed_turn_index = None
         self._gap_open = None
+        self._reset_missing()
         self.store.save(meeting)
         if self._previous is not None and self._previous_until and now <= self._previous_until:
             notice = 'new'
@@ -751,6 +778,7 @@ class SessionManager:
         self.state = 'live'
         self.paused_by_user = False
         self._paused_at = None
+        self._reset_missing()
         self._close_gap()
         self._resumed_turn_index = len(meeting['turns'])
         self._set_notice(notice)

@@ -8,6 +8,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 
@@ -237,6 +238,13 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(self.sm.state, 'live')
         return self.sm.current()
 
+    # The source goes away for good: two detector ticks, long enough apart
+    # to confirm it (END_CONFIRM_TICKS, END_CONFIRM_SECONDS).
+    def gone(self, sources=()):
+        self.sm.on_sources(list(sources))
+        self.clock.advance(2)
+        self.sm.on_sources(list(sources))
+
     def test_source_without_speech_does_not_start(self):
         self.sm.on_sources([discord()])
         self.sm.on_speech(1.0)
@@ -264,6 +272,31 @@ class SessionTests(unittest.TestCase):
         self.live({**discord(), 'mic': True})
         self.sm.on_sources([{**discord(), 'mic': False}])
         self.assertEqual(self.sm.state, 'live')
+
+    # Discord moving its session between microphones can fall between two
+    # reads: one tick without the source must not pause the meeting.
+    def test_one_missing_tick_does_not_pause(self):
+        self.live()
+        self.sm.on_sources([])
+        self.assertEqual(self.sm.state, 'live')
+        self.clock.advance(1)
+        self.sm.on_sources([discord()])
+        self.assertEqual(self.sm.state, 'live')
+        self.clock.advance(1)
+        self.sm.on_sources([])          # the count started over
+        self.clock.advance(1)
+        self.sm.on_sources([discord()])
+        self.assertEqual(self.sm.state, 'live')
+
+    def test_missing_source_pauses_after_confirmation(self):
+        self.live()
+        self.sm.on_sources([])
+        self.clock.advance(1)
+        self.sm.on_sources([])          # two ticks, but only 1 s
+        self.assertEqual(self.sm.state, 'live')
+        self.clock.advance(1)
+        self.sm.on_sources([])
+        self.assertEqual(self.sm.state, 'paused')
 
     def test_auto_start_names_and_saves_the_meeting(self):
         m = self.live()
@@ -298,7 +331,7 @@ class SessionTests(unittest.TestCase):
         m = self.live()
         self.sm.add_turn({'t0': started_at(m) + 5, 't1': started_at(m) + 8, 'stream': 'loopback', 'speaker': 's1',
                           'text': 'hi', 'lang': 'en'})
-        self.sm.on_sources([])
+        self.gone()
         self.assertEqual(self.sm.state, 'paused')
         self.assertEqual(self.captures[-1], ('stop',))
         self.clock.advance(120)
@@ -306,11 +339,11 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(self.sm.state, 'live')
         self.assertEqual(self.sm.current()['id'], m['id'])
         self.assertEqual(self.sm.state_payload()['notice'], 'resumed')
-        self.assertEqual(self.sm.current()['gaps'], [{'start': 0.0, 'end': 120.0, 'reason': 'paused'}])
+        self.assertEqual(self.sm.current()['gaps'], [{'start': 2.0, 'end': 122.0, 'reason': 'paused'}])
 
     def test_source_back_after_gap_starts_new_meeting(self):
         m = self.live()
-        self.sm.on_sources([])
+        self.gone()
         self.clock.advance(10 * 60 + 1)
         self.assertEqual(self.sm.state, 'idle')
         saved = self.store.load(m['id'])
@@ -324,7 +357,7 @@ class SessionTests(unittest.TestCase):
 
     def test_different_code_within_gap_starts_new_and_can_continue_previous(self):
         m = self.live(meet('abc-defg-hij'))
-        self.sm.on_sources([])
+        self.gone()
         self.clock.advance(60)
         self.sm.on_sources([meet('zzz-zzzz-zzz')])
         self.sm.on_speech(4.0)
@@ -351,7 +384,7 @@ class SessionTests(unittest.TestCase):
         m = self.live()
         base = started_at(m)
         self.sm.add_turn({'t0': base + 1, 't1': base + 2, 'stream': 'mic', 'speaker': 'you', 'text': 'first', 'lang': 'en'})
-        self.sm.on_sources([])
+        self.gone()
         self.clock.advance(60)
         self.sm.on_sources([discord()])
         self.sm.add_turn({'t0': base + 70, 't1': base + 72, 'stream': 'mic', 'speaker': 'you', 'text': 'second', 'lang': 'en'})
@@ -398,7 +431,7 @@ class SessionTests(unittest.TestCase):
     def test_continue_previous_moves_screenshots_and_files(self):
         first = self.live(meet('abc-defg-hij'))
         self.sm.add_screenshot(first['id'], self._png(), started_at(first) + 10)
-        self.sm.on_sources([])
+        self.gone()
         self.clock.advance(60)
         self.sm.on_sources([meet('zzz-zzzz-zzz')])
         self.sm.on_speech(4.0)
@@ -418,8 +451,8 @@ class SessionTests(unittest.TestCase):
         m = self.live()
         base = started_at(m)
         self.sm.add_screenshot(m['id'], self._png(), base + 1)
-        self.sm.on_sources([])
-        self.clock.advance(60)
+        self.gone()
+        self.clock.advance(58)          # resumed 60 s in
         self.sm.on_sources([discord()])
         self.sm.add_screenshot(m['id'], self._png(), base + 70)
         self.sm.split_resumed()
@@ -624,7 +657,7 @@ class SessionTests(unittest.TestCase):
     def test_a_meeting_that_ends_by_itself_does_not_wait(self):
         self.counting()
         self.clock.advance(3)
-        self.sm.on_sources([])
+        self.gone()
         self.clock.advance(10 * 60 + 1)
         self.assertEqual(self.sm.state, 'idle')
         self.assertFalse(self.sm.state_payload()['auto_paused'])
@@ -1377,7 +1410,9 @@ class ReviewFixTests(unittest.TestCase):
         sm.on_speech(4.0)
         sm.ensure_speaker({'id': 's1', 'name': 'Ilona', 'colour': 1, 'centroid': [1.0], 'count': 2})
         sm.on_sources([])
-        clock.advance(60)
+        clock.advance(2)
+        sm.on_sources([])
+        clock.advance(58)
         sm.on_sources([meet('zzz-zzzz-zzz')])
         sm.on_speech(4.0)
         sm.continue_previous()
@@ -1433,7 +1468,9 @@ class ReviewFixTests(unittest.TestCase):
         self.assertEqual(len(FakeLoop.made), 2)
         self.assertTrue(FakeLoop.made[1].started)
         self.assertGreaterEqual(len(self.probs), 3, 'each stream gets its own voice detector')
-        svc._on_sources([])
+        with mock.patch('koli.meeting.session.END_CONFIRM_SECONDS', 0):
+            svc._on_sources([])
+            svc._on_sources([])         # gone on two ticks: confirmed
         self.assertEqual(svc.state()['state'], 'paused')
         self.assertTrue(FakeLoop.made[1].stopped)
 
