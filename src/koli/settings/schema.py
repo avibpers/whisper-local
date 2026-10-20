@@ -345,6 +345,11 @@ SCHEMA = [
             'model; with no model at all, built-in texts are used.'),
     _S('ai.practice.timeout', 'Give up after', 'ai', 'number', group='Practice', min=10, max=600, step=5,
        unit='seconds'),
+    _S('ai.meetings.model', 'Summarize meetings with', 'ai', 'ai_model', group='Meetings',
+       help='Writes each meeting\'s summary from its template, and drafts new templates. Long meetings need a '
+            'model with a large context. Empty uses the default model.'),
+    _S('ai.meetings.timeout', 'Give up after', 'ai', 'number', group='Meetings', min=30, max=900, step=10,
+       unit='seconds'),
     _S('ai.commands.enabled', 'Do what I ask when no command matches', 'ai', 'toggle', group='AI actions',
        help='Your own wake word or the command shortcut, then any request ("move today\'s photos to Pictures"). '
             'Deleting and big changes ask for your password; the rest can be undone.'),
@@ -414,6 +419,16 @@ SCHEMA = [
        'this long. Starting by hand always works.'),
     _S('meeting.language', 'Meeting language', 'meetings', 'select', choices=LANGUAGES, apply=NEXT_RECORDING,
        help='Auto-detect handles Hebrew and English in one call.'),
+    _S('meeting.summary.auto', 'Summarize each meeting when it ends', 'meetings', 'toggle', group='Summary',
+       help='The AI writes the summary from your default template once the meeting ends and the transcript has '
+            'caught up. Needs an AI model (Settings › AI). You can always summarize by hand.'),
+    _S('meeting.summary.language', 'Write summaries in', 'meetings', 'select', group='Summary',
+       choices=[['meeting', 'The meeting\'s language']] + [c for c in LANGUAGES if c[0] != 'auto'],
+       help='A template can set its own language; picking one when you summarize wins over both.'),
+    _S('meeting.summary.min_minutes', 'Summarize meetings longer than', 'meetings', 'number', group='Summary',
+       min=0, max=60, unit='min', help='Shorter meetings are summarized only when you ask.'),
+    # The default template is chosen in Meetings › Templates.
+    _S('meeting.summary.template', 'Default summary template', 'meetings', 'text', apply=INTERNAL, mode=HIDDEN),
     # Reserved: a separate model for meetings is not wired yet, so it stays out of the page.
     _S('meeting.model', 'Meeting model', 'meetings', 'text', apply=INTERNAL, mode=HIDDEN),
     _S('meeting.speaker_model', 'Voiceprint model', 'meetings', 'select', apply=BACKGROUND,

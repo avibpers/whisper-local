@@ -52,9 +52,12 @@ def _who(m: dict, speaker_id: str) -> dict:
     return _speakers(m).get(speaker_id) or {'id': speaker_id, 'name': 'Speaker ?' if speaker_id == '?' else speaker_id, 'colour': 7}
 
 
-# "2026-10-19 Dev sync - SEO": the folder's and the doc's name.
-def folder_name(m: dict, brief: dict) -> str:
+# "2026-10-19 Dev sync - SEO": the folder's and the doc's name. A fixed title
+# ("Board Meeting Summary") gets the meeting's own name after it.
+def folder_name(m: dict, brief: dict, fixed_title: bool = False) -> str:
     title = str((brief or {}).get('title') or m.get('title') or 'Meeting')
+    if fixed_title and m.get('title') and m['title'] != title:
+        title = f"{title} - {m['title']}"
     text = re.sub(r'\s*:\s*', ' - ', f"{str(m.get('started_at') or '')[:10]} {title}".strip())
     return re.sub(r'[\\/*?"<>|]', '-', text).strip() or m['id']
 
@@ -163,13 +166,42 @@ def timeline_chart(m: dict, stats: list) -> str:
     return _png(img)
 
 
-# ── The Report tab: HTML Drive converts ──────────────────────────────────────
+# The visual brief's order, for briefs written before templates existed.
+STANDARD_DOC_BLOCKS = ['header', 'quick', 'page_break', 'tldr', 'decisions', 'action_items', 'lists', 'speakers', 'screenshots',
+                       'topics', 'notes', 'page_break', 'transcript']
+LABELS = {'tldr': 'Summary', 'decisions': 'Decisions', 'action_items': 'Action items', 'open_questions': 'Open questions',
+          'parked': 'Parked', 'next_meeting': 'Points for the next meeting', 'speakers': 'Who spoke',
+          'screenshots': 'What was on screen', 'topics': 'How the meeting went', 'participants': 'Participants',
+          'agenda': 'Meeting Agenda', 'agenda_details': 'Key Points, Decisions, and Action Items',
+          'agenda_discussion': 'Discussion', 'agenda_decisions': 'Decisions', 'agenda_actions': 'Action items'}
+RTL = ('he', 'ar', 'fa', 'ur', 'yi')
 
-def report_html(m: dict, brief: dict, shot_data: dict) -> str:
+
+def doc_blocks(layout: dict = None) -> list:
+    layout = layout or {}
+    return list(layout.get('doc_blocks') or layout.get('blocks') or STANDARD_DOC_BLOCKS)
+
+
+def _all_decisions(brief: dict) -> list:
+    return brief.get('decisions') or [d for a in brief.get('agenda') or [] for d in a.get('decisions') or []]
+
+
+def _all_actions(brief: dict) -> list:
+    return brief.get('action_items') or [x for a in brief.get('agenda') or [] for x in a.get('action_items') or []]
+
+
+# ── The Report tab: HTML Drive converts, laid out by the template ────────────
+
+def report_html(m: dict, brief: dict, shot_data: dict, layout: dict = None) -> str:
     e = html.escape
+    layout = layout or {}
     stats = talk_stats(m)
     roles = brief.get('roles') or {}
     shots = sorted(m.get('screenshots', []), key=lambda s: s['at'])
+    in_topic = set()
+
+    def label(key):
+        return (brief.get('labels') or {}).get(key) or (layout.get('labels') or {}).get(key) or LABELS.get(key, key)
 
     def at(sec):
         return f" <i style='color:#777'>({clock(sec)})</i>" if sec is not None else ''
@@ -182,48 +214,130 @@ def report_html(m: dict, brief: dict, shot_data: dict) -> str:
         return (f"<p style='text-align:center'><img src='{src}' width='{width}'></p>"
                 f"<p style='text-align:center;color:#777;font-size:9pt'><i>Screenshot at {clock(shot['at'])} · {e(shot.get('caption') or '')}</i></p>")
 
-    out = [f"<h1>{e(brief.get('title') or m['title'])}</h1>",
-           f"<p style='color:#666'>{e(_day(m))} · {clock(_length(m))} · {e(', '.join(_who(m, s['id'])['name'] for s in stats))}</p>",
-           "<h2>Summary</h2>"] + [f"<p>{e(p)}</p>" for p in brief.get('tldr') or []]
-    if brief.get('decisions'):
-        out += ["<h2>Decisions</h2>", "<ol>"] + [f"<li><b>{e(d['id'])}</b> {e(d['text'])}{at(d.get('at'))}</li>" for d in brief['decisions']] + ["</ol>"]
-    if brief.get('action_items'):
-        out += ["<h2>Action items</h2>", "<table border='1' cellpadding='5'><tr><th>#</th><th>Task</th><th>Owner</th><th>Status</th><th>At</th></tr>"]
-        for a in brief['action_items']:
-            out.append(f"<tr><td>{e(a['id'])}</td><td>{e(a['task'])}</td><td>{e(a.get('owner') or 'Not set')}</td>"
-                       f"<td>{e(STATUS.get(a.get('status'), a.get('status') or ''))}</td><td>{clock(a.get('at'))}</td></tr>")
-        out.append("</table>")
-        if all(not a.get('due') for a in brief['action_items']):
-            out.append("<p><i>No deadlines were stated.</i></p>")
-    if brief.get('open_questions'):
-        out += ["<h2>Open questions</h2>", "<ul>"] + [f"<li><b>{e(q['id'])}</b> {e(q['text'])}{at(q.get('at'))}</li>" for q in brief['open_questions']] + ["</ul>"]
-    if brief.get('parked'):
-        out += ["<h2>Parked</h2>", "<ul>"] + [f"<li><b>{e(p['id'])}</b> {e(p['text'])}</li>" for p in brief['parked']] + ["</ul>"]
-    if stats:
-        out += ["<h2>Who spoke</h2>", f"<p><img src='{share_chart(m, stats)}' width='520'></p>",
-                "<h3>Who held the floor, minute by minute</h3>",
-                "<p style='color:#666'>Seconds spoken in each minute, stacked. A minute passes 60 s when people talk over each other.</p>",
-                f"<p><img src='{timeline_chart(m, stats)}' width='620'></p>",
-                "<table border='1' cellpadding='5'><tr><th>Speaker</th><th>Talk time</th><th>Share</th><th>Turns</th><th>Role in this meeting</th></tr>"]
+    def items(rows, numbered=False):
+        tag = 'ol' if numbered else 'ul'
+        return f"<{tag}>" + ''.join(f"<li>{e(x['text'])}{at(x.get('at'))}</li>" for x in rows) + f"</{tag}>"
+
+    def actions_table(rows):
+        out = ["<table border='1' cellpadding='5'><tr><th>#</th><th>Task</th><th>Owner</th><th>Status</th><th>Due</th><th>At</th></tr>"]
+        out += [f"<tr><td>{e(str(a.get('id', '')))}</td><td>{e(a['task'])}</td><td>{e(a.get('owner') or 'Not set')}</td>"
+                f"<td>{e(STATUS.get(a.get('status'), a.get('status') or ''))}</td><td>{e(a.get('due') or '')}</td>"
+                f"<td>{clock(a.get('at'))}</td></tr>" for a in rows]
+        return ''.join(out) + "</table>"
+
+    def b_header():
+        if layout.get('date') == 'date':
+            meta = str(brief.get('date') or m.get('started_at') or '')[:10]
+        else:
+            meta = f"{_day(m)} · {clock(_length(m))} · {', '.join(_who(m, s['id'])['name'] for s in stats)}"
+        return f"<h1>{e(brief.get('title') or m['title'])}</h1><p style='color:#666'>{e(meta)}</p>"
+
+    def b_tldr():
+        return (f"<h2>{e(label('tldr'))}</h2>" + ''.join(f"<p>{e(p)}</p>" for p in brief['tldr'])) if brief.get('tldr') else ''
+
+    def b_participants():
+        people = brief.get('attendees') or [{'name': _who(m, s['id'])['name'], 'role': roles.get(s['id'], '')} for s in stats]
+        return (f"<h2>{e(label('participants'))}</h2><ul>" + ''.join(
+            f"<li>{e(str(a.get('name', '')))}{(' — ' + e(a['role'])) if a.get('role') else ''}</li>" for a in people) + "</ul>")
+
+    def b_agenda():
+        rows = brief.get('agenda') or []
+        return (f"<h2>{e(label('agenda'))}</h2><ol>" + ''.join(f"<li>{e(a['title'])}</li>" for a in rows) + "</ol>") if rows else ''
+
+    def b_agenda_details():
+        rows = brief.get('agenda') or []
+        if not rows:
+            return ''
+        out = [f"<h2>{e(label('agenda_details'))}</h2>"]
+        for n, a in enumerate(rows, 1):
+            out.append(f"<h3>{n}. {e(a['title'])}</h3>")
+            if a.get('discussion'):
+                out.append(f"<p><b>{e(label('agenda_discussion'))}</b></p><ul>" + ''.join(f"<li>{e(x)}</li>" for x in a['discussion']) + "</ul>")
+            if a.get('decisions'):
+                out.append(f"<p><b>{e(label('agenda_decisions'))}</b></p>" + items(a['decisions']))
+            if a.get('action_items'):
+                out.append(f"<p><b>{e(label('agenda_actions'))}</b></p>" + actions_table(a['action_items']))
+        return ''.join(out)
+
+    def b_decisions():
+        rows = _all_decisions(brief)
+        return (f"<h2>{e(label('decisions'))}</h2>" + items(rows, numbered=True)) if rows else ''
+
+    def b_action_items():
+        rows = _all_actions(brief)
+        if not rows:
+            return ''
+        note = "<p><i>No deadlines were stated.</i></p>" if all(not a.get('due') for a in rows) else ''
+        return f"<h2>{e(label('action_items'))}</h2>" + actions_table(rows) + note
+
+    def b_open_questions():
+        return (f"<h2>{e(label('open_questions'))}</h2>" + items(brief['open_questions'])) if brief.get('open_questions') else ''
+
+    def b_parked():
+        return (f"<h2>{e(label('parked'))}</h2>" + items(brief['parked'])) if brief.get('parked') else ''
+
+    def b_lists():
+        return b_open_questions() + b_parked()
+
+    def b_next_meeting():
+        return (f"<h2>{e(label('next_meeting'))}</h2>" + items(brief['next_meeting'])) if brief.get('next_meeting') else ''
+
+    def b_speakers():
+        if not stats:
+            return ''
+        out = [f"<h2>{e(label('speakers'))}</h2>", f"<p><img src='{share_chart(m, stats)}' width='520'></p>",
+               "<h3>Who held the floor, minute by minute</h3>",
+               "<p style='color:#666'>Seconds spoken in each minute, stacked. A minute passes 60 s when people talk over each other.</p>",
+               f"<p><img src='{timeline_chart(m, stats)}' width='620'></p>",
+               "<table border='1' cellpadding='5'><tr><th>Speaker</th><th>Talk time</th><th>Share</th><th>Turns</th><th>Role in this meeting</th></tr>"]
         out += [f"<tr><td>{e(_who(m, s['id'])['name'])}</td><td>{clock(s['seconds'])}</td><td>{round(s['share'] * 100)}%</td>"
-                f"<td>{s['turns']}</td><td>{e(roles.get(s['id'], ''))}</td></tr>" for s in stats] + ["</table>"]
-    if brief.get('topics'):
-        out.append("<h2>How the meeting went</h2>")
-        for t in brief['topics']:
-            out.append(f"<h3>{clock(t['start'])}–{clock(t['end'])} · {e(t['title'])}</h3>")
-            if t.get('lead'):
-                out.append(f"<p><i>{e(t['lead'])}</i></p>")
-            if t.get('points'):
-                out.append("<ul>" + ''.join(f"<li>{e(p)}</li>" for p in t['points']) + "</ul>")
-            for q in t.get('quotes') or []:
+                f"<td>{s['turns']}</td><td>{e(roles.get(s['id'], ''))}</td></tr>" for s in stats]
+        return ''.join(out) + "</table>"
+
+    def b_screenshots():
+        # With topic cards, each screenshot sits inside its topic instead.
+        if not shots or 'topics' in blocks and brief.get('topics'):
+            return ''
+        return f"<h2>{e(label('screenshots'))}</h2>" + ''.join(img(s, 460) for s in shots)
+
+    def b_topics():
+        if not brief.get('topics'):
+            return ''
+        out = [f"<h2>{e(label('topics'))}</h2>"]
+        for tp in brief['topics']:
+            out.append(f"<h3>{clock(tp['start'])}–{clock(tp['end'])} · {e(tp['title'])}</h3>")
+            if tp.get('lead'):
+                out.append(f"<p><i>{e(tp['lead'])}</i></p>")
+            if tp.get('points'):
+                out.append("<ul>" + ''.join(f"<li>{e(x)}</li>" for x in tp['points']) + "</ul>")
+            for q in tp.get('quotes') or []:
                 out.append(f"<blockquote><p dir='rtl'>{e(q['text'])}</p><p><i>{e(q.get('who') or '')} · {clock(q.get('at'))}</i></p></blockquote>")
-            for s in shots:
-                if t['start'] <= s['at'] < t['end']:
-                    out.append(img(s, 460))
-    if brief.get('notes'):
-        out.append(f"<p style='color:#777'><i>Transcription notes: {e('; '.join(brief['notes']))}.</i></p>")
-    out.append("<p style='color:#777'><i>The Quick summary tab has the bottom lines; the Transcript tab has every word.</i></p>")
-    return "<html><head><meta charset='utf-8'></head><body>" + "\n".join(out) + "</body></html>"
+            if 'screenshots' in blocks:
+                for s in shots:
+                    if tp['start'] <= s['at'] < tp['end'] and s['image'] not in in_topic:
+                        in_topic.add(s['image'])
+                        out.append(img(s, 460))
+        return ''.join(out)
+
+    def b_sections():
+        out = []
+        for s in brief.get('sections') or []:
+            out.append(f"<h2>{e(s['title'])}</h2>" + ''.join(f"<p>{e(x)}</p>" for x in s.get('text') or []))
+            if s.get('items'):
+                out.append("<ul>" + ''.join(f"<li>{e(x)}</li>" for x in s['items']) + "</ul>")
+        return ''.join(out)
+
+    def b_notes():
+        return f"<p style='color:#777'><i>Transcription notes: {e('; '.join(brief['notes']))}.</i></p>" if brief.get('notes') else ''
+
+    blocks = doc_blocks(layout)
+    makers = {name[2:]: fn for name, fn in locals().items() if name.startswith('b_')}
+    # The Quick summary and the transcript have their own tabs; the rest goes here.
+    body = [makers[b]() for b in blocks if b in makers]
+    tabs = "<p style='color:#777'><i>The Transcript tab has every word"
+    tabs += "; the Quick summary tab has the bottom lines.</i></p>" if 'quick' in blocks else ".</i></p>"
+    direction = " dir='rtl'" if str(brief.get('language') or '')[:2] in RTL else ''
+    return f"<html><head><meta charset='utf-8'></head><body{direction}>" + "\n".join(x for x in body if x) + tabs + "</body></html>"
 
 
 # ── Text tabs, written with Docs edits ───────────────────────────────────────
@@ -328,7 +442,7 @@ def transcript_requests(m: dict, brief: dict, tab: str) -> list:
 
 # Builds (or replaces) the meeting's doc and remembers where it is. Returns
 # {'folder_id', 'folder_url', 'doc_id', 'doc_url', 'exported_at'}.
-def export(store, meeting_id: str, drive=None, docs=None) -> dict:
+def export(store, meeting_id: str, drive=None, docs=None, layout: dict = None) -> dict:
     brief = store.load_brief(meeting_id)
     if not brief:
         raise ValueError("This meeting has no summary yet, so there is nothing to export")
@@ -337,7 +451,8 @@ def export(store, meeting_id: str, drive=None, docs=None) -> dict:
     if docs is None:
         from ..drive import docs
     m = store.load(meeting_id)
-    name = folder_name(m, brief)
+    spec = (layout or {}).get('title') or {}
+    name = folder_name(m, brief, isinstance(spec, dict) and spec.get('mode') == 'fixed')
     folder = drive.ensure_folder(f"{ROOT_FOLDER}/{name}")
     old = (m.get('drive') or {}).get('doc_id')
     if old:
@@ -351,17 +466,22 @@ def export(store, meeting_id: str, drive=None, docs=None) -> dict:
             shot_data[s['image']] = store.shot_path(meeting_id, s['image']).read_bytes()
         except FileNotFoundError:
             pass
-    page = report_html(m, brief, shot_data)
+    page = report_html(m, brief, shot_data, layout)
     doc_id = drive.upload_bytes(page.encode('utf-8'), name, 'text/html', folder_id=folder, convert_to=DOC_MIME)['id']
     first = docs.get(doc_id)['tabs'][0]['tabProperties']['tabId']
-    replies = docs.batch_update(doc_id, [
-        {'updateDocumentTabProperties': {'tabProperties': {'tabId': first, 'title': 'Report'}, 'fields': 'title'}},
-        {'addDocumentTab': {'tabProperties': {'title': 'Quick summary', 'index': 0}}},
-        {'addDocumentTab': {'tabProperties': {'title': 'Transcript'}}},
-    ])['replies']
-    quick = replies[1]['addDocumentTab']['tabProperties']['tabId']
-    transcript = replies[2]['addDocumentTab']['tabProperties']['tabId']
-    docs.batch_update(doc_id, quick_requests(m, brief, quick) + transcript_requests(m, brief, transcript))
+    # A Quick summary tab first only for templates that ask for one.
+    with_quick = 'quick' in doc_blocks(layout)
+    requests = [{'updateDocumentTabProperties': {'tabProperties': {'tabId': first, 'title': 'Report' if with_quick else 'Summary'},
+                                                 'fields': 'title'}}]
+    if with_quick:
+        requests.append({'addDocumentTab': {'tabProperties': {'title': 'Quick summary', 'index': 0}}})
+    requests.append({'addDocumentTab': {'tabProperties': {'title': 'Transcript'}}})
+    replies = docs.batch_update(doc_id, requests)['replies']
+    transcript = replies[-1]['addDocumentTab']['tabProperties']['tabId']
+    edits = transcript_requests(m, brief, transcript)
+    if with_quick:
+        edits = quick_requests(m, brief, replies[1]['addDocumentTab']['tabProperties']['tabId']) + edits
+    docs.batch_update(doc_id, edits)
     info = {'name': name, 'folder_id': folder, 'folder_url': f"https://drive.google.com/drive/folders/{folder}", 'doc_id': doc_id,
             'doc_url': str(drive.info(doc_id).get('webViewLink') or f"https://docs.google.com/document/d/{doc_id}/edit"),
             'exported_at': datetime.datetime.now().astimezone().isoformat(timespec='seconds')}

@@ -20,7 +20,9 @@ from ..meeting.detector import MeetingDetector
 from ..meeting.diarize import make_splitter
 from ..meeting.session import SessionManager, merge_speaker_into, same_name_as
 from ..meeting.speakers import SAME_VOICE, SpeakerTracker, make_embedder
+from ..meeting import summarize as summary_ai
 from ..meeting.store import MeetingStore
+from ..meeting.summary_templates import TemplateLibrary, layout as template_layout, summary as template_row
 from ..meeting.transcriber import YOU_FIRM, MeetingTranscriber
 from ..meeting.voices import FILE as VOICES_FILE, VoiceBook
 from ..platform import screenshots as platform_shots
@@ -52,8 +54,13 @@ class MeetingService:
                  report: Callable[[str], None] = None, sessions_fn: Callable[[], list] = None,
                  autostart: bool = True, mic_stream_factory: Callable = None,
                  splitter_factory: Callable = None, voices: Optional[VoiceBook] = None,
-                 shots=None):
+                 shots=None, complete: Callable = None, templates: Optional[TemplateLibrary] = None):
         self.ctx = ctx
+        # The AI call for summaries (llm.complete; a fake in tests), and the
+        # summary job running per meeting.
+        self._complete = complete
+        self._summarizing = {}            # meeting id -> 'auto' | 'hand' while its job runs
+        self._auto_waiting = set()        # meeting ids waiting for the transcript to settle
         # Screenshots: the platform's snip overlay and clipboard (a fake in tests).
         self._shots = shots or platform_shots
         self._expecting: Optional[str] = None   # meeting id while a snip of ours is awaited
@@ -64,6 +71,9 @@ class MeetingService:
         # Saved voices live next to the meetings folder (beside it, so the
         # meeting list never reads them as a meeting).
         self.voices = voices if voices is not None else VoiceBook(Path(self.store.folder).parent / VOICES_FILE)
+        # Summary templates: built-ins, the meeting-sum skill's, and the user's
+        # own in "summary_templates" beside the meetings folder.
+        self.templates = templates or TemplateLibrary(Path(self.store.folder).parent / 'summary_templates')
         self._splitter_factory = splitter_factory or self._load_splitter
         self._publish = publish or publish_event
         self._loopback_factory = loopback_factory or (
@@ -89,7 +99,7 @@ class MeetingService:
         self._embedder_task = None
         self.session = SessionManager(self.store, start_capture=self._start_capture, stop_capture=self._stop_capture,
                                       publish=self._publish, settings=self._setting, on_speakers=self.tracker.load,
-                                      on_ended=self._keep_voices)
+                                      on_ended=self._meeting_ended)
         self.transcriber = MeetingTranscriber(
             engine_provider=lambda: self.ctx.state_manager.whisper_engine,
             is_busy=lambda: not self.ctx.state_manager.is_idle(), tracker=self.tracker,
@@ -440,6 +450,167 @@ class MeetingService:
     def brief(self, meeting_id: str):
         return self.store.load_brief(meeting_id)
 
+    # ── Summaries written by the AI (docs/design/meeting-summary.md) ─────────
+
+    def _ai(self) -> Callable:
+        if self._complete is None:
+            from .. import llm
+            self._complete = llm.complete
+        return self._complete
+
+    @staticmethod
+    def _parse(text: str):
+        from ..llm import parse_json
+        return parse_json(text)
+
+    def ai_ready(self) -> bool:
+        if self._complete is not None:
+            return True
+        try:
+            from .. import llm
+            return bool(llm.model_for('meetings'))
+        except Exception:
+            return False
+
+    def summary_running(self, meeting_id: str) -> bool:
+        return meeting_id in self._summarizing
+
+    # Writes the meeting's brief in the background. `how` is 'hand' (a button)
+    # or 'auto' (after the meeting ended). Returns the task's id.
+    def summarize(self, meeting_id: str, template: str = '', language: str = '', how: str = 'hand') -> int:
+        live = self.session.meeting
+        if live and live['id'] == meeting_id and self.is_running():
+            raise ValueError("End the meeting before summarizing it")
+        template = template or self.default_template()
+        chosen = self.templates.get(template)
+        with self._lock:
+            if meeting_id in self._summarizing:
+                raise ValueError("This meeting is being summarized already")
+            self._summarizing[meeting_id] = how
+
+        def job(reporter):
+            m = self.store.load(meeting_id)
+            reporter.report(None, f"Writing it with the {chosen.get('name')} template")
+            brief = summary_ai.summarize(m, self.templates, chosen['id'], self._ai(), language=language,
+                                         language_setting=str(self._setting('meeting.summary.language', 'meeting')),
+                                         parse=self._parse)
+            brief['written'] = how
+            spec = chosen.get('title') or {}
+            fixed = isinstance(spec, dict) and spec.get('mode') == 'fixed'
+            self.store.save_brief(meeting_id, brief, rename_meeting=not fixed)
+            return brief.get('title')
+
+        def done(task):
+            with self._lock:
+                self._summarizing.pop(meeting_id, None)
+            if task.status == 'done':
+                self._publish('meeting_brief', {'id': meeting_id})
+        try:
+            task = get_task_manager().run('Summarizing the meeting', job, kind='meeting_summary',
+                                          on_done=done, ref=meeting_id)
+        except Exception:
+            with self._lock:
+                self._summarizing.pop(meeting_id, None)
+            raise
+        return task.id
+
+    # A meeting ended: keep its voices, then summarize it once the transcript
+    # has caught up, unless it resumes first.
+    def _meeting_ended(self, meeting: dict):
+        self._keep_voices(meeting)
+        if self._setting('meeting.summary.auto', True):
+            self._schedule_auto_summary(meeting['id'])
+
+    def _schedule_auto_summary(self, meeting_id: str, settle_s: float = 15.0, max_wait_s: float = 1800.0,
+                               poll_s: float = 2.0):
+        with self._lock:
+            if meeting_id in self._auto_waiting:
+                return
+            self._auto_waiting.add(meeting_id)
+
+        def wait_then_run():
+            try:
+                quiet_since, started = None, time.monotonic()
+                while not self._closed and time.monotonic() - started < max_wait_s:
+                    live = self.session.meeting
+                    if live is not None and live['id'] == meeting_id and self.is_running():
+                        return  # it resumed; it is scheduled again when it ends
+                    if self.transcriber.queued_seconds() > 0:
+                        quiet_since = None
+                    elif quiet_since is None:
+                        quiet_since = time.monotonic()
+                    elif time.monotonic() - quiet_since >= settle_s:
+                        self._auto_summary(meeting_id)
+                        return
+                    time.sleep(poll_s)
+            finally:
+                with self._lock:
+                    self._auto_waiting.discard(meeting_id)
+        threading.Thread(target=wait_then_run, name='meeting-auto-summary', daemon=True).start()
+
+    def _auto_summary(self, meeting_id: str):
+        if not self.ai_ready():
+            logger.info("Meeting summary: no AI model chosen, so no automatic summary")
+            return
+        try:
+            m = self.store.load(meeting_id)
+        except (OSError, ValueError) as e:
+            logger.warning(f"Meeting summary: {meeting_id} unreadable: {e}")
+            return
+        if not summary_ai.worth_summarizing(m, self._setting('meeting.summary.min_minutes', 2)):
+            logger.info(f"Meeting summary: {meeting_id} is too short to summarize")
+            return
+        existing = self.store.load_brief(meeting_id)
+        if existing and existing.get('written') != 'auto':
+            logger.info(f"Meeting summary: {meeting_id} keeps the summary asked for by hand")
+            return
+        try:
+            self.summarize(meeting_id, how='auto')
+        except ValueError as e:
+            logger.info(f"Meeting summary: {e}")
+
+    # ── Summary templates ────────────────────────────────────────────────────
+
+    def default_template(self) -> str:
+        return str(self._setting('meeting.summary.template', 'standard') or 'standard')
+
+    def templates_list(self) -> list:
+        default = self.default_template()
+        rows = [template_row(t, default) for t in self.templates.all().values()]
+        order = {'built-in': 0, 'skill': 1, 'mine': 2}
+        return sorted(rows, key=lambda r: (order.get(r['origin'], 3), str(r['name']).lower()))
+
+    def template_get(self, template_id: str) -> dict:
+        t = self.templates.get(template_id)
+        return dict(template_row(t, self.default_template()), text=t['text'], layout=template_layout(t))
+
+    def template_layout(self, template_id: str) -> dict:
+        return template_layout(self.templates.get(template_id or 'standard'))
+
+    # Saving and deleting change only files; the bridge moves the default
+    # setting through the settings service when the default's id goes away.
+    def template_save(self, text: str, replaces: str = '') -> dict:
+        t = self.templates.save(text, replaces)
+        return template_row(t, self.default_template())
+
+    def template_delete(self, template_id: str) -> bool:
+        return self.templates.delete(template_id)
+
+    def template_exists(self, template_id: str) -> bool:
+        return template_id in self.templates.all()
+
+    # A copy's text under a free id, for the editor; nothing is saved until Save.
+    def template_copy(self, template_id: str, name: str = '') -> dict:
+        source = self.templates.get(template_id)
+        name = name or f"{source.get('name')} (copy)"
+        return {'text': self.templates.copy_text(template_id, self.templates.free_id(name), name)}
+
+    # The AI writes a template from a description or from past summaries.
+    def template_draft(self, kind: str, text: str, name: str = '') -> dict:
+        if not self.ai_ready():
+            raise ValueError("Choose an AI model in Settings › AI first; the AI writes the template")
+        return summary_ai.draft_template(kind, text, self._ai(), name, taken=set(self.templates.all()))
+
     # The meeting as a Google Doc in Drive (meeting/gdoc.py). Not while it
     # runs: the session keeps writing that file.
     def export_to_drive(self, meeting_id: str) -> dict:
@@ -447,7 +618,8 @@ class MeetingService:
         if m and m['id'] == meeting_id:
             raise ValueError("End the meeting before saving it to Google Drive")
         from ..meeting import gdoc
-        return gdoc.export(self.store, meeting_id)
+        brief = self.store.load_brief(meeting_id) or {}
+        return gdoc.export(self.store, meeting_id, layout=self.template_layout(brief.get('template') or 'standard'))
 
     def set_caption(self, meeting_id: str, image: str, caption: str) -> bool:
         return self.session.set_caption(meeting_id, image, caption)

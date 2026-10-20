@@ -6,10 +6,13 @@
 # underscore attributes so pywebview doesn't expose them to JavaScript.
 
 import functools
+import html as html_lib
 import logging
 import os
+import re
 import time
 import webbrowser
+from pathlib import Path
 
 from .events import publish
 from .tasks import get_task_manager
@@ -705,6 +708,93 @@ class Bridge:
     @_api
     def meeting_brief(self, meeting_id):
         return self._meetings.brief(str(meeting_id))
+
+    # What the Summary tab needs to offer a summary: an AI model chosen, a
+    # job already running, and the default template.
+    @_api
+    def meeting_summary_state(self, meeting_id):
+        svc = self._meetings
+        return {'ai_ready': svc.ai_ready(), 'running': svc.summary_running(str(meeting_id)),
+                'template': svc.default_template()}
+
+    # Writes the summary with the AI in the background; the page hears
+    # 'meeting_brief' when it is saved. Returns the task's id.
+    @_api
+    def meeting_summarize(self, meeting_id, template='', language=''):
+        return self._meetings.summarize(str(meeting_id), str(template or ''), str(language or ''))
+
+    # ── Summary templates (docs/design/meeting-summary.md) ───────────────────
+
+    @_api
+    def summary_templates(self):
+        return self._meetings.templates_list()
+
+    # One template: its row, the whole file's text, and the layout.
+    @_api
+    def summary_template(self, template_id):
+        return self._meetings.template_get(str(template_id))
+
+    # How a brief written with this template is laid out (blocks, headings).
+    @_api
+    def summary_template_layout(self, template_id=''):
+        return self._meetings.template_layout(str(template_id or ''))
+
+    @_api
+    def summary_template_default(self, template_id):
+        self._meetings.templates.get(str(template_id))
+        self._settings.set('meeting.summary.template', str(template_id))
+        return str(template_id)
+
+    # Saves the editor's text as one of the user's templates (checked first).
+    # A renamed default stays the default under its new id.
+    @_api
+    def summary_template_save(self, text, replaces=''):
+        svc = self._meetings
+        row = svc.template_save(str(text or ''), str(replaces or ''))
+        if replaces and replaces != row['id'] and svc.default_template() == replaces:
+            self._settings.set('meeting.summary.template', row['id'])
+            row['default'] = True
+        return row
+
+    # Deletes one of the user's templates; the default falls back to the
+    # built-in brief when its template is gone.
+    @_api
+    def summary_template_delete(self, template_id):
+        svc = self._meetings
+        svc.template_delete(str(template_id))
+        if svc.default_template() == template_id and not svc.template_exists(str(template_id)):
+            self._settings.set('meeting.summary.template', 'standard')
+        return True
+
+    @_api
+    def summary_template_copy(self, template_id, name=''):
+        return self._meetings.template_copy(str(template_id), str(name or ''))
+
+    # The AI drafts a template: kind 'describe' (text = what the user wants)
+    # or 'examples' (text = past summaries). Returns {text, problems}.
+    @_api
+    def summary_template_draft(self, kind, text, name=''):
+        return self._meetings.template_draft('examples' if kind == 'examples' else 'describe', str(text or ''),
+                                             str(name or ''))
+
+    # Past summaries from files, as text for drafting a template: Markdown,
+    # text, HTML (tags dropped) or a Koli brief (.json). None = cancelled.
+    @_api
+    def summary_template_read_files(self):
+        paths = self._host.pick('open', 'Pick past summaries', multiple=True,
+                                types=('Summaries (*.md;*.txt;*.html;*.htm;*.json)', 'All files (*.*)'))
+        if not paths:
+            return None
+        parts = []
+        for path in paths[:10]:
+            text = Path(path).read_text(encoding='utf-8', errors='replace')
+            if path.lower().endswith(('.html', '.htm')):
+                text = re.sub(r'(?is)<(script|style)\b.*?</\1>', ' ', text)
+                text = re.sub(r'(?i)<br\s*/?>|</(p|div|li|h[1-6]|tr)>', '\n', text)
+                text = html_lib.unescape(re.sub(r'<[^>]+>', '', text))
+                text = re.sub(r'\n\s*\n+', '\n\n', text)
+            parts.append(f"--- {Path(path).name} ---\n{text.strip()[:20000]}")
+        return {'names': [Path(p).name for p in paths[:10]], 'text': '\n\n'.join(parts)}
 
     # The Summary tab as a PDF where the user picks; the page opens its
     # sections and applies its print styles before calling. None = cancelled.

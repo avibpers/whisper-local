@@ -2450,6 +2450,374 @@ class ServiceVoicesTests(unittest.TestCase):
         self.assertEqual(svc.voices_list(), [])
 
 
+
+# ── AI summaries and summary templates (docs/design/meeting-summary.md) ─────
+
+BOARD_FILE = '''---
+id: weekly
+name: Weekly sync
+description: Short weekly notes.
+language: meeting
+title:
+  mode: generated
+date: date
+blocks: [header, tldr, sections, next_meeting]
+---
+Write weekly notes.
+
+{{common_rules}}
+
+## What to return
+
+```json
+{"version": 1, "template": "weekly", "title": "", "tldr": [], "sections": [], "next_meeting": []}
+```
+'''
+
+
+def summary_meeting(turns=None, lang='he'):
+    turns = turns if turns is not None else [
+        {'start': 0.0, 'end': 40.0, 'speaker': 'you', 'text': 'שלום לכולם בואו נתחיל עם התקציב', 'lang': lang},
+        {'start': 41.0, 'end': 90.0, 'speaker': 's1', 'text': 'אני מציע לקצץ בשיווק עד סוף הרבעון', 'lang': lang},
+        {'start': 91.0, 'end': 130.0, 'speaker': 'you', 'text': 'מסכים, עומר שולח תחזית מעודכנת', 'lang': lang},
+        {'start': 131.0, 'end': 170.0, 'speaker': 's1', 'text': 'okay', 'lang': 'en'},
+    ]
+    return {'id': '2026-10-20-100000', 'title': 'Meeting', 'started_at': '2026-10-20T10:00:00+03:00',
+            'ended_at': '2026-10-20T10:03:00+03:00', 'source': None,
+            'speakers': [{'id': 'you', 'name': 'You', 'colour': 0}, {'id': 's1', 'name': 'Omer', 'colour': 1}],
+            'turns': turns, 'screenshots': [{'at': 95.0, 'image': 'a.png', 'caption': 'Budget sheet'}], 'gaps': []}
+
+
+class FakeResult:
+    def __init__(self, text='', error='', provider='codex', model='gpt-test'):
+        self.text, self.error, self.provider, self.model = text, error, provider, model
+
+    @property
+    def ok(self):
+        return bool(self.text) and not self.error
+
+
+class FakeAI:
+    """llm.complete stand-in: answers in turn, remembers what it was asked."""
+
+    def __init__(self, *answers):
+        self.answers = list(answers)
+        self.calls = []
+
+    def __call__(self, feature, messages, json=False):
+        self.calls.append((feature, messages, json))
+        a = self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
+        return a if isinstance(a, FakeResult) else FakeResult(a)
+
+
+class SummaryTemplateTests(unittest.TestCase):
+    def lib(self):
+        from koli.meeting.summary_templates import TemplateLibrary
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        return TemplateLibrary(self.root / 'mine', skill_dir=self.root / 'skill')
+
+    def test_builtins_load_and_pass_the_check(self):
+        from koli.meeting.summary_templates import problems
+        found = self.lib().all()
+        self.assertIn('standard', found)
+        self.assertIn('board-meeting', found)
+        for t in found.values():
+            self.assertEqual(problems(t), [], t['id'])
+        self.assertEqual(found['board-meeting']['title']['choices'][0], 'Board Meeting Summary')
+
+    def test_prompt_fills_the_shared_rules_and_the_language(self):
+        lib = self.lib()
+        prompt = lib.prompt(lib.get('board-meeting'), 'Hebrew (he)')
+        self.assertNotIn('{{common_rules}}', prompt)
+        self.assertIn('Every statement must come from the transcript', prompt)
+        self.assertIn('Write the report in Hebrew (he)', prompt)
+
+    def test_save_copy_and_delete_the_users_own(self):
+        from koli.meeting.summary_templates import TemplateError
+        lib = self.lib()
+        t = lib.save(BOARD_FILE)
+        self.assertEqual(t['id'], 'weekly')
+        self.assertEqual(lib.all()['weekly']['origin'], 'mine')
+        text = lib.copy_text('weekly', lib.free_id('Weekly sync'), 'Weekly: sync')
+        self.assertIn('id: weekly-sync', text)
+        self.assertIn("name: 'Weekly: sync'", text)
+        lib.save(text)
+        self.assertIn('weekly-sync', lib.all())
+        lib.delete('weekly')
+        self.assertNotIn('weekly', lib.all())
+        with self.assertRaises(TemplateError):
+            lib.delete('standard')
+
+    def test_save_refuses_unknown_blocks(self):
+        from koli.meeting.summary_templates import TemplateError
+        with self.assertRaises(TemplateError) as e:
+            self.lib().save(BOARD_FILE.replace('next_meeting]', 'charts]'))
+        self.assertIn('"charts"', str(e.exception))
+
+    def test_renamed_on_save_removes_the_old_file(self):
+        lib = self.lib()
+        lib.save(BOARD_FILE)
+        lib.save(BOARD_FILE.replace('id: weekly', 'id: weekly-notes'), replaces='weekly')
+        self.assertEqual(sorted(p.stem for p in (self.root / 'mine').glob('*.md')), ['weekly-notes'])
+
+    def test_a_users_copy_replaces_a_builtin_and_skill_templates_show(self):
+        lib = self.lib()
+        (self.root / 'skill').mkdir()
+        (self.root / 'skill' / 'weekly.md').write_text(BOARD_FILE, encoding='utf-8')
+        lib.save(BOARD_FILE.replace('id: weekly', 'id: standard').replace('name: Weekly sync', 'name: My brief'))
+        found = lib.all()
+        self.assertEqual(found['weekly']['origin'], 'skill')
+        self.assertEqual(found['standard']['name'], 'My brief')
+        self.assertTrue(found['standard']['builtin_copy'])
+
+    def test_a_broken_file_is_skipped(self):
+        lib = self.lib()
+        (self.root / 'mine').mkdir()
+        (self.root / 'mine' / 'bad.md').write_text('no header here', encoding='utf-8')
+        self.assertNotIn('bad', lib.all())
+        self.assertIn('standard', lib.all())
+
+
+class SummarizeTests(unittest.TestCase):
+    def lib(self):
+        from koli.meeting.summary_templates import TemplateLibrary
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        return TemplateLibrary(Path(tmp.name), skill_dir=None)
+
+    def test_meeting_language_is_the_language_of_most_words(self):
+        from koli.meeting.summarize import meeting_language
+        self.assertEqual(meeting_language(summary_meeting()), 'he')
+        english = summary_meeting([{'start': 0, 'end': 5, 'speaker': 'you', 'text': 'hello there all of you'}])
+        self.assertEqual(meeting_language(english), 'en')
+
+    def test_language_asked_then_template_then_setting_then_meeting(self):
+        from koli.meeting.summarize import choose_language
+        m = summary_meeting()
+        self.assertEqual(choose_language(m, {'language': 'meeting'}), 'he')
+        self.assertEqual(choose_language(m, {'language': 'meeting'}, setting='en'), 'en')
+        self.assertEqual(choose_language(m, {'language': 'fr'}, setting='en'), 'fr')
+        self.assertEqual(choose_language(m, {'language': 'fr'}, asked='de', setting='en'), 'de')
+
+    def test_the_meeting_text_has_ids_seconds_and_screenshots(self):
+        from koli.meeting.summarize import meeting_text
+        text = meeting_text(summary_meeting())
+        self.assertIn('- s1: Omer', text)
+        self.assertIn('[41] s1 (Omer): אני מציע', text)
+        self.assertIn('[95] SCREENSHOT: Budget sheet', text)
+        self.assertLess(text.index('[91]'), text.index('[95] SCREENSHOT'))
+
+    def test_a_board_summary_is_tidied(self):
+        from koli.meeting.summarize import summarize
+        answer = ('{"title": "Our budget talk", "participants": {"s1": "Omer Cohen", "s9": "Ghost"}, '
+                  '"agenda": [{"title": "Budget", "discussion": ["Over plan"], '
+                  '"decisions": ["Cut marketing"], "action_items": [{"task": "Send forecast", "owner": "Omer", "status": "soon"}]}], '
+                  '"next_meeting": ["Second office"]}')
+        ai = FakeAI(answer)
+        b = summarize(summary_meeting(), self.lib(), 'board-meeting', ai)
+        self.assertEqual(ai.calls[0][0], 'meetings')
+        self.assertTrue(ai.calls[0][2])
+        self.assertEqual(b['title'], 'Board Meeting Summary')
+        self.assertEqual(b['template'], 'board-meeting')
+        self.assertEqual(b['language'], 'he')
+        self.assertEqual(b['participants'], {'s1': 'Omer Cohen'})
+        self.assertEqual(b['agenda'][0]['id'], '1')
+        self.assertEqual(b['agenda'][0]['decisions'][0], {'text': 'Cut marketing', 'id': 'D1'})
+        action = b['agenda'][0]['action_items'][0]
+        self.assertEqual((action['id'], action['status'], action['due']), ('A1', 'do_now', None))
+        self.assertEqual(b['next_meeting'][0]['text'], 'Second office')
+        self.assertIn('codex/gpt-test', b['generator'])
+        self.assertEqual(b['date'], '2026-10-20')
+
+    def test_errors_from_the_ai_and_empty_answers_are_reported(self):
+        from koli.meeting.summarize import SummaryError, summarize
+        with self.assertRaises(SummaryError) as e:
+            summarize(summary_meeting(), self.lib(), 'standard', FakeAI(FakeResult(error='No AI model chosen')))
+        self.assertIn('No AI model chosen', str(e.exception))
+        with self.assertRaises(SummaryError):
+            summarize(summary_meeting(), self.lib(), 'standard', FakeAI('{"title": "x"}'))
+        with self.assertRaises(SummaryError):
+            summarize(summary_meeting(turns=[]), self.lib(), 'standard', FakeAI('{}'))
+
+    def test_worth_summarizing_needs_length_and_turns(self):
+        from koli.meeting.summarize import worth_summarizing
+        self.assertTrue(worth_summarizing(summary_meeting(), 2))
+        self.assertFalse(worth_summarizing(summary_meeting(), 5))
+        self.assertFalse(worth_summarizing(summary_meeting(summary_meeting()['turns'][:2]), 0))
+
+    def test_a_template_draft_gets_one_more_try_and_a_free_id(self):
+        from koli.meeting.summarize import draft_template
+        bad = BOARD_FILE.replace('next_meeting]', 'charts]')
+        ai = FakeAI('```markdown\n' + bad + '\n```', 'Here it is:\n' + BOARD_FILE)
+        out = draft_template('describe', 'weekly notes with a short list', ai, taken={'weekly'})
+        self.assertEqual(out['problems'], [])
+        self.assertIn('id: weekly-2', out['text'])
+        self.assertTrue(out['text'].startswith('---'))
+        self.assertIn('charts', ai.calls[1][1][-1]['content'])
+
+    def test_examples_ask_for_the_shared_structure(self):
+        from koli.meeting.summarize import draft_messages
+        msgs = draft_messages('examples', 'Summary one\nSummary two')
+        self.assertIn('Work out what they share', msgs[1]['content'])
+        self.assertIn('Summary two', msgs[1]['content'])
+
+
+class MeetingSummaryServiceTests(unittest.TestCase):
+    def service(self, values=None, ai=None):
+        from koli.services.meetings import MeetingService
+        from koli.meeting.store import MeetingStore
+        from koli.meeting.summary_templates import TemplateLibrary
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        settings = {'meeting.enabled': False, 'meeting.summary.auto': True, 'meeting.summary.template': 'standard',
+                    'meeting.summary.language': 'meeting', 'meeting.summary.min_minutes': 2}
+        settings.update(values or {})
+        ctx = type('Ctx', (), {})()
+        ctx.state_manager = FakeStateManager()
+        ctx.config_manager = FakeConfig(settings)
+        ctx.model_registry = None
+        self.events = []
+        self.store = MeetingStore(Path(tmp.name) / 'meetings')
+        svc = MeetingService(ctx, store=self.store, publish=lambda t, p: self.events.append((t, p)),
+                             loopback_factory=FakeLoop, embedder_factory=lambda: None, loopback_available=lambda: True,
+                             sessions_fn=lambda: [], autostart=False, complete=ai,
+                             templates=TemplateLibrary(Path(tmp.name) / 'summary_templates', skill_dir=None))
+        self.addCleanup(svc.shutdown)
+        return svc
+
+    def wait(self, svc, meeting_id, timeout=5.0):
+        end = time.monotonic() + timeout
+        while svc.summary_running(meeting_id) and time.monotonic() < end:
+            time.sleep(0.02)
+
+    def test_summarize_saves_the_brief_and_tells_the_page(self):
+        m = summary_meeting()
+        svc = self.service(ai=FakeAI('{"title": "Budget cut agreed", "tldr": ["Marketing is cut."]}'))
+        self.store.save(m)
+        svc.summarize(m['id'])
+        self.wait(svc, m['id'])
+        brief = self.store.load_brief(m['id'])
+        self.assertEqual(brief['tldr'], ['Marketing is cut.'])
+        self.assertEqual(brief['written'], 'hand')
+        self.assertEqual(self.store.load(m['id'])['title'], 'Budget cut agreed')
+        self.assertIn(('meeting_brief', {'id': m['id']}), self.events)
+
+    def test_a_fixed_title_template_leaves_the_meeting_title(self):
+        m = summary_meeting()
+        svc = self.service(ai=FakeAI('{"agenda": [{"title": "Budget", "discussion": ["Over plan"]}]}'))
+        self.store.save(m)
+        svc.summarize(m['id'], template='board-meeting')
+        self.wait(svc, m['id'])
+        self.assertEqual(self.store.load_brief(m['id'])['title'], 'Board Meeting Summary')
+        self.assertEqual(self.store.load(m['id'])['title'], 'Meeting')
+
+    def test_one_job_per_meeting(self):
+        m = summary_meeting()
+        svc = self.service(ai=FakeAI('{"tldr": ["x"]}'))
+        self.store.save(m)
+        svc._summarizing[m['id']] = 'hand'
+        with self.assertRaises(ValueError):
+            svc.summarize(m['id'])
+
+    def test_auto_summary_keeps_a_hand_summary_and_skips_short_meetings(self):
+        m = summary_meeting()
+        ai = FakeAI('{"tldr": ["auto"]}')
+        svc = self.service(ai=ai)
+        self.store.save(m)
+        self.store.save_brief(m['id'], {'tldr': ['mine'], 'written': 'hand'})
+        svc._auto_summary(m['id'])
+        self.assertEqual(ai.calls, [])
+        short = dict(summary_meeting(), id='2026-10-20-110000', ended_at='2026-10-20T10:01:00+03:00')
+        self.store.save(short)
+        svc._auto_summary(short['id'])
+        self.assertEqual(ai.calls, [])
+
+    def test_auto_summary_runs_once_the_transcript_has_caught_up(self):
+        m = summary_meeting()
+        svc = self.service(ai=FakeAI('{"tldr": ["auto"]}'))
+        self.store.save(m)
+        svc._schedule_auto_summary(m['id'], settle_s=0.05, poll_s=0.01)
+        end = time.monotonic() + 5
+        while not self.store.load_brief(m['id']) and time.monotonic() < end:
+            time.sleep(0.02)
+        self.wait(svc, m['id'])
+        self.assertEqual(self.store.load_brief(m['id'])['written'], 'auto')
+
+    def test_templates_list_marks_the_default(self):
+        svc = self.service(values={'meeting.summary.template': 'board-meeting'})
+        rows = {r['id']: r for r in svc.templates_list()}
+        self.assertTrue(rows['board-meeting']['default'])
+        self.assertFalse(rows['standard']['editable'])
+        self.assertIn('Agenda', rows['board-meeting']['sections'])
+        self.assertEqual(svc.template_layout('board-meeting')['labels']['agenda'], 'Meeting Agenda')
+
+
+class GoogleDocTemplateTests(unittest.TestCase):
+    BOARD = {'version': 1, 'template': 'board-meeting', 'title': 'Board Meeting Summary', 'date': '2026-10-19', 'language': 'he',
+             'attendees': [{'name': 'Dana', 'role': 'CEO'}],
+             'agenda': [{'id': '1', 'title': 'Budget', 'discussion': ['Over plan.'],
+                         'decisions': [{'id': 'D1', 'text': 'Cut marketing.', 'at': 5}],
+                         'action_items': [{'id': 'A1', 'task': 'Send forecast.', 'owner': 'Omer', 'status': 'do_now', 'due': None, 'at': 9}]}],
+             'next_meeting': [{'id': 'N1', 'text': 'Second office.'}]}
+
+    def layout(self):
+        from koli.meeting.summary_templates import TemplateLibrary, layout
+        return layout(TemplateLibrary(Path(tempfile.gettempdir()) / 'koli-no-such-dir', skill_dir=None).get('board-meeting'))
+
+    def test_a_board_report_follows_its_template(self):
+        from koli.meeting import gdoc
+        page = gdoc.report_html(brief_meeting(), self.BOARD, {}, self.layout())
+        for part in ('<h2>Participants</h2>', '<li>Dana — CEO</li>', '<h2>Meeting Agenda</h2>',
+                     '<h2>Key Points, Decisions, and Action Items</h2>', '<h3>1. Budget</h3>', 'Cut marketing.',
+                     'Send forecast.', '<h2>Points for Discussion at the Next Meeting</h2>', "<body dir='rtl'>",
+                     "<p style='color:#666'>2026-10-19</p>"):
+            self.assertIn(part, page)
+        self.assertNotIn('Who spoke', page)
+        self.assertNotIn('Quick summary', page)
+
+    def test_a_board_doc_has_no_quick_summary_tab_and_a_folder_with_the_meeting_name(self):
+        from koli.meeting import gdoc
+        from koli.meeting.store import MeetingStore
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        store = MeetingStore(Path(tmp.name))
+        m = brief_meeting()
+        store.save(m)
+        store.save_brief(m['id'], self.BOARD, rename_meeting=False)
+        tabs, folders = [], []
+
+        class FakeDrive:
+            def ensure_folder(self, path):
+                folders.append(path); return 'F1'
+            def upload_bytes(self, *a, **k):
+                return {'id': 'D1'}
+            def delete(self, file_id):
+                pass
+            def info(self, file_id):
+                return {}
+
+        class FakeDocs:
+            def get(self, doc_id):
+                return {'tabs': [{'tabProperties': {'tabId': 't.0'}}]}
+            def batch_update(self, doc_id, requests):
+                replies = []
+                for r in requests:
+                    if 'updateDocumentTabProperties' in r:
+                        tabs.append(r['updateDocumentTabProperties']['tabProperties']['title'])
+                    if 'addDocumentTab' in r:
+                        title = r['addDocumentTab']['tabProperties']['title']
+                        tabs.append(title)
+                        replies.append({'addDocumentTab': {'tabProperties': {'tabId': 't.' + title[0].lower()}}})
+                    else:
+                        replies.append({})
+                return {'replies': replies}
+
+        gdoc.export(store, m['id'], drive=FakeDrive(), docs=FakeDocs(), layout=self.layout())
+        self.assertEqual(tabs, ['Summary', 'Transcript'])
+        self.assertEqual(folders, ['Koli/Meetings/2026-10-19 Board Meeting Summary - Dev sync - SEO'])
+
 if __name__ == '__main__':
     unittest.main()
 

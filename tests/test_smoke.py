@@ -8397,3 +8397,110 @@ class MeetingDriveShareTests(unittest.TestCase):
             r = self.make(**kwargs).meeting_drive_share('m1')
             self.assertEqual(r['data'], {'window': False}, kwargs)
             self.assertIn(('browser', 'https://docs.google.com/document/d/D1/edit'), self.calls)
+
+
+# Meeting summaries by the AI and the summary templates (bridge and pages).
+class MeetingSummaryBridgeTests(unittest.TestCase):
+    def make(self, default='standard', picked=None):
+        from koli.ui.bridge import Bridge
+        self.calls, self.settings_set = [], []
+        calls, settings_set = self.calls, self.settings_set
+
+        class Library:
+            def get(self, tid):
+                if tid == 'nope':
+                    raise ValueError("No summary template 'nope'")
+                return {'id': tid}
+
+        class Svc:
+            templates = Library()
+            def default_template(self):
+                return default
+            def summarize(self, mid, template, language):
+                calls.append(('summarize', mid, template, language)); return 7
+            def ai_ready(self):
+                return True
+            def summary_running(self, mid):
+                return False
+            def template_save(self, text, replaces):
+                calls.append(('save', replaces)); return {'id': 'renamed', 'default': False}
+            def template_delete(self, tid):
+                calls.append(('delete', tid)); return True
+            def template_exists(self, tid):
+                return False
+
+        class Settings:
+            def set(self, path, value):
+                settings_set.append((path, value)); return value
+
+        class Host:
+            ctx = type('C', (), {'meetings': Svc()})()
+            settings = Settings()
+            def pick(self, kind, title, types=None, filename='', multiple=False):
+                calls.append(('pick', kind, multiple)); return picked
+        return Bridge(Host())
+
+    def test_summarize_and_state(self):
+        b = self.make()
+        self.assertEqual(b.meeting_summarize('m1', 'board-meeting', 'he'), {'ok': True, 'data': 7})
+        self.assertEqual(self.calls[-1], ('summarize', 'm1', 'board-meeting', 'he'))
+        self.assertEqual(b.meeting_summary_state('m1')['data'], {'ai_ready': True, 'running': False, 'template': 'standard'})
+
+    def test_default_goes_through_the_settings_service(self):
+        b = self.make()
+        self.assertTrue(b.summary_template_default('board-meeting')['ok'])
+        self.assertEqual(self.settings_set, [('meeting.summary.template', 'board-meeting')])
+        self.assertFalse(b.summary_template_default('nope')['ok'])
+
+    def test_a_renamed_or_deleted_default_moves_the_setting(self):
+        b = self.make(default='weekly')
+        row = b.summary_template_save('---', 'weekly')['data']
+        self.assertTrue(row['default'])
+        self.assertEqual(self.settings_set[-1], ('meeting.summary.template', 'renamed'))
+        b.summary_template_delete('weekly')
+        self.assertEqual(self.settings_set[-1], ('meeting.summary.template', 'standard'))
+
+    def test_past_summaries_are_read_from_files(self):
+        import tempfile
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        page = Path(tmp.name) / 'minutes.html'
+        page.write_text('<html><style>p{}</style><h1>Board Meeting Summary</h1><p>Participants: Dana</p></html>', encoding='utf-8')
+        notes = Path(tmp.name) / 'notes.md'
+        notes.write_text('# Weekly\n- wins', encoding='utf-8')
+        out = self.make(picked=[str(page), str(notes)]).summary_template_read_files()['data']
+        self.assertEqual(out['names'], ['minutes.html', 'notes.md'])
+        self.assertIn('Board Meeting Summary', out['text'])
+        self.assertNotIn('<h1>', out['text'])
+        self.assertNotIn('p{}', out['text'])
+        self.assertIn('--- notes.md ---\n# Weekly', out['text'])
+        self.assertEqual(self.calls[-1], ('pick', 'open', True))
+        self.assertEqual(self.make(picked=None).summary_template_read_files(), {'ok': True, 'data': None})
+
+
+class MeetingSummaryPageTests(unittest.TestCase):
+    WEB = ROOT / "src" / "koli" / "ui" / "web"
+
+    def test_summary_and_templates_are_wired(self):
+        brief = (self.WEB / 'js' / 'screens' / 'brief.js').read_text(encoding='utf-8')
+        self.assertIn('export function SummaryBar', brief)
+        self.assertIn("call('meeting_summarize'", brief)
+        self.assertIn("t.kind === 'meeting_summary'", brief)
+        screen = (self.WEB / 'js' / 'screens' / 'meetings.js').read_text(encoding='utf-8')
+        self.assertIn("on('meeting_brief'", screen)
+        self.assertIn("call('summary_template_layout'", screen)
+        self.assertIn('TemplatesView', screen)
+        templates = (self.WEB / 'js' / 'screens' / 'templates.js').read_text(encoding='utf-8')
+        for name in ('summary_templates', 'summary_template_draft', 'summary_template_save', 'summary_template_delete',
+                     'summary_template_copy', 'summary_template_default', 'summary_template_read_files'):
+            self.assertIn(f"call('{name}'", templates)
+        self.assertNotIn('confirm(', templates.replace('confirmModal(', ''))
+
+    def test_the_mock_answers_every_summary_call(self):
+        from koli.ui.bridge import Bridge
+        mock = (self.WEB / 'js' / 'mock-api.js').read_text(encoding='utf-8')
+        for name in ('meeting_summary_state', 'meeting_summarize', 'summary_templates', 'summary_template',
+                     'summary_template_layout', 'summary_template_default', 'summary_template_copy', 'summary_template_draft',
+                     'summary_template_save', 'summary_template_delete', 'summary_template_read_files'):
+            self.assertIn(f'    {name}:', mock)
+            self.assertTrue(hasattr(Bridge, name), name)

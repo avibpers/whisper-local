@@ -229,6 +229,26 @@ textarea.inp { height: auto; padding: 8px 10px; resize: vertical; line-height: 1
 .bf-note { display: block; color: var(--ink2); font-size: 12.5px; margin-top: 2px; }
 .bf-foot { margin: 8px 0 0; color: var(--mute); font-size: 12.5px; max-width: 75ch; }
 .bf-two { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 24px; }
+/* Minutes-style blocks: participants, the agenda, one card per agenda item. */
+.bf-people { display: flex; flex-wrap: wrap; gap: 8px; }
+.bf-person { border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 4px 12px; font-size: 13.5px; }
+.bf-agenda { margin: 0; padding-inline-start: 22px; display: grid; gap: 6px; font-size: 14.5px; }
+.bf-items { display: grid; gap: 12px; }
+.bf-item { border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); padding: 14px 16px; display: grid; gap: 12px; }
+.bf-item h4 { display: flex; gap: 8px; align-items: baseline; font-size: 15px; }
+.bf-num { color: var(--acc); font-family: var(--mono); }
+.bf-grp { display: grid; gap: 6px; }
+.bf-grp h5 { margin: 0; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--mute); font-weight: 600; }
+.bf-grp ul, .bf-bullets { margin: 0; padding-inline-start: 18px; display: grid; gap: 4px; }
+/* Asking the AI for a summary, above the summary or in its place. */
+.bf-ask { display: flex; flex-wrap: wrap; gap: 10px 12px; align-items: center; padding: 14px 16px; border: 1px dashed var(--line2);
+  border-radius: var(--r); background: var(--sunk); margin-bottom: 16px; }
+.bf-ask .grow { flex: 1 1 260px; min-width: 0; }
+.bf-ask.running { border-style: solid; background: var(--acc-soft); }
+.bf-again { display: flex; justify-content: flex-end; margin-bottom: 4px; }
+.spin { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--line2); border-top-color: var(--acc);
+  animation: spin .9s linear infinite; flex: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
 .bf-charts { display: grid; gap: 16px; margin-bottom: 14px; }
 .bf-fig.bf-share .bf-chart { max-width: 460px; }
 .bf-fig { position: relative; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); padding: 14px 16px; display: grid; gap: 6px; min-width: 0; }
@@ -249,7 +269,7 @@ textarea.inp { height: auto; padding: 8px 10px; resize: vertical; line-height: 1
 .bf-range { font-family: var(--mono); font-size: 11.5px; color: var(--mute); white-space: nowrap; }
 .bf-ttl { font-weight: 600; }
 .bf-ttl::after { content: "+"; float: inline-end; color: var(--mute); font-weight: 400; margin-inline-start: 10px; }
-.bf-topic[open] .bf-ttl::after { content: "2"; }
+.bf-topic[open] .bf-ttl::after { content: "\2212"; }
 .bf-lead { display: block; color: var(--ink2); font-size: 13px; font-weight: 400; }
 .bf-body { padding: 12px 16px 16px; display: grid; gap: 12px; border-top: 1px solid var(--line); }
 .bf-body ul { margin: 0; padding-inline-start: 18px; display: grid; gap: 4px; }
