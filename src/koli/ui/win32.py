@@ -370,3 +370,107 @@ def on_console_close(callback):
         on_console_close._handler = handler   # keep a reference
     except Exception as e:
         logger.debug(f"Console close handler not installed: {e}")
+
+
+# ── Virtual desktops ─────────────────────────────────────────────────────────
+# The meeting panel and the bubble belong on every Windows virtual desktop.
+# Windows ties some windows to the desktop they were shown on; switching
+# desktops then leaves them behind. These move such a window to the desktop
+# you're on, through the documented IVirtualDesktopManager (it may only move
+# this process's own windows, which is all Koli needs). A window Windows
+# keeps on no desktop in particular is already everywhere and is left alone.
+
+# The pure part: `manager` answers desktop_of(hwnd) (an id, or None for a
+# window on no desktop in particular), on_current(hwnd) and move(hwnd, id);
+# `top_windows()` lists top-level windows front to back, the first one on a
+# desktop telling which desktop is current. Returns the windows moved.
+def keep_on_current_desktop(hwnds: list, manager, top_windows) -> list:
+    left_behind = [h for h in hwnds if h and manager.desktop_of(h) is not None and not manager.on_current(h)]
+    if not left_behind:
+        return []
+    current = None
+    for h in top_windows():
+        if h in hwnds:
+            continue
+        desktop = manager.desktop_of(h)
+        if desktop is not None and manager.on_current(h):
+            current = desktop
+            break
+    if current is None:
+        return []
+    for h in left_behind:
+        manager.move(h, current)
+    return left_behind
+
+
+class _DesktopManager:
+    """IVirtualDesktopManager behind the three calls keep_on_current_desktop uses."""
+
+    def __init__(self):
+        import comtypes
+        import comtypes.client
+        from comtypes import COMMETHOD, GUID, HRESULT, IUnknown
+        from ctypes import wintypes
+
+        class IVirtualDesktopManager(IUnknown):
+            _iid_ = GUID('{a5cd92ff-29be-454c-8d04-d82879fb3f1b}')
+            _methods_ = [
+                COMMETHOD([], HRESULT, 'IsWindowOnCurrentVirtualDesktop',
+                          (['in'], wintypes.HWND, 'top'), (['out'], ctypes.POINTER(wintypes.BOOL), 'on')),
+                COMMETHOD([], HRESULT, 'GetWindowDesktopId',
+                          (['in'], wintypes.HWND, 'top'), (['out'], ctypes.POINTER(GUID), 'desktop')),
+                COMMETHOD([], HRESULT, 'MoveWindowToDesktop',
+                          (['in'], wintypes.HWND, 'top'), (['in'], ctypes.POINTER(GUID), 'desktop')),
+            ]
+        try:
+            comtypes.CoInitializeEx(comtypes.COINIT_APARTMENTTHREADED)
+        except OSError:
+            pass
+        self._null = GUID()
+        self._com = comtypes.client.CreateObject(GUID('{aa509086-5ca9-4c25-8f95-589d3c07b48a}'),
+                                                 interface=IVirtualDesktopManager)
+
+    def desktop_of(self, hwnd):
+        try:
+            desktop = self._com.GetWindowDesktopId(hwnd)
+        except Exception:
+            return None      # a window on no desktop in particular (tool windows, hidden ones)
+        return None if desktop == self._null else desktop
+
+    def on_current(self, hwnd) -> bool:
+        try:
+            return bool(self._com.IsWindowOnCurrentVirtualDesktop(hwnd))
+        except Exception:
+            return True
+
+    def move(self, hwnd, desktop):
+        self._com.MoveWindowToDesktop(hwnd, ctypes.byref(desktop))
+
+
+# Visible top-level windows, front to back.
+def _top_windows() -> list:
+    GW_HWNDNEXT = 2
+    found, h = [], user32.GetTopWindow(None)
+    while h and len(found) < 500:
+        if user32.IsWindowVisible(h):
+            found.append(int(h))
+        h = user32.GetWindow(h, GW_HWNDNEXT)
+    return found
+
+
+_desktops = None   # the manager, made on first use by the thread that follows desktops
+
+
+# Bring any of `hwnds` left on another virtual desktop to the current one.
+# Called often (twice a second) from one thread; cheap when nothing moved.
+def follow_current_desktop(hwnds: list) -> list:
+    global _desktops
+    if not IS_WINDOWS:
+        return []
+    try:
+        if _desktops is None:
+            _desktops = _DesktopManager()
+        return keep_on_current_desktop(list(hwnds), _desktops, _top_windows)
+    except Exception as e:
+        logger.debug(f"Virtual desktop follow failed: {e}")
+        return []

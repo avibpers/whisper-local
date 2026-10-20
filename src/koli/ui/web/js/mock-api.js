@@ -391,6 +391,7 @@ export function createMock(emit) {
     dictation_start: () => { fakeDictation(); return ok(); },
     dictation_stop: () => ok(),
     dictation_cancel: () => { setState({ state: 'idle' }); return ok(); },
+    processing_stop: () => { setState({ state: 'idle' }); return ok(true); },
     dictation_pause: (p) => { setState({ paused: !!p }); return ok(!!p); },
     voice_check: (seconds) => new Promise((resolve) => setTimeout(() => resolve(ok({
       verdict: 'leave_out', reason: "It doesn't sound like you on this microphone: auto-dictation leaves it out", speech: true,

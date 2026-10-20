@@ -30,6 +30,9 @@ chunks, so text appears a few seconds behind speech.
 | Rule `ask` | The panel appears small: "Discord call detected. Transcribe?" with Start and Not now. Not now ignores that source until it goes away. |
 | Start meeting from the tray, the hotkey or the Meetings screen | Starts at once, with whichever source is active, or "manual" when none. |
 | Source goes away (session closed, tab closed, app quit) | Meeting **pauses** once that is confirmed: missing on two detector ticks at least 1.5 s apart, so Discord moving between microphones mid-call doesn't pause it. Panel header says Paused. Nothing is captured. A running meeting goes on as long as the app has any audio session, so muting yourself (which may release the mic) doesn't pause it. |
+| The call ends (Discord, Slack, WhatsApp) | Their audio going away is the call ending (Discord tested live 2026-10-20): the meeting **ends** at once instead of pausing for `gap_minutes`. Rejoining within the gap offers "Continue previous". Zoom, Teams and browser calls still pause. |
+| A meeting ends with automatic summaries on | The panel stays and shows **Summarizing the meeting…** (`meeting_summary` phases `waiting`, `writing`), then **Summary ready** with the new title and **Open** (the Meetings screen at `meetings/<id>`, on its Summary tab) for 30 s, or "The summary didn't work" for 8 s. A meeting too short to summarize, no AI model, or summaries off (`none`) closes the panel after "Saved". |
+| You switch Windows virtual desktops | The meeting panel and the bubble come along: twice a second, a window Windows left on the desktop you switched from moves to the current one (`ui/win32.follow_current_desktop`, the documented IVirtualDesktopManager). |
 | A Discord meeting runs | Every 15 s Koli reads Discord's window for who is in the call (`platform/*/call_people.py`). The title becomes "Discord · Becky", and in a 1:1 call the far-end voice still called "Speaker N" takes the name, saved with its voiceprint. Discord doesn't expose who is speaking, so voices are still told apart by voiceprint (tested 2026-10-20, `docs/research/wispr-flow-meeting-detection.md`). |
 | Same app, and the same code when there is one, back within `gap_minutes` (default 10) | **Resumes** the paused meeting. Panel shows "Resumed: <title>" for a few seconds with a "Start new instead" button. |
 | Different app, different code, or after the gap | A **new** meeting. Panel shows "New meeting" with a "Continue previous instead" button (only while the previous one is still within its gap). |
@@ -41,7 +44,8 @@ chunks, so text appears a few seconds behind speech.
 | A dictation recording (hotkey or auto-dictation) runs during a meeting | Those microphone seconds go to the dictation only, never into the meeting. The loopback keeps going. |
 | A dictation is being transcribed | The meeting's chunks wait. Dictation keeps its latency. |
 | Transcription falls behind (slow machine, big model) | Nothing is dropped. The header shows "25 s behind". |
-| Call detected in auto mode, speech heard | The panel shows "Meeting detected · Google Meet · Chrome" and "Transcribing in 3 s" with Stop and Start now (the session is `offered` with `offer.starts_at`); the meeting starts when the countdown ends. `meeting.countdown_seconds: 0` starts at once, as before. |
+| Call detected in auto mode, speech heard | The bubble and the panel show "Google Meet · Chrome · recording starts" with a 10 s countdown, Cancel and Start now (the session is `offered` with `offer.starts_at`); the meeting starts when the countdown ends. `meeting.countdown_seconds: 0` starts at once, as before. |
+| You cancel the countdown, or answer Not now | While the call goes on, the bubble shows "Discord · not recording" with **Start** (the state's `standby`); Start records that call. It disappears when the call does. A ping (sound without the mic) is not a standby. |
 | You stop a meeting, or the countdown | Saved (or not started), and auto start waits until the call has been silent for `meeting.quiet_minutes_after_stop` (5); speech heard on the call while waiting restarts the wait. A meeting that ends by itself (the call ended) doesn't wait. Starting by hand always works and ends the wait. The state carries `auto_paused`. |
 | Loopback chunk transcribed | The chunk is split by voice; each voice's sentences become a turn of their own. Each voice gets a voiceprint; it joins the nearest known speaker, takes the name of a voice you named in an earlier meeting, or becomes "Speaker N". Two voices of one chunk are never the same speaker. |
 | Microphone chunk transcribed | Speaker "You", always the same colour. |
@@ -282,7 +286,7 @@ New section `meeting:` in `config.defaults.yaml`, schema section
 | `meeting.model` | "" (dictation model) | select from models | background |
 | `meeting.speaker_model` | eres2net | select | background |
 | `meeting.segmentation_model` | pyannote-segmentation | select (on / off) | next meeting |
-| `meeting.countdown_seconds` | 3 | number 0 to 30 (0 = start at once) | next detection |
+| `meeting.countdown_seconds` | 10 | number 0 to 30 (0 = start at once) | next detection |
 | `meeting.quiet_minutes_after_stop` | 5 | number 0 to 60 | next detection |
 | `meeting.remember_voices` | true | toggle | meeting end |
 | `meeting.keep_audio` | false | toggle | next chunk |

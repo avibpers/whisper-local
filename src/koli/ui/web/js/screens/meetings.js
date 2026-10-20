@@ -201,10 +201,14 @@ function KnownVoices() {
   </section>`;
 }
 
-export function MeetingsScreen() {
+export function MeetingsScreen({ route = 'meetings' } = {}) {
   const live = app.use((s) => s.meeting);
   const [list, setList] = useState([]);
   const [selected, setSelected] = useState(null);
+  // "meetings/<id>" (the panel's Open after a summary) selects that meeting;
+  // one with a summary opens on its Summary tab.
+  const routeId = route.split('/')[1] || null;
+  useEffect(() => { if (routeId) setSelected(routeId); }, [routeId]);
   const [view, setView] = useState('meetings');
   // Search: every saved meeting's title, speakers, summary, captions and words.
   const [query, setQuery] = useState('');

@@ -92,6 +92,17 @@ class _EngineThread:
 ENGINE_THREAD = _EngineThread()
 
 
+# Whisper's segments, read one by one until `stop` is set: a Stop on the
+# bubble ends a long dictation's transcription between two segments.
+def take_segments(segments, stop: Optional[threading.Event]) -> list:
+    out = []
+    for segment in segments:
+        if stop is not None and stop.is_set():
+            break
+        out.append(segment)
+    return out
+
+
 # A problem you must see (bubble and app). The UI's event module is optional
 # here: the engine also runs headless (--serve, tests).
 def _report_problem(message: str) -> None:
@@ -473,6 +484,17 @@ class WhisperEngine:
     # spelling, so Whisper writes "Hey Avia" and not "hey yeah".
     # `pieces`, a list, gets each piece with Whisper's numbers on how sure it
     # was: a quiet call has no `last_info`, and the wake check needs them.
+    # The event a Stop sets; made on first use.
+    def _stop_flag(self) -> threading.Event:
+        stop = self.__dict__.get('_stop')
+        if stop is None:
+            stop = self._stop = threading.Event()
+        return stop
+
+    # Stop the dictation being transcribed: Whisper ends at its next segment.
+    def cancel(self):
+        self._stop_flag().set()
+
     def transcribe_audio(self,
                          audio_data: np.ndarray,
                          language: Optional[str] = None,
@@ -484,7 +506,9 @@ class WhisperEngine:
                          pieces: Optional[list] = None) -> Optional[str]:
         if self.model is None:
             return None
-        
+        if not quiet:
+            self._stop_flag().clear()     # a Stop belongs to the dictation it was pressed on
+
         if audio_data is None or len(audio_data) == 0:
             self.logger.warning("No audio data to transcribe")
             return None
@@ -526,6 +550,7 @@ class WhisperEngine:
                 if words:
                     kwargs["hotwords"] = words
                 segments, info = model.transcribe(audio_data, **kwargs)
+                segments = take_segments(segments, None if quiet else self._stop_flag())
                 pieces = [{'text': s.text, 'start': float(s.start), 'end': float(s.end),
                            'no_speech_prob': round(float(s.no_speech_prob), 3),
                            'avg_logprob': round(float(s.avg_logprob), 3),

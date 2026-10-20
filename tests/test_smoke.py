@@ -163,6 +163,23 @@ class VoiceCommandsDefaultsTests(unittest.TestCase):
         self.assertNotIn("reg add", defaults.lower())
 
 
+# Whisper's segments are read one by one so a Stop can end a long
+# transcription early.
+class WhisperStopTests(unittest.TestCase):
+    def test_segments_stop_when_asked(self):
+        import threading
+        from koli.whisper_engine import take_segments
+        stop = threading.Event()
+
+        def segments():
+            for i in range(5):
+                if i == 2:
+                    stop.set()
+                yield i
+        self.assertEqual(take_segments(segments(), stop), [0, 1])
+        self.assertEqual(take_segments(iter([7, 8]), threading.Event()), [7, 8])
+
+
 class WhisperBackendTests(unittest.TestCase):
     def test_default_backend_is_faster_whisper(self):
         from ruamel.yaml import YAML
@@ -1514,7 +1531,9 @@ class VoiceCommandNumberAndTargetTests(unittest.TestCase):
     def test_a_misheard_or_hebrew_number_still_matches(self):
         self.manager.commands = [{'trigger': 'Desk{n}', 'other_triggers': ['דסק {n}'], 'hotkey': 'ctrl+alt+{n}'}]
         for said, number in (('Desk tu', '2'), ('desktu', '2'), ('desk to', '2'), ('desk for', '4'),
-                             ('Desk won', '1'), ('דסק 2', '2'), ('דסק שתיים', '2'), ('דסק שלוש', '3')):
+                             ('Desk won', '1'), ('דסק 2', '2'), ('דסק שתיים', '2'), ('דסק שלוש', '3'),
+                             # "View desk file" for "Viush, Desk 5" (2026-10-20 16:37)
+                             ('desk file', '5'), ('desk fife', '5'), ('desk sicks', '6'), ('desk ate', '8')):
             matched = self.manager.match_command(said)
             self.assertIsNotNone(matched, said)
             self.assertEqual(matched['hotkey'], f'ctrl+alt+{number}', said)
@@ -5940,6 +5959,41 @@ class AutoDictationStateManagerTests(unittest.TestCase):
         sm.handle_vad_event(VadEvent.PHRASE_PAUSE)
         sm.audio_recorder.take_recorded_audio.assert_called_once()
 
+    # Stop on the bubble's "Writing it down": a long or stuck transcription
+    # is dropped, nothing is pasted, and the next dictation works as usual.
+    def test_stop_while_writing_pastes_nothing(self):
+        def prepare(sm):
+            def transcribe(*a, **k):
+                self.assertTrue(sm.stop_processing())
+                return 'a very long text'
+            sm.whisper_engine.transcribe_audio.side_effect = transcribe
+        clipboard = self._run_auto_pipeline('unused', None, phrase=False, auto=False, prepare=prepare)
+        clipboard.deliver_transcription.assert_not_called()
+        self.last_sm.whisper_engine.cancel.assert_called_once()
+        self.assertFalse(self.last_sm.is_processing)
+
+    def test_the_dictation_after_a_stop_is_delivered(self):
+        calls = []
+
+        def prepare(sm):
+            def transcribe(*a, **k):
+                calls.append(1)
+                if len(calls) == 1:
+                    sm.stop_processing()
+                return 'hello there'
+            sm.whisper_engine.transcribe_audio.side_effect = transcribe
+
+        def run(sm, clip):
+            sm._transcription_pipeline(clip)
+            sm._transcription_pipeline(clip)
+        clipboard = self._run_auto_pipeline('unused', None, phrase=False, auto=False, prepare=prepare, run=run)
+        self.assertEqual(clipboard.deliver_transcription.call_count, 1)
+
+    def test_stop_with_nothing_being_written_does_nothing(self):
+        sm = self._sm(had_speech=True)
+        sm.is_processing = False
+        self.assertFalse(sm.stop_processing())
+
     def test_phrase_run_pastes_with_a_space_silently_and_stays_recording(self):
         import unittest.mock as mock
         import numpy as np
@@ -8254,7 +8308,7 @@ class BarMeetingHandlerTests(unittest.TestCase):
         src = (ROOT / "src" / "koli" / "ui" / "web" / "js" / "bar.js").read_text(encoding='utf-8')
         meeting = re.search(r"on\('meeting', \(m\) => \{(.*?)\n  \}\);", src, re.S).group(1)
         shot = re.search(r"on\('meeting_shot', \(p\) => \{(.*?)\n  \}\);", src, re.S).group(1)
-        self.assertIn('auto_paused', meeting)
+        self.assertIn('bar.set({ meeting: m })', meeting)
         self.assertNotIn('auto_paused', shot)
         self.assertNotIn('prev', shot)
 

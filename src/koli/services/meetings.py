@@ -561,6 +561,13 @@ class MeetingService:
                 self._summarizing.pop(meeting_id, None)
             if task.status == 'done':
                 self._publish('meeting_brief', {'id': meeting_id})
+            if how == 'auto':
+                if task.status == 'done':
+                    self._summary_status(meeting_id, 'ready', title=self._meeting_title(meeting_id))
+                else:
+                    self._summary_status(meeting_id, 'failed')
+        if how == 'auto':
+            self._summary_status(meeting_id, 'writing')
         try:
             task = get_task_manager().run('Summarizing the meeting', job, kind='meeting_summary',
                                           on_done=done, ref=meeting_id)
@@ -572,10 +579,42 @@ class MeetingService:
 
     # A meeting ended: keep its voices, then summarize it once the transcript
     # has caught up, unless it resumes first.
+    # The panel shows "Summarizing the meeting…" while one is on its way,
+    # then "Summary ready" with Open; 'none' lets it close.
     def _meeting_ended(self, meeting: dict):
         self._keep_voices(meeting)
-        if self._setting('meeting.summary.auto', True):
-            self._schedule_auto_summary(meeting['id'])
+        why_not = self._no_auto_summary(meeting)
+        if why_not:
+            logger.info(f"Meeting summary: {why_not}")
+            self._summary_status(meeting['id'], 'none')
+            return
+        self._summary_status(meeting['id'], 'waiting')
+        self._schedule_auto_summary(meeting['id'])
+
+    # Where an ended meeting's automatic summary stands, for the panel:
+    # waiting (the transcript catching up), writing, ready (with the new
+    # title), failed, or none (no summary is coming).
+    def _summary_status(self, meeting_id: str, phase: str, **extra):
+        self._publish('meeting_summary', {'id': meeting_id, 'phase': phase, **extra})
+
+    def _meeting_title(self, meeting_id: str) -> str:
+        try:
+            return str(self.store.load(meeting_id).get('title') or '')
+        except (OSError, ValueError):
+            return ''
+
+    # Why no automatic summary is written for this meeting, or '' when one is.
+    def _no_auto_summary(self, meeting: dict) -> str:
+        if not self._setting('meeting.summary.auto', True):
+            return "automatic summaries are off"
+        if not self.ai_ready():
+            return "no AI model chosen, so no automatic summary"
+        if not summary_ai.worth_summarizing(meeting, self._setting('meeting.summary.min_minutes', 10)):
+            return f"{meeting.get('id')} is too short to summarize"
+        existing = self.store.load_brief(meeting['id'])
+        if existing and existing.get('written') != 'auto':
+            return f"{meeting.get('id')} keeps the summary asked for by hand"
+        return ''
 
     def _schedule_auto_summary(self, meeting_id: str, settle_s: float = 15.0, max_wait_s: float = 1800.0,
                                poll_s: float = 2.0):
@@ -599,31 +638,31 @@ class MeetingService:
                         self._auto_summary(meeting_id)
                         return
                     time.sleep(poll_s)
+                if not self._closed:
+                    logger.info(f"Meeting summary: {meeting_id}'s transcript never caught up; no automatic summary")
+                    self._summary_status(meeting_id, 'none')
             finally:
                 with self._lock:
                     self._auto_waiting.discard(meeting_id)
         threading.Thread(target=wait_then_run, name='meeting-auto-summary', daemon=True).start()
 
     def _auto_summary(self, meeting_id: str):
-        if not self.ai_ready():
-            logger.info("Meeting summary: no AI model chosen, so no automatic summary")
-            return
         try:
             m = self.store.load(meeting_id)
         except (OSError, ValueError) as e:
             logger.warning(f"Meeting summary: {meeting_id} unreadable: {e}")
+            self._summary_status(meeting_id, 'none')
             return
-        if not summary_ai.worth_summarizing(m, self._setting('meeting.summary.min_minutes', 10)):
-            logger.info(f"Meeting summary: {meeting_id} is too short to summarize")
-            return
-        existing = self.store.load_brief(meeting_id)
-        if existing and existing.get('written') != 'auto':
-            logger.info(f"Meeting summary: {meeting_id} keeps the summary asked for by hand")
+        why_not = self._no_auto_summary({**m, 'id': meeting_id})
+        if why_not:
+            logger.info(f"Meeting summary: {why_not}")
+            self._summary_status(meeting_id, 'none')
             return
         try:
             self.summarize(meeting_id, how='auto')
         except ValueError as e:
             logger.info(f"Meeting summary: {e}")
+            self._summary_status(meeting_id, 'none')
 
     # ── Summary templates ────────────────────────────────────────────────────
 

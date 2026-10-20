@@ -484,6 +484,9 @@ class WakeListener:
     # "viush"). When the command's burst is known to start with the word,
     # this looser match drops it.
     WAKE_IN_COMMAND_RATIO = 0.5
+    # A command said after a pause drops a first word only this much like a
+    # spelling: the wake word said again, not a command word near one.
+    STRIP_AFTER_PAUSE_RATIO = 0.8
     # That looser match takes a word more than the spelling only when it is a
     # piece of the split wake word: "Viaš, Desk tu" lost "Desk" to "adeus"
     # (0.62 for "viašdesk", 2026-10-20) and the AI got "tu".
@@ -1018,7 +1021,11 @@ class WakeListener:
     # its start. Your spellings first; when the command's audio is known to
     # start with the word, also what the wake check heard, more loosely.
     def strip_wake(self, text: str) -> str:
-        rest = match_wake(text, self.spellings(), self.match_ratio())
+        # A command said after a pause is its own audio: it starts with the
+        # wake word only if you said it again, so only a word that clearly is
+        # it goes ("desk" is 0.67 like "adeus", and "Desk 6" lost its "Desk").
+        ratio = self.match_ratio() if self._wake_in_command else max(self.match_ratio(), self.STRIP_AFTER_PAUSE_RATIO)
+        rest = match_wake(text, self.spellings(), ratio)
         if rest is None and self._wake_in_command:
             heard = [self._wake_heard] if self._wake_heard else []
             rest = match_wake(text, self.spellings() + heard, self.WAKE_IN_COMMAND_RATIO,

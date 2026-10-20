@@ -28,6 +28,11 @@ NOTICE_SECONDS = 6.0
 # microphones mid-call, and one read can fall between the two.
 END_CONFIRM_TICKS = 2
 END_CONFIRM_SECONDS = 1.5
+# Call apps whose audio going away means the call ended (Discord tested
+# live, 2026-10-20; Wispr Flow trusts the same ones): their meeting ends at
+# once instead of waiting paused for gap_minutes. Rejoining within the gap
+# still offers to continue it.
+END_ON_RELEASE_APPS = ('discord.exe', 'slack.exe', 'whatsapp.exe')
 ECHO_SIMILARITY = 0.6    # text match for a short mic turn to count as the call's echo
 ECHO_WORD_SHARE = 0.35   # share of a mic turn's words also heard in the call at that time
 ECHO_MIN_WORDS = 3       # shorter mic turns ("כן") need the strict one-turn match
@@ -163,6 +168,7 @@ class SessionManager:
         self._countdown_until = None     # an auto-detected call starts by itself at this moment
         self._cancel_countdown = None
         self._stopped_at = None          # you stopped a meeting: auto start waits for a quiet call
+        self._standby_key = None         # the stopped or declined call last shown with Start
         self._last_call_speech = None    # speech heard on the call since you stopped
         self._paused_at = None           # when the current pause began
         self._gap_open = None            # index into meeting['gaps'] of the open gap
@@ -226,6 +232,7 @@ class SessionManager:
                 'can_continue': self._previous is not None and self.state == 'live',
                 'can_split': self._resumed_turn_index is not None and self.state == 'live',
                 'offer': self._offer_payload(),
+                'standby': self._standby_payload(),
                 'auto_paused': self._stopped_at is not None,
             }
 
@@ -242,7 +249,9 @@ class SessionManager:
         return offer
 
     def _emit(self):
-        self._publish('meeting', self.state_payload())
+        payload = self.state_payload()
+        self._standby_key = (payload['standby'] or {}).get('key')   # what the bubble now shows
+        self._publish('meeting', payload)
 
     def _set_notice(self, notice: Optional[str]):
         if self._cancel_notice:
@@ -278,25 +287,56 @@ class SessionManager:
                 else:
                     self._pending = next(s for s in sources if s['key'] == self._pending['key'])
                 return
-            # Idle: pick a source to wait for speech on. The same source
-            # staying keeps the speech heard so far. A native app that only
-            # plays sound (mic False) hasn't joined a call; once a meeting
-            # runs, sound alone keeps it going (muting may release the mic).
-            candidates = [s for s in sources if s['key'] not in self._declined and s.get('mode') != 'off'
-                          and s.get('mic') is not False]
-            same = next((c for c in candidates if self._pending and c['key'] == self._pending['key']), None)
+            self._pick_pending(sources)
+            # The bubble's "Start" for a call you stopped comes and goes with
+            # the call, while nothing else about the session changes.
+            standby = self._standby_source()
+            if (standby['key'] if standby else None) != self._standby_key:
+                self._emit()
+
+    # Idle: pick a source to wait for speech on. The same source staying
+    # keeps the speech heard so far. A native app that only plays sound (mic
+    # False) hasn't joined a call; once a meeting runs, sound alone keeps it
+    # going (muting may release the mic).
+    def _pick_pending(self, sources: list):
+        candidates = [s for s in sources if s['key'] not in self._declined and s.get('mode') != 'off'
+                      and s.get('mic') is not False]
+        same = next((c for c in candidates if self._pending and c['key'] == self._pending['key']), None)
+        if same is not None:
+            self._pending = same     # the latest reading: its output device may have appeared since
+            return
+        self._pending = candidates[0] if candidates else None
+        self._speech_s = 0.0
+
+    # A call still on that you stopped (auto start waits for it to be quiet)
+    # or answered "Not now": the bubble offers to start it by hand.
+    def _standby_source(self) -> Optional[dict]:
+        if self.state != 'idle':
+            return None
+        calls = [s for s in self._sources if s.get('mode') != 'off' and s.get('mic') is not False]
+        if self._stopped_at is not None and self._pending:
+            same = next((s for s in calls if s['key'] == self._pending['key']), None)
             if same is not None:
-                self._pending = same     # the latest reading: its output device may have appeared since
-                return
-            self._pending = candidates[0] if candidates else None
-            self._speech_s = 0.0
+                return same
+        return next((s for s in calls if s['key'] in self._declined), None)
+
+    def _standby_payload(self) -> Optional[dict]:
+        source = self._standby_source()
+        if source is None:
+            return None
+        return {'key': source['key'], 'app': source.get('app', ''), 'label': title_for(source),
+                'app_name': APP_NAMES.get(source.get('app', ''), title_for(source))}
 
     def _sources_while_meeting(self, sources: list):
         m = self.meeting
         match = next((s for s in sources if self._same_meeting(m, s)), None)
         if self.state == 'live' and match is None and m['source'].get('kind') != 'manual':
             if self._source_gone_confirmed():
-                self._pause(by_user=False)
+                if m['source'].get('app') in END_ON_RELEASE_APPS:
+                    logger.info("The call ended: the meeting ends with it")
+                    self._end()
+                else:
+                    self._pause(by_user=False)
             return
         self._reset_missing()
         if self.state == 'paused' and not self.paused_by_user:
@@ -439,8 +479,10 @@ class SessionManager:
             if self.state in ('live', 'paused'):
                 return
             self._clear_countdown()
+            standby = self._standby_source()
             self._stopped_at = self._last_call_speech = None
-            source = source or self._pending or (self._sources[0] if self._sources else None) or MANUAL_SOURCE
+            source = (source or self._pending or standby or (self._sources[0] if self._sources else None)
+                      or MANUAL_SOURCE)
             self._begin(source, notice=None)
 
     # You stopped it (panel, app, tray, hotkey): saved, and auto start waits

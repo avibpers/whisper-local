@@ -1,9 +1,10 @@
 // meeting.js
 // The meeting panel: who said what as it happens. Shows a detected call (in
-// auto mode with a countdown, Stop and Start now; in "ask" mode Not now and
+// auto mode with a countdown, Cancel and Start now; in "ask" mode Not now and
 // Start), the live transcript with speaker colours and a Stop button, the
 // paused and excluded states, the resumed/new notices with their undo, and
-// "Saved" at the end. Screenshots taken during the meeting sit among the
+// "Saved" at the end, then the automatic summary's progress ("Summarizing
+// the meeting…", "Summary ready" with Open). Screenshots taken during the meeting sit among the
 // turns at their moment, with a camera button to snip one. The header drags
 // the window; the corner handle resizes it; collapse shrinks it to a pill
 // and reports the pill's size.
@@ -18,6 +19,7 @@ const panel = createStore({
   settings: null, meeting: { state: 'idle' }, turns: [], screenshots: [], pending: null, menu: false, collapsed: false,
   shownInSharing: false, stuck: true,   // stuck: the list follows new turns
   open: null,      // the screenshot shown full size
+  summary: null,   // the ended meeting's automatic summary: { id, phase, title }
 });
 
 function dir(text) { return /[֐-׿؀-ۿ]/.test(text || '') ? 'rtl' : 'ltr'; }
@@ -34,6 +36,7 @@ function wire() {
   on('meeting', (m) => {
     const prev = panel.get().meeting;
     const patch = { meeting: m };
+    if (['offered', 'live', 'paused'].includes(m.state)) patch.summary = null;   // a new call takes the panel
     if (m.id !== prev.id) { patch.turns = []; patch.screenshots = []; patch.pending = null; patch.open = null; }
     panel.set(patch);
     if (m.id && m.id !== prev.id) loadTurns(m.id);
@@ -45,6 +48,7 @@ function wire() {
     if ('pending' in p) { panel.set({ pending: p.pending }); return; }
     panel.set({ turns: [...s.turns, p.turn], pending: null });
   });
+  on('meeting_summary', (p) => panel.set({ summary: p.phase === 'none' ? null : p }));
   on('meeting_shot', (p) => {
     const s = panel.get();
     if (p.id !== s.meeting.id) return;
@@ -116,7 +120,7 @@ function Offer({ m, drag }) {
   return html`<div class="panel"><div class="head" ...${drag}><span class="dot offered"></span><span class="title">Meeting detected</span></div>
     <div class="offer"><div><b>${what}</b></div>
       <div>${auto ? html`Transcribing in <${Countdown} until=${offer.starts_at} /> s` : 'Transcribe it?'}</div>
-      <div class="row"><button type="button" class="btn" onClick=${() => call('meeting_offer', false)}>${auto ? 'Stop' : 'Not now'}</button>
+      <div class="row"><button type="button" class="btn" onClick=${() => call('meeting_offer', false)}>${auto ? 'Cancel' : 'Not now'}</button>
         <button type="button" class="btn pri" onClick=${() => call('meeting_offer', true)}>${auto ? 'Start now' : 'Start'}</button></div></div></div>`;
 }
 
@@ -163,8 +167,31 @@ function Menu({ close }) {
   </div>`;
 }
 
+// After the meeting: its summary being written, then ready to open (the
+// Meetings screen opens it on its Summary tab), or a failure.
+function SummaryStatus({ summary, drag, collapsed, pillRef }) {
+  const open = () => call('window_open', `meetings/${summary.id}`);
+  const busy = summary.phase === 'waiting' || summary.phase === 'writing';
+  const head = busy ? 'Summarizing the meeting…' : summary.phase === 'ready' ? 'Summary ready' : "The summary didn't work";
+  const dot = 'dot ' + (busy ? 'busy' : summary.phase === 'ready' ? 'ended' : 'paused');
+  if (collapsed) {
+    return html`<div ref=${pillRef} class="pill" ...${drag} onClick=${open} title="Open the meeting"><span class=${dot}></span>${head}</div>`;
+  }
+  const sub = busy ? 'The AI writes it from the transcript; this takes a minute.'
+    : summary.phase === 'ready' ? (summary.title || '') : 'Open the meeting to try again.';
+  return html`<div class="panel">
+    <div class="head" ...${drag}><span class=${dot}></span>
+      <span class="title" role="status">${head}</span></div>
+    <div class="offer">
+      ${sub && html`<span class="sub" style="white-space:normal">${sub}</span>`}
+      <div class="row"><button type="button" class=${'btn' + (summary.phase === 'ready' ? ' pri' : '')} onClick=${open}>Open</button></div>
+    </div>
+  </div>`;
+}
+
 function Panel() {
   const m = panel.use((s) => s.meeting);
+  const summary = panel.use((s) => s.summary);
   const menu = panel.use((s) => s.menu);
   const collapsed = panel.use((s) => s.collapsed);
   const open = panel.use((s) => s.open);
@@ -174,8 +201,9 @@ function Panel() {
     if (!collapsed || !pillRef.current) return;
     const r = pillRef.current.getBoundingClientRect();
     call('meeting_collapse', true, Math.ceil(r.width), Math.ceil(r.height)).catch(() => {});
-  }, [collapsed, m.state]);
+  }, [collapsed, m.state, summary && summary.phase]);
   const title = m.title || 'Meeting';
+  if (summary && (m.state === 'idle' || m.state === 'ended')) return html`<${SummaryStatus} summary=${summary} drag=${drag} collapsed=${collapsed} pillRef=${pillRef} />`;
   if (m.state === 'idle') return null;
   if (m.state === 'offered') return html`<${Offer} m=${m} drag=${drag} />`;
   if (m.state === 'ended') {

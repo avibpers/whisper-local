@@ -379,6 +379,31 @@ class StateManager:
         if self.level_overlay:
             self.level_overlay.hide()
     
+    # The bubble's Stop on "Writing it down": a long or stuck dictation is
+    # dropped. Whisper ends at its next segment and nothing is pasted; Koli
+    # is ready again as soon as that dictation lets go. False when nothing
+    # was being written.
+    def stop_processing(self) -> bool:
+        with self._state_lock:
+            if not self.is_processing:
+                return False
+            self._stop_requested = True
+        cancel = getattr(self.whisper_engine, 'cancel', None)
+        if cancel:
+            cancel()
+        self.logger.info("Writing stopped by you")
+        self.audio_feedback.play_cancel_sound()
+        self._update_ui_state("idle")
+        return True
+
+    # True (and the dictation is dropped) when Stop was pressed on it.
+    def _stopped_by_you(self, mode: str) -> bool:
+        if not getattr(self, '_stop_requested', False):
+            return False
+        self._emit_pipeline('empty', mode=mode, why='Stopped by you')
+        print("   ✗ Stopped by you - nothing typed")
+        return True
+
     # Esc: cancels the recording, or, with none running, a send that is
     # waiting to press Enter.
     def cancel_recording_hotkey_pressed(self) -> bool:
@@ -1320,6 +1345,7 @@ class StateManager:
             print(f"   ✓ Recorded {duration:.1f} seconds, transcribing...")
 
             if not phrase:
+                self._stop_requested = False
                 self._update_ui_state("processing")
                 if self.level_overlay:
                     self.level_overlay.show_processing()
@@ -1327,6 +1353,8 @@ class StateManager:
             self._emit_pipeline('transcribing', mode=mode)
             transcribed_text = self.whisper_engine.transcribe_audio(audio_data)
             info = dict(getattr(self.whisper_engine, 'last_info', None) or {})
+            if self._stopped_by_you(mode):
+                return
 
             if not transcribed_text:
                 self._emit_pipeline('empty', mode=mode, info=info, why='Whisper heard no words')
@@ -1498,6 +1526,9 @@ class StateManager:
                     self.level_overlay.flash_success()
                 return
 
+            # Stop pressed while it was being written (or polished): not pasted.
+            if self._stopped_by_you(mode):
+                return
             effective_auto_enter, send_may_wait, send_wait = self._auto_send_plan(
                 use_auto_enter, rule, auto_dictation=auto_session)
             effective_auto_paste = None

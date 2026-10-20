@@ -629,9 +629,9 @@ meeting: # Meetings: calls in Discord, Zoom, Teams and the browser
     # Seconds of speech heard from the call before a meeting starts (so a
     # notification ping never starts one)
     start_speech_seconds: 3
-    # Auto start: the panel shows the detected call and counts down this many
-    # seconds, with Stop and Start now; 0 starts at once
-    countdown_seconds: 3
+    # Auto start: the bubble and the panel show the detected call and count
+    # down this many seconds, with Cancel and Start now; 0 starts at once
+    countdown_seconds: 10
     # After you stop a meeting (or the countdown), auto start waits until the
     # call has been quiet this many minutes; starting by hand always works
     quiet_minutes_after_stop: 5

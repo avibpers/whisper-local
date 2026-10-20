@@ -4,8 +4,9 @@
 // done, copy-only, nothing heard, command, rephrase, paused, background task,
 // no text field, the countdown before an auto-send presses Enter, waiting for
 // a command after the wake word ("Hey Koli"), and a
-// detected meeting counting down (Stop, Start now). Hovering during a
-// meeting offers Stop. Click (or right-click) opens quick actions. After
+// detected meeting counting down (Cancel, Start now), and a call you
+// cancelled with Start to record it after all. Hovering during a meeting
+// offers Stop. Click (or right-click) opens quick actions. After
 // every change the page reports its size so the window fits it exactly.
 
 import { html, render, useEffect, useLayoutEffect, useRef, useState } from '../vendor/preact-htm.module.js';
@@ -52,7 +53,19 @@ function wire() {
     bar.set({ levels });
   });
   on('streaming_text', (p) => bar.set({ streaming: p.text }));
-  on('wake', (w) => bar.set({ wake: w.phase === 'sleeping' ? null : w.phase }));
+  // Waking Koli again clears a finished AI message ("I couldn't identify…"),
+  // so the bubble shows it is listening for the new command. A question or a
+  // step still running stays.
+  on('wake', (w) => {
+    const wake = w.phase === 'sleeping' ? null : w.phase;
+    const a = bar.get().agent;
+    if (wake && a && !AGENT_LIVE.has(a.phase)) {
+      clearTimeout(agentTimer);
+      bar.set({ wake, agent: null });
+    } else {
+      bar.set({ wake });
+    }
+  });
   on('agent', (a) => {
     clearTimeout(agentTimer);
     bar.set({ agent: a, flash: null });
@@ -126,12 +139,8 @@ function wire() {
   });
   on('profile', (p) => bar.set({ profile: p.active }));
   on('meeting', (m) => {
-    const prev = bar.get().meeting;
     bar.set({ meeting: m });
     if (m.state === 'ended') flash('ok', 'Meeting saved', {}, 2600);
-    else if (m.state === 'idle' && m.auto_paused && !prev.auto_paused && prev.state === 'offered') {
-      flash('info', "Not starting · it waits until the call is quiet", {}, 3500);
-    }
   });
   // A screenshot joined the meeting (a caption change is quiet).
   on('meeting_shot', (p) => {
@@ -175,8 +184,9 @@ function Timer() {
 
 const Badge = ({ tone, icon }) => html`<span class=${`badge ${tone}`}><${Icon} name=${icon} /></span>`;
 
-// A call was detected: which one, and in auto mode a countdown with Stop and
-// Start now (like the auto-send countdown); in ask mode Not now and Start.
+// A call was detected: which one, and in auto mode a countdown before
+// recording starts, with Cancel and Start now (like the auto-send
+// countdown); in ask mode Not now and Start.
 function MeetingOffer({ meeting }) {
   const offer = meeting.offer || {};
   const auto = !!offer.starts_at;
@@ -187,11 +197,22 @@ function MeetingOffer({ meeting }) {
   const left = auto ? Math.max(0, offer.starts_at - now / 1000) : 0;
   return html`<div class="bub">
     <span class="badge acc" aria-hidden="true">${auto ? html`<b>${Math.max(1, Math.ceil(left))}</b>` : html`<${Icon} name="mic" />`}</span>
-    <span class="text" role="status" title=${`Meeting detected · ${what}`}>${what}</span>
+    <span class="text" role="status" title=${`Meeting detected · ${what}`}>${auto ? `${what} · recording starts` : what}</span>
     ${auto && html`<span class="prog"><span style=${`width:${Math.round((left / total) * 100)}%`}></span></span>`}
-    <button type="button" class="btn" title=${auto ? "Don't transcribe; it waits until the call is quiet before trying again" : ''}
-      onClick=${() => call('meeting_offer', false)}>${auto ? 'Stop' : 'Not now'}</button>
+    <button type="button" class="btn" title="Don't record this call; Start in the bubble records it after all"
+      onClick=${() => call('meeting_offer', false)}>${auto ? 'Cancel' : 'Not now'}</button>
     <button type="button" class="btn pri" onClick=${() => call('meeting_offer', true)}>${auto ? 'Start now' : 'Start'}</button>
+  </div>`;
+}
+
+// A call is still on that you cancelled or answered "Not now": it isn't
+// recorded, and Start records it after all. Shown until the call goes away.
+function MeetingStandby({ standby }) {
+  const what = standby.label && standby.label !== standby.app_name ? `${standby.label} · ${standby.app_name}` : (standby.app_name || 'A call');
+  return html`<div class="bub">
+    <${Badge} tone="quiet" icon="mic" />
+    <span class="text" role="status" title=${`${what} · not recording`}>${what} · not recording</span>
+    <button type="button" class="btn pri" onClick=${() => call('meeting_start')}>Start</button>
   </div>`;
 }
 
@@ -336,7 +357,8 @@ function Status() {
   }
   if (agent) return html`<${AgentStatus} a=${agent} />`;
   if (st.state === 'processing') {
-    return html`<div class="bub" style="padding-inline-end:16px"><${Badge} tone="acc" icon="pen" />Writing it down · <${Timer} /></div>`;
+    return html`<div class="bub"><${Badge} tone="acc" icon="pen" /><span class="text" role="status">Writing it down · <${Timer} /></span>
+      <button type="button" class="btn" title="Drop this dictation: nothing is typed" onClick=${() => call('processing_stop')}>Stop</button></div>`;
   }
   // The text is pasted; Enter waits so it can be read. The bubble never takes
   // focus, so these buttons leave the keyboard in the chat.
@@ -369,6 +391,7 @@ function Status() {
     return html`<div class="bub" style="padding-inline-end:16px" role="status"><${Badge} tone="purple" icon="command" />
       <span>${wake === 'awake' ? 'Listening for a command' : 'Anything else?'}</span></div>`;
   }
+  if (meeting.state === 'idle' && meeting.standby) return html`<${MeetingStandby} standby=${meeting.standby} />`;
   if (st.paused) {
     return html`<div class="bub"><${Badge} tone="quiet" icon="pause" /><span>Koli is paused</span>
       <button type="button" class="btn" onClick=${() => call('dictation_pause', false)}>Resume</button></div>`;
@@ -472,7 +495,8 @@ function waitingForSpeech(st) {
 function isResting(s) {
   return !!s.settings && !s.menu && !s.hover && !s.flash && !s.task && !s.sending && !s.wake && !s.agent
     && (s.state.state !== 'recording' || waitingForSpeech(s.state))
-    && s.state.state !== 'processing' && !s.state.paused && s.meeting.state !== 'offered';
+    && s.state.state !== 'processing' && !s.state.paused && s.meeting.state !== 'offered'
+    && !(s.meeting.state === 'idle' && s.meeting.standby);
 }
 
 // ── Dragging ──────────────────────────────────────────────────────────────

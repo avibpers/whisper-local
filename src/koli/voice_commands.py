@@ -87,18 +87,18 @@ RISKY_PATTERNS = re.compile(
 NUMBER_PLACEHOLDER = '{n}'
 NUMBER_WORDS = ('zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine')
 # Other ways a digit gets written: how Whisper hears an English number in a
-# short mixed clip ("Desk tu" when the language guess was Latvian,
-# 2026-10-20), and the Hebrew words, so "דסק שתיים" works with a Hebrew
+# short mixed clip ("Desk tu" when the language guess was Latvian, "View desk
+# file" for "Viush, Desk 5", 2026-10-20), and the Hebrew words, so "דסק שתיים" works with a Hebrew
 # other_trigger.
 DIGIT_SPELLINGS = {
     '1': ('won', 'אחד', 'אחת'),
     '2': ('to', 'too', 'tu', 'שתיים', 'שתים', 'שניים', 'שנים'),
     '3': ('שלוש', 'שלש', 'שלושה'),
     '4': ('for', 'ארבע', 'ארבעה'),
-    '5': ('חמש', 'חמישה'),
-    '6': ('שש', 'שישה'),
+    '5': ('file', 'fife', 'חמש', 'חמישה'),
+    '6': ('sicks', 'שש', 'שישה'),
     '7': ('שבע', 'שבעה'),
-    '8': ('שמונה',),
+    '8': ('ate', 'שמונה'),
     '9': ('תשע', 'תשעה'),
     '0': ('אפס',),
 }

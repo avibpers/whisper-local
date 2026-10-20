@@ -215,6 +215,10 @@ def discord(mode='auto'):
     return {'key': 'discord.exe', 'app': 'discord.exe', 'kind': 'native', 'title': '', 'code': '', 'mode': mode}
 
 
+def zoom(mode='auto'):
+    return {'key': 'zoom.exe', 'app': 'zoom.exe', 'kind': 'native', 'title': '', 'code': '', 'mode': mode}
+
+
 def meet(code='abc-defg-hij', mode='auto'):
     return {'key': f'chrome.exe|Meet - {code}', 'app': 'chrome.exe', 'kind': 'browser', 'title': f'Meet - {code}',
             'code': code, 'mode': mode}
@@ -285,12 +289,88 @@ class SessionTests(unittest.TestCase):
         self.sm.on_sources([{**discord(), 'mic': False}])
         self.assertEqual(self.sm.state, 'live')
 
+    # The auto start counts down long enough to read the bubble and press
+    # Cancel before anything is recorded.
+    def test_default_countdown_leaves_time_to_cancel(self):
+        from ruamel.yaml import YAML
+        defaults = YAML(typ='safe').load((ROOT / 'src' / 'koli' / 'config.defaults.yaml').read_text(encoding='utf-8'))
+        self.assertEqual(defaults['meeting']['countdown_seconds'], 10)
+
+    # A call you stopped (auto countdown) or said "Not now" to stays offered
+    # as a standby: the bubble shows it with Start until the call goes away.
+    def offer_and_decline(self, source):
+        self.sm.on_sources([source])
+        self.sm.on_speech(3.5)
+        self.assertEqual(self.sm.state, 'offered')
+        self.sm.offer_decline()
+        self.assertEqual(self.sm.state, 'idle')
+
+    def test_stopped_auto_start_leaves_a_standby(self):
+        self.settings['meeting.countdown_seconds'] = 10
+        self.offer_and_decline({**discord(), 'mic': True})
+        standby = self.sm.state_payload()['standby']
+        self.assertEqual((standby['key'], standby['label'], standby['app_name']), ('discord.exe', 'Discord', 'Discord'))
+        self.assertEqual(self.events[-1][1]['standby']['key'], 'discord.exe')
+
+    def test_not_now_leaves_a_standby(self):
+        self.offer_and_decline({**discord('ask'), 'mic': True})
+        self.assertEqual(self.sm.state_payload()['standby']['key'], 'discord.exe')
+
+    def test_standby_start_begins_that_call(self):
+        self.offer_and_decline({**discord('ask'), 'mic': True})
+        self.sm.start()
+        self.assertEqual(self.sm.state, 'live')
+        self.assertEqual(self.sm.current()['source']['app'], 'discord.exe')
+        self.assertIsNone(self.sm.state_payload()['standby'])
+
+    def test_standby_clears_when_the_call_goes_away(self):
+        self.offer_and_decline({**discord('ask'), 'mic': True})
+        self.sm.on_sources([])
+        self.assertIsNone(self.sm.state_payload()['standby'])
+        self.assertIsNone(self.events[-1][1]['standby'], 'the bubble hears that the call is gone')
+
+    # A ping after the call (sound without the mic) is not a call to start.
+    def test_no_standby_for_a_ping(self):
+        self.offer_and_decline({**discord('ask'), 'mic': True})
+        self.sm.on_sources([{**discord('ask'), 'mic': False}])
+        self.assertIsNone(self.sm.state_payload()['standby'])
+
+    def test_no_standby_while_nothing_was_declined(self):
+        self.sm.on_sources([{**discord(), 'mic': True}])
+        self.assertIsNone(self.sm.state_payload()['standby'])
+
+    # Discord letting go of its audio is the call ending (tested live,
+    # 2026-10-20): the meeting ends and the panel goes, instead of waiting
+    # paused for gap_minutes. Rejoining soon offers to continue it.
+    def test_a_discord_hang_up_ends_the_meeting(self):
+        m = self.live({**discord(), 'mic': True})
+        self.gone()
+        self.assertIn(self.sm.state, ('ended', 'idle'))
+        self.assertIsNone(self.sm.current())
+        self.assertEqual(self.captures[-1], ('stop',))
+        self.assertIsNotNone(self.store.load(m['id']).get('ended_at'))
+
+    def test_rejoining_discord_soon_can_continue_the_ended_meeting(self):
+        self.live({**discord(), 'mic': True})
+        self.gone()
+        self.clock.advance(60)
+        self.sm.on_sources([{**discord(), 'mic': True}])
+        self.sm.on_speech(3.5)
+        self.assertEqual(self.sm.state, 'live')
+        self.assertEqual(self.sm.state_payload()['notice'], 'new')
+
+    # Zoom, Teams and browser calls can drop out for a moment: they still pause.
+    def test_a_zoom_call_that_goes_away_pauses(self):
+        self.live(zoom())
+        self.gone()
+        self.assertEqual(self.sm.state, 'paused')
+
     # After the call, a Discord message ping plays sound without the mic: the
     # paused meeting neither resumes on it nor ends because of it.
     def test_paused_meeting_ignores_a_ping(self):
-        m = self.live({**discord(), 'mic': True})
+        m = self.live({**zoom(), 'mic': True})
         self.gone()
-        self.sm.on_sources([{**discord(), 'mic': False}])
+        self.sm.on_sources([{**zoom(), 'mic': False}])
         self.assertEqual(self.sm.state, 'paused')
         self.assertEqual(self.sm.current()['id'], m['id'])
 
@@ -328,7 +408,7 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(self.sm.state, 'live')
 
     def test_missing_source_pauses_after_confirmation(self):
-        self.live()
+        self.live(zoom())
         self.sm.on_sources([])
         self.clock.advance(1)
         self.sm.on_sources([])          # two ticks, but only 1 s
@@ -367,28 +447,28 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(self.sm.state, 'offered')
 
     def test_source_gone_pauses_and_same_source_resumes(self):
-        m = self.live()
+        m = self.live(zoom())
         self.sm.add_turn({'t0': started_at(m) + 5, 't1': started_at(m) + 8, 'stream': 'loopback', 'speaker': 's1',
                           'text': 'hi', 'lang': 'en'})
         self.gone()
         self.assertEqual(self.sm.state, 'paused')
         self.assertEqual(self.captures[-1], ('stop',))
         self.clock.advance(120)
-        self.sm.on_sources([discord()])
+        self.sm.on_sources([zoom()])
         self.assertEqual(self.sm.state, 'live')
         self.assertEqual(self.sm.current()['id'], m['id'])
         self.assertEqual(self.sm.state_payload()['notice'], 'resumed')
         self.assertEqual(self.sm.current()['gaps'], [{'start': 2.0, 'end': 122.0, 'reason': 'paused'}])
 
     def test_source_back_after_gap_starts_new_meeting(self):
-        m = self.live()
+        m = self.live(zoom())
         self.gone()
         self.clock.advance(10 * 60 + 1)
         self.assertEqual(self.sm.state, 'idle')
         saved = self.store.load(m['id'])
         self.assertIsNotNone(saved['ended_at'])
         self.clock.advance(5)
-        self.sm.on_sources([discord()])
+        self.sm.on_sources([zoom()])
         self.sm.on_speech(4.0)
         self.assertEqual(self.sm.state, 'live')
         self.assertNotEqual(self.sm.current()['id'], m['id'])
@@ -420,12 +500,12 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(self.sm.current()['id'], m['id'])
 
     def test_resumed_meeting_can_be_split_into_a_new_one(self):
-        m = self.live()
+        m = self.live(zoom())
         base = started_at(m)
         self.sm.add_turn({'t0': base + 1, 't1': base + 2, 'stream': 'mic', 'speaker': 'you', 'text': 'first', 'lang': 'en'})
         self.gone()
         self.clock.advance(60)
-        self.sm.on_sources([discord()])
+        self.sm.on_sources([zoom()])
         self.sm.add_turn({'t0': base + 70, 't1': base + 72, 'stream': 'mic', 'speaker': 'you', 'text': 'second', 'lang': 'en'})
         self.sm.split_resumed()
         self.assertNotEqual(self.sm.current()['id'], m['id'])
@@ -487,12 +567,12 @@ class SessionTests(unittest.TestCase):
         self.assertFalse(self.store.shots_dir(second['id']).exists())
 
     def test_split_resumed_carries_later_screenshots(self):
-        m = self.live()
+        m = self.live(zoom())
         base = started_at(m)
         self.sm.add_screenshot(m['id'], self._png(), base + 1)
         self.gone()
         self.clock.advance(58)          # resumed 60 s in
-        self.sm.on_sources([discord()])
+        self.sm.on_sources([zoom()])
         self.sm.add_screenshot(m['id'], self._png(), base + 70)
         self.sm.split_resumed()
         fresh = self.sm.current()
@@ -841,6 +921,62 @@ class DetectorTests(unittest.TestCase):
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         self.assertEqual(module.active(devices_fn=None, capture_devices_fn=None), [])
+
+
+# After a meeting, the panel follows its summary: up while one is on its
+# way, up a while longer once it's ready (with Open), gone when none comes.
+class SummaryPanelTests(unittest.TestCase):
+    def test_what_the_panel_does_for_each_phase(self):
+        from koli.ui.host import summary_panel_action, PANEL_HIDE_DELAY, SUMMARY_READY_SECONDS, SUMMARY_FAILED_SECONDS
+        self.assertEqual(summary_panel_action('waiting'), (True, None))
+        self.assertEqual(summary_panel_action('writing'), (True, None))
+        self.assertEqual(summary_panel_action('ready'), (True, SUMMARY_READY_SECONDS))
+        self.assertEqual(summary_panel_action('failed'), (True, SUMMARY_FAILED_SECONDS))
+        self.assertEqual(summary_panel_action('none'), (False, PANEL_HIDE_DELAY))
+        self.assertGreaterEqual(SUMMARY_READY_SECONDS, 20, 'long enough to notice and press Open')
+
+
+# The meeting panel and the bubble follow you to every Windows virtual
+# desktop: a window Windows tied to a desktop you left moves to the one
+# you're on. A fake desktop manager stands in for Windows.
+class VirtualDesktopTests(unittest.TestCase):
+    class Manager:
+        def __init__(self, desktops, current):
+            self.desktops, self.current, self.moves = dict(desktops), current, []
+
+        def desktop_of(self, hwnd):
+            return self.desktops.get(hwnd)
+
+        def on_current(self, hwnd):
+            return self.desktops.get(hwnd) in (None, self.current)
+
+        def move(self, hwnd, desktop):
+            self.moves.append((hwnd, desktop))
+            self.desktops[hwnd] = desktop
+
+    def follow(self, desktops, ours=(10,), others=(50,)):
+        from koli.ui.win32 import keep_on_current_desktop
+        manager = self.Manager(desktops, current='B')
+        moved = keep_on_current_desktop(list(ours), manager, top_windows=lambda: list(others) + list(ours))
+        return manager, moved
+
+    def test_window_left_on_another_desktop_moves_to_the_current_one(self):
+        manager, moved = self.follow({10: 'A', 50: 'B'})
+        self.assertEqual(manager.moves, [(10, 'B')])
+        self.assertEqual(moved, [10])
+
+    def test_window_on_no_desktop_stays(self):
+        manager, _ = self.follow({10: None, 50: 'B'})
+        self.assertEqual(manager.moves, [])
+
+    def test_window_on_the_current_desktop_stays(self):
+        manager, _ = self.follow({10: 'B', 50: 'B'})
+        self.assertEqual(manager.moves, [])
+
+    # Only shell windows in front (no desktop known): nothing moves.
+    def test_unknown_current_desktop_moves_nothing(self):
+        manager, _ = self.follow({10: 'A', 50: None})
+        self.assertEqual(manager.moves, [])
 
 
 # Who is in a Discord call, read from the rows Discord's window exposes
@@ -1557,7 +1693,7 @@ class ReviewFixTests(unittest.TestCase):
         with mock.patch('koli.meeting.session.END_CONFIRM_SECONDS', 0):
             svc._on_sources([])
             svc._on_sources([])         # gone on two ticks: confirmed
-        self.assertEqual(svc.state()['state'], 'paused')
+        self.assertIn(svc.state()['state'], ('ended', 'idle'), 'Discord hung up: the meeting ended')
         self.assertTrue(FakeLoop.made[1].stopped)
 
     def test_idle_listener_closes_when_the_source_goes_away(self):
@@ -2351,11 +2487,12 @@ class CallNameTests(unittest.TestCase):
     def test_no_voice_name_while_paused(self):
         self.speakers('Speaker 1')
         self.call()
+        mid = self.mid()
         self.sm.on_sources([])
         self.clock.advance(2)
         self.sm.on_sources([])
-        self.assertEqual(self.sm.state, 'paused')
-        self.assertIsNone(self.sm.take_call_name(self.mid()))
+        self.assertNotEqual(self.sm.state, 'live')      # Discord hung up: the meeting ended
+        self.assertIsNone(self.sm.take_call_name(mid))
 
 
 # One loopback chunk with two voices becomes two turns, two speakers.
@@ -3132,6 +3269,67 @@ class MeetingSummaryServiceTests(unittest.TestCase):
             time.sleep(0.02)
         self.wait(svc, m['id'])
         self.assertEqual(self.store.load_brief(m['id'])['written'], 'auto')
+
+    # The panel turns into the summary's progress after a meeting ends: it
+    # hears whether one is coming, when it is written, and when it's ready.
+    def summary_events(self):
+        return [p for t, p in self.events if t == 'meeting_summary']
+
+    def test_ending_a_meeting_says_a_summary_is_coming(self):
+        m = summary_meeting()
+        svc = self.service(ai=FakeAI('{"tldr": ["auto"]}'))
+        svc._schedule_auto_summary = lambda *a, **k: None
+        self.store.save(m)
+        svc._meeting_ended(m)
+        self.assertEqual(self.summary_events(), [{'id': m['id'], 'phase': 'waiting'}])
+
+    def test_ending_a_short_meeting_says_no_summary(self):
+        short = dict(summary_meeting(), ended_at='2026-10-20T10:01:00+03:00')
+        svc = self.service(ai=FakeAI('{"tldr": ["auto"]}'))
+        self.store.save(short)
+        svc._meeting_ended(short)
+        self.assertEqual(self.summary_events(), [{'id': short['id'], 'phase': 'none'}])
+
+    def test_no_summary_when_auto_summary_is_off(self):
+        m = summary_meeting()
+        svc = self.service(values={'meeting.summary.auto': False}, ai=FakeAI('{"tldr": ["auto"]}'))
+        self.store.save(m)
+        svc._meeting_ended(m)
+        self.assertEqual(self.summary_events(), [{'id': m['id'], 'phase': 'none'}])
+
+    def test_auto_summary_says_writing_then_ready_with_the_title(self):
+        m = summary_meeting()
+        svc = self.service(ai=FakeAI('{"title": "Budget cut agreed", "tldr": ["auto"]}'))
+        self.store.save(m)
+        svc._schedule_auto_summary(m['id'], settle_s=0.05, poll_s=0.01)
+        end = time.monotonic() + 5
+        while not any(e['phase'] == 'ready' for e in self.summary_events()) and time.monotonic() < end:
+            time.sleep(0.02)
+        phases = [e['phase'] for e in self.summary_events()]
+        self.assertEqual(phases, ['writing', 'ready'])
+        self.assertEqual(self.summary_events()[-1]['title'], 'Budget cut agreed')
+
+    # The transcript never caught up in time: the panel hears no summary is coming.
+    def test_giving_up_on_the_wait_says_no_summary(self):
+        m = summary_meeting()
+        svc = self.service(ai=FakeAI('{"tldr": ["auto"]}'))
+        svc.transcriber.queued_seconds = lambda: 5.0
+        self.store.save(m)
+        svc._schedule_auto_summary(m['id'], settle_s=0.05, max_wait_s=0.1, poll_s=0.01)
+        end = time.monotonic() + 5
+        while not self.summary_events() and time.monotonic() < end:
+            time.sleep(0.02)
+        self.assertEqual(self.summary_events(), [{'id': m['id'], 'phase': 'none'}])
+
+    def test_a_failed_auto_summary_says_so(self):
+        m = summary_meeting()
+        svc = self.service(ai=FakeAI('not json at all'))
+        self.store.save(m)
+        svc._auto_summary(m['id'])
+        end = time.monotonic() + 5
+        while not any(e['phase'] == 'failed' for e in self.summary_events()) and time.monotonic() < end:
+            time.sleep(0.02)
+        self.assertEqual([e['phase'] for e in self.summary_events()], ['writing', 'failed'])
 
     def test_templates_list_marks_the_default(self):
         svc = self.service(values={'meeting.summary.template': 'board-meeting'})

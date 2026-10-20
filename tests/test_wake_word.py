@@ -427,6 +427,16 @@ class WakeListenerTests(ListenerTestCase):
         self.assertEqual(listener.strip_wake('Views increase volume in 30%'), 'increase volume in 30%')
         self.assertEqual(listener.strip_wake('increase volume'), 'increase volume', 'nothing like the word stays')
 
+    # 2026-10-20 16:34: "Viush" … pause … "Desk 6". The command, its own
+    # audio, came out "Desk 6", and "desk" is 0.67 like the spelling "adeus":
+    # it was dropped as the wake word and the AI got "6". After a pause only
+    # a word that clearly is the wake word is dropped.
+    def test_a_command_after_a_pause_keeps_a_word_only_like_the_wake_word(self):
+        listener = self.make(phrases=['viush', 'víus', 'bios', 'adeus'], sensitivity='high', only_my_voice=True)
+        self.assertFalse(listener._wake_in_command)
+        self.assertEqual(listener.strip_wake('Desk 6'), 'Desk 6')
+        self.assertEqual(listener.strip_wake('Viush desk 6'), 'desk 6', 'the word said again is still dropped')
+
     def test_only_a_command_in_the_wake_breath_starts_with_the_word(self):
         self.make()
         self.say(1, 2, seconds=0.6)           # one breath
@@ -956,6 +966,7 @@ class WakeCommandStateManagerTests(unittest.TestCase):
         from koli.wake_word import WakeListener
         listener._wake_in_command, listener._wake_heard = False, ''
         listener.WAKE_IN_COMMAND_RATIO = WakeListener.WAKE_IN_COMMAND_RATIO
+        listener.STRIP_AFTER_PAUSE_RATIO = WakeListener.STRIP_AFTER_PAUSE_RATIO
         listener.WAKE_FRAGMENT_LETTERS = WakeListener.WAKE_FRAGMENT_LETTERS
         listener.strip_wake.side_effect = lambda text: WakeListener.strip_wake(listener, text)
         sm._wake_listener = listener

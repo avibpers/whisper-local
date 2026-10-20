@@ -34,12 +34,27 @@ APP_ID = 'Koli.App'
 MAIN_TITLE = 'Koli'
 BAR_TITLE = 'Koli · bubble'
 PANEL_TITLE = 'Koli · meeting'
+DESKTOP_FOLLOW_INTERVAL = 0.5   # seconds between checks that the panel and bubble are on your desktop
 PANEL_HIDE_DELAY = 2.5
+SUMMARY_READY_SECONDS = 30    # "Summary ready" with Open stays this long
+SUMMARY_FAILED_SECONDS = 8    # "Summary didn't work" stays this long
+
+
+# After a meeting, the panel follows its automatic summary: (keep it shown,
+# seconds until it hides or None to stay) for each phase the service sends.
+def summary_panel_action(phase: str) -> tuple:
+    if phase in ('waiting', 'writing'):
+        return True, None
+    if phase == 'ready':
+        return True, SUMMARY_READY_SECONDS
+    if phase == 'failed':
+        return True, SUMMARY_FAILED_SECONDS
+    return False, PANEL_HIDE_DELAY
 
 # Topics each page cares about. Latest-wins topics are coalesced per batch.
 BAR_TOPICS = {'state', 'bar', 'pipeline', 'notify', 'task', 'level', 'streaming_text', 'settings',
               'profile', 'window', 'auto_send', 'problem', 'meeting', 'meeting_shot', 'wake', 'agent'}
-PANEL_TOPICS = {'meeting', 'meeting_turn', 'meeting_shot', 'settings', 'task', 'problem'}
+PANEL_TOPICS = {'meeting', 'meeting_turn', 'meeting_shot', 'meeting_summary', 'settings', 'task', 'problem'}
 COALESCE = {'level', 'vad', 'foreground', 'streaming_text'}
 PUSH_INTERVAL = 0.05
 
@@ -156,6 +171,7 @@ class UiHost:
         self._drag_regions = False   # WebView2 treats `app-region: drag` as the title bar
         self.custom_frame = False    # the page draws the title bar and window buttons
         self._meeting_state = 'idle'  # last meeting state seen, for the tray and the panel
+        self._summary_pending = False  # an ended meeting's summary is on its way: the panel stays
         self.panel_hwnd = 0
         self._panel_visible = False
         self._panel_collapsed = False
@@ -298,6 +314,7 @@ class UiHost:
         except Exception as e:
             logger.error(f"The bubble and meeting panel could not be created: {e}", exc_info=True)
         threading.Thread(target=self._pump, daemon=True, name='ui-pump').start()
+        threading.Thread(target=self._follow_desktops, daemon=True, name='ui-desktops').start()
         threading.Thread(target=self._watch_shutdown, daemon=True, name='ui-shutdown').start()
         threading.Thread(target=self._watch_foreground, daemon=True, name='ui-foreground').start()
         self.settings.start_watching()
@@ -671,10 +688,10 @@ class UiHost:
         self.place_panel()
 
     # Hidden a moment after the meeting ends, so "Saved" can be read.
-    def _hide_panel_later(self):
+    def _hide_panel_later(self, seconds: float = PANEL_HIDE_DELAY):
         if self._panel_hide_timer is not None:
             self._panel_hide_timer.cancel()
-        self._panel_hide_timer = threading.Timer(PANEL_HIDE_DELAY, self._hide_panel)
+        self._panel_hide_timer = threading.Timer(seconds, self._hide_panel)
         self._panel_hide_timer.daemon = True
         self._panel_hide_timer.start()
 
@@ -875,6 +892,8 @@ class UiHost:
             self._on_setting(payload)
         elif topic == 'meeting' and isinstance(payload, dict):
             self._on_meeting_state(payload.get('state', 'idle'))
+        elif topic == 'meeting_summary' and isinstance(payload, dict):
+            self._on_summary_status(payload.get('phase', 'none'))
         item = {'topic': topic, 'payload': payload}
         self.main.queue.put(item)
         if topic in self.bar.topics:
@@ -895,11 +914,24 @@ class UiHost:
             except Exception:
                 pass
         if state in ('offered', 'live', 'paused'):
+            self._summary_pending = False
             self._show_panel()
         elif state == 'ended':
             self._hide_panel_later()
-        elif state == 'idle' and self._panel_hide_timer is None and self._panel_visible:
+        elif state == 'idle' and self._panel_hide_timer is None and self._panel_visible and not self._summary_pending:
             self._hide_panel()
+
+    # The ended meeting's summary: "Summarizing the meeting…" keeps the panel
+    # up, "Summary ready" (with Open) stays a while, no summary lets it go.
+    def _on_summary_status(self, phase: str):
+        if self._meeting_state in ('offered', 'live', 'paused'):
+            return     # a new call took the panel over
+        show, hide_after = summary_panel_action(phase)
+        self._summary_pending = show and hide_after is None
+        if show:
+            self._show_panel()
+        if hide_after is not None:
+            self._hide_panel_later(hide_after)
 
     def _on_setting(self, payload):
         path = payload.get('path', '')
@@ -921,6 +953,16 @@ class UiHost:
                 tray.refresh_menu()
             except Exception:
                 pass
+
+    # The meeting panel and the bubble on every virtual desktop: twice a
+    # second, either one Windows left on a desktop you switched away from
+    # moves to the one you're on (ui/win32.follow_current_desktop).
+    def _follow_desktops(self):
+        while not self._quitting:
+            time.sleep(DESKTOP_FOLLOW_INTERVAL)
+            moved = win32.follow_current_desktop([self.panel_hwnd, self.bar_hwnd])
+            if moved:
+                logger.debug(f"Moved {len(moved)} window(s) to the current virtual desktop")
 
     def _pump(self):
         while not self._quitting:

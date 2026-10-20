@@ -205,6 +205,11 @@ class Bridge:
     def dictation_cancel(self):
         self._sm.cancel_active_recording()
 
+    # The bubble's Stop on "Writing it down": drop that dictation.
+    @_api
+    def processing_stop(self):
+        return self._sm.stop_processing()
+
     # The bubble's buttons while an auto-send counts down before Enter.
     @_api
     def auto_send_cancel(self):
