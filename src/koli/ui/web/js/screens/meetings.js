@@ -112,10 +112,11 @@ function Transcript({ id, live, onDeleted }) {
   const rows = rowsByTime(m.turns, m.screenshots);
   const last = Math.max(m.turns.length ? m.turns[m.turns.length - 1].end : 0, ...(m.screenshots || []).map((s) => s.at));
   return html`<section class="card" style="min-width:0;overflow:hidden;display:flex;flex-direction:column;max-height:calc(100vh - 200px)" aria-label="Transcript">
-    <div class="row-flex" style="padding:12px 18px;border-bottom:1px solid var(--line)">
-      <div class="grow"><div style="font-weight:600">${m.title}</div>
-        <div class="small muted">${when(m.started_at)} · ${clock(last)} · ${m.source && m.source.app ? m.source.app.replace('.exe', '') : 'started by hand'}</div></div>
-      <div class="row-flex">${m.speakers.map((sp) => html`<button type="button" class="chip" style=${`color:${COLOURS[sp.colour % 8]}`} title="Rename" onClick=${() => renameSpeaker(sp)}>${sp.name}</button>`)}</div>
+    <div class="mt-head">
+      <div class="mt-title"><div class="mt-name" title=${m.title}>${m.title}</div>
+        <div class="small muted mt-when">${when(m.started_at)} · ${clock(last)} · ${m.source && m.source.app ? m.source.app.replace('.exe', '') : 'started by hand'}</div>
+        <div class="mt-speakers">${m.speakers.map((sp) => html`<button type="button" class="chip sm" style=${`color:${COLOURS[sp.colour % 8]}`} title="Rename" onClick=${() => renameSpeaker(sp)}>${sp.name}</button>`)}</div></div>
+      <div class="mt-actions">
       ${!live && html`<${DriveButton} m=${m} brief=${brief} onSaved=${(info) => setM((cur) => cur && { ...cur, drive: info })} />`}
       <${Select} label="Export" value="" options=${[['', 'Export…'], ['txt', 'As .txt'], ['md', 'As .md'], ...(brief ? [['pdf', 'Summary as .pdf']] : [])]} onChange=${(v) => v && exportAs(v)} />
       ${!live && html`<button type="button" class="btn ghost icon danger" aria-label="Delete" onClick=${async () => {
@@ -123,6 +124,7 @@ function Transcript({ id, live, onDeleted }) {
           call('meeting_delete', id).then(() => { toast('Meeting deleted'); onDeleted(); }).catch((e) => toast(e.message, { kind: 'err' }));
         }
       }}><${Icon} name="trash" /></button>`}
+      </div>
     </div>
     <div style="padding:10px 18px 0"><div class="seg" role="tablist" aria-label="Meeting view">
       ${[['summary', 'Summary'], ['transcript', 'Transcript'], ['data', 'Data']].map(([k, label]) => html`<button type="button" role="tab" aria-selected=${tab === k}
@@ -182,7 +184,7 @@ export function MeetingsScreen() {
   useEffect(() => { reload(); }, [live.state]);
   const liveId = live.id && (live.state === 'live' || live.state === 'paused') ? live.id : null;
   const current = selected || liveId || (list[0] && list[0].id);
-  return html`<div class="page">
+  return html`<div class="page wide">
     <div class="page-head">
       <div><h1 class="page-title">Meetings</h1><p class="page-sub">Calls transcribed as they happen, with who said what. Stored only on this computer.</p></div>
       ${!RUNNING.has(live.state) && html`<button type="button" class="btn pri" onClick=${() => call('meeting_start').catch((e) => toast(e.message, { kind: 'err' }))}>Start a meeting now</button>`}
