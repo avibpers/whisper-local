@@ -3,5 +3,5 @@
 # meetings start by hand. Mirrors platform/windows/audio_sessions.py.
 
 
-def active(devices_fn=None) -> list:
+def active(devices_fn=None, capture_devices_fn=None) -> list:
     return []

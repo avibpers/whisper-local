@@ -795,6 +795,52 @@ class DetectorTests(unittest.TestCase):
             spec.loader.exec_module(module)
             self.assertEqual(getattr(module, fn)(), [])
 
+    def test_macos_audio_sessions_mirrors_the_capture_argument(self):
+        import importlib.util
+        path = ROOT / 'src' / 'koli' / 'platform' / 'macos' / 'audio_sessions.py'
+        spec = importlib.util.spec_from_file_location('stub_audio_sessions_capture', path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.assertEqual(module.active(devices_fn=None, capture_devices_fn=None), [])
+
+
+# Who is in a Discord call, read from the rows Discord's window exposes
+# (class name, accessible name), as recorded in a live call on 2026-10-20.
+class CallPeopleTests(unittest.TestCase):
+    @staticmethod
+    def _load(system):
+        import importlib.util
+        path = ROOT / 'src' / 'koli' / 'platform' / system / 'call_people.py'
+        spec = importlib.util.spec_from_file_location(f'{system}_call_people', path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_dm_call_with_tiles(self):
+        mod = self._load('windows')
+        rows = [('link__972a0 channelNameFade__972a0', 'unread, Becky (direct message), Ongoing Call, Online'),
+                ('focusTarget__54e4b', 'avi151105'), ('focusTarget__54e4b', 'v069675, Muted'),
+                ('focusTarget__54e4b', 'v069675, Muted')]
+        self.assertEqual(mod.parse_discord(rows), {'with': 'Becky', 'people': [{'name': 'avi151105', 'muted': False},
+                                                                               {'name': 'v069675', 'muted': True}]})
+
+    # Another chat open: the call shows only as a label in the side list.
+    def test_call_label_fallback(self):
+        mod = self._load('windows')
+        rows = [('container_c9d15c textWithIconContainer_c9d15c textXs_c9d15c', 'In a call (Becky)')]
+        self.assertEqual(mod.parse_discord(rows), {'with': 'Becky', 'people': []})
+
+    def test_no_call(self):
+        mod = self._load('windows')
+        rows = [('link__972a0 channelNameFade__972a0', 'Ilona (direct message), Idle')]
+        self.assertEqual(mod.parse_discord(rows), {})
+
+    def test_other_apps_read_nothing(self):
+        self.assertEqual(self._load('windows').read('zoom.exe'), {})
+
+    def test_macos_stub(self):
+        self.assertEqual(self._load('macos').read('discord.exe'), {})
+
 
 class CaptureTests(unittest.TestCase):
     # A fake VAD: a frame is speech when its mean absolute level is above 0.1.
