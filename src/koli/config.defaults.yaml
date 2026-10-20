@@ -649,8 +649,9 @@ meeting: # Meetings: calls in Discord, Zoom, Teams and the browser
         template: standard
         # meeting = the language most of the meeting was in; or a code (he, en)
         language: meeting
-        # Shorter meetings are not summarized by themselves
-        min_minutes: 2
+        # Shorter meetings are not summarized by themselves (summarize by hand
+        # works for any length)
+        min_minutes: 10
     # A separate Whisper model for meetings (a key from whisper.models), or
     # empty for the dictation model. Only worth it on a GPU.
     model: ''

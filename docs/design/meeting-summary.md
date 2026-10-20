@@ -63,7 +63,7 @@ summary; the template's `language` when it is a code; the setting
   and *Summarize again* once there is one.
 - Automatically (`meeting.summary.auto`, on by default, needs an AI model):
   after a meeting ends, once the transcriber has caught up and the meeting
-  has not resumed, and only when it lasted `meeting.summary.min_minutes` (2)
+  has not resumed, and only when it lasted `meeting.summary.min_minutes` (10)
   with at least a few turns. A meeting that resumes and ends again is
   summarized again. An existing hand-run summary with another template is
   replaced only by a later hand run.
@@ -71,9 +71,17 @@ summary; the template's `language` when it is a code; the setting
   `meeting_summary`, ref = the meeting id), so the page shows progress and a
   failure shows as a problem.
 
-Settings: `ai.meetings.model` / `ai.meetings.timeout` (180 s) in Settings ›
-AI; `meeting.summary.auto`, `.template`, `.language`, `.min_minutes` in
-Settings › Meetings.
+Settings › Meetings › Summary holds them all: `meeting.summary.auto`,
+`.min_minutes`, the model (`ai.meetings.model`, kept in the `ai:` part of the
+file like every AI feature), `.language` and the timeout (`ai.meetings.timeout`,
+180 s); the default template is chosen in Summary templates. The Meetings
+screen's *Meeting settings* button opens the same Meetings section in a modal.
+
+## Search
+
+The Meetings screen searches every saved meeting: all words of the query must
+appear somewhere in its title, speakers, summary, screenshot captions or
+transcript. A transcript hit opens the meeting on that turn.
 
 ## Managing templates
 

@@ -600,6 +600,22 @@ function SectionCard({ section, schema, highlight, terms }) {
   </section>`;
 }
 
+// One section of Settings in a modal (the Meetings screen's Meeting
+// settings): the same card as on the Settings screen, so every row saves,
+// validates and undoes exactly as it does there.
+function SectionModal({ id }) {
+  const schema = app.use((s) => s.schema);
+  const section = schema && schema.sections.find((s) => s.id === id);
+  if (!section) return null;
+  return html`<div class="modal wide settings-modal" role="dialog" aria-label=${`${section.title} settings`}>
+    <div class="modal-body"><${SectionCard} section=${section} schema=${schema} terms=${[]} /></div>
+    <div class="modal-foot"><button type="button" class="btn pri" onClick=${closeModal}>Done</button></div></div>`;
+}
+
+export function openSettingsSection(id) {
+  openModal(() => html`<${SectionModal} id=${id} />`);
+}
+
 export function SettingsScreen({ route }) {
   const schema = app.use((s) => s.schema);
   const canUndo = app.use((s) => s.undo);

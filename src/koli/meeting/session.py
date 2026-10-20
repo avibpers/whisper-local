@@ -556,6 +556,15 @@ class SessionManager:
             self._publish('meeting_shot', {'id': target['id'], 'shot': entry, 'caption': True})
             return True
 
+    # The summary renamed the meeting: the copies kept in memory (running, or
+    # kept for resume) take the new title too, or their next save would bring
+    # the old one back.
+    def retitle(self, meeting_id: str, title: str):
+        with self._lock:
+            for m in (self.meeting, self._previous):
+                if m and m.get('id') == meeting_id:
+                    m['title'] = title
+
     # A meeting that already ended: the one kept for resume, or its file.
     def _saved(self, meeting_id: str) -> Optional[dict]:
         if self._previous and self._previous['id'] == meeting_id:

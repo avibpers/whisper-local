@@ -498,6 +498,8 @@ class MeetingService:
             spec = chosen.get('title') or {}
             fixed = isinstance(spec, dict) and spec.get('mode') == 'fixed'
             self.store.save_brief(meeting_id, brief, rename_meeting=not fixed)
+            if not fixed and brief.get('title'):
+                self.session.retitle(meeting_id, brief['title'])
             return brief.get('title')
 
         def done(task):
@@ -557,7 +559,7 @@ class MeetingService:
         except (OSError, ValueError) as e:
             logger.warning(f"Meeting summary: {meeting_id} unreadable: {e}")
             return
-        if not summary_ai.worth_summarizing(m, self._setting('meeting.summary.min_minutes', 2)):
+        if not summary_ai.worth_summarizing(m, self._setting('meeting.summary.min_minutes', 10)):
             logger.info(f"Meeting summary: {meeting_id} is too short to summarize")
             return
         existing = self.store.load_brief(meeting_id)
@@ -979,6 +981,9 @@ class MeetingService:
 
     def list(self) -> list:
         return self.store.list()
+
+    def search(self, query: str) -> list:
+        return self.store.search(query)
 
     def get(self, meeting_id: str) -> dict:
         m = self.session.meeting

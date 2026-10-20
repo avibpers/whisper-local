@@ -613,6 +613,17 @@ export function createMock(emit) {
     meeting_forget_voice: (id) => { const had = voices.some((v) => v.id === id); voices = voices.filter((v) => v.id !== id); return ok(had); },
     meeting_continue_previous: () => { meeting = { ...meeting, notice: 'resumed', can_continue: false }; emitMeeting(); return ok(); },
     meeting_split: () => { meeting = { ...meeting, notice: 'new', can_split: false }; emitMeeting(); return ok(); },
+    // Search: every word in the title, speakers or the words said.
+    meetings_search: (q) => {
+      const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
+      return ok(Object.values(saved).flatMap((m) => {
+        const words = [m.title, ...m.speakers.map((s) => s.name), ...m.turns.map((t) => t.text)].join(' ').toLowerCase();
+        if (!terms.every((w) => words.includes(w))) return [];
+        const turn = m.turns.find((t) => t.text.toLowerCase().includes(terms[0]));
+        return [{ id: m.id, title: m.title, started_at: m.started_at, hits: 1, where: turn ? 'transcript' : 'title',
+          snippet: turn ? turn.text : m.title, at: turn ? turn.start : null }];
+      }));
+    },
     meetings_list: () => ok(Object.values(saved).map((m) => ({ id: m.id, title: m.title, source: m.source, started_at: m.started_at,
       ended_at: m.ended_at, duration_s: 2520, speakers: m.speakers.map((s) => s.name), turns: m.turns.length }))),
     meeting_get: (id) => ok(id === 'live-mock' ? { id, title: meeting.title, source: meeting.source, started_at: meeting.started_at,

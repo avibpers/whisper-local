@@ -667,6 +667,12 @@ class Bridge:
     def meetings_list(self):
         return self._meetings.list()
 
+    # Saved meetings holding every word of the query (title, speakers, summary,
+    # screenshot captions, transcript), with where it matched.
+    @_api
+    def meetings_search(self, query):
+        return self._meetings.search(str(query or ''))
+
     @_api
     def meeting_get(self, meeting_id):
         return self._meetings.get(meeting_id)

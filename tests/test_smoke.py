@@ -8504,3 +8504,37 @@ class MeetingSummaryPageTests(unittest.TestCase):
                      'summary_template_save', 'summary_template_delete', 'summary_template_read_files'):
             self.assertIn(f'    {name}:', mock)
             self.assertTrue(hasattr(Bridge, name), name)
+
+
+# Meeting search and the Meeting settings modal on the Meetings screen.
+class MeetingSearchPageTests(unittest.TestCase):
+    WEB = ROOT / "src" / "koli" / "ui" / "web"
+
+    def test_search_is_wired(self):
+        from koli.ui.bridge import Bridge
+        self.assertTrue(hasattr(Bridge, 'meetings_search'))
+        screen = (self.WEB / 'js' / 'screens' / 'meetings.js').read_text(encoding='utf-8')
+        self.assertIn("call('meetings_search'", screen)
+        self.assertIn('focus=${focus}', screen)
+        mock = (self.WEB / 'js' / 'mock-api.js').read_text(encoding='utf-8')
+        self.assertIn('    meetings_search:', mock)
+
+    def test_meeting_settings_reuse_the_settings_section(self):
+        screen = (self.WEB / 'js' / 'screens' / 'meetings.js').read_text(encoding='utf-8')
+        self.assertIn("openSettingsSection('meetings')", screen)
+        # The modal draws the Settings screen's own section card, no copy of its rows.
+        self.assertNotIn('SettingRow', screen)
+        settings = (self.WEB / 'js' / 'screens' / 'settings.js').read_text(encoding='utf-8')
+        self.assertIn('export function openSettingsSection', settings)
+        self.assertIn('<${SectionCard} section=${section} schema=${schema}', settings)
+
+    def test_bridge_search_passes_the_query(self):
+        from koli.ui.bridge import Bridge
+
+        class Svc:
+            def search(self, q):
+                return [{'id': 'm1', 'q': q}]
+
+        class Host:
+            ctx = type('C', (), {'meetings': Svc()})()
+        self.assertEqual(Bridge(Host()).meetings_search('budget'), {'ok': True, 'data': [{'id': 'm1', 'q': 'budget'}]})

@@ -2818,6 +2818,77 @@ class GoogleDocTemplateTests(unittest.TestCase):
         self.assertEqual(tabs, ['Summary', 'Transcript'])
         self.assertEqual(folders, ['Koli/Meetings/2026-10-19 Board Meeting Summary - Dev sync - SEO'])
 
+
+# Searching saved meetings, and summary titles kept through a resume.
+class MeetingSearchTests(unittest.TestCase):
+    def store(self):
+        from koli.meeting.store import MeetingStore
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        store = MeetingStore(Path(tmp.name))
+        a = summary_meeting()
+        a['title'] = 'Budget review'
+        b = dict(summary_meeting([{'start': 12.0, 'end': 20.0, 'speaker': 's1', 'text': 'The release moves to Sunday', 'lang': 'en'}]),
+                 id='2026-10-21-090000', title='Release sync', started_at='2026-10-21T09:00:00+03:00', screenshots=[])
+        store.save(a)
+        store.save(b)
+        store.save_brief(b['id'], {'tldr': ['Monitoring comes first.'], 'decisions': [{'id': 'D1', 'text': 'Ship on Sunday', 'at': 12}]},
+                         rename_meeting=False)
+        return store
+
+    def test_a_title_match_needs_no_snippet(self):
+        hits = self.store().search('budget')
+        self.assertEqual([(h['title'], h['where'], h['at']) for h in hits], [('Budget review', 'title', None)])
+
+    def test_a_transcript_match_has_its_second_and_a_snippet(self):
+        hits = self.store().search('release sunday')
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0]['title'], 'Release sync')
+        # "release" is in the title, but not every word is: the transcript tells where.
+        self.assertEqual((hits[0]['where'], hits[0]['at']), ('transcript', 12.0))
+        self.assertIn('Sunday', hits[0]['snippet'])
+
+    def test_summary_captions_and_hebrew_are_searched(self):
+        store = self.store()
+        self.assertEqual(store.search('monitoring')[0]['where'], 'summary')
+        self.assertEqual(store.search('budget sheet')[0]['where'], 'screenshot')
+        self.assertEqual(store.search('התקציב')[0]['title'], 'Budget review')
+
+    def test_every_word_must_appear_and_newest_comes_first(self):
+        store = self.store()
+        self.assertEqual(store.search('budget sunday'), [])
+        self.assertEqual(store.search('   '), [])
+        self.assertEqual([h['title'] for h in store.search('omer')], ['Release sync', 'Budget review'])
+
+    def test_retitle_updates_the_meeting_kept_for_resume(self):
+        from koli.meeting.session import SessionManager
+        from koli.meeting.store import MeetingStore
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        session = SessionManager(MeetingStore(Path(tmp.name)), start_capture=lambda m: None, stop_capture=lambda: None,
+                                 publish=lambda t, p: None, settings=lambda path, default=None: default)
+        session._previous = {'id': 'm1', 'title': 'Discord'}
+        session.meeting = {'id': 'm2', 'title': 'Zoom'}
+        session.retitle('m1', 'Budget cut agreed')
+        self.assertEqual(session._previous['title'], 'Budget cut agreed')
+        self.assertEqual(session.meeting['title'], 'Zoom')
+
+
+class MeetingSummarySettingsTests(unittest.TestCase):
+    def test_every_summary_setting_is_in_the_meetings_section(self):
+        from koli.settings import schema
+        for path in ('meeting.summary.auto', 'meeting.summary.min_minutes', 'ai.meetings.model',
+                     'meeting.summary.language', 'ai.meetings.timeout'):
+            self.assertEqual((schema.get(path).section, schema.get(path).group), ('meetings', 'Summary'), path)
+
+    def test_short_meetings_are_not_summarized_by_default(self):
+        from ruamel.yaml import YAML
+        defaults = YAML(typ='safe').load((Path(__file__).resolve().parent.parent / 'src' / 'koli' / 'config.defaults.yaml')
+                                         .read_text(encoding='utf-8'))
+        self.assertEqual(defaults['meeting']['summary']['min_minutes'], 10)
+        self.assertEqual(defaults['ai']['meetings']['timeout'], 180)
+
+
 if __name__ == '__main__':
     unittest.main()
 
