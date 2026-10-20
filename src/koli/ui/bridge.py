@@ -739,6 +739,41 @@ class Bridge:
         webbrowser.open(url)
         return url
 
+    # Google's own Share window: Drive for desktop's, for the doc it synced
+    # (platform/*/drive_share.py). Without Drive for desktop, or before the
+    # doc has synced, the doc opens in the browser and its Share button does
+    # the same. {'window': True} when the Share window opened.
+    @_api
+    def meeting_drive_share(self, meeting_id):
+        import os
+        from pathlib import Path
+        svc = self._meetings
+        meeting = svc.get(str(meeting_id))
+        saved = meeting.get('drive') or {}
+        if not saved.get('doc_id'):
+            raise ValueError("This meeting isn't in Google Drive yet")
+        share = getattr(self, '_drive_share', None)
+        if share is None:
+            from ..platform import drive_share as share
+        email = (getattr(self, '_drive_email', None) or self._drive_account_email)()
+        exists = getattr(self, '_file_exists', None) or os.path.exists
+        name = saved.get('name')
+        if not name:
+            from ..meeting.gdoc import folder_name
+            name = folder_name(meeting, svc.brief(str(meeting_id)) or {})
+        root = share.local_root(email) if share.available() else None
+        if root is not None:
+            path = Path(root) / 'My Drive' / 'Koli' / 'Meetings' / name / f"{name}.gdoc"
+            if exists(str(path)) and share.show_share(path):
+                return {'window': True}
+        self.meeting_drive_open(meeting_id)
+        return {'window': False}
+
+    @staticmethod
+    def _drive_account_email() -> str:
+        from .. import drive
+        return str(drive.ACCOUNT.status().get('email') or '')
+
     # ── Meeting screenshots (docs/design/meeting-screenshots.md) ─────────────
 
     # The camera button: snip into the running meeting. {'ok', 'reason'}.

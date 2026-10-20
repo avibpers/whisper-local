@@ -362,7 +362,7 @@ def export(store, meeting_id: str, drive=None, docs=None) -> dict:
     quick = replies[1]['addDocumentTab']['tabProperties']['tabId']
     transcript = replies[2]['addDocumentTab']['tabProperties']['tabId']
     docs.batch_update(doc_id, quick_requests(m, brief, quick) + transcript_requests(m, brief, transcript))
-    info = {'folder_id': folder, 'folder_url': f"https://drive.google.com/drive/folders/{folder}", 'doc_id': doc_id,
+    info = {'name': name, 'folder_id': folder, 'folder_url': f"https://drive.google.com/drive/folders/{folder}", 'doc_id': doc_id,
             'doc_url': str(drive.info(doc_id).get('webViewLink') or f"https://docs.google.com/document/d/{doc_id}/edit"),
             'exported_at': datetime.datetime.now().astimezone().isoformat(timespec='seconds')}
     m = store.load(meeting_id)

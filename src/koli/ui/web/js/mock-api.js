@@ -600,6 +600,7 @@ export function createMock(emit) {
       resolve(ok(info));
     }, 1200)),
     meeting_drive_open: (id) => ok((saved[id] && saved[id].drive && saved[id].drive.doc_url) || ''),
+    meeting_drive_share: () => ok({ window: false }),
     meeting_caption: (id, image, caption) => {
       const list = id === 'live-mock' ? liveShots : (saved[id] ? saved[id].screenshots : []);
       const shot = list.find((s) => s.image === image);

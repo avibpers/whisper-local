@@ -8350,3 +8350,50 @@ class MeetingDrivePageTests(unittest.TestCase):
             self.assertIn(part, brief)
         self.assertIn('DriveButton', (web / 'screens' / 'meetings.js').read_text(encoding='utf-8'))
         self.assertIn('export function openDriveLogin', (web / 'screens' / 'settings.js').read_text(encoding='utf-8'))
+
+
+# Share opens Drive for desktop's own Share window when the doc is synced
+# there; otherwise the doc opens in the browser.
+class MeetingDriveShareTests(unittest.TestCase):
+    def make(self, local_root=None, shown=True, exists=True):
+        from koli.ui.bridge import Bridge
+        import koli.ui.bridge as mod
+        self.calls = []
+
+        class Svc:
+            def get(self, mid):
+                return {'id': mid, 'title': 'Dev sync: SEO', 'started_at': '2026-10-19T12:47:11+03:00',
+                        'drive': {'doc_id': 'D1', 'name': '2026-10-19 Dev sync - SEO',
+                                  'doc_url': 'https://docs.google.com/document/d/D1/edit'}}
+            def brief(self, mid):
+                return {'title': 'Dev sync: SEO'}
+        calls = self.calls
+
+        class Share:
+            def available(self):
+                return True
+            def local_root(self, email):
+                calls.append(('root', email)); return local_root
+            def show_share(self, path):
+                calls.append(('share', str(path))); return shown
+        host = type('H', (), {'ctx': type('C', (), {'meetings': Svc()})()})()
+        b = Bridge(host)
+        orig = mod.webbrowser.open
+        mod.webbrowser.open = lambda url: calls.append(('browser', url))
+        self.addCleanup(setattr, mod.webbrowser, 'open', orig)
+        b._drive_share = Share()
+        b._drive_email = lambda: 'studio@perspective-media.me'
+        b._file_exists = lambda p: exists
+        return b
+
+    def test_share_opens_drive_for_desktop_window(self):
+        r = self.make(local_root='P:/').meeting_drive_share('m1')
+        self.assertEqual(r['data'], {'window': True})
+        share = [c for c in self.calls if c[0] == 'share'][0][1]
+        self.assertTrue(share.replace(chr(92), '/').endswith('My Drive/Koli/Meetings/2026-10-19 Dev sync - SEO/2026-10-19 Dev sync - SEO.gdoc'))
+
+    def test_share_falls_back_to_the_browser(self):
+        for kwargs in ({'local_root': None}, {'local_root': 'P:/', 'exists': False}, {'local_root': 'P:/', 'shown': False}):
+            r = self.make(**kwargs).meeting_drive_share('m1')
+            self.assertEqual(r['data'], {'window': False}, kwargs)
+            self.assertIn(('browser', 'https://docs.google.com/document/d/D1/edit'), self.calls)

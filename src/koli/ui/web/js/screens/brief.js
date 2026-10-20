@@ -264,11 +264,15 @@ export function DriveButton({ m, brief, onSaved }) {
       onClick=${save}><${DriveMark} />Save to Google Drive</button>`;
   }
   const open = () => call('meeting_drive_open', m.id).catch((e) => toast(e.message, { kind: 'err' }));
-  const share = () => open().then(() => toast('Opened in Google Docs: press Share at the top right to choose who can see it'));
+  // Drive for desktop's own Share window when it has the doc; the doc in the
+  // browser otherwise, where Google's Share button is top right.
+  const share = () => call('meeting_drive_share', m.id).then((r) => {
+    if (!r.window) toast('Opened in Google Docs: press Share at the top right to choose who can see it');
+  }).catch((e) => toast(e.message, { kind: 'err' }));
   const copy = () => call('copy_text', m.drive.doc_url).then(() => toast('Link copied. Who can open it follows the doc\'s Share settings'));
   return html`<div class="drv-group" role="group" aria-label="Google Drive">
     <button type="button" class="btn drv" title="Open the Google Doc" onClick=${open}><${DriveMark} />Open</button>
-    <button type="button" class="btn drv" title="Opens the doc; Google's Share button decides who can see it" onClick=${share}>Share</button>
+    <button type="button" class="btn drv" title="Google's Share window: people, link access, copy link" onClick=${share}>Share</button>
     <button type="button" class="btn drv icon" aria-label="Copy link" title="Copy the doc's link" onClick=${copy}><${Icon} name="copy" /></button>
     <button type="button" class="btn drv icon" aria-label="Save again" title="Save again (replaces the doc in the same folder)" onClick=${save}><${Icon} name="refresh" /></button>
   </div>`;
