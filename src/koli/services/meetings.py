@@ -24,7 +24,7 @@ from ..meeting import summarize as summary_ai
 from ..meeting.store import MeetingStore
 from ..meeting.summary_templates import TemplateLibrary, layout as template_layout, summary as template_row
 from ..meeting.transcriber import YOU_FIRM, MeetingTranscriber
-from ..meeting.voices import FILE as VOICES_FILE, VoiceBook
+from ..meeting.voices import FILE as VOICES_FILE, VoiceBook, is_default_name
 from ..platform import screenshots as platform_shots
 from ..ui.events import publish as publish_event, report_problem
 from ..ui.tasks import get_task_manager
@@ -298,6 +298,8 @@ class MeetingService:
             with_sound = []
             for s in self._sessions_fn():
                 name = s.get('device')
+                if s.get('flow', 'render') != 'render':
+                    continue     # a microphone: recording it as "the call" would hear you as the far end
                 if int(s.get('state', 0)) == 1 and name and name not in with_sound:
                     with_sound.append(name)
             if with_sound:
@@ -308,9 +310,12 @@ class MeetingService:
 
     # One read of who is in the running call: the meeting keeps it (the title
     # names the other person), and in a 1:1 call the far-end voice still
-    # called "Speaker N" takes their name, saved with its voiceprint the way
-    # a rename by hand is. Only for apps whose window says it (CALL_APPS).
-    def _poll_call(self, read: Callable[[str], dict] = None):
+    # called "Speaker N" takes their name in this meeting. Its voiceprint is
+    # saved, under that name, only when the meeting ends and only by the
+    # "Remember voices" rules (_keep_voices). Only for apps whose window says
+    # who is in the call (CALL_APPS). `stop` set during the read (the meeting
+    # paused or ended) drops what was read.
+    def _poll_call(self, read: Callable[[str], dict] = None, stop: Optional[threading.Event] = None):
         try:
             m = self.session.meeting
             if self.session.state != 'live' or not m or m['source'].get('app') not in CALL_APPS:
@@ -320,11 +325,15 @@ class MeetingService:
             if read is None:
                 from ..platform import call_people
                 read = call_people.read
-            self.session.set_call(read(m['source']['app']))
-            target = self.session.call_name_target()
+            call = read(m['source']['app'])
+            if stop is not None and stop.is_set():
+                return
+            self.session.set_call(call, m['id'])
+            target = self.session.take_call_name(m['id'])
             if target:
                 logger.info("Naming the far-end voice from the call")
-                self.rename_speaker(*target)
+                self.session.rename_speaker(*target)
+                self.tracker.rename(*target)
         except Exception as e:
             logger.warning(f"Reading who is in the call failed: {e}")
 
@@ -338,7 +347,7 @@ class MeetingService:
 
         def run():
             while not stop.is_set() and not self._closed:
-                self._poll_call()
+                self._poll_call(stop=stop)
                 stop.wait(CALL_POLL_SECONDS)
         threading.Thread(target=run, daemon=True, name='meeting-call-people').start()
 
@@ -844,6 +853,11 @@ class MeetingService:
                 voice_id = self.voices.keep(s['centroid'], s['count'], meeting['id'], voice_id=s.get('voice_id'),
                                             taken=taken)
                 taken.append(voice_id)
+                # A voice saved without a name takes the one it had in this
+                # meeting (from the call, say); a name already saved stays.
+                saved = self.voices.get(voice_id) or {}
+                if not saved.get('name') and not is_default_name(s.get('name')):
+                    self.voices.set_name(voice_id, s['name'])
                 if s.get('voice_id') != voice_id:
                     s['voice_id'] = voice_id
                     changed = True

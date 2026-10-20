@@ -275,6 +275,8 @@ class SessionManager:
                     self._pending = None
                     self.state = 'idle'
                     self._emit()
+                else:
+                    self._pending = next(s for s in sources if s['key'] == self._pending['key'])
                 return
             # Idle: pick a source to wait for speech on. The same source
             # staying keeps the speech heard so far. A native app that only
@@ -282,7 +284,9 @@ class SessionManager:
             # runs, sound alone keeps it going (muting may release the mic).
             candidates = [s for s in sources if s['key'] not in self._declined and s.get('mode') != 'off'
                           and s.get('mic') is not False]
-            if self._pending and any(c['key'] == self._pending['key'] for c in candidates):
+            same = next((c for c in candidates if self._pending and c['key'] == self._pending['key']), None)
+            if same is not None:
+                self._pending = same     # the latest reading: its output device may have appeared since
                 return
             self._pending = candidates[0] if candidates else None
             self._speech_s = 0.0
@@ -296,6 +300,10 @@ class SessionManager:
             return
         self._reset_missing()
         if self.state == 'paused' and not self.paused_by_user:
+            # A call app that only plays sound (a ping after hanging up) is
+            # not a call: it neither resumes this meeting nor ends it.
+            sources = [s for s in sources if s.get('mic') is not False]
+            match = next((s for s in sources if self._same_meeting(m, s)), None)
             if match is not None:
                 self._resume(notice='resumed')
                 return
@@ -629,38 +637,60 @@ class SessionManager:
             self.saver.mark(m)
             self._emit()
 
-    # Who is in the call, read from the call app's window ({'with', 'people'};
-    # {} when nothing could be read, which changes nothing). The meeting keeps
-    # it, and a title still named after the app names the other person too:
-    # "Discord" becomes "Discord · Becky". A title from you or the summary stays.
-    def set_call(self, call: dict):
+    # The live meeting `meeting_id`, or None: a read of the call window takes
+    # seconds, and by its end the meeting may have paused, ended or changed.
+    def _live_meeting(self, meeting_id: str) -> Optional[dict]:
+        m = self.meeting
+        if self.state != 'live' or not m or m.get('id') != meeting_id:
+            return None
+        return m
+
+    # Who is in the call, read from the call app's window ({'with', 'direct',
+    # 'people'}; {} when nothing could be read, which changes nothing), for
+    # the live meeting `meeting_id`. The meeting keeps it, and a title still
+    # named after the app names the other person too: "Discord" becomes
+    # "Discord · Becky". A title from you or the summary stays.
+    def set_call(self, call: dict, meeting_id: str):
         if not call:
             return
         with self._transition():
-            m = self.meeting
-            if not m:
+            m = self._live_meeting(meeting_id)
+            if m is None:
                 return
             kept = m.get('call') or {}
-            m['call'] = {'with': call.get('with') or kept.get('with', ''),
-                         'people': list(call.get('people') or kept.get('people', []))}
+            fresh = {'with': call.get('with') or kept.get('with', ''),
+                     'direct': bool(call.get('direct')) if call.get('with') else kept.get('direct', False),
+                     'people': list(call.get('people') or kept.get('people', [])),
+                     'named': kept.get('named', '')}
             app_title = title_for(m['source'])
-            if m['call']['with'] and m['title'] == app_title:
-                m['title'] = f"{app_title} · {m['call']['with']}"
+            title = m['title']
+            if fresh['with'] and title == app_title:
+                title = f"{app_title} · {fresh['with']}"
+            if fresh == kept and title == m['title']:
+                return
+            m['call'], m['title'] = fresh, title
             self.saver.mark(m)
             self._emit()
 
-    # (speaker id, name) when the call's other person can name a voice: no
-    # speaker has that name yet, and the earliest far-end speaker still has
-    # Koli's "Speaker N". One voice only, so a voice split in two stays
-    # visible for you to merge.
-    def call_name_target(self) -> Optional[tuple]:
-        with self._lock:
-            m = self.meeting
-            name = ((m or {}).get('call') or {}).get('with', '')
-            if not name or any(s.get('name') == name for s in m['speakers']):
+    # (speaker id, name) when the call's other person can name a voice, and
+    # the meeting records that it did: only once per meeting (a rename by you
+    # is never undone by the next read), only in a 1:1 direct-message call,
+    # only when no speaker has that name yet, and to the earliest far-end
+    # speaker still called "Speaker N". A voice split in two keeps one
+    # "Speaker N" for you to merge.
+    def take_call_name(self, meeting_id: str) -> Optional[tuple]:
+        with self._transition():
+            m = self._live_meeting(meeting_id)
+            call = (m or {}).get('call') or {}
+            name = call.get('with', '')
+            if not name or call.get('named') or not call.get('direct') or len(call.get('people') or []) > 2:
+                return None
+            if any(s.get('name') == name for s in m['speakers']):
                 return None
             for s in m['speakers']:
                 if s['id'] != 'you' and is_default_name(s.get('name')):
+                    call['named'] = s['id']
+                    self.saver.mark(m)
                     return s['id'], name
             return None
 

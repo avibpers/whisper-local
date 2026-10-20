@@ -285,6 +285,33 @@ class SessionTests(unittest.TestCase):
         self.sm.on_sources([{**discord(), 'mic': False}])
         self.assertEqual(self.sm.state, 'live')
 
+    # After the call, a Discord message ping plays sound without the mic: the
+    # paused meeting neither resumes on it nor ends because of it.
+    def test_paused_meeting_ignores_a_ping(self):
+        m = self.live({**discord(), 'mic': True})
+        self.gone()
+        self.sm.on_sources([{**discord(), 'mic': False}])
+        self.assertEqual(self.sm.state, 'paused')
+        self.assertEqual(self.sm.current()['id'], m['id'])
+
+    def test_ping_from_another_app_does_not_end_a_paused_meeting(self):
+        m = self.live(meet())
+        self.gone()
+        self.sm.on_sources([{**discord(), 'mic': False}])
+        self.assertEqual(self.sm.state, 'paused')
+        self.assertEqual(self.sm.current()['id'], m['id'])
+
+    # Discord first seen holding only the mic, then its output session too:
+    # the meeting records from that output device, and the speech heard so
+    # far still counts.
+    def test_pending_source_follows_the_latest_reading(self):
+        self.sm.on_sources([{**discord(), 'mic': True, 'device': ''}])
+        self.sm.on_speech(1.0)
+        self.sm.on_sources([{**discord(), 'mic': True, 'device': 'Speakers'}])
+        self.sm.on_speech(2.5)
+        self.assertEqual(self.sm.state, 'live')
+        self.assertEqual(self.sm.current()['source']['device'], 'Speakers')
+
     # Discord moving its session between microphones can fall between two
     # reads: one tick without the source must not pause the meeting.
     def test_one_missing_tick_does_not_pause(self):
@@ -833,14 +860,15 @@ class CallPeopleTests(unittest.TestCase):
         rows = [('link__972a0 channelNameFade__972a0', 'unread, Becky (direct message), Ongoing Call, Online'),
                 ('focusTarget__54e4b', 'avi151105'), ('focusTarget__54e4b', 'v069675, Muted'),
                 ('focusTarget__54e4b', 'v069675, Muted')]
-        self.assertEqual(mod.parse_discord(rows), {'with': 'Becky', 'people': [{'name': 'avi151105', 'muted': False},
-                                                                               {'name': 'v069675', 'muted': True}]})
+        self.assertEqual(mod.parse_discord(rows), {'with': 'Becky', 'direct': True,
+                                                   'people': [{'name': 'avi151105', 'muted': False},
+                                                              {'name': 'v069675', 'muted': True}]})
 
     # Another chat open: the call shows only as a label in the side list.
     def test_call_label_fallback(self):
         mod = self._load('windows')
         rows = [('container_c9d15c textWithIconContainer_c9d15c textXs_c9d15c', 'In a call (Becky)')]
-        self.assertEqual(mod.parse_discord(rows), {'with': 'Becky', 'people': []})
+        self.assertEqual(mod.parse_discord(rows), {'with': 'Becky', 'direct': False, 'people': []})
 
     def test_no_call(self):
         mod = self._load('windows')
@@ -2250,39 +2278,84 @@ class CallNameTests(unittest.TestCase):
         for i, name in enumerate(names, 1):
             self.sm.ensure_speaker({'id': f's{i}', 'name': name, 'colour': i, 'centroid': [float(i)], 'count': 1})
 
+    def mid(self):
+        return self.sm.meeting['id']
+
+    def call(self, **kw):
+        self.sm.set_call({'with': 'Becky', 'people': [], 'direct': True, **kw}, self.mid())
+
     def test_call_retitles_default_title(self):
-        self.sm.set_call({'with': 'Becky', 'people': []})
+        self.call()
         self.assertEqual(self.sm.meeting['title'], 'Discord · Becky')
         self.assertEqual(self.sm.meeting['call']['with'], 'Becky')
 
     def test_call_keeps_custom_title(self):
-        self.sm.retitle(self.sm.meeting['id'], 'Planning')
-        self.sm.set_call({'with': 'Becky', 'people': []})
+        self.sm.retitle(self.mid(), 'Planning')
+        self.call()
         self.assertEqual(self.sm.meeting['title'], 'Planning')
 
     # Discord showing another chat, or minimized: nothing read, nothing lost.
     def test_empty_call_keeps_previous_call(self):
-        self.sm.set_call({'with': 'Becky', 'people': [{'name': 'v069675', 'muted': False}]})
-        self.sm.set_call({})
-        self.sm.set_call({'with': 'Becky', 'people': []})
+        self.call(people=[{'name': 'v069675', 'muted': False}])
+        self.sm.set_call({}, self.mid())
+        self.call()
         self.assertEqual(self.sm.meeting['call']['people'], [{'name': 'v069675', 'muted': False}])
         self.assertEqual(self.sm.meeting['title'], 'Discord · Becky')
 
-    def test_call_name_target_picks_first_default_speaker(self):
+    def test_take_call_name_picks_first_default_speaker(self):
         self.speakers('Speaker 1', 'Speaker 2')
-        self.sm.set_call({'with': 'Becky', 'people': []})
-        self.assertEqual(self.sm.call_name_target(), ('s1', 'Becky'))
+        self.call()
+        self.assertEqual(self.sm.take_call_name(self.mid()), ('s1', 'Becky'))
 
     # Diarization split Becky into two voices: only one gets her name.
     def test_call_name_goes_to_one_speaker_only(self):
         self.speakers('Becky', 'Speaker 2')
-        self.sm.set_call({'with': 'Becky', 'people': []})
-        self.assertIsNone(self.sm.call_name_target())
+        self.call()
+        self.assertIsNone(self.sm.take_call_name(self.mid()))
 
     def test_user_name_wins(self):
         self.speakers('Dana')
-        self.sm.set_call({'with': 'Becky', 'people': []})
-        self.assertIsNone(self.sm.call_name_target())
+        self.call()
+        self.assertIsNone(self.sm.take_call_name(self.mid()))
+
+    # You renamed the voice the call named: no other voice takes the name later.
+    def test_call_name_is_given_once(self):
+        self.speakers('Speaker 1', 'Speaker 2')
+        self.call()
+        sid, name = self.sm.take_call_name(self.mid())
+        self.sm.rename_speaker(sid, 'Rebecca')
+        self.assertIsNone(self.sm.take_call_name(self.mid()))
+
+    # Only a 1:1 direct-message call names a voice; a label seen elsewhere,
+    # a group call or a voice channel only names the meeting.
+    def test_no_voice_name_outside_a_direct_call(self):
+        self.speakers('Speaker 1')
+        self.call(direct=False)
+        self.assertEqual(self.sm.meeting['title'], 'Discord · Becky')
+        self.assertIsNone(self.sm.take_call_name(self.mid()))
+
+    def test_no_voice_name_in_a_group_call(self):
+        self.speakers('Speaker 1')
+        self.call(people=[{'name': 'a', 'muted': False}, {'name': 'b', 'muted': False}, {'name': 'c', 'muted': False}])
+        self.assertIsNone(self.sm.take_call_name(self.mid()))
+
+    # A read that finishes after its meeting ended or paused touches nothing.
+    def test_call_for_another_meeting_is_ignored(self):
+        self.speakers('Speaker 1')
+        self.sm.set_call({'with': 'Becky', 'people': [], 'direct': True}, 'another-meeting')
+        self.assertNotIn('call', self.sm.meeting)
+        self.assertEqual(self.sm.meeting['title'], 'Discord')
+        self.call()
+        self.assertIsNone(self.sm.take_call_name('another-meeting'))
+
+    def test_no_voice_name_while_paused(self):
+        self.speakers('Speaker 1')
+        self.call()
+        self.sm.on_sources([])
+        self.clock.advance(2)
+        self.sm.on_sources([])
+        self.assertEqual(self.sm.state, 'paused')
+        self.assertIsNone(self.sm.take_call_name(self.mid()))
 
 
 # One loopback chunk with two voices becomes two turns, two speakers.
@@ -2603,7 +2676,8 @@ class CallPollTests(unittest.TestCase):
                                          'meeting.start_speech_seconds': 3, 'meeting.countdown_seconds': 0})
         ctx.model_registry = None
         fake_loopback = type('L', (), {'start': lambda s: None, 'stop': lambda s: None})
-        svc = MeetingService(ctx, store=MeetingStore(Path(tmp.name)), publish=lambda t, p: None,
+        # Meetings in a subfolder: saved voices go beside it, inside tmp.
+        svc = MeetingService(ctx, store=MeetingStore(Path(tmp.name) / 'meetings'), publish=lambda t, p: None,
                              loopback_factory=lambda on_block, on_error, device=None: fake_loopback(),
                              embedder_factory=lambda: None, loopback_available=lambda: True, sessions_fn=lambda: [],
                              call_people_fn=lambda exe: {})
@@ -2616,10 +2690,42 @@ class CallPollTests(unittest.TestCase):
     def test_poll_call_names_far_end(self):
         svc = self.make(discord())
         svc.session.ensure_speaker({'id': 's1', 'name': 'Speaker 1', 'colour': 1, 'centroid': [1.0], 'count': 1})
-        svc._poll_call(read=lambda exe: {'with': 'Becky', 'people': []})
+        svc._poll_call(read=lambda exe: {'with': 'Becky', 'people': [], 'direct': True})
         names = {s['id']: s['name'] for s in svc.session.meeting['speakers']}
         self.assertEqual(names['s1'], 'Becky')
         self.assertEqual(svc.session.meeting['title'], 'Discord · Becky')
+
+    # Naming from the call stays in the meeting: voices are saved when it
+    # ends, by the "Remember voices" rules (setting, enough audio).
+    def test_poll_call_saves_no_voice(self):
+        svc = self.make(discord())
+        svc.tracker.embed = lambda audio: np.asarray([1.0, 0.0, 0.0], dtype=np.float32)
+        sid, entry = svc.tracker.label(np.zeros(16000 * 4), speech_s=4.0)
+        svc.session.ensure_speaker(entry)
+        svc._poll_call(read=lambda exe: {'with': 'Becky', 'people': [], 'direct': True})
+        self.assertEqual(svc.voices.all(), [])
+        self.assertEqual(svc.tracker.export()[0]['name'], 'Becky')
+
+    # The meeting stopped while the window was being read: nothing lands.
+    def test_poll_call_stopped_during_read(self):
+        import threading
+        svc = self.make(discord())
+        stop = threading.Event()
+
+        def read(exe):
+            stop.set()
+            return {'with': 'Becky', 'people': [], 'direct': True}
+        svc._poll_call(read=read, stop=stop)
+        self.assertEqual(svc.session.meeting['title'], 'Discord')
+
+    # Microphone sessions say who is in a call; the call is still recorded
+    # from output devices only, never from your own microphone.
+    def test_output_devices_ignore_microphones(self):
+        svc = self.make(discord())
+        svc._sessions_fn = lambda: [{'exe': 'discord.exe', 'state': 1, 'flow': 'capture', 'device': 'Microphone (BY-V20)'},
+                                    {'exe': 'python.exe', 'state': 1, 'flow': 'capture', 'device': 'Microphone (BY-V20)'},
+                                    {'exe': 'discord.exe', 'state': 1, 'flow': 'render', 'device': 'Speakers'}]
+        self.assertEqual(svc._output_devices({'source': {'device': ''}}), ['Speakers'])
 
     def test_poll_call_skips_other_apps(self):
         svc = self.make({**discord(), 'key': 'zoom.exe', 'app': 'zoom.exe'})
@@ -2667,6 +2773,16 @@ class ServiceVoicesTests(unittest.TestCase):
             if entry:
                 svc.session.ensure_speaker(entry)
         return sid
+
+    # A voice named during the meeting (from the call, say) is saved under
+    # that name when the meeting ends, if it had none yet.
+    def test_ending_a_meeting_names_a_new_voice_from_its_speaker(self):
+        svc = self.make()
+        svc.start()
+        sid = self.speak(svc, [1.0, 0.0, 0.0], 3)
+        svc.session.rename_speaker(sid, 'Becky')
+        svc.end()
+        self.assertEqual([v['name'] for v in self.book.all()], ['Becky'])
 
     # When a meeting ends every voice in it is saved with an id, the meeting
     # file points to it, and the next meeting links the same voice to it.

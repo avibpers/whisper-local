@@ -37,17 +37,24 @@ _client = threading.local()
 
 # ── Pure ─────────────────────────────────────────────────────────────────────
 
-# {'with': name, 'people': [{'name', 'muted'}]} from the (class name, name)
-# rows of Discord's window, or {} when no call shows.
+# {'with': name, 'direct': bool, 'people': [{'name', 'muted'}]} from the
+# (class name, name) rows of Discord's window, or {} when no call shows.
+# `direct` is True when the call is a direct-message call (one other person);
+# a bare "In a call (...)" label can be any call, so it is False.
 def parse_discord(rows: list) -> dict:
     with_name = ''
+    direct = False
     people = []
     for cls, name in rows:
         cls, name = cls or '', (name or '').strip()
-        if not with_name:
-            found = DM_CALL.match(name) or CALL_LABEL.match(name)
+        if not direct:
+            found = DM_CALL.match(name)
             if found:
-                with_name = found.group('name').strip()
+                with_name, direct = found.group('name').strip(), True
+            elif not with_name:
+                found = CALL_LABEL.match(name)
+                if found:
+                    with_name = found.group('name').strip()
         if TILE_CLASS in cls and name:
             muted = name.endswith(MUTED)
             person = name[:-len(MUTED)] if muted else name
@@ -55,7 +62,7 @@ def parse_discord(rows: list) -> dict:
                 people.append({'name': person, 'muted': muted})
     if not with_name and not people:
         return {}
-    return {'with': with_name, 'people': people}
+    return {'with': with_name, 'direct': direct, 'people': people}
 
 
 # ── Windows ──────────────────────────────────────────────────────────────────
