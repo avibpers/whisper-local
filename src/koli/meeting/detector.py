@@ -1,10 +1,12 @@
 # meeting/detector.py
-# Which call is on right now. A process with an open audio session (Discord
-# keeps one for the whole call; a notification ping doesn't) that matches an
-# app rule with a `meeting` setting is a source; a browser counts through its
-# tabs, whose names carry the tab title and media state ("Meet - abc-defg-hij
-# - Microphone in use"). The pure part is find_sources(); the thread just
-# polls the platform probes once a second.
+# Which call is on right now. A process with an active audio session that
+# matches an app rule with a `meeting` setting is a source. The microphone
+# is what marks a call: Discord takes it the second you join, before anyone
+# speaks, while a ping only plays sound; each native source says whether its
+# app holds the mic. A browser counts through its tabs, whose names carry the
+# tab title and media state ("Meet - abc-defg-hij - Microphone in use"). The
+# pure part is find_sources(); the thread polls the platform probes once a
+# second.
 
 import logging
 import re
@@ -54,16 +56,27 @@ def _meeting_rules(rules: list) -> list:
 def find_sources(sessions: list, tabs: list, rules: list, detect_default: str) -> list:
     detect_default = detect_default if detect_default in MODES else 'auto'
     meeting_rules = _meeting_rules(rules)
-    active = []
+    active = []          # exes with an active output or microphone session, in order
     device_of = {}       # exe -> the output device its active session plays on
+    holds_mic = set()    # exes with an active microphone session
+    saw_capture = False  # the probe reports microphones at all (not on macOS)
     for s in sessions:
         exe = (s.get('exe') or '').lower()
-        if exe and int(s.get('state', 0)) == SESSION_ACTIVE and exe not in active:
+        capture = s.get('flow') == 'capture'
+        saw_capture = saw_capture or capture
+        if not exe or int(s.get('state', 0)) != SESSION_ACTIVE:
+            continue
+        if exe not in active:
             active.append(exe)
+        if capture:
+            holds_mic.add(exe)
+        elif exe not in device_of:
             device_of[exe] = str(s.get('device') or '')
     sources = []
     for exe in active:
         if exe in BROWSERS:
+            if exe not in device_of:
+                continue     # a browser counts through the tabs that play sound
             own = [t for t in tabs if (t.get('exe') or '').lower() == exe]
             # The browser reports which tabs make sound: when it does, a
             # silent Meet tab (the lobby) doesn't count because YouTube plays
@@ -84,7 +97,8 @@ def find_sources(sessions: list, tabs: list, rules: list, detect_default: str) -
                 if any(s['key'] == key for s in sources):
                     continue     # the same tab seen through several windows or strips
                 sources.append({'key': key, 'app': exe, 'kind': 'browser', 'title': title,
-                                'code': found.group(1) if found else '', 'mode': mode, 'device': device_of[exe]})
+                                'code': found.group(1) if found else '', 'mode': mode, 'device': device_of[exe],
+                                'mic': None})
             continue
         rule = next((r for r in meeting_rules if rule_matches(r, exe, '')), None)
         if rule is None:
@@ -92,8 +106,10 @@ def find_sources(sessions: list, tabs: list, rules: list, detect_default: str) -
         mode = _mode_of(rule, detect_default)
         if mode == 'off':
             continue
+        # `mic`: the app holds the microphone (in a call), doesn't (only plays
+        # sound), or None when the probe can't tell.
         sources.append({'key': exe, 'app': exe, 'kind': 'native', 'title': '', 'code': '', 'mode': mode,
-                        'device': device_of[exe]})
+                        'device': device_of.get(exe, ''), 'mic': (exe in holds_mic) if saw_capture else None})
     return sources
 
 

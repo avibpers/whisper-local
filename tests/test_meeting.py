@@ -8,6 +8,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 
@@ -15,6 +16,18 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
 TZ = datetime.timezone(datetime.timedelta(hours=3))
+
+_call_people_patch = mock.patch('koli.platform.call_people.read', lambda exe: {})
+
+
+# A Discord meeting in a test must never read the real Discord window on this
+# machine (a call there would rename the test's speakers).
+def setUpModule():
+    _call_people_patch.start()
+
+
+def tearDownModule():
+    _call_people_patch.stop()
 
 
 def at(minute, second=0):
@@ -237,6 +250,13 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(self.sm.state, 'live')
         return self.sm.current()
 
+    # The source goes away for good: two detector ticks, long enough apart
+    # to confirm it (END_CONFIRM_TICKS, END_CONFIRM_SECONDS).
+    def gone(self, sources=()):
+        self.sm.on_sources(list(sources))
+        self.clock.advance(2)
+        self.sm.on_sources(list(sources))
+
     def test_source_without_speech_does_not_start(self):
         self.sm.on_sources([discord()])
         self.sm.on_speech(1.0)
@@ -249,6 +269,73 @@ class SessionTests(unittest.TestCase):
         self.sm.on_speech(2.5)
         self.assertEqual(self.sm.state, 'live')
         self.assertEqual(self.captures, [('start', self.sm.current()['id'])])
+
+    # Discord playing a sound outside a call: it doesn't hold the mic, so no
+    # meeting, whatever the loopback hears.
+    def test_native_render_only_is_not_offered(self):
+        self.sm.on_sources([{**discord(), 'mic': False}])
+        self.sm.on_speech(5)
+        self.assertEqual(self.sm.state, 'idle')
+        self.assertIsNone(self.sm._pending)
+
+    # In a call, muting yourself may release the mic: the meeting goes on as
+    # long as Discord is still there.
+    def test_ongoing_meeting_keeps_native_source_without_mic(self):
+        self.live({**discord(), 'mic': True})
+        self.sm.on_sources([{**discord(), 'mic': False}])
+        self.assertEqual(self.sm.state, 'live')
+
+    # After the call, a Discord message ping plays sound without the mic: the
+    # paused meeting neither resumes on it nor ends because of it.
+    def test_paused_meeting_ignores_a_ping(self):
+        m = self.live({**discord(), 'mic': True})
+        self.gone()
+        self.sm.on_sources([{**discord(), 'mic': False}])
+        self.assertEqual(self.sm.state, 'paused')
+        self.assertEqual(self.sm.current()['id'], m['id'])
+
+    def test_ping_from_another_app_does_not_end_a_paused_meeting(self):
+        m = self.live(meet())
+        self.gone()
+        self.sm.on_sources([{**discord(), 'mic': False}])
+        self.assertEqual(self.sm.state, 'paused')
+        self.assertEqual(self.sm.current()['id'], m['id'])
+
+    # Discord first seen holding only the mic, then its output session too:
+    # the meeting records from that output device, and the speech heard so
+    # far still counts.
+    def test_pending_source_follows_the_latest_reading(self):
+        self.sm.on_sources([{**discord(), 'mic': True, 'device': ''}])
+        self.sm.on_speech(1.0)
+        self.sm.on_sources([{**discord(), 'mic': True, 'device': 'Speakers'}])
+        self.sm.on_speech(2.5)
+        self.assertEqual(self.sm.state, 'live')
+        self.assertEqual(self.sm.current()['source']['device'], 'Speakers')
+
+    # Discord moving its session between microphones can fall between two
+    # reads: one tick without the source must not pause the meeting.
+    def test_one_missing_tick_does_not_pause(self):
+        self.live()
+        self.sm.on_sources([])
+        self.assertEqual(self.sm.state, 'live')
+        self.clock.advance(1)
+        self.sm.on_sources([discord()])
+        self.assertEqual(self.sm.state, 'live')
+        self.clock.advance(1)
+        self.sm.on_sources([])          # the count started over
+        self.clock.advance(1)
+        self.sm.on_sources([discord()])
+        self.assertEqual(self.sm.state, 'live')
+
+    def test_missing_source_pauses_after_confirmation(self):
+        self.live()
+        self.sm.on_sources([])
+        self.clock.advance(1)
+        self.sm.on_sources([])          # two ticks, but only 1 s
+        self.assertEqual(self.sm.state, 'live')
+        self.clock.advance(1)
+        self.sm.on_sources([])
+        self.assertEqual(self.sm.state, 'paused')
 
     def test_auto_start_names_and_saves_the_meeting(self):
         m = self.live()
@@ -283,7 +370,7 @@ class SessionTests(unittest.TestCase):
         m = self.live()
         self.sm.add_turn({'t0': started_at(m) + 5, 't1': started_at(m) + 8, 'stream': 'loopback', 'speaker': 's1',
                           'text': 'hi', 'lang': 'en'})
-        self.sm.on_sources([])
+        self.gone()
         self.assertEqual(self.sm.state, 'paused')
         self.assertEqual(self.captures[-1], ('stop',))
         self.clock.advance(120)
@@ -291,11 +378,11 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(self.sm.state, 'live')
         self.assertEqual(self.sm.current()['id'], m['id'])
         self.assertEqual(self.sm.state_payload()['notice'], 'resumed')
-        self.assertEqual(self.sm.current()['gaps'], [{'start': 0.0, 'end': 120.0, 'reason': 'paused'}])
+        self.assertEqual(self.sm.current()['gaps'], [{'start': 2.0, 'end': 122.0, 'reason': 'paused'}])
 
     def test_source_back_after_gap_starts_new_meeting(self):
         m = self.live()
-        self.sm.on_sources([])
+        self.gone()
         self.clock.advance(10 * 60 + 1)
         self.assertEqual(self.sm.state, 'idle')
         saved = self.store.load(m['id'])
@@ -309,7 +396,7 @@ class SessionTests(unittest.TestCase):
 
     def test_different_code_within_gap_starts_new_and_can_continue_previous(self):
         m = self.live(meet('abc-defg-hij'))
-        self.sm.on_sources([])
+        self.gone()
         self.clock.advance(60)
         self.sm.on_sources([meet('zzz-zzzz-zzz')])
         self.sm.on_speech(4.0)
@@ -336,7 +423,7 @@ class SessionTests(unittest.TestCase):
         m = self.live()
         base = started_at(m)
         self.sm.add_turn({'t0': base + 1, 't1': base + 2, 'stream': 'mic', 'speaker': 'you', 'text': 'first', 'lang': 'en'})
-        self.sm.on_sources([])
+        self.gone()
         self.clock.advance(60)
         self.sm.on_sources([discord()])
         self.sm.add_turn({'t0': base + 70, 't1': base + 72, 'stream': 'mic', 'speaker': 'you', 'text': 'second', 'lang': 'en'})
@@ -383,7 +470,7 @@ class SessionTests(unittest.TestCase):
     def test_continue_previous_moves_screenshots_and_files(self):
         first = self.live(meet('abc-defg-hij'))
         self.sm.add_screenshot(first['id'], self._png(), started_at(first) + 10)
-        self.sm.on_sources([])
+        self.gone()
         self.clock.advance(60)
         self.sm.on_sources([meet('zzz-zzzz-zzz')])
         self.sm.on_speech(4.0)
@@ -403,8 +490,8 @@ class SessionTests(unittest.TestCase):
         m = self.live()
         base = started_at(m)
         self.sm.add_screenshot(m['id'], self._png(), base + 1)
-        self.sm.on_sources([])
-        self.clock.advance(60)
+        self.gone()
+        self.clock.advance(58)          # resumed 60 s in
         self.sm.on_sources([discord()])
         self.sm.add_screenshot(m['id'], self._png(), base + 70)
         self.sm.split_resumed()
@@ -609,7 +696,7 @@ class SessionTests(unittest.TestCase):
     def test_a_meeting_that_ends_by_itself_does_not_wait(self):
         self.counting()
         self.clock.advance(3)
-        self.sm.on_sources([])
+        self.gone()
         self.clock.advance(10 * 60 + 1)
         self.assertEqual(self.sm.state, 'idle')
         self.assertFalse(self.sm.state_payload()['auto_paused'])
@@ -650,7 +737,37 @@ class DetectorTests(unittest.TestCase):
         from koli.meeting.detector import find_sources
         sources = find_sources([{'pid': 1, 'exe': 'discord.exe', 'state': 1}], [], RULES, 'auto')
         self.assertEqual(sources, [{'key': 'discord.exe', 'app': 'discord.exe', 'kind': 'native', 'title': '', 'code': '',
-                                    'mode': 'auto', 'device': ''}])
+                                    'mode': 'auto', 'device': '', 'mic': None}])
+
+    # Discord in a call: an output session and a microphone session. The
+    # loopback records the output device, never the microphone.
+    def test_native_source_holds_mic(self):
+        from koli.meeting.detector import find_sources
+        sessions = [{'pid': 1, 'exe': 'discord.exe', 'state': 1, 'flow': 'render', 'device': 'Speakers'},
+                    {'pid': 2, 'exe': 'discord.exe', 'state': 1, 'flow': 'capture', 'device': 'Mic'}]
+        [source] = find_sources(sessions, [], RULES, 'auto')
+        self.assertIs(source['mic'], True)
+        self.assertEqual(source['device'], 'Speakers')
+
+    def test_native_capture_only_is_a_source(self):
+        from koli.meeting.detector import find_sources
+        sessions = [{'pid': 2, 'exe': 'discord.exe', 'state': 1, 'flow': 'capture', 'device': 'Mic'}]
+        [source] = find_sources(sessions, [], RULES, 'auto')
+        self.assertIs(source['mic'], True)
+        self.assertEqual(source['device'], '')
+
+    # A ping or a join sound: Discord plays sound without holding the mic.
+    def test_native_render_only_reports_no_mic(self):
+        from koli.meeting.detector import find_sources
+        sessions = [{'pid': 1, 'exe': 'discord.exe', 'state': 1, 'flow': 'render', 'device': 'Speakers'},
+                    {'pid': 2, 'exe': 'discord.exe', 'state': 0, 'flow': 'capture', 'device': 'Mic'}]
+        [source] = find_sources(sessions, [], RULES, 'auto')
+        self.assertIs(source['mic'], False)
+
+    def test_no_capture_data_reports_unknown_mic(self):
+        from koli.meeting.detector import find_sources
+        [source] = find_sources([{'pid': 1, 'exe': 'discord.exe', 'state': 1, 'device': 'Speakers'}], [], RULES, 'auto')
+        self.assertIsNone(source['mic'])
 
     def test_inactive_session_and_unlisted_app_are_ignored(self):
         from koli.meeting.detector import find_sources
@@ -672,7 +789,8 @@ class DetectorTests(unittest.TestCase):
                 {'exe': 'chrome.exe', 'title': 'Meet - abc-defg-hij', 'media': 'Camera and microphone in use', 'hwnd': 9}]
         sources = find_sources(sessions, tabs, RULES, 'auto')
         self.assertEqual(sources, [{'key': 'chrome.exe|Meet - abc-defg-hij', 'app': 'chrome.exe', 'kind': 'browser',
-                                    'title': 'Meet - abc-defg-hij', 'code': 'abc-defg-hij', 'mode': 'auto', 'device': ''}])
+                                    'title': 'Meet - abc-defg-hij', 'code': 'abc-defg-hij', 'mode': 'auto', 'device': '',
+                                    'mic': None}])
 
     def test_browser_tab_without_audio_session_is_not_a_source(self):
         from koli.meeting.detector import find_sources
@@ -715,6 +833,53 @@ class DetectorTests(unittest.TestCase):
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
             self.assertEqual(getattr(module, fn)(), [])
+
+    def test_macos_audio_sessions_mirrors_the_capture_argument(self):
+        import importlib.util
+        path = ROOT / 'src' / 'koli' / 'platform' / 'macos' / 'audio_sessions.py'
+        spec = importlib.util.spec_from_file_location('stub_audio_sessions_capture', path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.assertEqual(module.active(devices_fn=None, capture_devices_fn=None), [])
+
+
+# Who is in a Discord call, read from the rows Discord's window exposes
+# (class name, accessible name), as recorded in a live call on 2026-10-20.
+class CallPeopleTests(unittest.TestCase):
+    @staticmethod
+    def _load(system):
+        import importlib.util
+        path = ROOT / 'src' / 'koli' / 'platform' / system / 'call_people.py'
+        spec = importlib.util.spec_from_file_location(f'{system}_call_people', path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_dm_call_with_tiles(self):
+        mod = self._load('windows')
+        rows = [('link__972a0 channelNameFade__972a0', 'unread, Becky (direct message), Ongoing Call, Online'),
+                ('focusTarget__54e4b', 'avi151105'), ('focusTarget__54e4b', 'v069675, Muted'),
+                ('focusTarget__54e4b', 'v069675, Muted')]
+        self.assertEqual(mod.parse_discord(rows), {'with': 'Becky', 'direct': True,
+                                                   'people': [{'name': 'avi151105', 'muted': False},
+                                                              {'name': 'v069675', 'muted': True}]})
+
+    # Another chat open: the call shows only as a label in the side list.
+    def test_call_label_fallback(self):
+        mod = self._load('windows')
+        rows = [('container_c9d15c textWithIconContainer_c9d15c textXs_c9d15c', 'In a call (Becky)')]
+        self.assertEqual(mod.parse_discord(rows), {'with': 'Becky', 'direct': False, 'people': []})
+
+    def test_no_call(self):
+        mod = self._load('windows')
+        rows = [('link__972a0 channelNameFade__972a0', 'Ilona (direct message), Idle')]
+        self.assertEqual(mod.parse_discord(rows), {})
+
+    def test_other_apps_read_nothing(self):
+        self.assertEqual(self._load('windows').read('zoom.exe'), {})
+
+    def test_macos_stub(self):
+        self.assertEqual(self._load('macos').read('discord.exe'), {})
 
 
 class CaptureTests(unittest.TestCase):
@@ -1331,7 +1496,9 @@ class ReviewFixTests(unittest.TestCase):
         sm.on_speech(4.0)
         sm.ensure_speaker({'id': 's1', 'name': 'Ilona', 'colour': 1, 'centroid': [1.0], 'count': 2})
         sm.on_sources([])
-        clock.advance(60)
+        clock.advance(2)
+        sm.on_sources([])
+        clock.advance(58)
         sm.on_sources([meet('zzz-zzzz-zzz')])
         sm.on_speech(4.0)
         sm.continue_previous()
@@ -1387,7 +1554,9 @@ class ReviewFixTests(unittest.TestCase):
         self.assertEqual(len(FakeLoop.made), 2)
         self.assertTrue(FakeLoop.made[1].started)
         self.assertGreaterEqual(len(self.probs), 3, 'each stream gets its own voice detector')
-        svc._on_sources([])
+        with mock.patch('koli.meeting.session.END_CONFIRM_SECONDS', 0):
+            svc._on_sources([])
+            svc._on_sources([])         # gone on two ticks: confirmed
         self.assertEqual(svc.state()['state'], 'paused')
         self.assertTrue(FakeLoop.made[1].stopped)
 
@@ -1423,30 +1592,55 @@ class DeviceRoutingTests(unittest.TestCase):
     # Sessions are read from every output device, each tagged with the device
     # it plays on, so a call on the headset is seen even when the monitor is
     # the Windows default.
-    def test_sessions_carry_their_output_device(self):
+    # The Windows probe loaded by path, so the tests run without pycaw.
+    @staticmethod
+    def _audio_sessions():
         import importlib.util
         path = ROOT / 'src' / 'koli' / 'platform' / 'windows' / 'audio_sessions.py'
         spec = importlib.util.spec_from_file_location('win_audio_sessions', path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
+        return mod
 
-        class Proc:
-            def __init__(self, name, pid):
-                self._name, self.pid = name, pid
+    class Proc:
+        def __init__(self, name, pid):
+            self._name, self.pid = name, pid
 
-            def name(self):
-                return self._name
+        def name(self):
+            return self._name
 
-        class Session:
-            def __init__(self, name, pid, state):
-                self.Process = Proc(name, pid) if name else None
-                self.State = state
+    class Session:
+        def __init__(self, name, pid, state):
+            self.Process = DeviceRoutingTests.Proc(name, pid) if name else None
+            self.State = state
+
+    def test_sessions_carry_their_output_device(self):
+        mod, Session = self._audio_sessions(), self.Session
         devices = [('Speakers (Logitech USB Headset)', 'dev-1', [Session('Discord.exe', 10, 1), Session(None, 0, 0)]),
                    ('LG ULTRAWIDE', 'dev-2', [Session('Spotify.exe', 20, 0)])]
         out = mod.active(devices_fn=lambda: devices)
         self.assertEqual(out, [{'pid': 10, 'exe': 'discord.exe', 'state': 1, 'device': 'Speakers (Logitech USB Headset)',
-                                'device_id': 'dev-1'},
-                               {'pid': 20, 'exe': 'spotify.exe', 'state': 0, 'device': 'LG ULTRAWIDE', 'device_id': 'dev-2'}])
+                                'device_id': 'dev-1', 'flow': 'render'},
+                               {'pid': 20, 'exe': 'spotify.exe', 'state': 0, 'device': 'LG ULTRAWIDE', 'device_id': 'dev-2',
+                                'flow': 'render'}])
+
+    # Microphone sessions say which app holds the mic: Discord opens one the
+    # second you join a call, before anyone speaks.
+    def test_capture_sessions_are_marked(self):
+        mod, Session = self._audio_sessions(), self.Session
+        out = mod.active(devices_fn=lambda: [('Speakers', 'r1', [Session('Discord.exe', 10, 1)])],
+                         capture_devices_fn=lambda: [('Microphone (BY-V20)', 'c1', [Session('Discord.exe', 10, 1)])])
+        self.assertEqual(len(out), 2)
+        render = next(e for e in out if e['flow'] == 'render')
+        capture = next(e for e in out if e['flow'] == 'capture')
+        self.assertEqual(render['device'], 'Speakers')
+        self.assertEqual(capture['device'], 'Microphone (BY-V20)')
+        self.assertEqual(capture['exe'], 'discord.exe')
+
+    def test_render_only_when_capture_probe_missing(self):
+        mod, Session = self._audio_sessions(), self.Session
+        out = mod.active(devices_fn=lambda: [('Speakers', 'r1', [Session('Discord.exe', 10, 1)])])
+        self.assertEqual([e['flow'] for e in out], ['render'])
 
     def test_source_names_the_device_its_sound_plays_on(self):
         from koli.meeting.detector import find_sources
@@ -2062,6 +2256,108 @@ class SessionVoiceNameTests(unittest.TestCase):
         self.assertNotIn('voice', self.sm.meeting['speakers'][1], 'the marker is never stored')
 
 
+# Who is in the call (read from Discord's window) on the meeting: the title
+# names the other person, and in a 1:1 call their voice gets their name.
+class CallNameTests(unittest.TestCase):
+    def setUp(self):
+        from koli.meeting.session import SessionManager
+        from koli.meeting.store import MeetingStore
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.clock = FakeClock(at(30))
+        settings = {'meeting.start_speech_seconds': 3, 'meeting.countdown_seconds': 0}
+        self.sm = SessionManager(MeetingStore(Path(self.tmp.name)), start_capture=lambda m: None,
+                                 stop_capture=lambda: None, publish=lambda t, p: None,
+                                 settings=lambda p, d=None: settings.get(p, d), now=self.clock.now,
+                                 schedule=self.clock.schedule)
+        self.sm.on_sources([discord()])
+        self.sm.on_speech(3.5)
+        self.assertEqual(self.sm.meeting['title'], 'Discord')
+
+    def speakers(self, *names):
+        for i, name in enumerate(names, 1):
+            self.sm.ensure_speaker({'id': f's{i}', 'name': name, 'colour': i, 'centroid': [float(i)], 'count': 1})
+
+    def mid(self):
+        return self.sm.meeting['id']
+
+    def call(self, **kw):
+        self.sm.set_call({'with': 'Becky', 'people': [], 'direct': True, **kw}, self.mid())
+
+    def test_call_retitles_default_title(self):
+        self.call()
+        self.assertEqual(self.sm.meeting['title'], 'Discord · Becky')
+        self.assertEqual(self.sm.meeting['call']['with'], 'Becky')
+
+    def test_call_keeps_custom_title(self):
+        self.sm.retitle(self.mid(), 'Planning')
+        self.call()
+        self.assertEqual(self.sm.meeting['title'], 'Planning')
+
+    # Discord showing another chat, or minimized: nothing read, nothing lost.
+    def test_empty_call_keeps_previous_call(self):
+        self.call(people=[{'name': 'v069675', 'muted': False}])
+        self.sm.set_call({}, self.mid())
+        self.call()
+        self.assertEqual(self.sm.meeting['call']['people'], [{'name': 'v069675', 'muted': False}])
+        self.assertEqual(self.sm.meeting['title'], 'Discord · Becky')
+
+    def test_take_call_name_picks_first_default_speaker(self):
+        self.speakers('Speaker 1', 'Speaker 2')
+        self.call()
+        self.assertEqual(self.sm.take_call_name(self.mid()), ('s1', 'Becky'))
+
+    # Diarization split Becky into two voices: only one gets her name.
+    def test_call_name_goes_to_one_speaker_only(self):
+        self.speakers('Becky', 'Speaker 2')
+        self.call()
+        self.assertIsNone(self.sm.take_call_name(self.mid()))
+
+    def test_user_name_wins(self):
+        self.speakers('Dana')
+        self.call()
+        self.assertIsNone(self.sm.take_call_name(self.mid()))
+
+    # You renamed the voice the call named: no other voice takes the name later.
+    def test_call_name_is_given_once(self):
+        self.speakers('Speaker 1', 'Speaker 2')
+        self.call()
+        sid, name = self.sm.take_call_name(self.mid())
+        self.sm.rename_speaker(sid, 'Rebecca')
+        self.assertIsNone(self.sm.take_call_name(self.mid()))
+
+    # Only a 1:1 direct-message call names a voice; a label seen elsewhere,
+    # a group call or a voice channel only names the meeting.
+    def test_no_voice_name_outside_a_direct_call(self):
+        self.speakers('Speaker 1')
+        self.call(direct=False)
+        self.assertEqual(self.sm.meeting['title'], 'Discord · Becky')
+        self.assertIsNone(self.sm.take_call_name(self.mid()))
+
+    def test_no_voice_name_in_a_group_call(self):
+        self.speakers('Speaker 1')
+        self.call(people=[{'name': 'a', 'muted': False}, {'name': 'b', 'muted': False}, {'name': 'c', 'muted': False}])
+        self.assertIsNone(self.sm.take_call_name(self.mid()))
+
+    # A read that finishes after its meeting ended or paused touches nothing.
+    def test_call_for_another_meeting_is_ignored(self):
+        self.speakers('Speaker 1')
+        self.sm.set_call({'with': 'Becky', 'people': [], 'direct': True}, 'another-meeting')
+        self.assertNotIn('call', self.sm.meeting)
+        self.assertEqual(self.sm.meeting['title'], 'Discord')
+        self.call()
+        self.assertIsNone(self.sm.take_call_name('another-meeting'))
+
+    def test_no_voice_name_while_paused(self):
+        self.speakers('Speaker 1')
+        self.call()
+        self.sm.on_sources([])
+        self.clock.advance(2)
+        self.sm.on_sources([])
+        self.assertEqual(self.sm.state, 'paused')
+        self.assertIsNone(self.sm.take_call_name(self.mid()))
+
+
 # One loopback chunk with two voices becomes two turns, two speakers.
 class TranscriberSplitTests(unittest.TestCase):
     def test_a_chunk_with_two_voices_becomes_two_turns(self):
@@ -2365,6 +2661,88 @@ class KeepAudioTests(unittest.TestCase):
         self.assertEqual([p.name for p in store.audio_dir('m1').iterdir()], ['5.00-mic.wav'])
 
 
+# While a Discord meeting runs, the service reads who is in the call and
+# names the meeting and the far-end voice from it.
+class CallPollTests(unittest.TestCase):
+    def make(self, source):
+        from koli.services.meetings import MeetingService
+        from koli.meeting.store import MeetingStore
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        ctx = type('Ctx', (), {})()
+        ctx.state_manager = FakeStateManager()
+        ctx.config_manager = FakeConfig({'meeting.enabled': False, 'meeting.include_me': True, 'meeting.language': 'auto',
+                                         'meeting.speaker_model': 'eres2net', 'meeting.segmentation_model': '',
+                                         'meeting.start_speech_seconds': 3, 'meeting.countdown_seconds': 0})
+        ctx.model_registry = None
+        fake_loopback = type('L', (), {'start': lambda s: None, 'stop': lambda s: None})
+        # Meetings in a subfolder: saved voices go beside it, inside tmp.
+        svc = MeetingService(ctx, store=MeetingStore(Path(tmp.name) / 'meetings'), publish=lambda t, p: None,
+                             loopback_factory=lambda on_block, on_error, device=None: fake_loopback(),
+                             embedder_factory=lambda: None, loopback_available=lambda: True, sessions_fn=lambda: [],
+                             call_people_fn=lambda exe: {})
+        self.addCleanup(svc.shutdown)
+        svc.session.on_sources([source])
+        svc.session.on_speech(3.5)
+        self.assertEqual(svc.session.state, 'live')
+        return svc
+
+    def test_poll_call_names_far_end(self):
+        svc = self.make(discord())
+        svc.session.ensure_speaker({'id': 's1', 'name': 'Speaker 1', 'colour': 1, 'centroid': [1.0], 'count': 1})
+        svc._poll_call(read=lambda exe: {'with': 'Becky', 'people': [], 'direct': True})
+        names = {s['id']: s['name'] for s in svc.session.meeting['speakers']}
+        self.assertEqual(names['s1'], 'Becky')
+        self.assertEqual(svc.session.meeting['title'], 'Discord · Becky')
+
+    # Naming from the call stays in the meeting: voices are saved when it
+    # ends, by the "Remember voices" rules (setting, enough audio).
+    def test_poll_call_saves_no_voice(self):
+        svc = self.make(discord())
+        svc.tracker.embed = lambda audio: np.asarray([1.0, 0.0, 0.0], dtype=np.float32)
+        sid, entry = svc.tracker.label(np.zeros(16000 * 4), speech_s=4.0)
+        svc.session.ensure_speaker(entry)
+        svc._poll_call(read=lambda exe: {'with': 'Becky', 'people': [], 'direct': True})
+        self.assertEqual(svc.voices.all(), [])
+        self.assertEqual(svc.tracker.export()[0]['name'], 'Becky')
+
+    # The meeting stopped while the window was being read: nothing lands.
+    def test_poll_call_stopped_during_read(self):
+        import threading
+        svc = self.make(discord())
+        stop = threading.Event()
+
+        def read(exe):
+            stop.set()
+            return {'with': 'Becky', 'people': [], 'direct': True}
+        svc._poll_call(read=read, stop=stop)
+        self.assertEqual(svc.session.meeting['title'], 'Discord')
+
+    # Microphone sessions say who is in a call; the call is still recorded
+    # from output devices only, never from your own microphone.
+    def test_output_devices_ignore_microphones(self):
+        svc = self.make(discord())
+        svc._sessions_fn = lambda: [{'exe': 'discord.exe', 'state': 1, 'flow': 'capture', 'device': 'Microphone (BY-V20)'},
+                                    {'exe': 'python.exe', 'state': 1, 'flow': 'capture', 'device': 'Microphone (BY-V20)'},
+                                    {'exe': 'discord.exe', 'state': 1, 'flow': 'render', 'device': 'Speakers'}]
+        self.assertEqual(svc._output_devices({'source': {'device': ''}}), ['Speakers'])
+
+    def test_poll_call_skips_other_apps(self):
+        svc = self.make({**discord(), 'key': 'zoom.exe', 'app': 'zoom.exe'})
+        asked = []
+        svc._poll_call(read=lambda exe: asked.append(exe) or {})
+        self.assertEqual(asked, [])
+
+    def test_poll_call_survives_errors(self):
+        svc = self.make(discord())
+        title = svc.session.meeting['title']
+
+        def broken(exe):
+            raise RuntimeError('window gone')
+        svc._poll_call(read=broken)
+        self.assertEqual(svc.session.meeting['title'], title)
+
+
 class ServiceVoicesTests(unittest.TestCase):
     def make(self):
         from koli.services.meetings import MeetingService
@@ -2395,6 +2773,16 @@ class ServiceVoicesTests(unittest.TestCase):
             if entry:
                 svc.session.ensure_speaker(entry)
         return sid
+
+    # A voice named during the meeting (from the call, say) is saved under
+    # that name when the meeting ends, if it had none yet.
+    def test_ending_a_meeting_names_a_new_voice_from_its_speaker(self):
+        svc = self.make()
+        svc.start()
+        sid = self.speak(svc, [1.0, 0.0, 0.0], 3)
+        svc.session.rename_speaker(sid, 'Becky')
+        svc.end()
+        self.assertEqual([v['name'] for v in self.book.all()], ['Becky'])
 
     # When a meeting ends every voice in it is saved with an id, the meeting
     # file points to it, and the next meeting links the same voice to it.

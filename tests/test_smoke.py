@@ -17,7 +17,7 @@ sys.path.insert(0, str(ROOT / "src"))
 # platform/macos/app.py redefines an Objective-C class, which pyobjc refuses.
 _PLATFORM_SUBMODULES = ('hotkeys', 'keyboard', 'foreground', 'app', 'console',
                         'permissions', 'icons', 'paths', 'instance_lock', 'gpu',
-                        'audio_sessions', 'browser_tabs', 'window_focus', 'session')
+                        'audio_sessions', 'browser_tabs', 'window_focus', 'session', 'call_people')
 
 
 # A module whose every attribute is a MagicMock unless set explicitly.

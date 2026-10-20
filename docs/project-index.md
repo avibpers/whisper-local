@@ -82,6 +82,7 @@ Koli is a fork of `drajb/whisper-local` by Rohit Burani (repo `avibpers/whisper-
 | **Input Watch** | `platform/*/input_watch.py` | Focus-change and typing hooks plus the UI Automation "is this a text field" probe for auto-dictation (Windows; macOS stub) | ctypes, comtypes |
 | **Session Lock** | `platform/*/session.py` | Whether the PC is locked, so the wake word stops listening (Windows; macOS stub) | ctypes |
 | **Screenshots** | `platform/*/screenshots.py` | Opens the Windows snip overlay and reads the Snipping Tool's image off the clipboard for meeting screenshots (Windows; macOS stub) | ctypes, Pillow |
+| **Call People** | `platform/*/call_people.py` | Who is in a Discord call and who is muted, read from Discord's window through UI Automation every 15 s while a Discord meeting runs; names the meeting and the far end of a 1:1 call (Windows; macOS stub) | comtypes |
 | **Drive Share Window** | `platform/*/drive_share.py` | Opens Drive for desktop's own Share window for a synced Google file, found on the drive letter it mounts for the account (Windows; macOS stub) | pywin32 shell |
 | **Meeting in Google Docs** | `meeting/gdoc.py` + `drive/docs.py` | Saves a meeting to Drive as a Google Doc with Quick summary, Report and Transcript tabs in `Koli/Meetings/<name>/` | Docs API, Pillow |
 | **Console Control** | `platform/windows/console.py` | Show/hide/own the console window (pyapp builds) | ctypes |
