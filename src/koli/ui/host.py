@@ -483,7 +483,9 @@ class UiHost:
         logger.info(f"Meeting brief PDF {'written' if ok else 'failed'}: {path}")
         return ok
 
-    def pick(self, kind, title, types=None, filename=''):
+    # A file or folder dialog: one path, a list of paths with multiple=True,
+    # or None when cancelled.
+    def pick(self, kind, title, types=None, filename='', multiple=False):
         import webview
         dialog = {'folder': webview.FileDialog.FOLDER, 'open': webview.FileDialog.OPEN,
                   'save': webview.FileDialog.SAVE}[kind]
@@ -492,9 +494,13 @@ class UiHost:
             kwargs['file_types'] = tuple(types)
         if filename:
             kwargs['save_filename'] = filename
+        if multiple:
+            kwargs['allow_multiple'] = True
         result = self.main.window.create_file_dialog(dialog, **kwargs)
         if not result:
             return None
+        if multiple:
+            return list(result) if isinstance(result, (list, tuple)) else [result]
         return result[0] if isinstance(result, (list, tuple)) else result
 
     # ── Floating bar ─────────────────────────────────────────────────────────

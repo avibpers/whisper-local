@@ -638,6 +638,19 @@ meeting: # Meetings: calls in Discord, Zoom, Teams and the browser
     # Language of the meetings: auto for mixed (Hebrew and English in one
     # call), or a code to force one
     language: auto
+    # Summaries the AI writes from a template (docs/design/meeting-summary.md;
+    # the model is ai.meetings.model). Templates: built-ins, plus your own in
+    # "summary_templates" beside the meetings folder.
+    summary:
+        # Summarize a meeting by itself once it ends and the transcript has
+        # caught up (needs an AI model)
+        auto: true
+        # The template used unless you pick another (Meetings › Templates)
+        template: standard
+        # meeting = the language most of the meeting was in; or a code (he, en)
+        language: meeting
+        # Shorter meetings are not summarized by themselves
+        min_minutes: 2
     # A separate Whisper model for meetings (a key from whisper.models), or
     # empty for the dictation model. Only worth it on a GPU.
     model: ''
@@ -883,6 +896,12 @@ ai: # Language models for polish, rewrites and later features (Settings › AI)
     practice:
         model: '' # empty = the default model
         timeout: 90
+
+    # Meeting summaries: writes each meeting's summary from a template, and
+    # drafts new templates. Long meetings need a model with a large context.
+    meetings:
+        model: '' # empty = the default model
+        timeout: 180
 
     # AI actions: a voice command that matches none of yours ("move today's
     # photos to Pictures") is done by the AI, with your own wake word or the

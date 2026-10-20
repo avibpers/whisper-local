@@ -236,7 +236,9 @@ class MeetingStore:
     # The brief's title becomes the meeting's title ("Meeting" or "Discord"
     # until then), so the list, the header and the export names say what the
     # meeting was about. An empty title leaves the meeting's as it is.
-    def save_brief(self, meeting_id: str, brief: dict) -> Path:
+    # The meeting takes the brief's title, unless the template's title is a
+    # fixed one ("Board Meeting Summary") that would name every meeting alike.
+    def save_brief(self, meeting_id: str, brief: dict, rename_meeting: bool = True) -> Path:
         path = self.brief_path(meeting_id)
         with self._lock:
             self.folder.mkdir(parents=True, exist_ok=True)
@@ -244,7 +246,7 @@ class MeetingStore:
             tmp.write_text(json.dumps(brief, ensure_ascii=False, indent=1), encoding='utf-8')
             os.replace(tmp, path)
         title = str(brief.get('title') or '').strip()
-        if title and self.path(meeting_id).exists():
+        if rename_meeting and title and self.path(meeting_id).exists():
             meeting = self.load(meeting_id)
             if meeting.get('title') != title:
                 meeting['title'] = title
