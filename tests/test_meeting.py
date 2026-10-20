@@ -1423,30 +1423,55 @@ class DeviceRoutingTests(unittest.TestCase):
     # Sessions are read from every output device, each tagged with the device
     # it plays on, so a call on the headset is seen even when the monitor is
     # the Windows default.
-    def test_sessions_carry_their_output_device(self):
+    # The Windows probe loaded by path, so the tests run without pycaw.
+    @staticmethod
+    def _audio_sessions():
         import importlib.util
         path = ROOT / 'src' / 'koli' / 'platform' / 'windows' / 'audio_sessions.py'
         spec = importlib.util.spec_from_file_location('win_audio_sessions', path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
+        return mod
 
-        class Proc:
-            def __init__(self, name, pid):
-                self._name, self.pid = name, pid
+    class Proc:
+        def __init__(self, name, pid):
+            self._name, self.pid = name, pid
 
-            def name(self):
-                return self._name
+        def name(self):
+            return self._name
 
-        class Session:
-            def __init__(self, name, pid, state):
-                self.Process = Proc(name, pid) if name else None
-                self.State = state
+    class Session:
+        def __init__(self, name, pid, state):
+            self.Process = DeviceRoutingTests.Proc(name, pid) if name else None
+            self.State = state
+
+    def test_sessions_carry_their_output_device(self):
+        mod, Session = self._audio_sessions(), self.Session
         devices = [('Speakers (Logitech USB Headset)', 'dev-1', [Session('Discord.exe', 10, 1), Session(None, 0, 0)]),
                    ('LG ULTRAWIDE', 'dev-2', [Session('Spotify.exe', 20, 0)])]
         out = mod.active(devices_fn=lambda: devices)
         self.assertEqual(out, [{'pid': 10, 'exe': 'discord.exe', 'state': 1, 'device': 'Speakers (Logitech USB Headset)',
-                                'device_id': 'dev-1'},
-                               {'pid': 20, 'exe': 'spotify.exe', 'state': 0, 'device': 'LG ULTRAWIDE', 'device_id': 'dev-2'}])
+                                'device_id': 'dev-1', 'flow': 'render'},
+                               {'pid': 20, 'exe': 'spotify.exe', 'state': 0, 'device': 'LG ULTRAWIDE', 'device_id': 'dev-2',
+                                'flow': 'render'}])
+
+    # Microphone sessions say which app holds the mic: Discord opens one the
+    # second you join a call, before anyone speaks.
+    def test_capture_sessions_are_marked(self):
+        mod, Session = self._audio_sessions(), self.Session
+        out = mod.active(devices_fn=lambda: [('Speakers', 'r1', [Session('Discord.exe', 10, 1)])],
+                         capture_devices_fn=lambda: [('Microphone (BY-V20)', 'c1', [Session('Discord.exe', 10, 1)])])
+        self.assertEqual(len(out), 2)
+        render = next(e for e in out if e['flow'] == 'render')
+        capture = next(e for e in out if e['flow'] == 'capture')
+        self.assertEqual(render['device'], 'Speakers')
+        self.assertEqual(capture['device'], 'Microphone (BY-V20)')
+        self.assertEqual(capture['exe'], 'discord.exe')
+
+    def test_render_only_when_capture_probe_missing(self):
+        mod, Session = self._audio_sessions(), self.Session
+        out = mod.active(devices_fn=lambda: [('Speakers', 'r1', [Session('Discord.exe', 10, 1)])])
+        self.assertEqual([e['flow'] for e in out], ['render'])
 
     def test_source_names_the_device_its_sound_plays_on(self):
         from koli.meeting.detector import find_sources
