@@ -58,9 +58,12 @@ def ratio_for(sensitivity: str, personal: bool = False) -> float:
 # was heard doesn't start with it. Words are compared with their spaces taken
 # out and one word more or less than the spelling, because Whisper writes
 # "Hey Koli" as "heykoli" or "hey ko li" too.
-def match_wake(text: str, spellings: Iterable[str], min_ratio: float) -> Optional[str]:
+# `fragment_letters`: the word more is taken only when it is this short, a
+# piece of the split word ("ko li", "via uš"), never a command's first word.
+def match_wake(text: str, spellings: Iterable[str], min_ratio: float,
+               fragment_letters: Optional[int] = None) -> Optional[str]:
     words = normalize_spoken(text).split()
-    ratio, take, _ = _closest(words, spellings)
+    ratio, take, _ = _closest(words, spellings, fragment_letters)
     if take is None or ratio < min_ratio:
         return None
     return ' '.join(words[take:])
@@ -74,8 +77,8 @@ def closest_wake(text: str, spellings: Iterable[str]) -> tuple:
 
 
 # (best ratio, words it took, spelling) over every spelling and one word more
-# or less than it has.
-def _closest(words: List[str], spellings: Iterable[str]) -> tuple:
+# or less than it has (the word more only a short one with `fragment_letters`).
+def _closest(words: List[str], spellings: Iterable[str], fragment_letters: Optional[int] = None) -> tuple:
     best_ratio, best_take, best_spelling = 0.0, None, ''
     for spelling in spellings:
         target_words = normalize_spoken(spelling).split()
@@ -84,6 +87,9 @@ def _closest(words: List[str], spellings: Iterable[str]) -> tuple:
         target = ''.join(target_words)
         for take in (len(target_words) - 1, len(target_words), len(target_words) + 1):
             if take < 1 or take > len(words):
+                continue
+            if (fragment_letters is not None and take > len(target_words)
+                    and len(words[take - 1]) > fragment_letters):
                 continue
             ratio = difflib.SequenceMatcher(None, ''.join(words[:take]), target).ratio()
             if ratio > best_ratio:
@@ -478,6 +484,10 @@ class WakeListener:
     # "viush"). When the command's burst is known to start with the word,
     # this looser match drops it.
     WAKE_IN_COMMAND_RATIO = 0.5
+    # That looser match takes a word more than the spelling only when it is a
+    # piece of the split wake word: "Viaš, Desk tu" lost "Desk" to "adeus"
+    # (0.62 for "viašdesk", 2026-10-20) and the AI got "tu".
+    WAKE_FRAGMENT_LETTERS = 3
     # The console shows tries that are probably you: a voice this close under
     # "Sounds like you", or (with "Hey Koli", where every burst reaches
     # Whisper) text this much like the wake word. Other voices and a TV
@@ -1011,7 +1021,8 @@ class WakeListener:
         rest = match_wake(text, self.spellings(), self.match_ratio())
         if rest is None and self._wake_in_command:
             heard = [self._wake_heard] if self._wake_heard else []
-            rest = match_wake(text, self.spellings() + heard, self.WAKE_IN_COMMAND_RATIO)
+            rest = match_wake(text, self.spellings() + heard, self.WAKE_IN_COMMAND_RATIO,
+                              fragment_letters=self.WAKE_FRAGMENT_LETTERS)
             if rest is not None:
                 self.logger.info("Wake word: dropped from the start of the command (read another way)")
         if rest is None:

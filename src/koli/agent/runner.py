@@ -45,13 +45,17 @@ def is_yes(answer: str) -> bool:
 class AgentRunner:
     # `complete(feature, messages, json=True)` → llm.Result; `publish(payload)`
     # sends an 'agent' event; `commands()` → your fixed command phrases;
-    # `run_fixed(phrase)` runs one of them; `enabled()` reads the setting;
+    # `run_fixed(phrase)` runs one of them; `has_fixed(phrase)` says whether a
+    # phrase names one ("Desk2" names "Desk{n}"; by default only the exact
+    # phrase); `enabled()` reads the setting;
     # `hear(stop)` listens for your answer to a question → text or None.
     def __init__(self, complete: Callable, publish: Callable[[dict], None], approval: Approval,
                  backend: actions.Backend = None, journal: Journal = None, folders: policy.Folders = None,
                  commands: Callable[[], List[str]] = lambda: [], run_fixed: Callable[[str], bool] = lambda p: False,
+                 has_fixed: Optional[Callable[[str], bool]] = None,
                  enabled: Callable[[], bool] = lambda: True, hear: Callable = None):
         self.hear = hear
+        self.has_fixed = has_fixed or (lambda phrase: phrase in self.commands())
         self._questions = 0
         self.complete = complete
         self.publish = publish
@@ -164,7 +168,7 @@ class AgentRunner:
     def _rehearse(self, script: str, previous: Optional[tuple]):
         aliases = {}
         while True:
-            recorder = actions.Recorder(self.backend, command_exists=lambda p: p in self.commands(),
+            recorder = actions.Recorder(self.backend, command_exists=self.has_fixed,
                                         previous=previous[1] if previous else (), aliases=aliases)
             error = None
             try:

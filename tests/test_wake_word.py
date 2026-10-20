@@ -956,6 +956,7 @@ class WakeCommandStateManagerTests(unittest.TestCase):
         from koli.wake_word import WakeListener
         listener._wake_in_command, listener._wake_heard = False, ''
         listener.WAKE_IN_COMMAND_RATIO = WakeListener.WAKE_IN_COMMAND_RATIO
+        listener.WAKE_FRAGMENT_LETTERS = WakeListener.WAKE_FRAGMENT_LETTERS
         listener.strip_wake.side_effect = lambda text: WakeListener.strip_wake(listener, text)
         sm._wake_listener = listener
         return sm
@@ -974,6 +975,20 @@ class WakeCommandStateManagerTests(unittest.TestCase):
         sm._wake_listener._wake_in_command, sm._wake_listener._wake_heard = True, 'dios'
         self.assertEqual(self.run_(sm, audio=np.zeros(16000, dtype=np.float32)), RAN)
         self.assertEqual(sm.voice_command_manager.execute_command.call_args[0][0]['hotkey'], 'media_next')
+
+    # "Viaš, Desk tu": the loose match took "viaš desk" as "adeus" and the AI
+    # got "tu" (2026-10-20). A split wake word ("via uš") is still dropped.
+    def test_the_loose_match_keeps_the_commands_first_word(self):
+        from koli.wake_word import RAN
+        commands = [{'trigger': 'Desk{n}', 'hotkey': 'ctrl+alt+{n}'}]
+        for heard in ('Viaš, Desk tu', 'Via uš desk two'):
+            sm = self._sm(heard=heard, commands=commands)
+            sm._wake_listener.spellings.return_value = ['viush', 'víus', 'bios', 'adeus']
+            sm._wake_listener.match_ratio.return_value = 0.65
+            sm._wake_listener._wake_in_command, sm._wake_listener._wake_heard = True, 'viush'
+            self.assertEqual(self.run_(sm, audio=np.zeros(16000, dtype=np.float32)), RAN, heard)
+            self.assertEqual(sm.voice_command_manager.execute_command.call_args[0][0]['hotkey'], 'ctrl+alt+2')
+            self.assertIn(sm._wake_listener.strip_wake(heard).lower(), ('viaš, desk tu', 'desk two'), heard)
 
     def test_the_wake_word_is_dropped_and_the_command_runs(self):
         from koli.wake_word import RAN

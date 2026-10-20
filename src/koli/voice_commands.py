@@ -86,6 +86,24 @@ RISKY_PATTERNS = re.compile(
 
 NUMBER_PLACEHOLDER = '{n}'
 NUMBER_WORDS = ('zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine')
+# Other ways a digit gets written: how Whisper hears an English number in a
+# short mixed clip ("Desk tu" when the language guess was Latvian,
+# 2026-10-20), and the Hebrew words, so "דסק שתיים" works with a Hebrew
+# other_trigger.
+DIGIT_SPELLINGS = {
+    '1': ('won', 'אחד', 'אחת'),
+    '2': ('to', 'too', 'tu', 'שתיים', 'שתים', 'שניים', 'שנים'),
+    '3': ('שלוש', 'שלש', 'שלושה'),
+    '4': ('for', 'ארבע', 'ארבעה'),
+    '5': ('חמש', 'חמישה'),
+    '6': ('שש', 'שישה'),
+    '7': ('שבע', 'שבעה'),
+    '8': ('שמונה',),
+    '9': ('תשע', 'תשעה'),
+    '0': ('אפס',),
+}
+SPOKEN_DIGITS = {word: str(digit) for digit, word in enumerate(NUMBER_WORDS)}
+SPOKEN_DIGITS.update({word: digit for digit, words in DIGIT_SPELLINGS.items() for word in words})
 # The action values a spoken number is put into. `run` is left out on purpose:
 # a number from speech has no business inside a shell command.
 NUMBER_FIELDS = ('hotkey', 'type')
@@ -96,13 +114,14 @@ NUMBER_FIELDS = ('hotkey', 'type')
 # as "D 1"; the lookarounds keep "and 1" and "D 12" from matching.
 @functools.lru_cache(maxsize=256)
 def _number_trigger_regex(trigger: str):
-    number = r'\s*(\d|' + '|'.join(NUMBER_WORDS) + r')\s*'
+    words = sorted(SPOKEN_DIGITS, key=len, reverse=True)
+    number = r'\s*(\d|' + '|'.join(map(re.escape, words)) + r')\s*'
     pieces = [re.escape(normalize_spoken(piece)) for piece in trigger.lower().split(NUMBER_PLACEHOLDER)]
     return re.compile(r'(?<!\w)' + number.join(pieces) + r'(?!\w)')
 
 
 def _spoken_digit(word: str) -> str:
-    return word if word.isdigit() else str(NUMBER_WORDS.index(word))
+    return word if word.isdigit() else SPOKEN_DIGITS[word]
 
 
 # ── Phrases: the trigger plus other_triggers ─────────────────────────────────
@@ -331,15 +350,22 @@ class VoiceCommandManager:
                 phrases.append(cmd['trigger'])
         return phrases
 
-    # Runs the plain command whose trigger is exactly `phrase` (an AI script's
-    # run_command). True when it ran.
+    # The plain command `phrase` is the whole of (an AI script's run_command),
+    # or None. Matched like speech, so "Desk2" and "desk two" are "Desk{n}"
+    # with the number filled in.
+    def plain_command(self, phrase: str) -> Optional[dict]:
+        if not getattr(self, 'commands', None):
+            return None
+        return self.match_command(phrase, exact=True,
+                                  only=lambda cmd: any(cmd.get(k) is not None for k in PLAIN_KEYS))
+
+    # Runs the plain command `phrase` names. True when it ran.
     def run_plain(self, phrase: str) -> bool:
-        wanted = normalize_spoken(phrase)
-        for cmd in getattr(self, 'commands', None) or []:
-            if normalize_spoken(cmd.get('trigger') or '') == wanted and any(cmd.get(k) is not None for k in PLAIN_KEYS):
-                self.execute_command(cmd)
-                return True
-        return False
+        command = self.plain_command(phrase)
+        if command is None:
+            return False
+        self.execute_command(command)
+        return True
 
     # `confirm_runs`: the command came from a voice anyone could have spoken
     # ("Hey Koli" from a TV or a video), so its run steps always ask first,

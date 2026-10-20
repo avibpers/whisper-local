@@ -35,7 +35,8 @@ system(command, undo="", before="") -> runs a command you write from your own kn
   undo: the command that puts things back, when it changes something. before: a command that prints the value it
   changes (a level or state as it is now); its output replaces {before} in undo. Shape:
   system("<command>", undo="<command that sets it back to {before}>", before="<command that prints the current value>")
-run_command(phrase) -> runs one of the person's own voice commands (listed below), exactly as written there.
+run_command(phrase) -> runs one of the person's own voice commands (listed below), exactly as written there. A {n}
+  in one stands for a digit 0-9 the person says: for "Desk{n}" and "desk two", run_command("Desk 2").
 say(text) -> a short answer shown to the person.
 Files and folders have these fields only: .name .path .ext (".jpg") .size (bytes) .modified ("2026-10-14") .age_days .folder
 Built-ins: len, range, str, int, min, max, abs, round."""
