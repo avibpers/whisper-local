@@ -32,6 +32,8 @@ from ..ui.tasks import get_task_manager
 logger = logging.getLogger(__name__)
 
 MIN_KEEP_CHUNKS = 3   # chunks a remote voice needs before it is saved when the meeting ends
+CALL_POLL_SECONDS = 15   # how often a running call's window is read for who is in it
+CALL_APPS = ('discord.exe',)   # call apps whose window says who is in the call (platform call_people)
 MY_VOICE_MIN = 3      # hotkey dictations on a microphone before auto-dictation checks your voice there
 
 LOOPBACK_HINT = ("Meetings need the loopback package to hear the call. Install it from the Meetings screen, "
@@ -54,8 +56,13 @@ class MeetingService:
                  report: Callable[[str], None] = None, sessions_fn: Callable[[], list] = None,
                  autostart: bool = True, mic_stream_factory: Callable = None,
                  splitter_factory: Callable = None, voices: Optional[VoiceBook] = None,
-                 shots=None, complete: Callable = None, templates: Optional[TemplateLibrary] = None):
+                 shots=None, complete: Callable = None, templates: Optional[TemplateLibrary] = None,
+                 call_people_fn: Callable[[str], dict] = None):
         self.ctx = ctx
+        # Who is in a running call, read from the call app's window (a fake
+        # in tests), and the thread that reads it while a meeting runs.
+        self._call_people_fn = call_people_fn
+        self._call_stop = threading.Event()
         # The AI call for summaries (llm.complete; a fake in tests), and the
         # summary job running per meeting.
         self._complete = complete
@@ -239,6 +246,7 @@ class MeetingService:
             self.transcriber.submit({**chunk, 'meeting_id': meeting_id})
         if self._screenshot_mode() == 'all':
             self._start_watcher()
+        self._start_call_poll(meeting)
         loopbacks, loop_chunkers = [], []
         for device in self._output_devices(meeting):
             chunker = Chunker('loopback', self._speech_prob_factory(), submit)
@@ -298,7 +306,44 @@ class MeetingService:
             logger.debug(f"Output devices unknown ({e}); using the default output")
         return [None]
 
+    # One read of who is in the running call: the meeting keeps it (the title
+    # names the other person), and in a 1:1 call the far-end voice still
+    # called "Speaker N" takes their name, saved with its voiceprint the way
+    # a rename by hand is. Only for apps whose window says it (CALL_APPS).
+    def _poll_call(self, read: Callable[[str], dict] = None):
+        try:
+            m = self.session.meeting
+            if self.session.state != 'live' or not m or m['source'].get('app') not in CALL_APPS:
+                return
+            if read is None:
+                read = self._call_people_fn
+            if read is None:
+                from ..platform import call_people
+                read = call_people.read
+            self.session.set_call(read(m['source']['app']))
+            target = self.session.call_name_target()
+            if target:
+                logger.info("Naming the far-end voice from the call")
+                self.rename_speaker(*target)
+        except Exception as e:
+            logger.warning(f"Reading who is in the call failed: {e}")
+
+    # Read the call every CALL_POLL_SECONDS while the meeting captures,
+    # first right away; a read takes seconds, so never on the detector's tick.
+    def _start_call_poll(self, meeting: dict):
+        if meeting['source'].get('app') not in CALL_APPS:
+            return
+        self._call_stop.set()
+        stop = self._call_stop = threading.Event()
+
+        def run():
+            while not stop.is_set() and not self._closed:
+                self._poll_call()
+                stop.wait(CALL_POLL_SECONDS)
+        threading.Thread(target=run, daemon=True, name='meeting-call-people').start()
+
     def _stop_capture(self):
+        self._call_stop.set()
         with self._lock:
             loopbacks, self._loopbacks = self._loopbacks, []
             mic_source, self._mic_source = self._mic_source, None
@@ -1005,6 +1050,7 @@ class MeetingService:
     def shutdown(self):
         self._closed = True
         self._watch_stop.set()
+        self._call_stop.set()
         self.stop_detector()
         if self.session.state in ('live', 'paused'):
             self.session.end()

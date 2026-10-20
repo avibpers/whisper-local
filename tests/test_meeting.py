@@ -17,6 +17,18 @@ sys.path.insert(0, str(ROOT / "src"))
 
 TZ = datetime.timezone(datetime.timedelta(hours=3))
 
+_call_people_patch = mock.patch('koli.platform.call_people.read', lambda exe: {})
+
+
+# A Discord meeting in a test must never read the real Discord window on this
+# machine (a call there would rename the test's speakers).
+def setUpModule():
+    _call_people_patch.start()
+
+
+def tearDownModule():
+    _call_people_patch.stop()
+
 
 def at(minute, second=0):
     return datetime.datetime(2026, 10, 11, 14, minute, second, tzinfo=TZ)
@@ -2574,6 +2586,55 @@ class KeepAudioTests(unittest.TestCase):
         values['meeting.keep_audio'] = True
         svc._keep_audio(chunk)
         self.assertEqual([p.name for p in store.audio_dir('m1').iterdir()], ['5.00-mic.wav'])
+
+
+# While a Discord meeting runs, the service reads who is in the call and
+# names the meeting and the far-end voice from it.
+class CallPollTests(unittest.TestCase):
+    def make(self, source):
+        from koli.services.meetings import MeetingService
+        from koli.meeting.store import MeetingStore
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        ctx = type('Ctx', (), {})()
+        ctx.state_manager = FakeStateManager()
+        ctx.config_manager = FakeConfig({'meeting.enabled': False, 'meeting.include_me': True, 'meeting.language': 'auto',
+                                         'meeting.speaker_model': 'eres2net', 'meeting.segmentation_model': '',
+                                         'meeting.start_speech_seconds': 3, 'meeting.countdown_seconds': 0})
+        ctx.model_registry = None
+        fake_loopback = type('L', (), {'start': lambda s: None, 'stop': lambda s: None})
+        svc = MeetingService(ctx, store=MeetingStore(Path(tmp.name)), publish=lambda t, p: None,
+                             loopback_factory=lambda on_block, on_error, device=None: fake_loopback(),
+                             embedder_factory=lambda: None, loopback_available=lambda: True, sessions_fn=lambda: [],
+                             call_people_fn=lambda exe: {})
+        self.addCleanup(svc.shutdown)
+        svc.session.on_sources([source])
+        svc.session.on_speech(3.5)
+        self.assertEqual(svc.session.state, 'live')
+        return svc
+
+    def test_poll_call_names_far_end(self):
+        svc = self.make(discord())
+        svc.session.ensure_speaker({'id': 's1', 'name': 'Speaker 1', 'colour': 1, 'centroid': [1.0], 'count': 1})
+        svc._poll_call(read=lambda exe: {'with': 'Becky', 'people': []})
+        names = {s['id']: s['name'] for s in svc.session.meeting['speakers']}
+        self.assertEqual(names['s1'], 'Becky')
+        self.assertEqual(svc.session.meeting['title'], 'Discord · Becky')
+
+    def test_poll_call_skips_other_apps(self):
+        svc = self.make({**discord(), 'key': 'zoom.exe', 'app': 'zoom.exe'})
+        asked = []
+        svc._poll_call(read=lambda exe: asked.append(exe) or {})
+        self.assertEqual(asked, [])
+
+    def test_poll_call_survives_errors(self):
+        svc = self.make(discord())
+        title = svc.session.meeting['title']
+
+        def broken(exe):
+            raise RuntimeError('window gone')
+        svc._poll_call(read=broken)
+        self.assertEqual(svc.session.meeting['title'], title)
 
 
 class ServiceVoicesTests(unittest.TestCase):

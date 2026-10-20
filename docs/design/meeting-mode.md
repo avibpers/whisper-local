@@ -24,12 +24,13 @@ chunks, so text appears a few seconds behind speech.
 
 | Situation | What Koli does |
 |-----------|----------------|
-| A listed app opens an audio session (Discord, Zoom, Teams, Slack) | It is a *source*. Its rule decides: `auto` starts a meeting once speech is heard, `ask` offers one, `off` ignores it. |
+| A listed app takes the microphone (Discord, Zoom, Teams, Slack) | It is a *source*: that is joining a call, before anyone speaks. Its rule decides: `auto` starts a meeting once speech is heard, `ask` offers one, `off` ignores it. An app that only plays sound (a ping, a join sound) is not offered. |
 | A browser has sound and a tab whose title matches a listed site ("Meet - abc-defg-hij", "Microsoft Teams", ...) | Same, with the tab as the source. Found through the tab strip, so the tab can be behind others. The Meet code from the title is the meeting code. |
 | Source present, loopback hears about 3 s of speech (setting) | The meeting starts: panel appears, capture and transcription run. A stray ping never starts one. |
 | Rule `ask` | The panel appears small: "Discord call detected. Transcribe?" with Start and Not now. Not now ignores that source until it goes away. |
 | Start meeting from the tray, the hotkey or the Meetings screen | Starts at once, with whichever source is active, or "manual" when none. |
-| Source goes away (session closed, tab closed, app quit) | Meeting **pauses**. Panel header says Paused. Nothing is captured. |
+| Source goes away (session closed, tab closed, app quit) | Meeting **pauses** once that is confirmed: missing on two detector ticks at least 1.5 s apart, so Discord moving between microphones mid-call doesn't pause it. Panel header says Paused. Nothing is captured. A running meeting goes on as long as the app has any audio session, so muting yourself (which may release the mic) doesn't pause it. |
+| A Discord meeting runs | Every 15 s Koli reads Discord's window for who is in the call (`platform/*/call_people.py`). The title becomes "Discord · Becky", and in a 1:1 call the far-end voice still called "Speaker N" takes the name, saved with its voiceprint. Discord doesn't expose who is speaking, so voices are still told apart by voiceprint (tested 2026-10-20, `docs/research/wispr-flow-meeting-detection.md`). |
 | Same app, and the same code when there is one, back within `gap_minutes` (default 10) | **Resumes** the paused meeting. Panel shows "Resumed: <title>" for a few seconds with a "Start new instead" button. |
 | Different app, different code, or after the gap | A **new** meeting. Panel shows "New meeting" with a "Continue previous instead" button (only while the previous one is still within its gap). |
 | Paused longer than the gap | The meeting **ends** and is saved. Panel shows "Saved, 42 min" briefly, then hides. |
@@ -90,9 +91,12 @@ platform/windows/audio_sessions.py   platform/windows/browser_tabs.py
 ### Components
 
 **`meeting/detector.py`: MeetingDetector.** A daemon thread. Each tick,
-`audio_sessions.active()` gives the processes with an *active* audio session
-(an open stream, which Discord keeps for the whole call, silent or not; a
-notification ping opens none that lasts). Each exe is matched against the
+`audio_sessions.active()` gives the processes with an *active* audio session,
+output and microphone (`flow` `render` / `capture`). The microphone marks a
+call: Discord opens its capture session the second you join, silent or not,
+while a ping only plays sound; each native source carries `mic` (True, False,
+or None when the probe reports no microphones, as on macOS) and the session
+manager offers only one that holds it. Each exe is matched against the
 meeting rules (see Settings). A browser exe (`chrome.exe`, `msedge.exe`,
 `brave.exe`) is matched through its tabs instead: `browser_tabs.tabs()` (UI
 Automation, cached 3 s) returns each tab's accessible name, which Chrome and
