@@ -16,6 +16,7 @@ import re
 
 from .store import roster
 from .summarize import fold_extras
+from .summary_templates import WORDS, word
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,6 @@ ROOT_FOLDER = 'Koli/Meetings'
 # The app's speaker colours (screens/brief.js), by a speaker's colour index.
 COLOURS = ['#0A6E82', '#B45309', '#6D28D9', '#15803D', '#BE185D', '#0369A1', '#C2410C', '#4D7C0F']
 GREY = (0.45, 0.47, 0.50)
-STATUS = {'do_now': 'Do now', 'plan_only': 'Plan only', 'waiting': 'Waiting', 'done': 'Done'}
 
 
 # ── Small helpers ────────────────────────────────────────────────────────────
@@ -173,11 +173,7 @@ def timeline_chart(m: dict, stats: list) -> str:
 # The visual brief's order, for briefs written before templates existed.
 STANDARD_DOC_BLOCKS = ['header', 'quick', 'page_break', 'tldr', 'decisions', 'action_items', 'lists', 'speakers', 'screenshots',
                        'topics', 'notes', 'page_break', 'transcript']
-LABELS = {'tldr': 'Summary', 'decisions': 'Decisions', 'action_items': 'Action items', 'open_questions': 'Open questions',
-          'parked': 'Parked', 'next_meeting': 'Points for the next meeting', 'speakers': 'Who spoke',
-          'screenshots': 'What was on screen', 'topics': 'How the meeting went', 'participants': 'Participants',
-          'agenda': 'Meeting Agenda', 'agenda_details': 'Key Points, Decisions, and Action Items',
-          'agenda_discussion': 'Discussion', 'agenda_decisions': 'Decisions', 'agenda_actions': 'Action items'}
+LABELS = WORDS      # the headings, in English; a summary's own `labels` translate them
 RTL = ('he', 'ar', 'fa', 'ur', 'yi')
 
 
@@ -221,7 +217,7 @@ def report_html(m: dict, brief: dict, shot_data: dict, layout: dict = None) -> s
     in_topic = set()
 
     def label(key):
-        return (brief.get('labels') or {}).get(key) or (layout.get('labels') or {}).get(key) or LABELS.get(key, key)
+        return word(key, brief, layout)
 
     def at(sec):
         return f" <i style='color:#777'>({clock(sec)})</i>" if sec is not None else ''
@@ -232,16 +228,17 @@ def report_html(m: dict, brief: dict, shot_data: dict, layout: dict = None) -> s
             return ''
         src = 'data:image/png;base64,' + base64.b64encode(data).decode('ascii')
         return (f"<p style='text-align:center'><img src='{src}' width='{width}'></p>"
-                f"<p style='text-align:center;color:#777;font-size:9pt'><i>Screenshot at {clock(shot['at'])} · {e(shot.get('caption') or '')}</i></p>")
+                f"<p style='text-align:center;color:#777;font-size:9pt'><i>{e(label('screenshot_at'))} {clock(shot['at'])} · {e(shot.get('caption') or '')}</i></p>")
 
     def items(rows, numbered=False):
         tag = 'ol' if numbered else 'ul'
         return f"<{tag}>" + ''.join(f"<li>{e(x['text'])}{at(x.get('at'))}</li>" for x in rows) + f"</{tag}>"
 
     def actions_table(rows):
-        out = ["<table border='1' cellpadding='5'><tr><th>#</th><th>Task</th><th>Owner</th><th>Status</th><th>Due</th><th>At</th></tr>"]
-        out += [f"<tr><td>{e(str(a.get('id', '')))}</td><td>{e(a['task'])}</td><td>{e(a.get('owner') or 'Not set')}</td>"
-                f"<td>{e(STATUS.get(a.get('status'), a.get('status') or ''))}</td><td>{e(a.get('due') or '')}</td>"
+        out = ["<table border='1' cellpadding='5'><tr><th>#</th>" + ''.join(
+            f"<th>{e(label(k))}</th>" for k in ('col_task', 'col_owner', 'col_status', 'col_due', 'col_at')) + "</tr>"]
+        out += [f"<tr><td>{e(str(a.get('id', '')))}</td><td>{e(a['task'])}</td><td>{e(a.get('owner') or label('not_set'))}</td>"
+                f"<td>{e(label(a.get('status')) if a.get('status') else '')}</td><td>{e(a.get('due') or '')}</td>"
                 f"<td>{clock(a.get('at'))}</td></tr>" for a in rows]
         return ''.join(out) + "</table>"
 
@@ -256,7 +253,7 @@ def report_html(m: dict, brief: dict, shot_data: dict, layout: dict = None) -> s
         return (f"<h2>{e(label('tldr'))}</h2>" + ''.join(f"<p>{e(p)}</p>" for p in brief['tldr'])) if brief.get('tldr') else ''
 
     def b_participants():
-        people = brief.get('attendees') or [{'name': _who(m, s['id'])['name'], 'role': roles.get(s['id'], '')} for s in stats] +             [{'name': r['name'], 'role': '' if r['spoke'] else 'did not speak'} for r in quiet]
+        people = brief.get('attendees') or [{'name': _who(m, s['id'])['name'], 'role': roles.get(s['id'], '')} for s in stats] +             [{'name': r['name'], 'role': '' if r['spoke'] else label('did_not_speak')} for r in quiet]
         return (f"<h2>{e(label('participants'))}</h2><ul>" + ''.join(
             f"<li>{e(str(a.get('name', '')))}{(' — ' + e(a['role'])) if a.get('role') else ''}</li>" for a in people) + "</ul>")
 
@@ -306,13 +303,14 @@ def report_html(m: dict, brief: dict, shot_data: dict, layout: dict = None) -> s
         if not stats and not quiet:
             return ''
         out = [f"<h2>{e(label('speakers'))}</h2>", f"<p><img src='{share_chart(m, stats)}' width='520'></p>",
-               "<h3>Who held the floor, minute by minute</h3>",
-               "<p style='color:#666'>Seconds spoken in each minute, stacked. A minute passes 60 s when people talk over each other.</p>",
+               f"<h3>{e(label('floor_title'))}</h3>",
+               f"<p style='color:#666'>{e(label('floor_note'))}</p>",
                f"<p><img src='{timeline_chart(m, stats)}' width='620'></p>",
-               "<table border='1' cellpadding='5'><tr><th>Speaker</th><th>Talk time</th><th>Share</th><th>Turns</th><th>Role in this meeting</th></tr>"]
+               "<table border='1' cellpadding='5'><tr>" + ''.join(
+                   f"<th>{e(label(k))}</th>" for k in ('col_speaker', 'col_talk_time', 'col_share', 'col_turns', 'col_role')) + "</tr>"]
         out += [f"<tr><td>{e(_who(m, s['id'])['name'])}</td><td>{clock(s['seconds'])}</td><td>{round(s['share'] * 100)}%</td>"
                 f"<td>{s['turns']}</td><td>{e(roles.get(s['id'], ''))}</td></tr>" for s in stats]
-        out += [f"<tr><td>{e(r['name'])}</td><td>{clock(r['seconds']) if r['spoke'] else 'Did not speak'}</td><td></td>"
+        out += [f"<tr><td>{e(r['name'])}</td><td>{clock(r['seconds']) if r['spoke'] else e(label('did_not_speak'))}</td><td></td>"
                 f"<td>{r['turns'] or ''}</td><td>{e(roles.get(r['speaker'] or '', ''))}</td></tr>" for r in quiet]
         return ''.join(out) + "</table>"
 
@@ -350,14 +348,13 @@ def report_html(m: dict, brief: dict, shot_data: dict, layout: dict = None) -> s
         return ''.join(out)
 
     def b_notes():
-        return f"<p style='color:#777'><i>Transcription notes: {e('; '.join(brief['notes']))}.</i></p>" if brief.get('notes') else ''
+        return f"<p style='color:#777'><i>{e(label('notes'))}: {e('; '.join(brief['notes']))}.</i></p>" if brief.get('notes') else ''
 
     blocks = with_sections(doc_blocks(layout), brief)
     makers = {name[2:]: fn for name, fn in locals().items() if name.startswith('b_')}
     # The Quick summary and the transcript have their own tabs; the rest goes here.
     body = [makers[b]() for b in blocks if b in makers]
-    tabs = "<p style='color:#777'><i>The Transcript tab has every word"
-    tabs += "; the Quick summary tab has the bottom lines.</i></p>" if 'quick' in blocks else ".</i></p>"
+    tabs = f"<p style='color:#777'><i>{e(label('note_transcript_quick' if 'quick' in blocks else 'note_transcript'))}</i></p>"
     direction = " dir='rtl'" if str(brief.get('language') or '')[:2] in RTL else ''
     return f"<html><head><meta charset='utf-8'></head><body{direction}>" + "\n".join(x for x in body if x) + tabs + "</body></html>"
 
@@ -402,33 +399,34 @@ def _write(tab: str, paras: list) -> list:
 # The Quick summary tab: what was decided, who does what, what's open.
 def quick_requests(m: dict, brief: dict, tab: str) -> list:
     stats = talk_stats(m)
+    w = lambda key: word(key, brief)      # noqa: E731
     paras = [(brief.get('title') or m['title'], 'title', []),
              (f"{_day(m)} · {clock(_length(m))} · {', '.join(_who(m, s['id'])['name'] for s in stats)}", 'meta', []),
-             ('In short', 'heading', [])]
+             (w('in_short'), 'heading', [])]
     paras += [(p, 'normal', []) for p in brief.get('tldr') or []]
     if brief.get('decisions'):
-        paras.append(('Decisions', 'heading', []))
+        paras.append((w('decisions'), 'heading', []))
         paras += [(f"{d['text']} ({clock(d.get('at'))})", 'bullet', []) for d in brief['decisions']]
     if brief.get('action_items'):
-        paras.append(('Action items', 'heading', []))
+        paras.append((w('action_items'), 'heading', []))
         for a in brief['action_items']:
-            owner = a.get('owner') or 'Owner not set'
-            line = f"{a['task']} · {owner} · {STATUS.get(a.get('status'), a.get('status') or '')}"
+            owner = a.get('owner') or w('owner_not_set')
+            line = f"{a['task']} · {owner} · {w(a['status']) if a.get('status') else ''}"
             if a.get('due'):
-                line += f" · due {a['due']}"
+                line += f" · {w('due')} {a['due']}"
             paras.append((line, 'bullet', [(u16(a['task']) + 3, u16(owner), (0.12, 0.15, 0.17), True, None)]))
     if brief.get('open_questions'):
-        paras.append(('Open questions', 'heading', []))
+        paras.append((w('open_questions'), 'heading', []))
         paras += [(q['text'], 'bullet', []) for q in brief['open_questions']]
     if brief.get('parked'):
-        paras.append(('Parked', 'heading', []))
+        paras.append((w('parked'), 'heading', []))
         paras += [(p['text'], 'bullet', []) for p in brief['parked']]
     if brief.get('topics'):
-        paras.append(('Topics', 'heading', []))
+        paras.append((w('topics_short'), 'heading', []))
         for t in brief['topics']:
             head = f"{clock(t['start'])}–{clock(t['end'])} {t['title']}"
             paras.append((f"{head}: {t.get('lead') or ''}".rstrip(': '), 'bullet', [(0, u16(head), (0.12, 0.15, 0.17), True, None)]))
-    paras.append(('The Report tab has the charts, quotes and screenshots; the Transcript tab has every word.', 'note', []))
+    paras.append((w('note_quick'), 'note', []))
     return _write(tab, paras)
 
 
@@ -438,8 +436,9 @@ def transcript_requests(m: dict, brief: dict, tab: str) -> list:
     turns = sorted(m.get('turns', []), key=lambda t: t['start'])
     topics = sorted((brief or {}).get('topics') or [], key=lambda t: t['start'])
     stats = talk_stats(m)
-    paras = [(f"{brief.get('title') or m['title']}: transcript", 'title', []),
-             (f"{_day(m)} · {clock(_length(m))} · {len(turns)} turns · verbatim as Koli heard it", 'meta', [])]
+    w = lambda key: word(key, brief)      # noqa: E731
+    paras = [(f"{brief.get('title') or m['title']}: {w('transcript_title')}", 'title', []),
+             (f"{_day(m)} · {clock(_length(m))} · {len(turns)} {w('turns_word')} · {w('verbatim')}", 'meta', [])]
     legend, spans = '', []
     for s in stats:
         sp = _who(m, s['id'])
@@ -467,11 +466,12 @@ def transcript_requests(m: dict, brief: dict, tab: str) -> list:
 def _fill_tabs(docs, doc_id: str, m: dict, brief: dict, layout: dict):
     first = docs.get(doc_id)['tabs'][0]['tabProperties']['tabId']
     with_quick = 'quick' in doc_blocks(layout)
-    requests = [{'updateDocumentTabProperties': {'tabProperties': {'tabId': first, 'title': 'Report' if with_quick else 'Summary'},
+    tab = lambda key: word(key, brief, layout)      # noqa: E731
+    requests = [{'updateDocumentTabProperties': {'tabProperties': {'tabId': first, 'title': tab('tab_report' if with_quick else 'tab_summary')},
                                                  'fields': 'title'}}]
     if with_quick:
-        requests.append({'addDocumentTab': {'tabProperties': {'title': 'Quick summary', 'index': 0}}})
-    requests.append({'addDocumentTab': {'tabProperties': {'title': 'Transcript'}}})
+        requests.append({'addDocumentTab': {'tabProperties': {'title': tab('tab_quick'), 'index': 0}}})
+    requests.append({'addDocumentTab': {'tabProperties': {'title': tab('tab_transcript')}}})
     replies = docs.batch_update(doc_id, requests)['replies']
     transcript = replies[-1]['addDocumentTab']['tabProperties']['tabId']
     edits = transcript_requests(m, brief, transcript)

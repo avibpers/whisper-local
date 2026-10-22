@@ -7,6 +7,7 @@
 # show up too. Design: docs/design/meeting-summary.md.
 
 import io
+import json
 import logging
 import re
 from pathlib import Path
@@ -45,6 +46,41 @@ BLOCKS = {
     'data': 'The summary as JSON',
     'page_break': 'Google Doc: a new page',
 }
+
+
+# Every fixed word a report shows: section headings, tab names, table
+# headers, statuses. A summary in another language carries its own
+# translation in "labels" (the model writes it), so a Hebrew meeting gets
+# Hebrew headings in the app and the Google Doc; these English words are the
+# fallback. A template's own `labels` rename headings in English.
+WORDS = {
+    'tldr': 'Summary', 'decisions': 'Decisions', 'action_items': 'Action items', 'open_questions': 'Open questions',
+    'parked': 'Parked', 'next_meeting': 'Points for the next meeting', 'speakers': 'Who spoke',
+    'screenshots': 'What was on screen', 'topics': 'How the meeting went', 'participants': 'Participants',
+    'agenda': 'Meeting Agenda', 'agenda_details': 'Key Points, Decisions, and Action Items',
+    'agenda_discussion': 'Discussion', 'agenda_decisions': 'Decisions', 'agenda_actions': 'Action items',
+    'notes': 'Transcription notes', 'in_short': 'In short', 'topics_short': 'Topics',
+    'tab_quick': 'Quick summary', 'tab_report': 'Report', 'tab_summary': 'Summary', 'tab_transcript': 'Transcript',
+    'transcript_title': 'transcript', 'turns_word': 'turns', 'verbatim': 'verbatim as Koli heard it',
+    'col_task': 'Task', 'col_owner': 'Owner', 'col_status': 'Status', 'col_due': 'Due', 'col_at': 'At',
+    'not_set': 'Not set', 'owner_not_set': 'Owner not set', 'due': 'due',
+    'col_speaker': 'Speaker', 'col_talk_time': 'Talk time', 'col_share': 'Share', 'col_turns': 'Turns',
+    'col_role': 'Role in this meeting', 'did_not_speak': 'Did not speak',
+    'floor_title': 'Who held the floor, minute by minute',
+    'floor_note': 'Seconds spoken in each minute, stacked. A minute passes 60 s when people talk over each other.',
+    'screenshot_at': 'Screenshot at',
+    'note_transcript': 'The Transcript tab has every word.',
+    'note_transcript_quick': 'The Transcript tab has every word; the Quick summary tab has the bottom lines.',
+    'note_quick': 'The Report tab has the charts, quotes and screenshots; the Transcript tab has every word.',
+    'do_now': 'Do now', 'plan_only': 'Plan only', 'waiting': 'Waiting', 'done': 'Done',
+}
+
+
+# A word for the report: the summary's own translation, then the template's
+# heading, then English.
+def word(key: str, brief: dict = None, layout: dict = None) -> str:
+    return ((brief or {}).get('labels') or {}).get(key) or ((layout or {}).get('labels') or {}).get(key) \
+        or WORDS.get(key, key)
 
 
 class TemplateError(ValueError):
@@ -150,10 +186,22 @@ class TemplateLibrary:
         return ''
 
     # The system prompt: the body with the shared rules, and the language rule.
+    # The system prompt. In any language but English it also asks for the
+    # report's fixed words in that language ("labels"), the fixed title too.
     def prompt(self, t: dict, language_name: str) -> str:
         body = t['body'].replace('{{common_rules}}', self.common_rules())
-        return (f"{body}\n\n## Language\n\nWrite the report in {language_name}. Keep names, product names and "
+        text = (f"{body}\n\n## Language\n\nWrite the report in {language_name}. Keep names, product names and "
                 f"quotes as they were said. Set \"language\" in the JSON to the ISO code of the language you wrote in.")
+        if not language_name.lower().startswith('english'):
+            words = {k: word(k, layout=t) for k in WORDS}
+            spec = t.get('title') or {}
+            if isinstance(spec, dict) and spec.get('mode') == 'fixed' and spec.get('choices'):
+                words['title'] = ' / '.join(spec['choices'])
+            text += ("\n\nAlso return \"labels\": these headings and words of the report, translated into "
+                     f"{language_name}, short and natural, with the same keys"
+                     + (" (\"title\": the one fixed title you chose, translated)" if 'title' in words else '')
+                     + ":\n" + json.dumps(words, ensure_ascii=False))
+        return text
 
     # ── Changing the user's collection ───────────────────────────────────────
 

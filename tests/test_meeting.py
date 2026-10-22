@@ -4038,3 +4038,44 @@ class MeetingTitleTests(unittest.TestCase):
         self.wait(svc, m['id'])
         self.assertEqual(self.store.load(m['id'])['title'], 'Budget review')
         self.assertFalse(svc.rename_meeting(m['id'], '   '))
+
+
+# A Hebrew summary has Hebrew headings (2026-10-22: the board minutes showed
+# "Participants", "Discussion" in English over Hebrew text).
+class ReportWordsTests(unittest.TestCase):
+    def lib(self):
+        from koli.meeting.summary_templates import TemplateLibrary
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        return TemplateLibrary(Path(tmp.name), skill_dir=None)
+
+    def test_a_non_english_prompt_asks_for_the_words_and_the_fixed_title(self):
+        lib = self.lib()
+        prompt = lib.prompt(lib.get('board-meeting'), 'Hebrew (he)')
+        self.assertIn('"labels"', prompt)
+        self.assertIn('"agenda_discussion": "Discussion"', prompt)
+        self.assertIn('"title": "Board Meeting Summary / Management Meeting Summary"', prompt)
+        self.assertNotIn('"labels"', lib.prompt(lib.get('board-meeting'), 'English (en)'))
+
+    def test_tidy_keeps_the_words_and_a_translated_fixed_title(self):
+        from koli.meeting.summarize import tidy
+        lib = self.lib()
+        b = tidy({'language': 'he', 'title': 'Management Meeting Summary', 'agenda': [{'title': 'תקציב'}],
+                  'labels': {'participants': 'משתתפים', 'title': 'סיכום ישיבת הנהלה', 'bogus': 'x', 'notes': 5}},
+                 summary_meeting(), lib.get('board-meeting'), 'g', 'he')
+        self.assertEqual(b['title'], 'סיכום ישיבת הנהלה')
+        self.assertEqual(b['labels'], {'participants': 'משתתפים'})
+        # English keeps the fixed title as it is.
+        b = tidy({'title': 'Whatever', 'agenda': [{'title': 'Budget'}], 'labels': {'title': 'x'}},
+                 summary_meeting(), lib.get('board-meeting'), 'g', 'en')
+        self.assertEqual(b['title'], 'Board Meeting Summary')
+        self.assertNotIn('labels', b)
+
+    def test_the_doc_uses_the_summarys_words(self):
+        from koli.meeting import gdoc
+        brief = dict(BRIEF, labels={'decisions': 'החלטות', 'col_task': 'משימה', 'in_short': 'בקצרה'})
+        page = gdoc.report_html(brief_meeting(), brief, {})
+        self.assertIn('<h2>החלטות</h2>', page)
+        self.assertIn('<th>משימה</th>', page)
+        quick = ''.join(r['insertText']['text'] for r in gdoc.quick_requests(brief_meeting(), brief, 't') if 'insertText' in r)
+        self.assertIn('בקצרה', quick)

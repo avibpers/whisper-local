@@ -12,7 +12,7 @@ from collections import Counter
 from typing import Callable, Optional
 
 from .store import roster
-from .summary_templates import BLOCKS, TemplateError, TemplateLibrary, parse_text, problems
+from .summary_templates import BLOCKS, WORDS, TemplateError, TemplateLibrary, parse_text, problems
 
 logger = logging.getLogger(__name__)
 
@@ -233,12 +233,23 @@ def tidy(answer, m: dict, template: dict, generator: str, language: str) -> dict
         if isinstance(b.get('participants'), dict) else {}
     b['roles'] = {k: str(v) for k, v in (b.get('roles') or {}).items() if k in ids and v} \
         if isinstance(b.get('roles'), dict) else {}
-    # A fixed-title template keeps one of its own titles.
+    # The report's fixed words in its language (summary_templates.WORDS).
+    labels = b.get('labels') if isinstance(b.get('labels'), dict) else {}
+    b['labels'] = {k: str(v).strip()[:120] for k, v in labels.items()
+                   if (k in WORDS or k == 'title') and isinstance(v, str) and v.strip()}
+    # A fixed-title template keeps one of its own titles, or its translation.
     spec = template.get('title') or {}
     if isinstance(spec, dict) and spec.get('mode') == 'fixed':
         choices = spec.get('choices') or []
-        if choices and b.get('title') not in choices:
+        translated = b['labels'].pop('title', '')
+        if translated and str(b.get('language') or language)[:2] != 'en':
+            b['title'] = translated
+        elif choices and b.get('title') not in choices:
             b['title'] = choices[0]
+    else:
+        b['labels'].pop('title', None)
+    if not b['labels']:
+        del b['labels']
     if not str(b.get('title') or '').strip():
         b['title'] = m.get('title') or 'Meeting'
     # What the meeting was about, in a few words: the meeting's own title

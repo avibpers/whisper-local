@@ -61,9 +61,10 @@ function Who({ sp }) {
   return html`<span class="bf-who"><i style=${`background:${COLOURS[sp.colour % 8]}`}></i>${sp.name}</span>`;
 }
 
-function Status({ status }) {
-  const [tone, label] = STATUS[status] || ['', status || ''];
-  return html`<span class=${'bf-status ' + tone}>${label}</span>`;
+function Status({ status, label }) {
+  const [tone, english] = STATUS[status] || ['', status || ''];
+  const translated = label && STATUS[status] && status !== 'parked' ? label(status) : '';
+  return html`<span class=${'bf-status ' + tone}>${translated && translated !== status ? translated : english}</span>`;
 }
 
 // A chart's hover note, placed at the pointer inside its card.
@@ -159,18 +160,21 @@ const LABELS = {
   topics: 'How the meeting went', participants: 'Participants', agenda: 'Meeting Agenda',
   agenda_details: 'Key Points, Decisions, and Action Items', agenda_discussion: 'Discussion', agenda_decisions: 'Decisions',
   agenda_actions: 'Action items', notes: 'Transcription notes',
+  col_task: 'Task', col_owner: 'Owner', col_status: 'Status', col_due: 'Due', col_at: 'Source', did_not_speak: 'Did not speak',
+  col_speaker: 'Speaker', col_talk_time: 'Talk time', col_share: 'Share', col_turns: 'Turns', col_role: 'Role in this meeting',
 };
 const RTL = ['he', 'ar', 'fa', 'ur', 'yi'];
 export const SUMMARY_LANGUAGES = [['', 'As the template says'], ['he', 'Hebrew · עברית'], ['en', 'English'], ['ar', 'Arabic'],
   ['ru', 'Russian'], ['fr', 'French'], ['es', 'Spanish'], ['de', 'German']];
 
 // An action items table; owners who spoke get their colour.
-function Actions({ items, byName, onJump }) {
-  return html`<div class="bf-tablewrap"><table class="bf-table"><thead><tr><th></th><th>Task</th><th>Owner</th><th>Status</th><th>Source</th></tr></thead><tbody>
+// `label` gives the report's words in its language (the summary's "labels").
+function Actions({ items, byName, onJump, label }) {
+  return html`<div class="bf-tablewrap"><table class="bf-table"><thead><tr><th></th><th>${label('col_task')}</th><th>${label('col_owner')}</th><th>${label('col_status')}</th><th>${label('col_at')}</th></tr></thead><tbody>
     ${items.map((a) => { const sp = a.owner && byName(a.owner); return html`<tr>
       <td class="bf-id">${a.id}</td><td dir=${textDir(a.task)}>${a.task}${a.effort && html`<span class="bf-note">Effort: ${a.effort}</span>`}</td>
       <td>${a.owner ? (sp ? html`<${Who} sp=${sp} />` : html`<span class="bf-who"><i></i>${a.owner}</span>`) : html`<span class="muted">Not set</span>`}</td>
-      <td><${Status} status=${a.status} />${a.due && html`<span class="bf-note">Due ${a.due}</span>`}</td>
+      <td><${Status} status=${a.status} label=${label} />${a.due && html`<span class="bf-note">${label('col_due')} ${a.due}</span>`}</td>
       <td><${At} at=${a.at} onJump=${onJump} /></td></tr>`; })}
   </tbody></table></div>`;
 }
@@ -222,7 +226,7 @@ export function Brief({ m, brief, layout, onJump, onOpenShot }) {
   const splitOff = stats.folded.filter((s) => isDefault(who(s.id).name));
   const attendees = (brief.attendees && brief.attendees.length) ? brief.attendees
     : [...stats.shown.map((s) => ({ name: who(s.id).name, role: roles[s.id] || '' })),
-      ...quiet.map((r) => ({ name: r.name, role: r.spoke ? '' : 'did not speak' }))];
+      ...quiet.map((r) => ({ name: r.name, role: r.spoke ? '' : label('did_not_speak') }))];
 
   const blocks = {
     header: () => html`<header class="bf-head">
@@ -247,11 +251,11 @@ export function Brief({ m, brief, layout, onJump, onOpenShot }) {
           <ul>${a.discussion.map((x) => html`<li dir=${textDir(x)}>${x}</li>`)}</ul></div>`}
         ${(a.decisions || []).length > 0 && html`<div class="bf-grp"><h5>${label('agenda_decisions')}</h5><${Items} list=${a.decisions} onJump=${onJump} /></div>`}
         ${(a.action_items || []).length > 0 && html`<div class="bf-grp"><h5>${label('agenda_actions')}</h5>
-          <${Actions} items=${a.action_items} byName=${byName} onJump=${onJump} /></div>`}
+          <${Actions} items=${a.action_items} byName=${byName} onJump=${onJump} label=${label} /></div>`}
       </article>`)}</div></section>`,
     decisions: () => decisions.length > 0 && html`<section><h3>${label('decisions')} ${count(decisions)}</h3><${Items} list=${decisions} onJump=${onJump} /></section>`,
     action_items: () => actions.length > 0 && html`<section><h3>${label('action_items')} ${count(actions)}</h3>
-      <${Actions} items=${actions} byName=${byName} onJump=${onJump} />
+      <${Actions} items=${actions} byName=${byName} onJump=${onJump} label=${label} />
       ${actions.every((a) => !a.due) && html`<p class="bf-foot">No deadlines were stated. "Do now" means it was asked to start right away; it is not a date.</p>`}</section>`,
     open_questions: () => (brief.open_questions || []).length > 0 && html`<section><h3>${label('open_questions')} ${count(brief.open_questions)}</h3>
       <${Items} list=${brief.open_questions} onJump=${onJump} /></section>`,
@@ -265,11 +269,11 @@ export function Brief({ m, brief, layout, onJump, onOpenShot }) {
       <${Items} list=${brief.next_meeting} onJump=${onJump} /></section>`,
     speakers: () => (m.turns.length > 0 || quiet.length > 0) && html`<section><h3>${label('speakers')}</h3>
       <div class="bf-charts"><${ShareBars} stats=${stats} who=${who} /><${Timeline} minutes=${perMinute(m)} order=${order} who=${who} /></div>
-      <div class="bf-tablewrap"><table class="bf-table"><thead><tr><th>Speaker</th><th>Talk time</th><th>Share</th><th>Turns</th><th>Role in this meeting</th></tr></thead><tbody>
+      <div class="bf-tablewrap"><table class="bf-table"><thead><tr>${['col_speaker', 'col_talk_time', 'col_share', 'col_turns', 'col_role'].map((k) => html`<th>${label(k)}</th>`)}</tr></thead><tbody>
         ${stats.shown.map((s) => html`<tr><td><${Who} sp=${who(s.id)} /></td><td class="mono">${clock(s.seconds)}</td>
           <td class="mono">${Math.round(s.share * 100)}%</td><td class="mono">${s.turns}</td><td>${roles[s.id] || ''}</td></tr>`)}
         ${quiet.map((r) => html`<tr><td>${r.speaker ? html`<${Who} sp=${who(r.speaker)} />` : html`<span class="bf-who"><i></i>${r.name}</span>`}</td>
-          <td class=${r.spoke ? 'mono' : 'muted'}>${r.spoke ? clock(r.seconds) : 'Did not speak'}</td><td></td>
+          <td class=${r.spoke ? 'mono' : 'muted'}>${r.spoke ? clock(r.seconds) : label('did_not_speak')}</td><td></td>
           <td class="mono">${r.turns || ''}</td><td>${(r.speaker && roles[r.speaker]) || ''}</td></tr>`)}
       </tbody></table></div>
       ${splitOff.length > 0 && html`<p class="bf-foot">${splitOff.map((s) => who(s.id).name).join(', ')}: under 1% of the talk, likely a voice split by mistake; left out of the charts.</p>`}</section>`,

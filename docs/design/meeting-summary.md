@@ -61,6 +61,12 @@ with (`instructions`).
 words). A fixed-title template ("Management Meeting Summary") keeps its title
 on the report, and the meeting is named by the subject instead.
 
+**The report's words.** A summary in any language but English also brings
+`labels`: every fixed word of the report (section headings, tab names, table
+headers, statuses; `summary_templates.WORDS`) in that language, and a fixed
+title translated. The Summary tab and the Google Doc read them first, so a
+Hebrew meeting gets Hebrew headings; English is the fallback.
+
 **Made-up fields.** A section the user asked for must go in `sections`; a
 field the model invents anyway (say `avi_vision`) is folded into a section
 (`summarize.fold_extras`), when the summary is written and whenever an older
