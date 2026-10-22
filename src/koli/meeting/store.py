@@ -5,7 +5,8 @@
 # meeting runs, so a crash loses seconds, not the meeting. With
 # meeting.keep_audio on, the call's audio is kept beside it in "<id>.audio/";
 # screenshots are PNGs in "<id>.shots/". The brief (the summary written from
-# the meeting: decisions, action items, topics) is "<id>.brief.json".
+# the meeting: decisions, action items, topics) is "<id>.brief.json"; the
+# conversation with the AI about the meeting (its Chat tab) is "<id>.chat.json".
 
 import datetime
 import json
@@ -28,6 +29,7 @@ FOLDER = 'meetings'
 SAVE_INTERVAL = 5.0
 EXPORT_FORMATS = ('txt', 'md')
 BRIEF_SUFFIX = '.brief.json'
+CHAT_SUFFIX = '.chat.json'
 
 
 # ── Shapes ───────────────────────────────────────────────────────────────────
@@ -69,6 +71,40 @@ def duration_s(meeting: dict) -> float:
     last_turn = float(meeting['turns'][-1]['end']) if meeting['turns'] else 0.0
     last_shot = max((float(s['at']) for s in meeting.get('screenshots', [])), default=0.0)
     return max(last_turn, last_shot)
+
+
+# ── Who was there ────────────────────────────────────────────────────────────
+# Everyone in the meeting, said something or not: the voices heard, the
+# people the call app showed in the call (m['call']['people']) and the names
+# you added by hand (m['attendees']). A name that is also a speaker's is one
+# person. Each row: {'name', 'speaker' (id or None), 'seconds', 'turns',
+# 'spoke'}, the voices by talk time first, then the silent ones.
+
+def _norm(name) -> str:
+    return ' '.join(str(name or '').split()).lower()
+
+
+def roster(meeting: dict) -> list:
+    by_id = {}
+    for s in meeting.get('speakers', []):
+        by_id[s['id']] = {'name': s.get('name') or s['id'], 'speaker': s['id'], 'seconds': 0.0, 'turns': 0}
+    for t in meeting.get('turns', []):
+        # A turn whose speaker entry went missing still counts, under "Speaker N".
+        row = by_id.setdefault(t['speaker'], {'name': 'Speaker ' + t['speaker'].lstrip('s'),
+                                              'speaker': t['speaker'], 'seconds': 0.0, 'turns': 0})
+        row['seconds'] += max(0.0, float(t['end']) - float(t['start']))
+        row['turns'] += 1
+    rows = sorted((r for r in by_id.values() if r['turns'] or r['speaker'] == 'you'), key=lambda r: -r['seconds'])
+    known = {_norm(r['name']) for r in rows}
+    present = [p.get('name') for p in (meeting.get('call') or {}).get('people') or []] + list(meeting.get('attendees') or [])
+    for name in present:
+        if _norm(name) and _norm(name) not in known:
+            known.add(_norm(name))
+            rows.append({'name': str(name).strip(), 'speaker': None, 'seconds': 0.0, 'turns': 0})
+    for r in rows:
+        r['seconds'] = round(r['seconds'], 1)
+        r['spoke'] = r['turns'] > 0
+    return rows
 
 
 # What the list shows: never the turns or the voiceprints.
@@ -258,11 +294,33 @@ class MeetingStore:
             shutil.rmtree(self.audio_dir(meeting_id), ignore_errors=True)
             shutil.rmtree(self.shots_dir(meeting_id), ignore_errors=True)
             self.brief_path(meeting_id).unlink(missing_ok=True)
+            self.chat_path(meeting_id).unlink(missing_ok=True)
             try:
                 self.path(meeting_id).unlink()
                 return True
             except FileNotFoundError:
                 return False
+
+    # ── The chat: "<id>.chat.json" ───────────────────────────────────────────
+    # [{'role': 'user'|'assistant', 'text', 'at', 'changes'?}], oldest first.
+
+    def chat_path(self, meeting_id: str) -> Path:
+        return self.folder / f"{meeting_id}{CHAT_SUFFIX}"
+
+    def load_chat(self, meeting_id: str) -> list:
+        try:
+            data = json.loads(self.chat_path(meeting_id).read_text(encoding='utf-8'))
+            return data if isinstance(data, list) else []
+        except FileNotFoundError:
+            return []
+        except (OSError, ValueError) as e:
+            logger.warning(f"Unreadable chat for {meeting_id}: {e}")
+            return []
+
+    def save_chat(self, meeting_id: str, messages: list) -> None:
+        path = self.chat_path(meeting_id)
+        with self._lock:
+            path.write_text(json.dumps(messages, ensure_ascii=False, indent=1), encoding='utf-8')
 
     # ── Kept audio (meeting.keep_audio, off by default) ──────────────────────
     # Each chunk as a 16 kHz WAV in "<id>.audio/", named by its wall-clock

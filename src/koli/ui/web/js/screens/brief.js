@@ -7,7 +7,7 @@
 
 import { html, useEffect, useState } from '../../vendor/preact-htm.module.js';
 import { call } from '../api.js';
-import { app, navigate, textDir, toast } from '../store.js';
+import { app, closeModal, navigate, openModal, textDir, toast } from '../store.js';
 import { Thumb } from '../shots.js';
 import { Icon, Select } from '../ui.js';
 
@@ -204,8 +204,16 @@ export function Brief({ m, brief, layout, onJump, onOpenShot }) {
   const decisions = (brief.decisions && brief.decisions.length) ? brief.decisions : agenda.flatMap((a) => a.decisions || []);
   const actions = (brief.action_items && brief.action_items.length) ? brief.action_items : agenda.flatMap((a) => a.action_items || []);
   const dateOnly = lay.date === 'date';
+  // People who were there but are not in the charts: a named voice under
+  // 1% of the talk, or someone who said nothing (from the call or added by
+  // you). They still belong in the report.
+  const isDefault = (name) => /^(You|Speaker \d+)$/.test(name);
+  const quiet = (m.roster || []).filter((r) => !order.includes(r.speaker) && (r.speaker == null || !isDefault(who(r.speaker).name)))
+    .map((r) => ({ ...r, name: r.speaker ? who(r.speaker).name : r.name }));
+  const splitOff = stats.folded.filter((s) => isDefault(who(s.id).name));
   const attendees = (brief.attendees && brief.attendees.length) ? brief.attendees
-    : stats.shown.map((s) => ({ name: who(s.id).name, role: roles[s.id] || '' }));
+    : [...stats.shown.map((s) => ({ name: who(s.id).name, role: roles[s.id] || '' })),
+      ...quiet.map((r) => ({ name: r.name, role: r.spoke ? '' : 'did not speak' }))];
 
   const blocks = {
     header: () => html`<header class="bf-head">
@@ -246,13 +254,16 @@ export function Brief({ m, brief, layout, onJump, onOpenShot }) {
     </section>`,
     next_meeting: () => (brief.next_meeting || []).length > 0 && html`<section><h3>${label('next_meeting')} ${count(brief.next_meeting)}</h3>
       <${Items} list=${brief.next_meeting} onJump=${onJump} /></section>`,
-    speakers: () => m.turns.length > 0 && html`<section><h3>${label('speakers')}</h3>
+    speakers: () => (m.turns.length > 0 || quiet.length > 0) && html`<section><h3>${label('speakers')}</h3>
       <div class="bf-charts"><${ShareBars} stats=${stats} who=${who} /><${Timeline} minutes=${perMinute(m)} order=${order} who=${who} /></div>
       <div class="bf-tablewrap"><table class="bf-table"><thead><tr><th>Speaker</th><th>Talk time</th><th>Share</th><th>Turns</th><th>Role in this meeting</th></tr></thead><tbody>
         ${stats.shown.map((s) => html`<tr><td><${Who} sp=${who(s.id)} /></td><td class="mono">${clock(s.seconds)}</td>
           <td class="mono">${Math.round(s.share * 100)}%</td><td class="mono">${s.turns}</td><td>${roles[s.id] || ''}</td></tr>`)}
+        ${quiet.map((r) => html`<tr><td>${r.speaker ? html`<${Who} sp=${who(r.speaker)} />` : html`<span class="bf-who"><i></i>${r.name}</span>`}</td>
+          <td class=${r.spoke ? 'mono' : 'muted'}>${r.spoke ? clock(r.seconds) : 'Did not speak'}</td><td></td>
+          <td class="mono">${r.turns || ''}</td><td>${(r.speaker && roles[r.speaker]) || ''}</td></tr>`)}
       </tbody></table></div>
-      ${stats.folded.length > 0 && html`<p class="bf-foot">${stats.folded.map((s) => who(s.id).name).join(', ')}: under 1% of the talk, likely a voice split by mistake; left out of the charts.</p>`}</section>`,
+      ${splitOff.length > 0 && html`<p class="bf-foot">${splitOff.map((s) => who(s.id).name).join(', ')}: under 1% of the talk, likely a voice split by mistake; left out of the charts.</p>`}</section>`,
     screenshots: () => shots.length > 0 && html`<section><h3>${label('screenshots')} ${count(shots)}</h3>
       <p class="bf-foot">Screenshots taken during the meeting, in order. Each one also sits inside its topic and at its moment in the transcript.</p>
       <div class="bf-strip">${shots.map((s) => html`<div class="bf-card"><${Thumb} meetingId=${m.id} shot=${s} width=${180} onOpen=${onOpenShot} />
@@ -272,21 +283,18 @@ export function Brief({ m, brief, layout, onJump, onOpenShot }) {
   </div>`;
 }
 
-// Asking the AI for a summary: the template and language, then Summarize.
-// With no summary it fills the tab; with one, it sits above it as
-// "Summarize again". While a summary is written it shows the progress.
+// Asking the AI for a summary: the template, the language and your own
+// instructions, then Summarize. With no summary it fills the tab; with one,
+// "Summarize again" sits above it and opens the same choices in a dialog.
+// While a summary is written it shows the progress.
 export function SummaryBar({ meetingId, brief, live, onStarted }) {
   const has = !!brief;
   const [st, setSt] = useState(null);
   const [templates, setTemplates] = useState([]);
-  const [tpl, setTpl] = useState('');
-  const [lang, setLang] = useState('');
-  const [open, setOpen] = useState(!has);
   const tasks = app.use((s) => s.tasks);
   const job = Object.values(tasks || {}).find((t) => t.kind === 'meeting_summary' && t.ref === meetingId && t.status === 'running');
   useEffect(() => {
-    setOpen(!has);
-    call('meeting_summary_state', meetingId).then((s) => { setSt(s); setTpl(s.template); }).catch(() => {});
+    call('meeting_summary_state', meetingId).then(setSt).catch(() => {});
     call('summary_templates').then(setTemplates).catch(() => {});
   }, [meetingId, brief]);
   if (live) return has ? null : html`<div class="empty">The summary is written when the meeting ends.</div>`;
@@ -295,19 +303,49 @@ export function SummaryBar({ meetingId, brief, live, onStarted }) {
     return html`<div class="bf-ask running"><span class="spin" aria-hidden="true"></span>
       <div><b>Writing the summary…</b><div class="small muted">${(job && job.detail) || 'The AI is reading the transcript'}</div></div></div>`;
   }
-  const go = () => call('meeting_summarize', meetingId, tpl, lang).then(() => { setSt({ ...st, running: true }); onStarted && onStarted(); })
-    .catch((e) => toast(e.message, { kind: 'err' }));
-  if (has && !open) {
-    return html`<div class="bf-again"><button type="button" class="btn ghost sm" onClick=${() => setOpen(true)}><${Icon} name="refresh" />Summarize again</button></div>`;
+  const started = () => { setSt({ ...st, running: true }); onStarted && onStarted(); };
+  if (has) {
+    const open = () => openModal(() => html`<${SummarizeDialog} meetingId=${meetingId} st=${st} templates=${templates} onStarted=${started} />`);
+    return html`<div class="bf-again"><button type="button" class="btn ghost sm" onClick=${open}><${Icon} name="refresh" />Summarize again</button></div>`;
   }
-  return html`<div class="bf-ask">
-    <div class="grow"><b>${has ? 'Summarize again' : 'No summary yet'}</b>
+  return html`<div class="bf-ask" style="flex-direction:column;align-items:stretch">
+    <div><b>No summary yet</b>
       <div class="small muted">${st.ai_ready ? 'The AI writes it from the transcript, laid out by the template you pick.'
         : html`Choose an AI model first in <a href="#" onClick=${(e) => { e.preventDefault(); navigate('settings/ai'); }}>Settings › AI</a>.`}</div></div>
-    <${Select} label="Template" value=${tpl} options=${templates.map((t) => [t.id, t.name + (t.default ? ' (default)' : '')])} onChange=${setTpl} />
-    <${Select} label="Language" value=${lang} options=${SUMMARY_LANGUAGES} onChange=${setLang} />
-    <button type="button" class="btn pri" disabled=${!st.ai_ready} onClick=${go}>Summarize</button>
-    ${has && html`<button type="button" class="btn ghost" onClick=${() => setOpen(false)}>Cancel</button>`}
+    <${SummarizeForm} meetingId=${meetingId} st=${st} templates=${templates} onStarted=${started} />
+  </div>`;
+}
+
+// The choices for a summary: template, language, instructions, Summarize.
+function SummarizeForm({ meetingId, st, templates, onStarted, onCancel, again = false }) {
+  const [tpl, setTpl] = useState(st.template);
+  const [lang, setLang] = useState('');
+  const [text, setText] = useState(again ? (st.instructions || '') : '');
+  const go = () => call('meeting_summarize', meetingId, tpl, lang, text.trim())
+    .then(() => { onStarted && onStarted(); })
+    .catch((e) => toast(e.message, { kind: 'err' }));
+  return html`<div class="stack" style="gap:10px">
+    <div class="row-flex">
+      <${Select} label="Template" value=${tpl} options=${templates.map((t) => [t.id, t.name + (t.default ? ' (default)' : '')])} onChange=${setTpl} />
+      <${Select} label="Language" value=${lang} options=${SUMMARY_LANGUAGES} onChange=${setLang} />
+    </div>
+    <label class="stack" style="gap:6px"><span class="eyebrow">Instructions for the AI (optional)</span>
+      <textarea class="inp" rows="4" dir="auto" value=${text} onInput=${(e) => setText(e.currentTarget.value)}
+        placeholder="Focus on the budget. Speaker 2 is Dana. Ilona was there and didn't speak."></textarea></label>
+    <div class="row-flex" style="justify-content:flex-end">
+      ${onCancel && html`<button type="button" class="btn" onClick=${onCancel}>Cancel</button>`}
+      <button type="button" class="btn pri" disabled=${!st.ai_ready} onClick=${go}>${again ? 'Summarize again' : 'Summarize'}</button>
+    </div></div>`;
+}
+
+// "Summarize again" as a dialog over the summary.
+function SummarizeDialog({ meetingId, st, templates, onStarted }) {
+  return html`<div class="modal" role="dialog" aria-modal="true" aria-labelledby="sumtitle" style="width:min(560px,92vw)">
+    <div class="modal-head"><h2 id="sumtitle">Summarize again</h2></div>
+    <div class="modal-body">
+      <p class="small muted" style="margin:0 0 10px">The AI writes the whole summary again from the transcript. Tell it what to do differently.</p>
+      <${SummarizeForm} meetingId=${meetingId} st=${st} templates=${templates} again=${true}
+        onStarted=${() => { closeModal(); onStarted(); }} onCancel=${closeModal} /></div>
   </div>`;
 }
 

@@ -45,12 +45,26 @@ data have their own tabs, so those blocks are skipped there.
 `meeting/summarize.py` builds the messages: the template's prompt as the
 system message, then the meeting as text (title, date, length, the speakers
 with their ids, every turn as `[seconds] id (name): text`, and the
-screenshots' captions at their moments). The model answers JSON
+screenshots' captions at their moments), plus everyone who was there with
+their talk time (`store.roster`: the voices, the people the call app showed,
+the names added with *+ Person*; someone silent reads "was there but did not
+speak"). Your instructions from the Summarize box come as a last user
+message and win over the template. The model answers JSON
 (`llm.complete('meetings', ..., json=True)`). The answer is checked and
 tidied: version, template id, generator ("model via Koli"), list fields as
 lists, unknown speaker ids dropped from `participants`. It is saved as the
 brief; a fixed-title template keeps one of its titles, so the meeting keeps
-its own title in the list.
+its own title in the list. The brief keeps the instructions it was written
+with (`instructions`).
+
+**Names from the summary.** The model's `participants` name the speakers
+still called "Speaker N" in the meeting (never "You", never a name you gave),
+and their saved voice takes the name when it has none, so the next meeting
+recognises them. Rename the speaker to correct a wrong guess.
+
+**People who said little or nothing** are in the report: the Summary tab and
+the Google Doc list them in the speakers table ("Did not speak") and in the
+participants, and the shared rules tell the model to list everyone present.
 
 **Language**, first that applies: the language picked when asking for the
 summary; the template's `language` when it is a code; the setting
@@ -59,8 +73,12 @@ summary; the template's `language` when it is a code; the setting
 
 **When**
 
-- By hand: *Summarize* on the Summary tab (template and language pickers),
-  and *Summarize again* once there is one.
+- By hand: *Summarize* on the Summary tab (template, language and
+  instructions for the AI), and *Summarize again* once there is one: a dialog
+  with the same choices, starting from the last summary's template and
+  instructions.
+- The template: the one picked in the meeting panel while the call was
+  offered or ran (`summary_template` on the meeting), else the default.
 - Automatically (`meeting.summary.auto`, on by default, needs an AI model):
   after a meeting ends, once the transcriber has caught up and the meeting
   has not resumed, and only when it lasted `meeting.summary.min_minutes` (10)
@@ -76,6 +94,25 @@ Settings › Meetings › Summary holds them all: `meeting.summary.auto`,
 file like every AI feature), `.language` and the timeout (`ai.meetings.timeout`,
 180 s); the default template is chosen in Summary templates. The Meetings
 screen's *Meeting settings* button opens the same Meetings section in a modal.
+
+## Chat
+
+A meeting's **Chat** tab (`meeting/chat.py`, `screens/chat.js`) asks the AI
+about that meeting: it reads the meeting text and the brief, plus the last 20
+messages, and answers `{"reply", "changes"}`. Changes it may make, checked
+before they are done: `rename_speaker` (an id from the meeting; names the
+voice too), `add_attendee` / `remove_attendee`, `set_title`, `edit_summary`
+(whole fields of the brief, tidied like a fresh summary) and `resummarize`
+(with instructions). On a running meeting only names and attendees change.
+The conversation is kept in `<id>.chat.json`; the answer lists what changed.
+
+## Google Drive follows the meeting
+
+A meeting saved to Drive once is updated there after each change (a summary,
+a name, an attendee, a caption, a chat edit), a few quiet seconds after the
+last one: the same doc, so its link and sharing stay (`gdoc.export` deletes
+the doc's extra tabs, uploads the report onto the doc, renames the folder when
+the title changed, and adds the tabs again). A doc that is gone is made anew.
 
 ## Search
 

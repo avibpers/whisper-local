@@ -20,8 +20,8 @@ from ..meeting.detector import MeetingDetector
 from ..meeting.diarize import make_splitter
 from ..meeting.session import SessionManager, merge_speaker_into, same_name_as
 from ..meeting.speakers import SAME_VOICE, SpeakerTracker, make_embedder
-from ..meeting import summarize as summary_ai
-from ..meeting.store import MeetingStore
+from ..meeting import chat as meeting_chat, summarize as summary_ai
+from ..meeting.store import MeetingStore, roster
 from ..meeting.summary_templates import TemplateLibrary, layout as template_layout, summary as template_row
 from ..meeting.transcriber import YOU_FIRM, MeetingTranscriber
 from ..meeting.voices import FILE as VOICES_FILE, VoiceBook, is_default_name
@@ -35,9 +35,31 @@ MIN_KEEP_CHUNKS = 3   # chunks a remote voice needs before it is saved when the 
 CALL_POLL_SECONDS = 15   # how often a running call's window is read for who is in it
 CALL_APPS = ('discord.exe',)   # call apps whose window says who is in the call (platform call_people)
 MY_VOICE_MIN = 3      # hotkey dictations on a microphone before auto-dictation checks your voice there
+DRIVE_FOLLOW_S = 5.0  # quiet seconds after a change before a meeting saved to Drive is updated there
 
 LOOPBACK_HINT = ("Meetings need the loopback package to hear the call. Install it from the Meetings screen, "
                  "or: pip install koli[loopback]")
+
+
+# The call app whose window says who is in this meeting's call: the detected
+# app, or for a meeting started by hand a call app that has sound now
+# (`sessions`, the audio sessions), so an idle Discord is never read.
+def _call_app(meeting: dict, sessions: Callable[[], list] = lambda: []) -> Optional[str]:
+    app = (meeting.get('source') or {}).get('app')
+    if app in CALL_APPS:
+        return app
+    if (meeting.get('source') or {}).get('kind') != 'manual':
+        return None
+    try:
+        playing = {str(s.get('exe') or s.get('app') or '').lower() for s in sessions()}
+    except Exception:
+        return None
+    return next((a for a in CALL_APPS if a in playing), None)
+
+
+# The colour for a speaker added to a saved meeting: the next of the others'.
+def _next_colour(meeting: dict) -> int:
+    return len([s for s in meeting['speakers'] if s['id'] != 'you']) % 7 + 1
 
 
 def _soundcard_installed() -> bool:
@@ -68,6 +90,9 @@ class MeetingService:
         self._complete = complete
         self._summarizing = {}            # meeting id -> 'auto' | 'hand' while its job runs
         self._auto_waiting = set()        # meeting ids waiting for the transcript to settle
+        # Meetings saved to Google Drive follow their changes there (_drive_follow).
+        self._drive_due = {}              # meeting id -> when its doc is updated
+        self._drive_lock = threading.Lock()   # one export at a time
         # Screenshots: the platform's snip overlay and clipboard (a fake in tests).
         self._shots = shots or platform_shots
         self._expecting: Optional[str] = None   # meeting id while a snip of ours is awaited
@@ -318,14 +343,15 @@ class MeetingService:
     def _poll_call(self, read: Callable[[str], dict] = None, stop: Optional[threading.Event] = None):
         try:
             m = self.session.meeting
-            if self.session.state != 'live' or not m or m['source'].get('app') not in CALL_APPS:
+            app = _call_app(m, self._sessions_fn) if m else None
+            if self.session.state != 'live' or not app:
                 return
             if read is None:
                 read = self._call_people_fn
             if read is None:
                 from ..platform import call_people
                 read = call_people.read
-            call = read(m['source']['app'])
+            call = read(app)
             if stop is not None and stop.is_set():
                 return
             self.session.set_call(call, m['id'])
@@ -340,8 +366,9 @@ class MeetingService:
     # Read the call every CALL_POLL_SECONDS while the meeting captures,
     # first right away; a read takes seconds, so never on the detector's tick.
     def _start_call_poll(self, meeting: dict):
-        if meeting['source'].get('app') not in CALL_APPS:
-            return
+        source = meeting.get('source') or {}
+        if source.get('app') not in CALL_APPS and source.get('kind') != 'manual':
+            return     # each read checks again which call app has sound (_call_app)
         self._call_stop.set()
         stop = self._call_stop = threading.Event()
 
@@ -531,11 +558,14 @@ class MeetingService:
 
     # Writes the meeting's brief in the background. `how` is 'hand' (a button)
     # or 'auto' (after the meeting ended). Returns the task's id.
-    def summarize(self, meeting_id: str, template: str = '', language: str = '', how: str = 'hand') -> int:
+    # `template` '' is the one picked for this meeting in the panel, else the
+    # default; `instructions` are your own words for this summary.
+    def summarize(self, meeting_id: str, template: str = '', language: str = '', how: str = 'hand',
+                  instructions: str = '') -> int:
         live = self.session.meeting
         if live and live['id'] == meeting_id and self.is_running():
             raise ValueError("End the meeting before summarizing it")
-        template = template or self.default_template()
+        template = template or self.meeting_template(meeting_id) or self.default_template()
         chosen = self.templates.get(template)
         with self._lock:
             if meeting_id in self._summarizing:
@@ -547,13 +577,14 @@ class MeetingService:
             reporter.report(None, f"Writing it with the {chosen.get('name')} template")
             brief = summary_ai.summarize(m, self.templates, chosen['id'], self._ai(), language=language,
                                          language_setting=str(self._setting('meeting.summary.language', 'meeting')),
-                                         parse=self._parse)
+                                         parse=self._parse, instructions=instructions)
             brief['written'] = how
             spec = chosen.get('title') or {}
             fixed = isinstance(spec, dict) and spec.get('mode') == 'fixed'
             self.store.save_brief(meeting_id, brief, rename_meeting=not fixed)
             if not fixed and brief.get('title'):
                 self.session.retitle(meeting_id, brief['title'])
+            self._apply_brief_names(meeting_id, brief)
             return brief.get('title')
 
         def done(task):
@@ -561,6 +592,7 @@ class MeetingService:
                 self._summarizing.pop(meeting_id, None)
             if task.status == 'done':
                 self._publish('meeting_brief', {'id': meeting_id})
+                self._drive_follow(meeting_id)
             if how == 'auto':
                 if task.status == 'done':
                     self._summary_status(meeting_id, 'ready', title=self._meeting_title(meeting_id))
@@ -664,7 +696,102 @@ class MeetingService:
             logger.info(f"Meeting summary: {e}")
             self._summary_status(meeting_id, 'none')
 
+    # The summary says who a "Speaker N" is ("participants"): the meeting
+    # takes that name, and so does its saved voice when that has no name yet,
+    # so the next meeting knows them. A name you gave stays, and so does a
+    # saved voice's name; "You" stays You. A speaker whose entry went missing
+    # (a voice first heard after End, before that was kept) gets one back.
+    def _apply_brief_names(self, meeting_id: str, brief: dict):
+        names = {k: str(v).strip()[:40] for k, v in (brief.get('participants') or {}).items()
+                 if k != 'you' and str(v).strip() and not is_default_name(v)}
+        if not names:
+            return
+        named = []
+
+        def change(m):
+            for sid, name in names.items():
+                if same_name_as(m, sid, name):
+                    continue      # someone else here has that name already
+                s = next((x for x in m['speakers'] if x['id'] == sid), None)
+                if s is None:
+                    if not any(t['speaker'] == sid for t in m['turns']):
+                        continue
+                    s = {'id': sid, 'name': '', 'colour': _next_colour(m)}
+                    m['speakers'].append(s)
+                elif not is_default_name(s.get('name')):
+                    continue
+                s['name'] = name
+                named.append(dict(s))
+            return bool(named)
+        try:
+            self.session.edit_saved(meeting_id, change)
+        except ValueError:
+            return
+        for s in named:
+            saved = self.voices.get(s['voice_id']) if s.get('voice_id') else None
+            if saved is not None and not saved.get('name'):
+                self.voices.set_name(s['voice_id'], s['name'])
+        if named:
+            logger.info(f"The summary named {len(named)} speaker(s) in {meeting_id}")
+
+    # ── Google Drive follows the meeting ─────────────────────────────────────
+    # A meeting saved to Drive once is updated there after every change (a
+    # summary, a speaker's name, an attendee, a caption, a chat edit): a few
+    # quiet seconds after the last one, the same doc is refreshed in place.
+    # Never while the meeting runs. The app hears 'meeting_drive' with the
+    # phase (saving, saved, failed).
+    def _drive_follow(self, meeting_id: str, delay_s: float = DRIVE_FOLLOW_S):
+        live = self.session.meeting
+        if live and live['id'] == meeting_id:
+            return
+        try:
+            if not self.store.load(meeting_id).get('drive') or not self.store.load_brief(meeting_id):
+                return
+        except (OSError, ValueError):
+            return
+        with self._lock:
+            waiting = meeting_id in self._drive_due
+            self._drive_due[meeting_id] = time.monotonic() + delay_s
+        if waiting:
+            return
+
+        def run():
+            while not self._closed:
+                with self._lock:
+                    left = self._drive_due[meeting_id] - time.monotonic()
+                    if left <= 0:
+                        del self._drive_due[meeting_id]
+                        break
+                time.sleep(min(left, 1.0))
+            else:
+                return
+            self._publish('meeting_drive', {'id': meeting_id, 'phase': 'saving'})
+            try:
+                info = self.export_to_drive(meeting_id)
+                self._publish('meeting_drive', {'id': meeting_id, 'phase': 'saved', 'drive': info})
+            except Exception as e:
+                logger.warning(f"Updating {meeting_id} in Google Drive failed: {e}")
+                self._publish('meeting_drive', {'id': meeting_id, 'phase': 'failed', 'error': str(e)})
+        threading.Thread(target=run, name='meeting-drive-follow', daemon=True).start()
+
     # ── Summary templates ────────────────────────────────────────────────────
+
+    # The template picked for this meeting in the panel, when it still exists.
+    def meeting_template(self, meeting_id: str) -> str:
+        live = self.session.meeting
+        try:
+            m = live if live and live['id'] == meeting_id else self.store.load(meeting_id)
+        except (OSError, ValueError):
+            return ''
+        chosen = str(m.get('summary_template') or '')
+        return chosen if chosen and self.template_exists(chosen) else ''
+
+    # The panel's pick for the meeting running now, or for the call offered.
+    def set_summary_template(self, template_id: str):
+        template_id = str(template_id or '')
+        if template_id and not self.template_exists(template_id):
+            raise ValueError("That summary template no longer exists")
+        self.session.set_summary_template(template_id)
 
     def default_template(self) -> str:
         return str(self._setting('meeting.summary.template', 'standard') or 'standard')
@@ -714,10 +841,21 @@ class MeetingService:
             raise ValueError("End the meeting before saving it to Google Drive")
         from ..meeting import gdoc
         brief = self.store.load_brief(meeting_id) or {}
-        return gdoc.export(self.store, meeting_id, layout=self.template_layout(brief.get('template') or 'standard'))
+        with self._drive_lock:
+            return gdoc.export(self.store, meeting_id, layout=self.template_layout(brief.get('template') or 'standard'))
 
     def set_caption(self, meeting_id: str, image: str, caption: str) -> bool:
-        return self.session.set_caption(meeting_id, image, caption)
+        done = self.session.set_caption(meeting_id, image, caption)
+        if done:
+            self._drive_follow(meeting_id)
+        return done
+
+    # Who was there besides the voices heard (names you type), live or saved.
+    def set_attendees(self, meeting_id: str, names: list) -> bool:
+        done = self.session.set_attendees(meeting_id, list(names or []))
+        if done:
+            self._drive_follow(meeting_id)
+        return done
 
     # The PNG as a data URL, the way the pages can show it (they are served
     # from the package folder, not from the data folder).
@@ -975,24 +1113,31 @@ class MeetingService:
             self.session.ensure_speaker({'id': speaker_id, 'voice_id': voice_id})
             self.tracker.set_voice_id(speaker_id, voice_id)
 
+    # Through the session, so the copy it keeps for resume changes too. A
+    # speaker whose entry went missing (heard only after End) gets one.
     def rename_saved_speaker(self, meeting_id: str, speaker_id: str, name: str):
-        m = self.store.load(meeting_id)
-        twin = same_name_as(m, speaker_id, name)
-        if twin:
-            source = next((s for s in m['speakers'] if s['id'] == speaker_id), {})
-            target = next((s for s in m['speakers'] if s['id'] == twin), {})
-            self._merge_voice_ids(source.get('voice_id'), target)
-            merge_speaker_into(m, speaker_id, twin)
-            speaker_id = twin
-        for s in m['speakers']:
-            if s['id'] == speaker_id:
-                s['name'] = str(name).strip()[:40] or s['name']
-                if s.get('centroid'):
-                    s['voice_id'] = s.get('voice_id') or self.voices.keep(
-                        s['centroid'], s.get('count', 1), meeting_id,
-                        taken=[o.get('voice_id') for o in m['speakers'] if o.get('voice_id')])
-                    self.voices.set_name(s['voice_id'], s['name'])
-        self.store.save(m)
+        def change(m):
+            target_id = speaker_id
+            twin = same_name_as(m, speaker_id, name)
+            if twin:
+                source = next((s for s in m['speakers'] if s['id'] == speaker_id), {})
+                target = next((s for s in m['speakers'] if s['id'] == twin), {})
+                self._merge_voice_ids(source.get('voice_id'), target)
+                merge_speaker_into(m, speaker_id, twin)
+                target_id = twin
+            if not any(s['id'] == target_id for s in m['speakers']) and any(t['speaker'] == target_id for t in m['turns']):
+                m['speakers'].append({'id': target_id, 'name': '', 'colour': _next_colour(m)})
+            for s in m['speakers']:
+                if s['id'] == target_id:
+                    s['name'] = str(name).strip()[:40] or s['name']
+                    if s.get('centroid'):
+                        s['voice_id'] = s.get('voice_id') or self.voices.keep(
+                            s['centroid'], s.get('count', 1), meeting_id,
+                            taken=[o.get('voice_id') for o in m['speakers'] if o.get('voice_id')])
+                        self.voices.set_name(s['voice_id'], s['name'])
+            return True
+        self.session.edit_saved(meeting_id, change)
+        self._drive_follow(meeting_id)
 
     # ── Your voice in dictation ──────────────────────────────────────────────
     # The same voiceprints, for auto-dictation: a hotkey dictation (you
@@ -1083,11 +1228,107 @@ class MeetingService:
     def search(self, query: str) -> list:
         return self.store.search(query)
 
+    # The meeting with its roster: everyone there, with their talk time.
     def get(self, meeting_id: str) -> dict:
         m = self.session.meeting
-        if m and m['id'] == meeting_id:
-            return dict(m)
-        return self.store.load(meeting_id)
+        m = dict(m) if m and m['id'] == meeting_id else self.store.load(meeting_id)
+        m['roster'] = roster(m)
+        return m
+
+    # ── Chat about a meeting (meeting/chat.py) ───────────────────────────────
+
+    def chat_history(self, meeting_id: str) -> list:
+        return self.store.load_chat(meeting_id)
+
+    def chat_clear(self, meeting_id: str):
+        self.store.save_chat(meeting_id, [])
+
+    # Asks the AI about the meeting and does the changes it answered with.
+    # Returns the whole conversation and whether the meeting changed.
+    def chat_ask(self, meeting_id: str, question: str) -> dict:
+        if not self.ai_ready():
+            raise ValueError("Choose an AI model in Settings › AI first")
+        m = self.get(meeting_id)
+        brief = self.store.load_brief(meeting_id)
+        history = self.store.load_chat(meeting_id)
+        answer = meeting_chat.ask(m, brief, history, question, self._ai(), parse=self._parse)
+        done = self._chat_changes(meeting_id, answer['changes'])
+        now = time.strftime('%Y-%m-%dT%H:%M:%S')
+        history = history + [{'role': 'user', 'text': str(question).strip(), 'at': now},
+                             {'role': 'assistant', 'text': answer['reply'], 'at': now, 'changes': done}]
+        self.store.save_chat(meeting_id, history)
+        return {'messages': history, 'changed': bool(done)}
+
+    # Does the chat's changes; returns a line for each one done. On a running
+    # meeting only names and attendees change; the rest waits for its end.
+    def _chat_changes(self, meeting_id: str, changes: list) -> list:
+        live = self.session.meeting
+        running = bool(live and live['id'] == meeting_id)
+        done = []
+        for c in changes:
+            try:
+                line = self._chat_change(meeting_id, c, running)
+            except Exception as e:
+                logger.warning(f"Chat change {c.get('op')} on {meeting_id} failed: {e}")
+                line = f"Couldn't {c['op'].replace('_', ' ')}: {e}"
+            if line:
+                done.append(line)
+        if done and not running:
+            self._publish('meeting_brief', {'id': meeting_id})
+            self._drive_follow(meeting_id)
+        return done
+
+    def _chat_change(self, meeting_id: str, c: dict, running: bool) -> str:
+        op = c['op']
+        m = self.get(meeting_id)
+        if op == 'rename_speaker':
+            old = next((s['name'] for s in m['speakers'] if s['id'] == c['speaker']), c['speaker'])
+            if running:
+                self.rename_speaker(c['speaker'], c['name'])
+            else:
+                self.rename_saved_speaker(meeting_id, c['speaker'], c['name'])
+            return f"{old} is now {c['name']}"
+        if op in ('add_attendee', 'remove_attendee'):
+            names = list(m.get('attendees') or [])
+            if op == 'add_attendee':
+                names.append(c['name'])
+            else:
+                names = [n for n in names if n.lower() != c['name'].lower()]
+            self.session.set_attendees(meeting_id, names)
+            return f"{'Added' if op == 'add_attendee' else 'Removed'} {c['name']}"
+        if running:
+            return "The summary and title change once the meeting ends"
+        if op == 'set_title':
+            def retitle(x):
+                x['title'] = c['title']
+                return True
+            self.session.edit_saved(meeting_id, retitle)
+            self.session.retitle(meeting_id, c['title'])
+            brief = self.store.load_brief(meeting_id)
+            if brief:
+                brief['title'] = c['title']
+                self.store.save_brief(meeting_id, brief)
+            return f"Title: {c['title']}"
+        if op == 'edit_summary':
+            brief = self.store.load_brief(meeting_id)
+            if not brief:
+                return "There is no summary to change yet"
+            template = self.templates.get(brief.get('template') or 'standard')
+            kept = {k: brief[k] for k in ('written', 'instructions') if k in brief}
+            fresh = summary_ai.tidy({**brief, **c['set']}, m, template, brief.get('generator', ''),
+                                    brief.get('language', ''))
+            fresh.update(kept)
+            self.store.save_brief(meeting_id, fresh, rename_meeting='title' in c['set'])
+            if 'title' in c['set']:
+                self.session.retitle(meeting_id, fresh['title'])
+            if 'participants' in c['set']:
+                self._apply_brief_names(meeting_id, fresh)
+            return "Summary changed: " + ', '.join(c['set'])
+        if op == 'resummarize':
+            brief = self.store.load_brief(meeting_id) or {}
+            self.summarize(meeting_id, template=brief.get('template') or '', instructions=c['instructions'])
+            return "Writing the summary again"
+        return ''
 
     def delete(self, meeting_id: str) -> bool:
         m = self.session.meeting

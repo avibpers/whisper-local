@@ -7,6 +7,19 @@
 
 // ── Meeting summaries and templates (mock) ──────────────────────────────
 const summaries = {};
+const chats = {};      // meeting id -> the Chat tab's conversation
+
+// The roster the app adds to a meeting: every voice by talk time, then the
+// names added by hand that never spoke.
+function withRoster(m) {
+  if (!m) return m;
+  const by = {};
+  m.speakers.forEach((s) => { by[s.id] = { name: s.name, speaker: s.id, seconds: 0, turns: 0 }; });
+  m.turns.forEach((t) => { const r = by[t.speaker] || (by[t.speaker] = { name: t.speaker, speaker: t.speaker, seconds: 0, turns: 0 }); r.seconds += t.end - t.start; r.turns += 1; });
+  const rows = Object.values(by).filter((r) => r.turns).sort((a, b) => b.seconds - a.seconds);
+  (m.attendees || []).forEach((n) => { if (!rows.some((r) => r.name.toLowerCase() === n.toLowerCase())) rows.push({ name: n, speaker: null, seconds: 0, turns: 0 }); });
+  return { ...m, roster: rows.map((r) => ({ ...r, spoke: r.turns > 0 })) };
+}
 let templateDefault = 'standard';
 const TEMPLATES = [
   { id: 'standard', name: 'Visual meeting brief', description: 'Outcomes first, who talked most with charts, topics with quotes.',
@@ -627,8 +640,29 @@ export function createMock(emit) {
     },
     meetings_list: () => ok(Object.values(saved).map((m) => ({ id: m.id, title: m.title, source: m.source, started_at: m.started_at,
       ended_at: m.ended_at, duration_s: 2520, speakers: m.speakers.map((s) => s.name), turns: m.turns.length }))),
-    meeting_get: (id) => ok(id === 'live-mock' ? { id, title: meeting.title, source: meeting.source, started_at: meeting.started_at,
-      speakers: SPEAKERS, turns: liveTurns.slice(), screenshots: liveShots.slice(), gaps: [] } : saved[id]),
+    meeting_get: (id) => ok(withRoster(id === 'live-mock' ? { id, title: meeting.title, source: meeting.source, started_at: meeting.started_at,
+      speakers: SPEAKERS, turns: liveTurns.slice(), screenshots: liveShots.slice(), gaps: [], attendees: meeting.attendees || [] } : saved[id])),
+    // People added by hand; the roster is worked out again on the next get.
+    meeting_attendees: (id, names) => {
+      if (id === 'live-mock') meeting.attendees = names; else if (saved[id]) saved[id].attendees = names;
+      return ok(true);
+    },
+    meeting_set_template: (templateId) => { meeting.summary_template = templateId; emit('meeting', { ...meeting }); return ok(null); },
+    // The chat answers after a moment; "is <name>" renames Speaker 2, like the AI would.
+    meeting_chat: (id) => ok(chats[id] || []),
+    meeting_chat_clear: (id) => { chats[id] = []; return ok(null); },
+    meeting_chat_ask: (id, question) => delay(700).then(() => {
+      const named = /is (\w+)/i.exec(question);
+      const changes = [];
+      if (named && saved[id]) {
+        const sp = saved[id].speakers.find((x) => x.id !== 'you');
+        if (sp) { changes.push(`${sp.name} is now ${named[1]}`); sp.name = named[1]; }
+      }
+      const at = new Date().toISOString().slice(0, 19);
+      chats[id] = [...(chats[id] || []), { role: 'user', text: question, at },
+        { role: 'assistant', text: changes.length ? 'Done.' : 'In the mock, every answer is this one.', at, changes }];
+      return ok({ messages: chats[id], changed: changes.length > 0 });
+    }),
     // The camera button: the "snip" lands 800 ms later, as if the overlay closed.
     meeting_screenshot: () => {
       if (meeting.state !== 'live' && meeting.state !== 'paused') return ok({ ok: false, reason: 'no meeting' });
@@ -643,7 +677,8 @@ export function createMock(emit) {
     // A summary for the saved meeting, in the shape the summary step writes;
     // Summarize writes one for the others (the board template's, or this one).
     meeting_brief: (id) => ok(summaries[id] || (id === '2026-10-10-150000' ? STANDARD_BRIEF : null)),
-    meeting_summary_state: (id) => ok({ ai_ready: true, running: false, template: templateDefault }),
+    meeting_summary_state: (id) => ok({ ai_ready: true, running: false, template: (summaries[id] && summaries[id].template) || templateDefault,
+      instructions: (summaries[id] && summaries[id].instructions) || '' }),
     meeting_summarize: (id, template) => {
       const task = { id: 900 + Object.keys(summaries).length, label: 'Summarizing the meeting', kind: 'meeting_summary', ref: id,
         status: 'running', progress: null, detail: `Writing it with the ${(TEMPLATES.find((x) => x.id === (template || templateDefault)) || {}).name} template` };

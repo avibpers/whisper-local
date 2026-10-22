@@ -174,6 +174,7 @@ class SessionManager:
         self._gap_open = None            # index into meeting['gaps'] of the open gap
         self._cancel_gap_timer = None
         self._previous = None            # the meeting ended while a new one started inside its gap
+        self._next_template = ''         # the summary template picked while a call is offered
         self._previous_until = None
         self._previous_paused_s = 0.0
         self._resumed_turn_index = None  # turns from here came after the last resume
@@ -234,6 +235,8 @@ class SessionManager:
                 'offer': self._offer_payload(),
                 'standby': self._standby_payload(),
                 'auto_paused': self._stopped_at is not None,
+                'summary_template': (m.get('summary_template', '') if m else self._next_template) or '',
+                'attendees': list(m.get('attendees') or []) if m else [],
             }
 
     # The detected call, for the panel: its name ("Google Meet"), its app
@@ -470,6 +473,7 @@ class SessionManager:
             self._pending = None
         self._clear_countdown()
         self.state = 'idle'
+        self._next_template = ''
         self._speech_s = 0.0
 
     # ── Commands ─────────────────────────────────────────────────────────────
@@ -635,6 +639,42 @@ class SessionManager:
             self._publish('meeting_shot', {'id': target['id'], 'shot': entry, 'caption': True})
             return True
 
+    # The template this meeting's summary is written with ('' = the default),
+    # picked in the panel while the call is offered or the meeting runs.
+    def set_summary_template(self, template_id: str):
+        with self._transition():
+            m = self.meeting
+            if m and self.state in ('live', 'paused'):
+                m['summary_template'] = template_id
+                self.saver.mark(m)
+            elif self.state == 'offered':
+                self._next_template = template_id
+            else:
+                return
+            self._emit()
+
+    # Who was there besides the voices heard: names you add, for people who
+    # said nothing (or whose voice went to someone else). Live or saved.
+    def set_attendees(self, meeting_id: str, names: list) -> bool:
+        clean = []
+        for n in names or []:
+            n = ' '.join(str(n or '').split())[:40]
+            if n and n.lower() not in {c.lower() for c in clean}:
+                clean.append(n)
+        with self._transition():
+            m = self.meeting
+            if m and m['id'] == meeting_id:
+                m['attendees'] = clean
+                self.saver.mark(m)
+                self._emit()
+                return True
+            target = self._saved(meeting_id)
+            if target is None:
+                return False
+            target['attendees'] = clean
+            self.store.save(target)
+            return True
+
     # The summary renamed the meeting: the copies kept in memory (running, or
     # kept for resume) take the new title too, or their next save would bring
     # the old one back.
@@ -657,13 +697,20 @@ class SessionManager:
     # A speaker seen for the first time, or one whose voiceprint moved. The
     # name is the user's to change, so an update never touches it, with one
     # exception: `voice`, a name you gave this voice in an earlier meeting,
-    # replaces a "Speaker N" that Koli gave.
-    def ensure_speaker(self, speaker: dict):
+    # replaces a "Speaker N" that Koli gave. `meeting_id` is the meeting the
+    # chunk came from: the transcriber catches up after End, and a voice first
+    # heard in those last chunks still needs its entry in the saved file, or
+    # its turns show a bare id and the summary can't name it.
+    def ensure_speaker(self, speaker: dict, meeting_id: Optional[str] = None):
         speaker = dict(speaker)
         voice = speaker.pop('voice', None)
         with self._transition():
             m = self.meeting
+            if m and meeting_id and meeting_id != m['id']:
+                m = None
             if not m:
+                if meeting_id:
+                    self._ensure_saved_speaker(meeting_id, speaker, voice)
                 return
             for i, s in enumerate(m['speakers']):
                 if s['id'] == speaker['id']:
@@ -678,6 +725,37 @@ class SessionManager:
             m['speakers'].append(speaker)
             self.saver.mark(m)
             self._emit()
+
+    # ensure_speaker for a meeting that already ended (caller holds the lock).
+    def _ensure_saved_speaker(self, meeting_id: str, speaker: dict, voice: Optional[str]):
+        target = self._saved(meeting_id)
+        if target is None:
+            return
+        for i, s in enumerate(target['speakers']):
+            if s['id'] == speaker['id']:
+                target['speakers'][i] = {**s, **{k: v for k, v in speaker.items() if k != 'name'}}
+                if voice and is_default_name(s.get('name')):
+                    target['speakers'][i]['name'] = voice
+                break
+        else:
+            target['speakers'].append(speaker)
+        self.store.save(target)
+
+    # Changes a meeting that is not running: `change(meeting)` edits the dict
+    # and returns whether anything changed. The copy kept for resume is the
+    # one edited when it is that meeting, so a resume never brings back the
+    # old version. Returns the meeting, or None when it can't be read.
+    def edit_saved(self, meeting_id: str, change: Callable[[dict], bool]) -> Optional[dict]:
+        with self._transition():
+            m = self.meeting
+            if m and m['id'] == meeting_id:
+                raise ValueError("End the meeting before changing it")
+            target = self._saved(meeting_id)
+            if target is None:
+                return None
+            if change(target):
+                self.store.save(target)
+            return target
 
     # The live meeting `meeting_id`, or None: a read of the call window takes
     # seconds, and by its end the meeting may have paused, ended or changed.
@@ -845,6 +923,8 @@ class SessionManager:
         source = {k: source.get(k, '') for k in SOURCE_KEYS}
         language = str(self._settings('meeting.language', 'auto') or 'auto')
         meeting = new_meeting(self._unique_id(now), title_for(source), source, now, language)
+        if self._next_template:
+            meeting['summary_template'], self._next_template = self._next_template, ''
         self.meeting = meeting
         self.state = 'live'
         self.excluded = False

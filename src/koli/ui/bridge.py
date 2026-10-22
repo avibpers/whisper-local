@@ -721,18 +721,51 @@ class Bridge:
         return self._meetings.brief(str(meeting_id))
 
     # What the Summary tab needs to offer a summary: an AI model chosen, a
-    # job already running, and the default template.
+    # job already running, the template (the last summary's, the one picked
+    # for the meeting, or the default) and the last summary's instructions.
     @_api
     def meeting_summary_state(self, meeting_id):
         svc = self._meetings
-        return {'ai_ready': svc.ai_ready(), 'running': svc.summary_running(str(meeting_id)),
-                'template': svc.default_template()}
+        meeting_id = str(meeting_id)
+        brief = svc.brief(meeting_id) or {}
+        last = brief.get('template') if brief.get('template') and svc.template_exists(brief['template']) else ''
+        return {'ai_ready': svc.ai_ready(), 'running': svc.summary_running(meeting_id),
+                'template': last or svc.meeting_template(meeting_id) or svc.default_template(),
+                'instructions': brief.get('instructions', '')}
 
     # Writes the summary with the AI in the background; the page hears
-    # 'meeting_brief' when it is saved. Returns the task's id.
+    # 'meeting_brief' when it is saved. `instructions` are your own words for
+    # this summary. Returns the task's id.
     @_api
-    def meeting_summarize(self, meeting_id, template='', language=''):
-        return self._meetings.summarize(str(meeting_id), str(template or ''), str(language or ''))
+    def meeting_summarize(self, meeting_id, template='', language='', instructions=''):
+        return self._meetings.summarize(str(meeting_id), str(template or ''), str(language or ''),
+                                        instructions=str(instructions or ''))
+
+    # The summary template for the meeting running now (or the call offered),
+    # picked in the meeting panel; '' is the default.
+    @_api
+    def meeting_set_template(self, template_id=''):
+        self._meetings.set_summary_template(str(template_id or ''))
+
+    # Who was there besides the voices heard: the names you add by hand.
+    @_api
+    def meeting_attendees(self, meeting_id, names):
+        return self._meetings.set_attendees(str(meeting_id), [str(n) for n in (names or [])])
+
+    # ── Chat about a meeting (meeting/chat.py) ───────────────────────────────
+
+    @_api
+    def meeting_chat(self, meeting_id):
+        return self._meetings.chat_history(str(meeting_id))
+
+    # Waits for the AI's answer; returns {'messages', 'changed'}.
+    @_api
+    def meeting_chat_ask(self, meeting_id, question):
+        return self._meetings.chat_ask(str(meeting_id), str(question or ''))
+
+    @_api
+    def meeting_chat_clear(self, meeting_id):
+        self._meetings.chat_clear(str(meeting_id))
 
     # ── Summary templates (docs/design/meeting-summary.md) ───────────────────
 

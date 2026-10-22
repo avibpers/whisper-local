@@ -5,6 +5,9 @@
 // write and a click to see them full size. A saved meeting opens on its
 // Summary tab (screens/brief.js) when it has one, with a PDF export; the AI
 // writes the summary from a template (Summary templates, screens/templates.js).
+// The Chat tab (screens/chat.js) asks the AI about the meeting and changes it.
+// Beside the speakers sit the people who were there but said nothing; "+ Person"
+// adds one. A meeting saved to Google Drive follows its changes there.
 
 import { html, useEffect, useRef, useState } from '../../vendor/preact-htm.module.js';
 import { call, on } from '../api.js';
@@ -14,6 +17,7 @@ import { ExtraInstall } from './shared.js';
 import { Lightbox, Thumb, rowsByTime } from '../shots.js';
 import { Brief, BriefData, COLOURS, DriveButton, SummaryBar, printBrief } from './brief.js';
 import { TemplatesView } from './templates.js';
+import { MeetingChat } from './chat.js';
 import { openSettingsSection } from './settings.js';
 
 const RUNNING = new Set(['live', 'paused', 'offered']);
@@ -107,6 +111,12 @@ function Transcript({ id, live, onDeleted, focus }) {
   useEffect(() => on('meeting', (s) => {
     if (s.id === id && s.speakers) setM((cur) => cur && { ...cur, speakers: s.speakers.map((sp) => ({ ...sp })) });
   }), [id]);
+  // The doc in Google Drive is updated after a change: new link details, or why not.
+  useEffect(() => on('meeting_drive', (p) => {
+    if (p.id !== id) return;
+    if (p.phase === 'saved') { setM((cur) => cur && { ...cur, drive: p.drive }); toast('Google Doc updated'); }
+    if (p.phase === 'failed') toast(`The Google Doc wasn't updated: ${p.error}`, { kind: 'err' });
+  }), [id]);
   useEffect(() => on('meeting_shot', (p) => {
     if (p.id !== id) return;
     setM((cur) => {
@@ -120,6 +130,15 @@ function Transcript({ id, live, onDeleted, focus }) {
   if (!m) return html`<div class="empty">Loading…</div>`;
   const names = Object.fromEntries(m.speakers.map((s) => [s.id, s]));
   const who = (sid) => names[sid] || { id: sid, name: sid === '?' ? 'Speaker ?' : sid, colour: 7 };
+  // People who were there besides the voices: the ones you added can go again.
+  const attendees = m.attendees || [];
+  const quiet = (m.roster || []).filter((r) => r.speaker == null);
+  const setAttendees = (names) => call('meeting_attendees', id, names).then(load).catch((e) => toast(e.message, { kind: 'err' }));
+  const addPerson = async () => {
+    const name = await promptModal({ title: 'Who else was in the meeting?', label: 'Name', confirm: 'Add',
+      body: 'Someone who was there, also when they said nothing. The summary lists them.' });
+    if (name && name.trim()) setAttendees([...attendees, name.trim()]);
+  };
   const renameSpeaker = async (sp) => {
     const name = await promptModal({ title: 'Rename speaker', label: 'Name', value: sp.name, confirm: 'Rename' });
     if (name) call('meeting_rename', sp.id, name, id).then(load).catch((e) => toast(e.message, { kind: 'err' }));
@@ -139,7 +158,11 @@ function Transcript({ id, live, onDeleted, focus }) {
     <div class="mt-head">
       <div class="mt-title"><div class="mt-name" title=${m.title}>${m.title}</div>
         <div class="small muted mt-when">${when(m.started_at)} · ${clock(last)} · ${m.source && m.source.app ? m.source.app.replace('.exe', '') : 'started by hand'}</div>
-        <div class="mt-speakers">${m.speakers.map((sp) => html`<button type="button" class="chip sm" style=${`color:${COLOURS[sp.colour % 8]}`} title="Rename" onClick=${() => renameSpeaker(sp)}>${sp.name}</button>`)}</div></div>
+        <div class="mt-speakers">${m.speakers.map((sp) => html`<button type="button" class="chip sm" style=${`color:${COLOURS[sp.colour % 8]}`} title="Rename" onClick=${() => renameSpeaker(sp)}>${sp.name}</button>`)}
+          ${quiet.map((r) => (attendees.includes(r.name)
+            ? html`<button type="button" class="chip sm quiet" title="Didn't speak. Click to take them off the list" onClick=${() => setAttendees(attendees.filter((n) => n !== r.name))}>${r.name} ×</button>`
+            : html`<span class="chip sm quiet" title="In the call; didn't speak">${r.name}</span>`))}
+          <button type="button" class="chip sm quiet" title="Add someone who was in the meeting" onClick=${addPerson}>+ Person</button></div></div>
       <div class="mt-actions">
       ${!live && html`<${DriveButton} m=${m} brief=${brief} onSaved=${(info) => setM((cur) => cur && { ...cur, drive: info })} />`}
       <${Select} label="Export" value="" options=${[['', 'Export…'], ['txt', 'As .txt'], ['md', 'As .md'], ...(brief ? [['pdf', 'Summary as .pdf']] : [])]} onChange=${(v) => v && exportAs(v)} />
@@ -151,12 +174,14 @@ function Transcript({ id, live, onDeleted, focus }) {
       </div>
     </div>
     <div style="padding:10px 18px 0"><div class="seg" role="tablist" aria-label="Meeting view">
-      ${[['summary', 'Summary'], ['transcript', 'Transcript'], ['data', 'Data']].map(([k, label]) => html`<button type="button" role="tab" aria-selected=${tab === k}
+      ${[['summary', 'Summary'], ['transcript', 'Transcript'], ['chat', 'Chat'], ['data', 'Data']].map(([k, label]) => html`<button type="button" role="tab" aria-selected=${tab === k}
         class=${tab === k ? 'on' : ''} onClick=${() => setTab(k)}>${label}</button>`)}</div></div>
     ${tab === 'summary' && html`<div class="brief-scroll" style="overflow-y:auto;padding:12px 18px 18px">
       <${SummaryBar} meetingId=${id} brief=${brief} live=${live} />
       <div ref=${briefBox}><${Brief} m=${m} brief=${brief} layout=${layout} onJump=${jump} onOpenShot=${setOpen} /></div></div>`}
     ${tab === 'data' && html`<div style="overflow-y:auto;padding:12px 18px 18px"><${BriefData} brief=${brief} /></div>`}
+    ${tab === 'chat' && html`<div style="display:flex;flex-direction:column;min-height:0;flex:1;padding:12px 18px 18px">
+      <${MeetingChat} meetingId=${id} onChanged=${() => { load(); loadBrief(false).catch(() => {}); }} /></div>`}
     ${tab === 'transcript' && html`<div ref=${box} style="overflow-y:auto;padding:8px 18px 16px">
       ${rows.length === 0 && html`<div class="empty">${live ? 'Listening…' : 'Nothing was said.'}</div>`}
       ${rows.map((t) => {

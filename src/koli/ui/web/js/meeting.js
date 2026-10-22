@@ -7,7 +7,8 @@
 // the meeting…", "Summary ready" with Open). Screenshots taken during the meeting sit among the
 // turns at their moment, with a camera button to snip one. The header drags
 // the window; the corner handle resizes it; collapse shrinks it to a pill
-// and reports the pill's size.
+// and reports the pill's size. While a call is offered and while the meeting
+// runs, a button picks the summary template the meeting is summarized with.
 
 import { html, render, useEffect, useLayoutEffect, useRef, useState } from '../vendor/preact-htm.module.js';
 import { call, on } from './api.js';
@@ -20,6 +21,7 @@ const panel = createStore({
   shownInSharing: false, stuck: true,   // stuck: the list follows new turns
   open: null,      // the screenshot shown full size
   summary: null,   // the ended meeting's automatic summary: { id, phase, title }
+  templates: [],   // the summary templates to pick from
 });
 
 function dir(text) { return /[֐-׿؀-ۿ]/.test(text || '') ? 'rtl' : 'ltr'; }
@@ -121,8 +123,34 @@ function Offer({ m, drag }) {
     <div class="offer"><div><b>${what}</b></div>
       <div>${auto ? html`Transcribing in <${Countdown} until=${offer.starts_at} /> s` : 'Transcribe it?'}</div>
       <div class="row"><button type="button" class="btn" onClick=${() => call('meeting_offer', false)}>${auto ? 'Cancel' : 'Not now'}</button>
-        <button type="button" class="btn pri" onClick=${() => call('meeting_offer', true)}>${auto ? 'Start now' : 'Start'}</button></div></div></div>`;
+        <button type="button" class="btn pri" onClick=${() => call('meeting_offer', true)}>${auto ? 'Start now' : 'Start'}</button></div>
+      <div class="tpl-row"><span class="sub">Summary</span><${TemplatePick} m=${m} inline=${true} /></div></div></div>`;
 }
+
+// The summary template for this meeting, picked while the call is offered
+// or the meeting runs; the summary written when it ends uses it. Buttons,
+// not a <select>: the panel never takes focus, and a native list may not
+// open in it. `inline` lists them in the flow (the small offer view).
+function TemplatePick({ m, inline = false }) {
+  const templates = panel.use((s) => s.templates);
+  const [open, setOpen] = useState(false);
+  if (!templates.length) return null;
+  const current = m.summary_template || '';
+  const def = templates.find((t) => t.default) || templates[0];
+  const chosen = templates.find((t) => t.id === current) || def;
+  const pick = (t) => { setOpen(false); call('meeting_set_template', t.id === def.id ? '' : t.id).catch(() => {}); };
+  const toggle = () => { if (!open) loadTemplates(); setOpen(!open); };
+  return html`<div class="tpl-pick">
+    <button type="button" class="btn" title=${`The summary is written with the ${chosen.name} template`} onClick=${toggle}>
+      <${Icon} name="doc" /><span class="tpl-name">${chosen.name}</span><${Icon} name=${open ? 'up' : 'down'} /></button>
+    ${open && html`<div class=${'menu ' + (inline ? 'inline' : 'up')} role="menu" aria-label="Summary template">
+      ${templates.map((t) => html`<button type="button" class="mi" role="menuitemradio" aria-checked=${t.id === chosen.id} onClick=${() => pick(t)}>
+        ${t.name}${t.id === def.id ? ' (default)' : ''}${t.id === chosen.id && html`<span class="grow"></span><${Icon} name="check" />`}</button>`)}
+    </div>`}
+  </div>`;
+}
+
+function loadTemplates() { call('summary_templates').then((t) => panel.set({ templates: t || [] })).catch(() => {}); }
 
 // The panel never takes keyboard focus (it must not steal it from the
 // call), so renaming happens in the app window's Meetings screen.
@@ -231,6 +259,7 @@ function Panel() {
     <div class="foot">
       <button type="button" class=${'btn' + (m.excluded ? ' on' : '')} onClick=${() => call('meeting_exclude', !m.excluded)}><${Icon} name="mic" />${m.excluded ? 'Include me' : 'Exclude me'}</button>
       <button type="button" class="btn" onClick=${() => call(paused ? 'meeting_resume' : 'meeting_pause')}><${Icon} name=${paused ? 'play' : 'pause'} />${paused ? 'Resume' : 'Pause'}</button>
+      <${TemplatePick} m=${m} />
       <span class="grow"></span>
       ${m.screenshots !== 'off' && html`<button type="button" class="btn icon" aria-label="Screenshot" title="Snip a screenshot into the meeting"
         onClick=${() => call('meeting_screenshot')}><${Icon} name="camera" /></button>`}
@@ -246,6 +275,7 @@ function Panel() {
 async function boot() {
   wire();
   render(html`<${Panel} />`, document.getElementById('root'));
+  loadTemplates();
   const data = await call('app_bootstrap', 'meeting');
   panel.set({ settings: data.settings, meeting: data.meeting || { state: 'idle' }, turns: data.turns || [], screenshots: data.screenshots || [],
               collapsed: !!(data.settings.meeting && data.settings.meeting.panel.collapsed) });
