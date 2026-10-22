@@ -10,6 +10,9 @@
 - An action item has an owner only when someone took it or was given it; otherwise the owner is null. A due date only when one was said; otherwise null.
 - Status of an action item: "do_now", "plan_only" (plan or research, don't build yet), "waiting" (blocked on someone or something), "done" (finished in the meeting).
 - Decisions are only what was agreed, not proposals.
+- When someone sums the meeting up ("let's summarize", "the decision is"), usually near the end, that is the meeting's main outcome. It wins over what was said earlier, and it comes first: in tldr, and as the first decisions in "decisions" when the template has them. Read the transcript to its last line before writing.
+- "subject" says what the meeting was about in a few words (under 70 characters), in the report's language, never just "Meeting". Always give it, also when the template's title is fixed.
+- A section the user asks for that the template has no field for goes in "sections" as {"title", "text": [paragraphs], "items": [bullets]}; never invent other top-level fields.
 - Off-topic moments (phone calls, jokes, personal talk) are not topics, decisions or tasks.
 - Short, concrete lines a reader can act on: who, what, by when. No filler such as "The meeting discussed".
 - Return only the JSON object, with no text before or after it.

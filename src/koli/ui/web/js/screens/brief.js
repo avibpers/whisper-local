@@ -180,6 +180,15 @@ function Items({ list, onJump, parked }) {
     <span dir=${textDir(x.text)}>${parked ? html`<${Status} status="parked" /> ` : ''}${x.text} <${At} at=${x.at} onJump=${onJump} /></span></li>`)}</ul>`;
 }
 
+// Sections asked for in the instructions show even when the template doesn't
+// list them, before the notes, as in the Google Doc (gdoc.with_sections).
+function withSections(list, brief) {
+  if (!(brief.sections || []).length || list.includes('sections')) return list;
+  let i = list.length;
+  while (i > 0 && ['notes', 'transcript', 'data'].includes(list[i - 1])) i -= 1;
+  return [...list.slice(0, i), 'sections', ...list.slice(i)];
+}
+
 // The meeting's summary, laid out by the template it was written with:
 // its blocks in its order, with its headings.
 export function Brief({ m, brief, layout, onJump, onOpenShot }) {
@@ -275,7 +284,7 @@ export function Brief({ m, brief, layout, onJump, onOpenShot }) {
       ${(s.items || []).length > 0 && html`<ul class="bf-bullets">${s.items.map((x) => html`<li dir=${textDir(x)}>${x}</li>`)}</ul>`}</section>`),
     notes: () => (brief.notes || []).length > 0 && html`<p class="bf-foot">${label('notes')}: ${brief.notes.join('; ')}.</p>`,
   };
-  const want = (lay.blocks && lay.blocks.length ? lay.blocks : STANDARD_BLOCKS).filter((b) => blocks[b]);
+  const want = withSections((lay.blocks && lay.blocks.length ? lay.blocks : STANDARD_BLOCKS), brief).filter((b) => blocks[b]);
   const dir = RTL.includes(String(brief.language || '').slice(0, 2)) ? 'rtl' : 'ltr';
   return html`<div class="brief" dir=${dir}>
     ${want.map((b) => blocks[b]())}
