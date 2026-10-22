@@ -53,7 +53,7 @@ export function MeetingChat({ meetingId, onChanged }) {
         ${(msg.changes || []).length > 0 && html`<ul class="mc-changes">${msg.changes.map((c) => html`<li><${Icon} name="check" size="sm" /> ${c}</li>`)}</ul>`}
       </div>`)}
       ${waiting && html`<div class="mc-msg user"><p dir=${textDir(waiting)}>${waiting}</p></div>
-        <div class="mc-msg assistant"><span class="spin" aria-label="The AI is answering"></span></div>`}
+        <div class="mc-msg assistant mc-thinking" role="status"><span class="spin" aria-hidden="true"></span>Thinking…</div>`}
     </div>
     <div class="mc-ask">
       <textarea class="inp" rows="2" dir="auto" value=${text} placeholder="Ask about the meeting, or say what to change" aria-label="Your question"
