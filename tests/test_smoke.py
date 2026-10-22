@@ -8494,8 +8494,12 @@ class MeetingSummaryBridgeTests(unittest.TestCase):
             templates = Library()
             def default_template(self):
                 return default
-            def summarize(self, mid, template, language):
-                calls.append(('summarize', mid, template, language)); return 7
+            def summarize(self, mid, template, language, instructions=''):
+                calls.append(('summarize', mid, template, language, instructions)); return 7
+            def brief(self, mid):
+                return {'template': 'board-meeting', 'instructions': 'Short'} if mid == 'm2' else None
+            def meeting_template(self, mid):
+                return ''
             def ai_ready(self):
                 return True
             def summary_running(self, mid):
@@ -8505,7 +8509,7 @@ class MeetingSummaryBridgeTests(unittest.TestCase):
             def template_delete(self, tid):
                 calls.append(('delete', tid)); return True
             def template_exists(self, tid):
-                return False
+                return tid == 'board-meeting'
 
         class Settings:
             def set(self, path, value):
@@ -8520,9 +8524,13 @@ class MeetingSummaryBridgeTests(unittest.TestCase):
 
     def test_summarize_and_state(self):
         b = self.make()
-        self.assertEqual(b.meeting_summarize('m1', 'board-meeting', 'he'), {'ok': True, 'data': 7})
-        self.assertEqual(self.calls[-1], ('summarize', 'm1', 'board-meeting', 'he'))
-        self.assertEqual(b.meeting_summary_state('m1')['data'], {'ai_ready': True, 'running': False, 'template': 'standard'})
+        self.assertEqual(b.meeting_summarize('m1', 'board-meeting', 'he', 'Focus on money'), {'ok': True, 'data': 7})
+        self.assertEqual(self.calls[-1], ('summarize', 'm1', 'board-meeting', 'he', 'Focus on money'))
+        self.assertEqual(b.meeting_summary_state('m1')['data'],
+                         {'ai_ready': True, 'running': False, 'template': 'standard', 'instructions': ''})
+        # Summarize again starts from the last summary's template and instructions.
+        state = b.meeting_summary_state('m2')['data']
+        self.assertEqual((state['template'], state['instructions']), ('board-meeting', 'Short'))
 
     def test_default_goes_through_the_settings_service(self):
         b = self.make()

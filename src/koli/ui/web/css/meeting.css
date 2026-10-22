@@ -49,3 +49,11 @@ button { font: inherit; color: inherit; }
 .pill { display: inline-flex; align-items: center; gap: 8px; height: 36px; padding: 0 12px 0 10px; border-radius: 18px; background: #0B0E11; cursor: pointer; white-space: nowrap; }
 .offer { display: flex; flex-direction: column; gap: 10px; padding: 14px; }
 .offer .row { display: flex; gap: 8px; justify-content: flex-end; }
+/* The summary template picker: in the foot while the meeting runs (its list
+   opens upwards), under the buttons while a call is offered (in the flow). */
+.tpl-pick { position: relative; min-width: 0; }
+.tpl-pick > .btn { max-width: 170px; }
+.tpl-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.menu.up { top: auto; right: auto; left: 0; bottom: calc(100% + 6px); }
+.menu.inline { position: static; margin-top: 6px; }
+.tpl-row { display: flex; align-items: center; gap: 8px; }

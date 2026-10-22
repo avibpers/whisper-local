@@ -4,7 +4,8 @@
 # full brief with charts, quotes and screenshots, written as HTML that Drive
 # converts) and the Transcript tab (every turn, speakers in colour, Hebrew
 # right to left). The meeting remembers the folder and the doc, so the app can
-# offer Open and Share, and a second export replaces the doc in that folder.
+# offer Open and Share, and a later export updates that same doc in place
+# (its link and sharing stay).
 
 import base64
 import datetime
@@ -12,6 +13,8 @@ import html
 import io
 import logging
 import re
+
+from .store import roster
 
 logger = logging.getLogger(__name__)
 
@@ -196,6 +199,9 @@ def report_html(m: dict, brief: dict, shot_data: dict, layout: dict = None) -> s
     e = html.escape
     layout = layout or {}
     stats = talk_stats(m)
+    # People who were there but said almost nothing: under the charts' 1%
+    # or silent, they are still in the speakers table and the participants.
+    quiet = [r for r in roster(m) if r['speaker'] not in {s['id'] for s in stats}]
     roles = brief.get('roles') or {}
     shots = sorted(m.get('screenshots', []), key=lambda s: s['at'])
     in_topic = set()
@@ -236,7 +242,7 @@ def report_html(m: dict, brief: dict, shot_data: dict, layout: dict = None) -> s
         return (f"<h2>{e(label('tldr'))}</h2>" + ''.join(f"<p>{e(p)}</p>" for p in brief['tldr'])) if brief.get('tldr') else ''
 
     def b_participants():
-        people = brief.get('attendees') or [{'name': _who(m, s['id'])['name'], 'role': roles.get(s['id'], '')} for s in stats]
+        people = brief.get('attendees') or [{'name': _who(m, s['id'])['name'], 'role': roles.get(s['id'], '')} for s in stats] +             [{'name': r['name'], 'role': '' if r['spoke'] else 'did not speak'} for r in quiet]
         return (f"<h2>{e(label('participants'))}</h2><ul>" + ''.join(
             f"<li>{e(str(a.get('name', '')))}{(' — ' + e(a['role'])) if a.get('role') else ''}</li>" for a in people) + "</ul>")
 
@@ -283,7 +289,7 @@ def report_html(m: dict, brief: dict, shot_data: dict, layout: dict = None) -> s
         return (f"<h2>{e(label('next_meeting'))}</h2>" + items(brief['next_meeting'])) if brief.get('next_meeting') else ''
 
     def b_speakers():
-        if not stats:
+        if not stats and not quiet:
             return ''
         out = [f"<h2>{e(label('speakers'))}</h2>", f"<p><img src='{share_chart(m, stats)}' width='520'></p>",
                "<h3>Who held the floor, minute by minute</h3>",
@@ -292,6 +298,8 @@ def report_html(m: dict, brief: dict, shot_data: dict, layout: dict = None) -> s
                "<table border='1' cellpadding='5'><tr><th>Speaker</th><th>Talk time</th><th>Share</th><th>Turns</th><th>Role in this meeting</th></tr>"]
         out += [f"<tr><td>{e(_who(m, s['id'])['name'])}</td><td>{clock(s['seconds'])}</td><td>{round(s['share'] * 100)}%</td>"
                 f"<td>{s['turns']}</td><td>{e(roles.get(s['id'], ''))}</td></tr>" for s in stats]
+        out += [f"<tr><td>{e(r['name'])}</td><td>{clock(r['seconds']) if r['spoke'] else 'Did not speak'}</td><td></td>"
+                f"<td>{r['turns'] or ''}</td><td>{e(roles.get(r['speaker'] or '', ''))}</td></tr>" for r in quiet]
         return ''.join(out) + "</table>"
 
     def b_screenshots():
@@ -440,36 +448,10 @@ def transcript_requests(m: dict, brief: dict, tab: str) -> list:
 
 # ── The export ───────────────────────────────────────────────────────────────
 
-# Builds (or replaces) the meeting's doc and remembers where it is. Returns
-# {'folder_id', 'folder_url', 'doc_id', 'doc_url', 'exported_at'}.
-def export(store, meeting_id: str, drive=None, docs=None, layout: dict = None) -> dict:
-    brief = store.load_brief(meeting_id)
-    if not brief:
-        raise ValueError("This meeting has no summary yet, so there is nothing to export")
-    if drive is None:
-        from ..drive import api as drive
-    if docs is None:
-        from ..drive import docs
-    m = store.load(meeting_id)
-    spec = (layout or {}).get('title') or {}
-    name = folder_name(m, brief, isinstance(spec, dict) and spec.get('mode') == 'fixed')
-    folder = drive.ensure_folder(f"{ROOT_FOLDER}/{name}")
-    old = (m.get('drive') or {}).get('doc_id')
-    if old:
-        try:
-            drive.delete(old)
-        except Exception as e:
-            logger.info(f"The previous doc wasn't trashed ({e}); a new one is made anyway")
-    shot_data = {}
-    for s in m.get('screenshots', []):
-        try:
-            shot_data[s['image']] = store.shot_path(meeting_id, s['image']).read_bytes()
-        except FileNotFoundError:
-            pass
-    page = report_html(m, brief, shot_data, layout)
-    doc_id = drive.upload_bytes(page.encode('utf-8'), name, 'text/html', folder_id=folder, convert_to=DOC_MIME)['id']
+# The tabs after the first (Report): the Quick summary first for templates
+# that ask for one, and the Transcript last.
+def _fill_tabs(docs, doc_id: str, m: dict, brief: dict, layout: dict):
     first = docs.get(doc_id)['tabs'][0]['tabProperties']['tabId']
-    # A Quick summary tab first only for templates that ask for one.
     with_quick = 'quick' in doc_blocks(layout)
     requests = [{'updateDocumentTabProperties': {'tabProperties': {'tabId': first, 'title': 'Report' if with_quick else 'Summary'},
                                                  'fields': 'title'}}]
@@ -482,11 +464,65 @@ def export(store, meeting_id: str, drive=None, docs=None, layout: dict = None) -
     if with_quick:
         edits = quick_requests(m, brief, replies[1]['addDocumentTab']['tabProperties']['tabId']) + edits
     docs.batch_update(doc_id, edits)
+
+
+# The doc exported before, given new content in place: its id, link and
+# sharing stay, so a link you sent keeps working. Every tab but the first
+# goes, the report replaces the first tab's content, and the tabs are made
+# again. Raises when the doc is gone or can't be changed.
+def _refresh(drive, docs, doc_id: str, page: str, name: str):
+    tabs = docs.get(doc_id).get('tabs') or []
+    extra = [{'deleteTab': {'tabId': t['tabProperties']['tabId']}} for t in tabs[1:]]
+    if extra:
+        docs.batch_update(doc_id, extra)
+    drive.upload_bytes(page.encode('utf-8'), name, 'text/html', file_id=doc_id)
+
+
+# Builds the meeting's doc, or refreshes the one exported before, and
+# remembers where it is. Returns {'name', 'folder_id', 'folder_url',
+# 'doc_id', 'doc_url', 'exported_at'}.
+def export(store, meeting_id: str, drive=None, docs=None, layout: dict = None) -> dict:
+    brief = store.load_brief(meeting_id)
+    if not brief:
+        raise ValueError("This meeting has no summary yet, so there is nothing to export")
+    if drive is None:
+        from ..drive import api as drive
+    if docs is None:
+        from ..drive import docs
+    m = store.load(meeting_id)
+    spec = (layout or {}).get('title') or {}
+    name = folder_name(m, brief, isinstance(spec, dict) and spec.get('mode') == 'fixed')
+    kept = m.get('drive') or {}
+    shot_data = {}
+    for s in m.get('screenshots', []):
+        try:
+            shot_data[s['image']] = store.shot_path(meeting_id, s['image']).read_bytes()
+        except FileNotFoundError:
+            pass
+    page = report_html(m, brief, shot_data, layout)
+    doc_id, folder = None, kept.get('folder_id')
+    if kept.get('doc_id'):
+        try:
+            _refresh(drive, docs, kept['doc_id'], page, name)
+            doc_id = kept['doc_id']
+            # A new title renames the folder too, so the doc and its folder match.
+            if folder and kept.get('name') != name:
+                drive.rename(folder, name)
+        except Exception as e:
+            logger.warning(f"The doc saved before couldn't be updated ({e}); a new one is made")
+            try:
+                drive.delete(kept['doc_id'])
+            except Exception:
+                pass
+    if doc_id is None:
+        folder = drive.ensure_folder(f"{ROOT_FOLDER}/{name}")
+        doc_id = drive.upload_bytes(page.encode('utf-8'), name, 'text/html', folder_id=folder, convert_to=DOC_MIME)['id']
+    _fill_tabs(docs, doc_id, m, brief, layout)
     info = {'name': name, 'folder_id': folder, 'folder_url': f"https://drive.google.com/drive/folders/{folder}", 'doc_id': doc_id,
             'doc_url': str(drive.info(doc_id).get('webViewLink') or f"https://docs.google.com/document/d/{doc_id}/edit"),
             'exported_at': datetime.datetime.now().astimezone().isoformat(timespec='seconds')}
     m = store.load(meeting_id)
     m['drive'] = info
     store.save(m)
-    logger.info(f"Meeting {meeting_id} saved to Google Drive as {doc_id}")
+    logger.info(f"Meeting {meeting_id} {'updated in' if doc_id == kept.get('doc_id') else 'saved to'} Google Drive as {doc_id}")
     return info

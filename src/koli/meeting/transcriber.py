@@ -120,7 +120,7 @@ def is_leak(mic: np.ndarray, t0: float, call: list) -> bool:
 class MeetingTranscriber:
     def __init__(self, engine_provider: Callable, is_busy: Callable[[], bool], tracker: SpeakerTracker,
                  language_provider: Callable[[], str], on_turn: Callable[[dict], None],
-                 on_speaker: Callable[[dict], None], on_pending: Callable[[Optional[str]], None],
+                 on_speaker: Callable[[dict, Optional[str]], None], on_pending: Callable[[Optional[str]], None],
                  on_behind: Callable[[float], None], poll_s: float = 0.1,
                  keep_audio: Optional[Callable[[dict], None]] = None):
         self.engine_provider = engine_provider
@@ -298,7 +298,7 @@ class MeetingTranscriber:
             return
         voices = self._voices_in(chunk['audio'])
         if len({v for _, _, v in voices}) < 2:
-            speaker = self._label(chunk['audio'], chunk.get('speech_s'), ())
+            speaker = self._label(chunk['audio'], chunk.get('speech_s'), (), chunk.get('meeting_id'))
             self.on_turn({**base, 't0': chunk['t0'], 't1': chunk['t1'], 'speaker': speaker,
                           'text': ''.join(p['text'] for p in pieces).strip()})
             return
@@ -309,7 +309,8 @@ class MeetingTranscriber:
             voice = part['voice']
             if voice not in speakers:
                 speaker = self._label(voice_audio(chunk['audio'], voices, voice), voice_seconds(voices, voice),
-                                      [s for s in speakers.values() if s != SpeakerTracker.UNKNOWN])
+                                      [s for s in speakers.values() if s != SpeakerTracker.UNKNOWN],
+                                      chunk.get('meeting_id'))
                 # Too little of this voice for a voiceprint: it stays with the voice before it.
                 if speaker == SpeakerTracker.UNKNOWN and self.tracker.embed is not None and previous:
                     speaker = previous
@@ -328,8 +329,8 @@ class MeetingTranscriber:
             logger.debug(f"Splitting a chunk by voice failed: {e}")
             return []
 
-    def _label(self, audio, speech_s, exclude) -> str:
+    def _label(self, audio, speech_s, exclude, meeting_id: Optional[str] = None) -> str:
         speaker, entry = self.tracker.label(audio, speech_s=speech_s, exclude=exclude)
         if entry is not None:
-            self.on_speaker(entry)
+            self.on_speaker(entry, meeting_id)
         return speaker

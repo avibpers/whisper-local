@@ -11,6 +11,7 @@ import re
 from collections import Counter
 from typing import Callable, Optional
 
+from .store import roster
 from .summary_templates import BLOCKS, TemplateError, TemplateLibrary, parse_text, problems
 
 logger = logging.getLogger(__name__)
@@ -79,6 +80,12 @@ def meeting_text(m: dict) -> str:
              f"Length: {_clock(_length(m))}",
              "Speakers (id: name as Koli knows it; \"You\" is the person who recorded the meeting):"]
     lines += [f"- {sid}: {name}" for sid, name in names.items()]
+    # Everyone present, with how much they said: someone in the call who
+    # said little or nothing still belongs in the report.
+    lines.append("People in the meeting (from the voices, the call app and the user), with their talk time:")
+    for r in roster(m):
+        said = f"spoke {_clock(r['seconds'])} in {r['turns']} turn{'s' if r['turns'] != 1 else ''}" if r['spoke']             else 'was there but did not speak'
+        lines.append(f"- {r['name']}{' (' + r['speaker'] + ')' if r['speaker'] else ''}: {said}")
     lines.append('')
     lines.append('Transcript, one turn per line as [seconds from the start] speaker id (name): words.')
     rows = [(t['start'], 0, f"[{int(t['start'])}] {t['speaker']} ({names.get(t['speaker'], t['speaker'])}): {t['text']}")
@@ -89,9 +96,17 @@ def meeting_text(m: dict) -> str:
     return '\n'.join(lines)
 
 
-def messages(m: dict, template: dict, library: TemplateLibrary, language: str) -> list:
-    return [{'role': 'system', 'content': library.prompt(template, f"{language_name(language)} ({language})")},
+# `instructions` are the user's own words for this summary ("focus on the
+# budget", "Speaker 2 is Dana"); they come after the transcript and win
+# over the template where the two disagree.
+def messages(m: dict, template: dict, library: TemplateLibrary, language: str, instructions: str = '') -> list:
+    msgs = [{'role': 'system', 'content': library.prompt(template, f"{language_name(language)} ({language})")},
             {'role': 'user', 'content': meeting_text(m)}]
+    if str(instructions or '').strip():
+        msgs.append({'role': 'user', 'content': "Extra instructions from the person who recorded the meeting. "
+                                                "Follow them where they differ from the template, and still "
+                                                "answer with the JSON only:\n\n" + str(instructions).strip()})
+    return msgs
 
 
 # ── Checking the answer ──────────────────────────────────────────────────────
@@ -149,7 +164,7 @@ def tidy(answer, m: dict, template: dict, generator: str, language: str) -> dict
         a['action_items'] = _actions(a.get('action_items'))
         agenda.append(a)
     b['agenda'] = agenda
-    ids = {s['id'] for s in m.get('speakers', [])}
+    ids = {s['id'] for s in m.get('speakers', [])} | {t['speaker'] for t in m.get('turns', [])}
     b['participants'] = {k: str(v) for k, v in (b.get('participants') or {}).items() if k in ids and v} \
         if isinstance(b.get('participants'), dict) else {}
     b['roles'] = {k: str(v) for k, v in (b.get('roles') or {}).items() if k in ids and v} \
@@ -176,18 +191,22 @@ def worth_summarizing(m: dict, min_minutes: float) -> bool:
 
 
 def summarize(m: dict, library: TemplateLibrary, template_id: str, complete: Callable,
-              language: str = '', language_setting: str = '', parse: Callable = None) -> dict:
+              language: str = '', language_setting: str = '', parse: Callable = None,
+              instructions: str = '') -> dict:
     if not m.get('turns'):
         raise SummaryError('Nothing was said in this meeting, so there is nothing to summarize')
     template = library.get(template_id)
     lang = choose_language(m, template, language, language_setting)
-    result = complete('meetings', messages(m, template, library, lang), json=True)
+    result = complete('meetings', messages(m, template, library, lang, instructions), json=True)
     if not result.ok:
         raise SummaryError(result.error or 'The AI did not answer')
     answer = (parse or json.loads)(result.text)
     model = '/'.join(p for p in (getattr(result, 'provider', ''), getattr(result, 'model', '')) if p)
     generator = f"{model} via Koli ({template.get('name')})" if model else f"Koli ({template.get('name')})"
-    return tidy(answer, m, template, generator, lang)
+    brief = tidy(answer, m, template, generator, lang)
+    if str(instructions or '').strip():
+        brief['instructions'] = str(instructions).strip()
+    return brief
 
 
 # ── Drafting templates with the AI ───────────────────────────────────────────

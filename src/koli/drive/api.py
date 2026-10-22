@@ -132,6 +132,10 @@ def download_to(file_id: str, path) -> Path:
     return path
 
 
+def rename(file_id: str, name: str) -> dict:
+    return _json('PATCH', f"/files/{urllib.parse.quote(file_id, safe='')}", params={'fields': FIELDS}, json_body={'name': name})
+
+
 # To the bin, not gone for good.
 def delete(file_id: str):
     _json('PATCH', f"/files/{urllib.parse.quote(file_id, safe='')}", json_body={'trashed': True})

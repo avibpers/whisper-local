@@ -1260,7 +1260,7 @@ class TranscriberTests(unittest.TestCase):
         t = MeetingTranscriber(engine_provider=lambda: engine, is_busy=lambda: busy_state['busy'],
                                tracker=tracker or SpeakerTracker(embed=lambda a: np.array([1.0, 0.0])),
                                language_provider=lambda: language,
-                               on_turn=self.turns.append, on_speaker=self.speakers.append,
+                               on_turn=self.turns.append, on_speaker=lambda sp, mid=None: self.speakers.append(sp),
                                on_pending=self.pending.append, on_behind=self.behind.append, poll_s=0.01)
         t.start()
         for c in chunks:
@@ -2517,7 +2517,7 @@ class TranscriberSplitTests(unittest.TestCase):
         turns, speakers = [], []
         t = MeetingTranscriber(engine_provider=lambda: engine, is_busy=lambda: False,
                                tracker=SpeakerTracker(embed=embed), language_provider=lambda: 'auto',
-                               on_turn=turns.append, on_speaker=speakers.append, on_pending=lambda s: None,
+                               on_turn=turns.append, on_speaker=lambda sp, mid=None: speakers.append(sp), on_pending=lambda s: None,
                                on_behind=lambda s: None, poll_s=0.01)
         t.split = lambda a: [(0.0, 5.8, 0), (6.0, 12.0, 1)]
         t.start()
@@ -3768,10 +3768,50 @@ class GoogleDocTests(unittest.TestCase):
         self.assertEqual(out['doc_id'], 'D1')
         self.assertEqual(store.load(m['id'])['drive']['doc_id'], 'D1')
         self.assertEqual(store.load(m['id'])['drive']['folder_id'], 'F1')
-        # A second export replaces the doc in the same folder.
+        # A second export updates that same doc: no new doc, nothing trashed,
+        # the old tabs go and come back.
         calls.clear()
-        gdoc.export(store, m['id'], drive=FakeDrive(), docs=FakeDocs())
-        self.assertIn(('trash', 'D1'), calls)
+        FakeDocs.get = lambda self, doc_id: {'tabs': [{'tabProperties': {'tabId': 't.0'}}, {'tabProperties': {'tabId': 't.t'}}]}
+        out = gdoc.export(store, m['id'], drive=FakeDrive(), docs=FakeDocs())
+        self.assertEqual(out['doc_id'], 'D1')
+        self.assertNotIn(('trash', 'D1'), calls)
+        self.assertNotIn(('folder', 'Koli/Meetings/2026-10-19 Dev sync - SEO'), calls)
+        self.assertEqual(calls[0], ('batch', 1, ['deleteTab']))
+        self.assertEqual(calls[1], ('upload', '2026-10-19 Dev sync - SEO', 'text/html', None, None))
+
+    def test_export_makes_a_new_doc_when_the_old_one_is_gone(self):
+        from koli.meeting import gdoc
+        from koli.meeting.store import MeetingStore
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        store = MeetingStore(Path(tmp.name))
+        m = dict(brief_meeting(), drive={'doc_id': 'OLD', 'folder_id': 'F0', 'name': 'x'})
+        store.save(m)
+        store.save_brief(m['id'], BRIEF)
+        calls = []
+
+        class FakeDrive:
+            def ensure_folder(self, path):
+                return 'F1'
+            def upload_bytes(self, data, name, mime, folder_id=None, file_id=None, convert_to=None):
+                calls.append(('upload', file_id)); return {'id': 'D2'}
+            def delete(self, file_id):
+                calls.append(('trash', file_id))
+            def info(self, file_id):
+                return {}
+
+        class FakeDocs:
+            def get(self, doc_id):
+                if doc_id == 'OLD':
+                    raise RuntimeError('404')
+                return {'tabs': [{'tabProperties': {'tabId': 't.0'}}]}
+            def batch_update(self, doc_id, requests):
+                return {'replies': [{'addDocumentTab': {'tabProperties': {'tabId': 't.x'}}} for _ in requests]}
+
+        out = gdoc.export(store, m['id'], drive=FakeDrive(), docs=FakeDocs())
+        self.assertEqual(out['doc_id'], 'D2')
+        self.assertEqual(out['folder_id'], 'F1')
+        self.assertIn(('upload', None), calls)
 
     def test_export_needs_a_brief(self):
         from koli.meeting import gdoc
@@ -3783,3 +3823,130 @@ class GoogleDocTests(unittest.TestCase):
         store.save(m)
         with self.assertRaises(ValueError):
             gdoc.export(store, m['id'], drive=object(), docs=object())
+
+
+# The follow-ups to a real meeting (2026-10-22): the summary names the
+# speakers, a voice heard only after End keeps its entry, people who said
+# little or nothing are in the report, the template picked in the panel and
+# your instructions shape the summary, the chat answers and edits, and a
+# meeting saved to Drive follows its changes there.
+class MeetingFollowupTests(unittest.TestCase):
+    service = MeetingSummaryServiceTests.service
+    wait = MeetingSummaryServiceTests.wait
+
+    def meeting(self):
+        m = summary_meeting()
+        m['speakers'] = [{'id': 'you', 'name': 'You', 'colour': 0}, {'id': 's1', 'name': 'Speaker 1', 'colour': 1}]
+        m['turns'] = m['turns'] + [{'start': 171.0, 'end': 175.0, 'speaker': 's2', 'text': 'David gave me a task', 'lang': 'en'}]
+        return m
+
+    def test_roster_lists_quiet_people_and_lost_speakers(self):
+        from koli.meeting.store import roster
+        m = self.meeting()
+        m['attendees'] = ['Ilona', 'speaker 1']
+        m['call'] = {'people': [{'name': 'Victor', 'muted': True}]}
+        rows = {r['name']: r for r in roster(m)}
+        self.assertTrue(rows['Speaker 2']['spoke'])          # turns without a speaker entry still count
+        self.assertEqual(rows['Speaker 2']['seconds'], 4.0)
+        self.assertFalse(rows['Ilona']['spoke'])
+        self.assertIsNone(rows['Ilona']['speaker'])
+        self.assertFalse(rows['Victor']['spoke'])
+        self.assertEqual(sum(1 for r in roster(m) if r['name'].lower() == 'speaker 1'), 1)
+
+    def test_the_model_reads_who_was_there_and_your_instructions(self):
+        from koli.meeting.summarize import messages, meeting_text
+        from koli.meeting.summary_templates import TemplateLibrary
+        m = dict(self.meeting(), attendees=['Ilona'])
+        self.assertIn('- Ilona: was there but did not speak', meeting_text(m))
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        lib = TemplateLibrary(Path(tmp.name), skill_dir=None)
+        msgs = messages(m, lib.get('standard'), lib, 'en', instructions='Focus on the budget')
+        self.assertEqual(msgs[-1]['role'], 'user')
+        self.assertIn('Focus on the budget', msgs[-1]['content'])
+        self.assertEqual(len(messages(m, lib.get('standard'), lib, 'en')), 2)
+
+    def test_the_summary_names_speakers_but_not_you_or_a_name_you_gave(self):
+        m = self.meeting()
+        m['speakers'].append({'id': 's3', 'name': 'Omer', 'colour': 3})
+        svc = self.service(ai=FakeAI('{"tldr": ["x"], "participants": {"you": "Avi", "s1": "Andrew", "s2": "Ilona", "s3": "Victor"}}'))
+        self.store.save(m)
+        svc.summarize(m['id'], instructions='Name everyone')
+        self.wait(svc, m['id'])
+        names = {s['id']: s['name'] for s in self.store.load(m['id'])['speakers']}
+        self.assertEqual(names, {'you': 'You', 's1': 'Andrew', 's2': 'Ilona', 's3': 'Omer'})
+        self.assertEqual(self.store.load_brief(m['id'])['instructions'], 'Name everyone')
+
+    def test_the_template_picked_for_the_meeting_writes_its_summary(self):
+        m = dict(self.meeting(), summary_template='board-meeting')
+        svc = self.service(ai=FakeAI('{"agenda": [{"title": "Budget", "discussion": ["Over plan"]}]}'))
+        self.store.save(m)
+        svc.summarize(m['id'])
+        self.wait(svc, m['id'])
+        self.assertEqual(self.store.load_brief(m['id'])['template'], 'board-meeting')
+
+    def test_a_voice_first_heard_after_end_is_kept_in_the_saved_meeting(self):
+        svc = self.service()
+        m = self.meeting()
+        self.store.save(m)
+        svc.session.ensure_speaker({'id': 's2', 'name': 'Speaker 2', 'colour': 2, 'count': 1}, m['id'])
+        self.assertIn('s2', [s['id'] for s in self.store.load(m['id'])['speakers']])
+
+    def test_chat_answers_and_does_the_changes_it_names(self):
+        m = self.meeting()
+        answer = ('{"reply": "Done.", "changes": [{"op": "rename_speaker", "speaker": "s1", "name": "Andrew"},'
+                  '{"op": "add_attendee", "name": "Ilona"}, {"op": "rename_speaker", "speaker": "s9", "name": "Nobody"},'
+                  '{"op": "delete_everything"}]}')
+        ai = FakeAI(answer)
+        svc = self.service(ai=ai)
+        self.store.save(m)
+        out = svc.chat_ask(m['id'], 'Speaker 1 is Andrew and Ilona was there')
+        self.assertTrue(out['changed'])
+        self.assertEqual(out['messages'][-1]['changes'], ['Speaker 1 is now Andrew', 'Added Ilona'])
+        saved = self.store.load(m['id'])
+        self.assertEqual(next(s['name'] for s in saved['speakers'] if s['id'] == 's1'), 'Andrew')
+        self.assertEqual(saved['attendees'], ['Ilona'])
+        self.assertEqual(len(self.store.load_chat(m['id'])), 2)
+        # The next question carries the conversation so far.
+        svc.chat_ask(m['id'], 'And who spoke most?')
+        self.assertIn('Speaker 1 is Andrew and Ilona was there', [x['content'] for x in ai.calls[-1][1]])
+
+    def test_chat_edits_the_summary_in_place(self):
+        m = self.meeting()
+        svc = self.service(ai=FakeAI('{"reply": "Shorter now.", "changes": [{"op": "edit_summary", "set": {"tldr": ["Short."], "bogus": 1}}]}'))
+        self.store.save(m)
+        self.store.save_brief(m['id'], {'template': 'standard', 'title': 'Budget', 'tldr': ['Long text.'], 'written': 'hand'})
+        svc.chat_ask(m['id'], 'Make it shorter')
+        brief = self.store.load_brief(m['id'])
+        self.assertEqual(brief['tldr'], ['Short.'])
+        self.assertEqual(brief['written'], 'hand')
+        self.assertNotIn('bogus', brief)
+
+    def test_a_meeting_in_drive_follows_its_changes_once(self):
+        m = dict(self.meeting(), drive={'doc_id': 'D1', 'folder_id': 'F1'})
+        svc = self.service()
+        self.store.save(m)
+        self.store.save_brief(m['id'], {'template': 'standard', 'tldr': ['x']})
+        exported = []
+        svc.export_to_drive = lambda mid: exported.append(mid) or {'doc_id': 'D1'}
+        svc._drive_follow(m['id'], delay_s=0.1)
+        svc._drive_follow(m['id'], delay_s=0.1)
+        end = time.monotonic() + 3
+        while not exported and time.monotonic() < end:
+            time.sleep(0.02)
+        time.sleep(0.2)
+        self.assertEqual(exported, [m['id']])
+        self.assertIn(('meeting_drive', {'id': m['id'], 'phase': 'saved', 'drive': {'doc_id': 'D1'}}), self.events)
+        # A meeting never saved to Drive stays where it is.
+        other = dict(self.meeting(), id='2026-10-20-120000')
+        self.store.save(other)
+        svc._drive_follow(other['id'], delay_s=0.01)
+        time.sleep(0.1)
+        self.assertEqual(exported, [m['id']])
+
+    def test_attendees_are_trimmed_and_unique(self):
+        svc = self.service()
+        m = self.meeting()
+        self.store.save(m)
+        svc.set_attendees(m['id'], [' Ilona ', 'ilona', '', 'Victor'])
+        self.assertEqual(self.store.load(m['id'])['attendees'], ['Ilona', 'Victor'])
