@@ -105,7 +105,7 @@ def rule_matches(rule: dict, exe: str, title: str) -> bool:
 
 
 # Keys that say which windows a rule is for, not what it changes.
-_SELECTOR_KEYS = ('id', 'name', 'match', 'window_title', 'disabled', 'meeting')
+_SELECTOR_KEYS = ('id', 'name', 'match', 'window_title', 'disabled', 'meeting', 'meeting_mic')
 
 
 # A rule that only marks an app as holding calls (meeting mode) changes

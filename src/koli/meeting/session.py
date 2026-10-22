@@ -675,6 +675,27 @@ class SessionManager:
             self.store.save(target)
             return True
 
+    # You renamed the meeting: live or saved. `by_you` marks it, so a summary
+    # written later doesn't rename it again.
+    def set_title(self, meeting_id: str, title: str, by_you: bool = True) -> bool:
+        title = ' '.join(str(title or '').split())[:120]
+        if not title:
+            return False
+        with self._transition():
+            m = self.meeting
+            target = m if m and m['id'] == meeting_id else self._saved(meeting_id)
+            if target is None:
+                return False
+            target['title'] = title
+            if by_you:
+                target['title_by_you'] = True
+            if target is m:
+                self.saver.mark(m)
+                self._emit()
+            else:
+                self.store.save(target)
+            return True
+
     # The summary renamed the meeting: the copies kept in memory (running, or
     # kept for resume) take the new title too, or their next save would bring
     # the old one back.

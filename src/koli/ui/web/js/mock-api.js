@@ -647,6 +647,7 @@ export function createMock(emit) {
       if (id === 'live-mock') meeting.attendees = names; else if (saved[id]) saved[id].attendees = names;
       return ok(true);
     },
+    meeting_retitle: (id, title) => { if (saved[id]) saved[id].title = title; return ok(true); },
     meeting_set_template: (templateId) => { meeting.summary_template = templateId; emit('meeting', { ...meeting }); return ok(null); },
     // The chat answers after a moment; "is <name>" renames Speaker 2, like the AI would.
     meeting_chat: (id) => ok(chats[id] || []),

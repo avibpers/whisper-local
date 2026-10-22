@@ -592,8 +592,11 @@ class MeetingService:
             brief['written'] = how
             spec = chosen.get('title') or {}
             fixed = isinstance(spec, dict) and spec.get('mode') == 'fixed'
-            self.store.save_brief(meeting_id, brief, rename_meeting=not fixed)
-            if not fixed and brief.get('title'):
+            yours = bool(m.get('title_by_you'))      # you named it: the summary doesn't rename it
+            self.store.save_brief(meeting_id, brief, rename_meeting=not fixed and not yours)
+            if yours:
+                pass
+            elif not fixed and brief.get('title'):
                 self.session.retitle(meeting_id, brief['title'])
             elif fixed and brief.get('subject'):
                 self._retitle(meeting_id, brief['subject'])
@@ -862,6 +865,25 @@ class MeetingService:
         if done:
             self._drive_follow(meeting_id)
         return done
+
+    # You renamed the meeting (the title button, or the chat): the meeting
+    # and its summary take the name, a later summary keeps it, and a meeting
+    # in Google Drive follows. A fixed-title template keeps its title on the
+    # report; the name becomes its subject.
+    def rename_meeting(self, meeting_id: str, title: str) -> bool:
+        if not self.session.set_title(meeting_id, title):
+            return False
+        title = ' '.join(str(title).split())[:120]
+        brief = self.store.load_brief(meeting_id)
+        if brief:
+            spec = (self.templates.get(brief['template']) if self.template_exists(brief.get('template') or '') else {}).get('title') or {}
+            if not (isinstance(spec, dict) and spec.get('mode') == 'fixed'):
+                brief['title'] = title
+            brief['subject'] = title
+            self.store.save_brief(meeting_id, brief, rename_meeting=False)
+            self._publish('meeting_brief', {'id': meeting_id})
+        self._drive_follow(meeting_id)
+        return True
 
     # Who was there besides the voices heard (names you type), live or saved.
     def set_attendees(self, meeting_id: str, names: list) -> bool:
@@ -1312,15 +1334,7 @@ class MeetingService:
         if running:
             return "The summary and title change once the meeting ends"
         if op == 'set_title':
-            def retitle(x):
-                x['title'] = c['title']
-                return True
-            self.session.edit_saved(meeting_id, retitle)
-            self.session.retitle(meeting_id, c['title'])
-            brief = self.store.load_brief(meeting_id)
-            if brief:
-                brief['title'] = c['title']
-                self.store.save_brief(meeting_id, brief)
+            self.rename_meeting(meeting_id, c['title'])
             return f"Title: {c['title']}"
         if op == 'edit_summary':
             brief = self.store.load_brief(meeting_id)

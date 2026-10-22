@@ -139,6 +139,12 @@ function Transcript({ id, live, onDeleted, focus }) {
       body: 'Someone who was there, also when they said nothing. The summary lists them.' });
     if (name && name.trim()) setAttendees([...attendees, name.trim()]);
   };
+  const renameMeeting = async () => {
+    const title = await promptModal({ title: 'Rename meeting', label: 'Title', value: m.title, confirm: 'Rename' });
+    if (title && title.trim() && title.trim() !== m.title) {
+      call('meeting_retitle', id, title.trim()).then(() => { load(); toast('Meeting renamed'); }).catch((e) => toast(e.message, { kind: 'err' }));
+    }
+  };
   const renameSpeaker = async (sp) => {
     const name = await promptModal({ title: 'Rename speaker', label: 'Name', value: sp.name, confirm: 'Rename' });
     if (name) call('meeting_rename', sp.id, name, id).then(load).catch((e) => toast(e.message, { kind: 'err' }));
@@ -156,7 +162,8 @@ function Transcript({ id, live, onDeleted, focus }) {
   const last = Math.max(m.turns.length ? m.turns[m.turns.length - 1].end : 0, ...(m.screenshots || []).map((s) => s.at));
   return html`<section class="card" style="min-width:0;overflow:hidden;display:flex;flex-direction:column;max-height:calc(100vh - 200px)" aria-label="Transcript">
     <div class="mt-head">
-      <div class="mt-title"><div class="mt-name" title=${m.title}>${m.title}</div>
+      <div class="mt-title"><div class="mt-name" title=${m.title}>${m.title}
+          <button type="button" class="btn ghost icon sm" aria-label="Rename meeting" title="Rename meeting" onClick=${renameMeeting}><${Icon} name="pen" size="sm" /></button></div>
         <div class="small muted mt-when">${when(m.started_at)} · ${clock(last)} · ${m.source && m.source.app ? m.source.app.replace('.exe', '') : 'started by hand'}</div>
         <div class="mt-speakers">${m.speakers.map((sp) => html`<button type="button" class="chip sm" style=${`color:${COLOURS[sp.colour % 8]}`} title="Rename" onClick=${() => renameSpeaker(sp)}>${sp.name}</button>`)}
           ${quiet.map((r) => (attendees.includes(r.name)

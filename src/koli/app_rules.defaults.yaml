@@ -133,7 +133,10 @@ rules:
     match: ["chrome.exe", "msedge.exe", "brave.exe"]
     window_title: ["Zoom Meeting", "Zoom Workplace"]
     meeting: default
+  # Discord in a tab plays notification sounds all day: it counts as a
+  # call only while the tab uses the microphone.
   - id: meeting-discord-web
     match: ["chrome.exe", "msedge.exe", "brave.exe"]
     window_title: ["Discord"]
     meeting: default
+    meeting_mic: required
