@@ -3950,3 +3950,54 @@ class MeetingFollowupTests(unittest.TestCase):
         self.store.save(m)
         svc.set_attendees(m['id'], [' Ilona ', 'ilona', '', 'Victor'])
         self.assertEqual(self.store.load(m['id'])['attendees'], ['Ilona', 'Victor'])
+
+
+# Summaries after the 2026-10-22 meetings: a fixed-title template still names
+# the meeting by its subject, a section the model made up shows in the app
+# and the Doc alike, and the board minutes open with the main decisions.
+class SummaryFixTests(unittest.TestCase):
+    service = MeetingSummaryServiceTests.service
+    wait = MeetingSummaryServiceTests.wait
+
+    def test_a_made_up_field_becomes_a_section(self):
+        from koli.meeting.summarize import fold_extras
+        b = fold_extras({'title': 'T', 'tldr': ['x'], 'avi_vision': {
+            'title': 'Be creators', 'audience': 'All workers',
+            'article': ['A long paragraph about how AI changes where a programmer creates value, and what that asks of everyone today.'],
+            'asks': ['Show your work', 'Learn the tools']}})
+        self.assertNotIn('avi_vision', b)
+        s = b['sections'][0]
+        self.assertEqual(s['title'], 'Be creators')
+        self.assertIn('Audience: All workers', s['items'])
+        self.assertIn('Show your work', s['items'])
+        self.assertTrue(s['text'][0].startswith('A long paragraph'))
+
+    def test_the_doc_shows_sections_the_template_does_not_list(self):
+        from koli.meeting import gdoc
+        brief = dict(BRIEF, vision={'title': 'Our vision', 'text': ['Everyone builds with AI, every day, from today on, in every team.']})
+        page = gdoc.report_html(brief_meeting(), brief, {}, {'blocks': ['header', 'tldr'], 'doc_blocks': ['header', 'tldr', 'transcript']})
+        self.assertIn('<h2>Our vision</h2>', page)
+        self.assertEqual(gdoc.with_sections(['header', 'notes', 'transcript'], {'sections': [{'title': 'x'}]}),
+                         ['header', 'sections', 'notes', 'transcript'])
+
+    def test_a_fixed_title_template_names_the_meeting_by_its_subject(self):
+        m = summary_meeting()
+        svc = self.service(ai=FakeAI('{"subject": "Budget and the second office", "decisions": [{"text": "Cap spend", "at": 160}],'
+                                     ' "agenda": [{"title": "Budget", "discussion": ["Over plan"]}]}'))
+        self.store.save(m)
+        svc.summarize(m['id'], template='board-meeting')
+        self.wait(svc, m['id'])
+        brief = self.store.load_brief(m['id'])
+        self.assertEqual(brief['title'], 'Board Meeting Summary')
+        self.assertEqual(brief['decisions'][0]['text'], 'Cap spend')
+        self.assertEqual(self.store.load(m['id'])['title'], 'Budget and the second office')
+
+    def test_the_rules_ask_for_the_closing_decision_and_a_subject(self):
+        from koli.meeting.summary_templates import TemplateLibrary
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        lib = TemplateLibrary(Path(tmp.name), skill_dir=None)
+        prompt = lib.prompt(lib.get('board-meeting'), 'English (en)')
+        self.assertIn('main outcome', prompt)
+        self.assertIn('"subject"', prompt)
+        self.assertIn('decisions', lib.get('board-meeting')['blocks'])

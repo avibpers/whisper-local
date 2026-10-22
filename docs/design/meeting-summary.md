@@ -57,6 +57,21 @@ brief; a fixed-title template keeps one of its titles, so the meeting keeps
 its own title in the list. The brief keeps the instructions it was written
 with (`instructions`).
 
+**Subject.** Every answer has a `subject` (what the meeting was about, a few
+words). A fixed-title template ("Management Meeting Summary") keeps its title
+on the report, and the meeting is named by the subject instead.
+
+**Made-up fields.** A section the user asked for must go in `sections`; a
+field the model invents anyway (say `avi_vision`) is folded into a section
+(`summarize.fold_extras`), when the summary is written and whenever an older
+one is read. The Summary tab and the Google Doc show `sections` even when the
+template doesn't list them, so both show the same thing.
+
+**Long meetings.** The whole transcript goes to the model in one request
+(a 90-minute meeting is about 30,000 tokens; the models used read far more).
+The shared rules say the closing summary ("the decision is…") is the main
+outcome and comes first; the board template opens with Main Decisions.
+
 **Names from the summary.** The model's `participants` name the speakers
 still called "Speaker N" in the meeting (never "You", never a name you gave),
 and their saved voice takes the name when it has none, so the next meeting

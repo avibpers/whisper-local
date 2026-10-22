@@ -15,6 +15,7 @@ import logging
 import re
 
 from .store import roster
+from .summarize import fold_extras
 
 logger = logging.getLogger(__name__)
 
@@ -185,6 +186,18 @@ def doc_blocks(layout: dict = None) -> list:
     return list(layout.get('doc_blocks') or layout.get('blocks') or STANDARD_DOC_BLOCKS)
 
 
+# Sections the user asked for show even when the template doesn't list them:
+# before the notes and the transcript, so the Doc matches the Summary tab.
+def with_sections(blocks: list, brief: dict) -> list:
+    if not (brief or {}).get('sections') or 'sections' in blocks:
+        return blocks
+    tail = ('notes', 'page_break', 'transcript', 'data')
+    i = len(blocks)
+    while i > 0 and blocks[i - 1] in tail:
+        i -= 1
+    return blocks[:i] + ['sections'] + blocks[i:]
+
+
 def _all_decisions(brief: dict) -> list:
     return brief.get('decisions') or [d for a in brief.get('agenda') or [] for d in a.get('decisions') or []]
 
@@ -197,6 +210,7 @@ def _all_actions(brief: dict) -> list:
 
 def report_html(m: dict, brief: dict, shot_data: dict, layout: dict = None) -> str:
     e = html.escape
+    brief = fold_extras(brief)
     layout = layout or {}
     stats = talk_stats(m)
     # People who were there but said almost nothing: under the charts' 1%
@@ -338,7 +352,7 @@ def report_html(m: dict, brief: dict, shot_data: dict, layout: dict = None) -> s
     def b_notes():
         return f"<p style='color:#777'><i>Transcription notes: {e('; '.join(brief['notes']))}.</i></p>" if brief.get('notes') else ''
 
-    blocks = doc_blocks(layout)
+    blocks = with_sections(doc_blocks(layout), brief)
     makers = {name[2:]: fn for name, fn in locals().items() if name.startswith('b_')}
     # The Quick summary and the transcript have their own tabs; the rest goes here.
     body = [makers[b]() for b in blocks if b in makers]
@@ -482,7 +496,7 @@ def _refresh(drive, docs, doc_id: str, page: str, name: str):
 # remembers where it is. Returns {'name', 'folder_id', 'folder_url',
 # 'doc_id', 'doc_url', 'exported_at'}.
 def export(store, meeting_id: str, drive=None, docs=None, layout: dict = None) -> dict:
-    brief = store.load_brief(meeting_id)
+    brief = fold_extras(store.load_brief(meeting_id))
     if not brief:
         raise ValueError("This meeting has no summary yet, so there is nothing to export")
     if drive is None:

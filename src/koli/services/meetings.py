@@ -527,9 +527,20 @@ class MeetingService:
                 if self._watcher is threading.current_thread():
                     self._watcher = None
 
-    # The summary written from the meeting ("<id>.brief.json"), or None.
+    # The summary written from the meeting ("<id>.brief.json"), or None,
+    # read the way the Google Doc reads it (summary_ai.fold_extras).
     def brief(self, meeting_id: str):
-        return self.store.load_brief(meeting_id)
+        return summary_ai.fold_extras(self.store.load_brief(meeting_id))
+
+    # The meeting's own title, saved and in the copies the session keeps.
+    def _retitle(self, meeting_id: str, title: str):
+        def change(m):
+            if m.get('title') == title:
+                return False
+            m['title'] = title
+            return True
+        self.session.edit_saved(meeting_id, change)
+        self.session.retitle(meeting_id, title)
 
     # ── Summaries written by the AI (docs/design/meeting-summary.md) ─────────
 
@@ -584,6 +595,8 @@ class MeetingService:
             self.store.save_brief(meeting_id, brief, rename_meeting=not fixed)
             if not fixed and brief.get('title'):
                 self.session.retitle(meeting_id, brief['title'])
+            elif fixed and brief.get('subject'):
+                self._retitle(meeting_id, brief['subject'])
             self._apply_brief_names(meeting_id, brief)
             return brief.get('title')
 

@@ -24,6 +24,11 @@ LANGUAGES = {
 LIST_FIELDS = ('tldr', 'decisions', 'action_items', 'open_questions', 'parked', 'next_meeting', 'agenda',
                'topics', 'sections', 'notes', 'attendees')
 STATUSES = ('do_now', 'plan_only', 'waiting', 'done')
+# Every field a summary may hold; anything else the model adds (a section the
+# user asked for, under a name it made up) is folded into "sections", the one
+# block both the app and the Google Doc always show.
+KNOWN_FIELDS = set(LIST_FIELDS) | {'version', 'template', 'generator', 'title', 'subject', 'date', 'language',
+                                   'participants', 'roles', 'labels', 'written', 'instructions', 'counts'}
 MIN_TURNS = 4
 
 
@@ -105,7 +110,10 @@ def messages(m: dict, template: dict, library: TemplateLibrary, language: str, i
     if str(instructions or '').strip():
         msgs.append({'role': 'user', 'content': "Extra instructions from the person who recorded the meeting. "
                                                 "Follow them where they differ from the template, and still "
-                                                "answer with the JSON only:\n\n" + str(instructions).strip()})
+                                                "answer with the JSON only. A section they ask for that the "
+                                                "template has no field for goes in \"sections\" as "
+                                                "{\"title\", \"text\": [paragraphs], \"items\": [bullets]}:\n\n"
+                                                + str(instructions).strip()})
     return msgs
 
 
@@ -136,10 +144,66 @@ def _actions(value) -> list:
     return out
 
 
+# "avi_vision": {"title": ..., "article": [...]} -> a section with that title.
+def _section_from(key: str, value) -> Optional[dict]:
+    title = key.replace('_', ' ').strip().capitalize()
+    text, items = [], []
+
+    def walk(v, label=''):
+        if isinstance(v, str):
+            if v.strip():
+                line = f"{label}: {v.strip()}" if label and len(v) < 80 else v.strip()
+                (items if len(line) < 90 else text).append(line)
+        elif isinstance(v, (int, float)) and not isinstance(v, bool):
+            items.append(f"{label}: {v}" if label else str(v))
+        elif isinstance(v, list):
+            for x in v:
+                main = next((x[k] for k in ('text', 'task', 'quote') if isinstance(x, dict) and isinstance(x.get(k), str)), None)
+                if main:      # {"text", "who", "at"}: one line, with who said it
+                    who = next((x[k] for k in ('who', 'owner', 'by') if isinstance(x.get(k), str) and x[k].strip()), '')
+                    walk(f"{main.strip()} — {who.strip()}" if who else main)
+                else:
+                    walk(x)
+        elif isinstance(v, dict):
+            for k, x in v.items():
+                if k in ('title', 'heading', 'name') and isinstance(x, str) and x.strip():
+                    continue
+                if k in ('id', 'at', 'start', 'end'):
+                    continue      # ids and times belong to the JSON, not the page
+                plain = k in ('text', 'task', 'quote', 'body', 'paragraph') or not isinstance(x, (str, int, float))
+                walk(x, '' if plain else k.replace('_', ' ').capitalize())
+    if isinstance(value, dict):
+        title = next((str(value[k]).strip() for k in ('title', 'heading', 'name')
+                      if isinstance(value.get(k), str) and value[k].strip()), title)
+    walk(value)
+    if not text and not items:
+        return None
+    return {'title': title, 'text': text, 'items': items}
+
+
+# Fields the model made up become sections, so the Summary tab and the Google
+# Doc show the same thing. Briefs saved before this read the same way.
+def fold_extras(brief: dict) -> dict:
+    if not isinstance(brief, dict):
+        return brief
+    extra = [k for k in brief if k not in KNOWN_FIELDS]
+    if not extra:
+        return brief
+    b = {k: v for k, v in brief.items() if k in KNOWN_FIELDS}
+    sections = list(b.get('sections') or []) if isinstance(b.get('sections'), list) else []
+    for k in extra:
+        s = _section_from(k, brief[k])
+        if s:
+            s['id'] = f"S{len(sections) + 1}"
+            sections.append(s)
+    b['sections'] = sections
+    return b
+
+
 def tidy(answer, m: dict, template: dict, generator: str, language: str) -> dict:
     if not isinstance(answer, dict):
         raise SummaryError("The AI didn't answer with a summary (no JSON object)")
-    b = dict(answer)
+    b = fold_extras(dict(answer))
     b['version'] = 1
     b['template'] = template['id']
     b['generator'] = generator
@@ -177,6 +241,9 @@ def tidy(answer, m: dict, template: dict, generator: str, language: str) -> dict
             b['title'] = choices[0]
     if not str(b.get('title') or '').strip():
         b['title'] = m.get('title') or 'Meeting'
+    # What the meeting was about, in a few words: the meeting's own title
+    # when the template's title is fixed ("Management Meeting Summary").
+    b['subject'] = str(b.get('subject') or '').strip()[:120] or (b['title'] if not (isinstance(spec, dict) and spec.get('mode') == 'fixed') else '')
     if not b.get('date'):
         b['date'] = (m.get('started_at') or '')[:10 if template.get('date') == 'date' else 16]
     if not (b['tldr'] or b['decisions'] or b['action_items'] or b['agenda'] or b['topics'] or b['sections']):
@@ -242,7 +309,7 @@ Blocks and the JSON fields they show:
 - sections: "sections": [{"id","title","items": [bullets],"text": [paragraphs]}] for anything else, asked for by exact title
 - notes: "notes": [transcript problems]
 - data: the summary as JSON (add it last)
-Every JSON answer also has "version": 1, "template": "<id>", "title", "date", "language", "participants": {speaker id: name}.
+Every JSON answer also has "version": 1, "template": "<id>", "title", "subject" (what the meeting was about, under 70 characters), "date", "language", "participants": {speaker id: name}.
 Times ("at", "start", "end") are seconds from the start of the meeting.
 
 Answer with the template file only: no code fence around it, no text before or after it."""
@@ -301,5 +368,5 @@ def draft_template(kind: str, text: str, complete: Callable, name: str = '', tak
     return {'text': draft, 'problems': last_problems}
 
 
-__all__ = ['BLOCKS', 'SummaryError', 'choose_language', 'draft_template', 'meeting_language', 'meeting_text',
+__all__ = ['BLOCKS', 'SummaryError', 'choose_language', 'draft_template', 'fold_extras', 'meeting_language', 'meeting_text',
            'messages', 'summarize', 'tidy', 'worth_summarizing']
