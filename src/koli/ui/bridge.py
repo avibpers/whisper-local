@@ -747,6 +747,11 @@ class Bridge:
     def meeting_set_template(self, template_id=''):
         self._meetings.set_summary_template(str(template_id or ''))
 
+    # A new title for the meeting, typed by you; live or saved.
+    @_api
+    def meeting_retitle(self, meeting_id, title):
+        return self._meetings.rename_meeting(str(meeting_id), str(title or ''))
+
     # Who was there besides the voices heard: the names you add by hand.
     @_api
     def meeting_attendees(self, meeting_id, names):

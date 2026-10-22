@@ -28,6 +28,9 @@ MEDIA_STATES = ('Audio playing', 'Audio muted', 'Microphone recording', 'Camera 
                 'Camera and microphone recording', 'Media recording', 'Microphone in use', 'Camera in use',
                 'Camera and microphone in use', 'Sharing screen', 'Playing in picture-in-picture',
                 'Connected to a device')
+# The states of a tab that uses the microphone or camera: a call, not a page
+# that only plays sound.
+IN_CALL_STATES = tuple(s for s in MEDIA_STATES if 'recording' in s or 'in use' in s)
 
 
 # ── Pure ─────────────────────────────────────────────────────────────────────
@@ -85,9 +88,14 @@ def find_sources(sessions: list, tabs: list, rules: list, detect_default: str) -
             for tab in own:
                 if any_media and not tab.get('media'):
                     continue
-                title, _ = strip_media(tab.get('title') or '')
+                title, media = strip_media(tab.get('title') or '')
+                media = tab.get('media') or media
                 rule = next((r for r in meeting_rules if rule_matches(r, exe, title)), None)
                 if rule is None:
+                    continue
+                # `meeting_mic: required` (Discord in a tab): only a tab using
+                # the microphone is a call; its notification sounds are not.
+                if rule.get('meeting_mic') == 'required' and media not in IN_CALL_STATES:
                     continue
                 mode = _mode_of(rule, detect_default)
                 if mode == 'off':

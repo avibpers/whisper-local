@@ -4001,3 +4001,40 @@ class SummaryFixTests(unittest.TestCase):
         self.assertIn('main outcome', prompt)
         self.assertIn('"subject"', prompt)
         self.assertIn('decisions', lib.get('board-meeting')['blocks'])
+
+
+# A Discord tab that only plays a sound is not a call (2026-10-22: it started
+# a meeting titled "Discord" during a Google Meet), and you can rename a
+# meeting; a summary written later keeps your name.
+class MeetingTitleTests(unittest.TestCase):
+    service = MeetingSummaryServiceTests.service
+    wait = MeetingSummaryServiceTests.wait
+
+    def sources(self, tabs):
+        from koli.meeting.detector import find_sources
+        import ruamel.yaml
+        shipped = ruamel.yaml.YAML(typ='safe').load((ROOT / 'src' / 'koli' / 'app_rules.defaults.yaml').read_text(encoding='utf-8'))
+        rules = shipped['rules']
+        sessions = [{'exe': 'chrome.exe', 'state': 1, 'flow': 'render', 'device': 'Speakers'}]
+        return [s['key'] for s in find_sources(sessions, tabs, rules, 'auto')]
+
+    def test_a_discord_tab_counts_only_while_it_uses_the_microphone(self):
+        self.assertEqual(self.sources([{'exe': 'chrome.exe', 'title': 'Discord', 'media': 'Audio playing'}]), [])
+        self.assertEqual(self.sources([{'exe': 'chrome.exe', 'title': 'Discord', 'media': 'Microphone recording'}]),
+                         ['chrome.exe|Discord'])
+        # Google Meet still counts by its title.
+        self.assertEqual(self.sources([{'exe': 'chrome.exe', 'title': 'Meet - abc-defg-hij', 'media': 'Audio playing'}]),
+                         ['chrome.exe|Meet - abc-defg-hij'])
+
+    def test_renaming_a_meeting_sticks_through_a_new_summary(self):
+        m = summary_meeting()
+        svc = self.service(ai=FakeAI('{"title": "AI title", "tldr": ["x"]}'))
+        self.store.save(m)
+        self.store.save_brief(m['id'], {'template': 'standard', 'title': 'Old', 'tldr': ['x']})
+        self.assertTrue(svc.rename_meeting(m['id'], '  Budget   review '))
+        self.assertEqual(self.store.load(m['id'])['title'], 'Budget review')
+        self.assertEqual(self.store.load_brief(m['id'])['title'], 'Budget review')
+        svc.summarize(m['id'])
+        self.wait(svc, m['id'])
+        self.assertEqual(self.store.load(m['id'])['title'], 'Budget review')
+        self.assertFalse(svc.rename_meeting(m['id'], '   '))
