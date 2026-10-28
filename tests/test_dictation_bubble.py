@@ -566,5 +566,263 @@ class GeminiSilenceTests(unittest.TestCase):
         self.assertEqual(result, ('', 0, 0))
         self.assertEqual(posts, [])
 
+# ── Task 7: the session drives the dictation ────────────────────────────────
+
+class LiveWordsFlowTests(unittest.TestCase):
+    WINDOW = {'exe': 'notepad.exe', 'hwnd': 5, 'title': 'notes'}
+
+    def setUp(self):
+        import unittest.mock as mock
+        self.focus = [False]
+        self.patches = [mock.patch('builtins.print'),
+                        mock.patch('koli.state_manager.publish'),
+                        mock.patch('koli.live_session_flow.publish'),
+                        mock.patch('koli.state_manager.postprocess', side_effect=lambda t, cfg, trace=None, polish=None: t),
+                        mock.patch('koli.state_manager.record_transcription'),
+                        mock.patch('koli.state_manager.record_transcript'),
+                        mock.patch('koli.state_manager.foreground'),
+                        mock.patch('koli.live_session_flow.foreground'),
+                        mock.patch('koli.live_session_flow.live_words_usage')]
+        started = [p.start() for p in self.patches]
+        for p in self.patches:
+            self.addCleanup(p.stop)
+        self.record_transcript = started[5]
+        started[6].get_foreground_app.return_value = dict(self.WINDOW)
+        started[7].get_foreground_app.return_value = dict(self.WINDOW)
+        self.usage = started[8]
+        self.flow_publish = started[2]
+
+    def _sm(self, engine='phrases', phrases=(), rule=None, polish=False):
+        import collections
+        import threading
+        import unittest.mock as mock
+        import numpy as np
+        from koli.state_manager import StateManager
+        from koli.live_session_flow import LiveWordsFlow
+        sm = StateManager.__new__(StateManager)
+        sm.logger = __import__('logging').getLogger('test')
+        sm._state_lock, sm._pipeline_lock = threading.Lock(), threading.Lock()
+        for name in ('_auto_started', '_auto_heard', '_auto_pasted', '_command_mode', '_rephrase_mode',
+                     '_continuous_aborted', '_streaming_display_active', 'is_paused', 'is_processing',
+                     'is_model_loading', '_hands_free'):
+            setattr(sm, name, False)
+        sm._rephrase_selection = ''
+        sm.level_overlay = mock.Mock()
+        sm.audio_feedback, sm.system_tray, sm.media_control = mock.Mock(), mock.Mock(), mock.Mock()
+        sm.fallback_window = mock.Mock()
+        sm.vad_manager = mock.Mock(vad_silence_timeout_seconds=30.0)
+        rec = sm.audio_recorder = mock.Mock()
+        self.recording = [False]
+
+        def start(**kw):
+            self.recording[0] = True
+            return True
+
+        def stop():
+            self.recording[0] = False
+            return np.zeros(8000, dtype=np.float32)
+        rec.start_recording.side_effect = start
+        rec.stop_recording.side_effect = stop
+        rec.cancel_recording.side_effect = lambda: self.recording.__setitem__(0, False)
+        rec.get_recording_status.side_effect = lambda: self.recording[0]
+        rec.take_recorded_audio.return_value = np.ones(16000, dtype=np.float32) * 0.1
+        rec.get_audio_duration.side_effect = lambda a: len(a) / 16000.0
+        rec.continuous_vad = mock.Mock(had_speech=True, silence_timeout_sec=30.0, phrase_pause_sec=1.0,
+                                       speech_since_phrase=False)
+        sm.whisper_engine = mock.Mock(last_info={}, initial_prompt=None, language=None, task='transcribe')
+        sm.whisper_engine.transcribe_audio.side_effect = list(phrases)
+        sm.app_rules = mock.Mock()
+        sm.app_rules.match_for_foreground.return_value = rule
+        config = {'live_words': {'engine': engine, 'phrase_pause_seconds': 1}, 'audio': {}}
+        sm.config_manager = mock.Mock(config=config)
+        sm.config_manager.get_postprocess_config.return_value = {}
+        sm.config_manager.get_whisper_config.return_value = {'language': 'en'}
+        sm.config_manager.get_path.side_effect = lambda path, default=None: (
+            True if (path == 'ai.polish.enabled' and polish) else default)
+        sm._ai_polish = mock.Mock(side_effect=lambda t: t + ' [polished]')
+        sm.clipboard_manager = mock.Mock(auto_paste=True, delivery_method='paste', auto_send_delay=0,
+                                         silent_copy_allowed=True)
+        sm.clipboard_manager.deliver_transcription.return_value = True
+        sm.clipboard_manager.send_is_pending.return_value = False
+        sm._foreground_is_textable = lambda: True
+        sm._pending_model_change = sm._pending_device_change = None
+        sm._idle_actions = []
+        sm._update_ui_state = mock.Mock()
+        sm._apply_recording_context = mock.Mock()
+        sm._maybe_pause_media = mock.Mock()
+        sm._maybe_restart_continuous = mock.Mock()
+        sm._begin_clip = mock.Mock(return_value=None)
+        sm.recent_transcriptions = collections.deque(maxlen=10)
+        sm.bubble_has_focus = lambda: self.focus[0]
+        sm.bubble_focus = mock.Mock()
+        sm.bubble_focus.give_back.return_value = True
+        sm.live = LiveWordsFlow(sm)
+        return sm
+
+    def _start(self, sm):
+        sm._begin_recording()
+        sm._recording_started_at -= 5      # held long enough to be a dictation
+
+    def _pause(self, sm):
+        from koli.voice_activity_detection import VadEvent
+        sm.handle_vad_event(VadEvent.PHRASE_PAUSE)
+
+    def _delivered(self, sm):
+        return [c.args[0] for c in sm.clipboard_manager.deliver_transcription.call_args_list]
+
+    def test_phrases_fill_the_bubble_and_are_written_once(self):
+        sm = self._sm(phrases=['Hello there.', 'how are you?'])
+        self._start(sm)
+        self.assertEqual(sm.audio_recorder.start_recording.call_args.kwargs.get('phrase_pause'), 1.0)
+        self._pause(sm)
+        self._pause(sm)
+        self.assertEqual(sm.live.session.text(), 'Hello there. How are you?')
+        sm.stop_recording()
+        self.assertEqual(self._delivered(sm), ['Hello there. How are you?'])
+        self.assertEqual(sm.whisper_engine.transcribe_audio.call_count, 2, 'the silent tail is not transcribed')
+        self.assertIsNone(sm.live.session)
+        self.usage.record.assert_called_once()
+        self.assertEqual(self.usage.record.call_args.args[0], 'phrases')
+
+    def test_the_tail_with_speech_is_transcribed_into_the_bubble(self):
+        sm = self._sm(phrases=['First part.', 'and the rest'])
+        self._start(sm)
+        self._pause(sm)
+        sm.audio_recorder.continuous_vad.speech_since_phrase = True
+        sm.stop_recording()
+        self.assertEqual(self._delivered(sm), ['First part. And the rest'])
+
+    def test_previous_phrases_prime_whisper(self):
+        sm = self._sm(phrases=['Call Avigail.', 'she knows'])
+        self._start(sm)
+        prompts = []
+        sm.whisper_engine.transcribe_audio.side_effect = lambda a: (prompts.append(sm.whisper_engine.initial_prompt)
+                                                                    or ['Call Avigail.', 'she knows'][len(prompts) - 1])
+        self._pause(sm)
+        self._pause(sm)
+        self.assertIn('Call Avigail.', prompts[1] or '')
+
+    def test_an_empty_bubble_writes_nothing(self):
+        sm = self._sm(phrases=[])
+        self._start(sm)
+        sm.stop_recording()
+        sm.clipboard_manager.deliver_transcription.assert_not_called()
+        sm.level_overlay.flash_failure.assert_called_with('No speech detected')
+
+    def test_off_engine_keeps_todays_flow(self):
+        sm = self._sm(engine='off', phrases=['whole thing'])
+        self._start(sm)
+        self.assertIsNone(sm.live.session)
+        self.assertFalse(sm.audio_recorder.start_recording.call_args.kwargs.get('phrase_pause'))
+        sm.stop_recording()
+        self.assertEqual(self._delivered(sm), ['whole thing'])
+
+    def test_auto_dictation_never_gets_a_session(self):
+        sm = self._sm(engine='cloud')
+        sm.config_manager.config['auto_dictation'] = {'silence_timeout_seconds': 5}
+        sm._begin_recording(auto_started=True)
+        self.assertIsNone(sm.live.session)
+
+    def test_release_in_the_bubble_pauses_and_the_hotkey_resumes(self):
+        sm = self._sm(phrases=['Send it to Jon.', 'John', 'thanks'])
+        self._start(sm)
+        self._pause(sm)
+        session_id = sm.live.session.session_id
+        self.assertTrue(sm.bubble_open())
+        sm.bubble_focus.take.assert_called_once()
+        sm.bubble_edit('Send it to Jon.', 11, 14)
+        self.focus[0] = True
+        sm.stop_recording()                                  # let go of the keys with the bubble focused
+        sm.clipboard_manager.deliver_transcription.assert_not_called()
+        self.assertFalse(self.recording[0])
+        self.assertFalse(sm.live.session.listening)
+        sm.start_recording()                                 # press again: resumes the same session
+        self.assertTrue(self.recording[0])
+        self.assertEqual(sm.live.session.session_id, session_id)
+        self._pause(sm)
+        self.assertEqual(sm.live.session.text(), 'Send it to John.')
+        self.focus[0] = False                                # back in the app
+        sm._recording_started_at -= 5
+        sm.stop_recording()
+        self.assertEqual(self._delivered(sm), ['Send it to John.'])
+        sm.bubble_focus.give_back.assert_called_once()
+        self.assertEqual(sm.bubble_focus.give_back.call_args.args[0]['hwnd'], 5)
+
+    def test_the_window_gone_sends_the_text_to_the_fallback(self):
+        sm = self._sm(phrases=['Keep this.'])
+        self._start(sm)
+        self._pause(sm)
+        sm.bubble_open()
+        sm.bubble_focus.give_back.return_value = False
+        sm.bubble_write(False)
+        sm.clipboard_manager.deliver_transcription.assert_not_called()
+        sm.fallback_window.show.assert_called_once()
+        self.assertEqual(sm.fallback_window.show.call_args.args[0], 'Keep this.')
+
+    def test_write_and_send_from_the_bubble(self):
+        sm = self._sm(phrases=['Ship it.'])
+        self._start(sm)
+        self._pause(sm)
+        sm.bubble_open()
+        self.focus[0] = True
+        self.assertTrue(sm.bubble_write(True))
+        call = sm.clipboard_manager.deliver_transcription.call_args
+        self.assertEqual((call.args[0], call.args[1]), ('Ship it.', True))
+
+    def test_hotkey_release_in_the_app_follows_the_rules_auto_send(self):
+        sm = self._sm(phrases=['Hi.'], rule={'match': ['notepad.exe'], 'auto_send': True})
+        self._start(sm)
+        self._pause(sm)
+        sm.stop_recording()
+        self.assertTrue(sm.clipboard_manager.deliver_transcription.call_args.args[1])
+
+    def test_a_late_phrase_after_cancel_is_dropped(self):
+        sm = self._sm(phrases=['Late words.'])
+        self._start(sm)
+        old = sm.live.session
+        sm.live.phrase_session_check = lambda: None
+        sm.bubble_cancel()
+        self.assertIsNone(sm.live.session)
+        import numpy as np
+        sm.live.on_phrase(np.ones(16000, dtype=np.float32) * 0.1, session=old)
+        self.assertEqual(old.text(), '')
+        sm.clipboard_manager.deliver_transcription.assert_not_called()
+
+    def test_edited_text_is_not_polished(self):
+        sm = self._sm(phrases=['teh plan.'], polish=True)
+        self._start(sm)
+        self._pause(sm)
+        sm.bubble_open()
+        sm.bubble_edit('The plan.', 9, 9)
+        sm.bubble_write(False)
+        self.assertEqual(self._delivered(sm), ['The plan.'])
+        sm._ai_polish.assert_not_called()
+
+    def test_unedited_text_is_polished_once(self):
+        sm = self._sm(phrases=['The plan.'], polish=True)
+        self._start(sm)
+        self._pause(sm)
+        sm.stop_recording()
+        self.assertEqual(self._delivered(sm), ['The plan. [polished]'])
+        sm._ai_polish.assert_called_once()
+
+    def test_esc_with_the_bubble_focused_cancels_nothing(self):
+        sm = self._sm(phrases=['Words.'])
+        self._start(sm)
+        self._pause(sm)
+        sm.bubble_open()
+        self.focus[0] = True
+        self.assertFalse(sm.cancel_recording_hotkey_pressed())
+        self.assertIsNotNone(sm.live.session)
+
+    def test_esc_in_the_app_discards_and_keeps_it_in_history(self):
+        sm = self._sm(phrases=['Words.'])
+        self._start(sm)
+        self._pause(sm)
+        self.assertTrue(sm.cancel_recording_hotkey_pressed())
+        self.assertIsNone(sm.live.session)
+        sm.clipboard_manager.deliver_transcription.assert_not_called()
+        self.assertTrue(self.record_transcript.called)
+
 if __name__ == '__main__':
     unittest.main()
