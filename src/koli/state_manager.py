@@ -1045,11 +1045,12 @@ class StateManager:
         except (TypeError, ValueError):
             return 5.0
 
-    # Seconds of silence after speech that paste a phrase mid-recording; 0 = off.
+    # Seconds of silence after speech that end a phrase: auto-dictation pastes
+    # there, and the bubble's Phrases and cloud engines transcribe there.
     def _auto_phrase_pause(self) -> float:
-        cfg = self.config_manager.config.get('auto_dictation') or {}
+        cfg = self.config_manager.config.get('live_words') or {}
         try:
-            return max(0.0, float(cfg.get('phrase_pause_seconds', 0) or 0))
+            return max(0.0, float(cfg.get('phrase_pause_seconds', 1) or 0))
         except (TypeError, ValueError):
             return 0.0
 

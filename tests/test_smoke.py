@@ -5827,7 +5827,7 @@ class AutoDictationStateManagerTests(unittest.TestCase):
         import unittest.mock as mock
         sm = self._sm(had_speech=False)
         sm._auto_started = False
-        sm.config_manager = mock.Mock(config={'auto_dictation': {'silence_timeout_seconds': 5, 'phrase_pause_seconds': 1}})
+        sm.config_manager = mock.Mock(config={'auto_dictation': {'silence_timeout_seconds': 5}, 'live_words': {'phrase_pause_seconds': 1}})
         sm._apply_recording_context = mock.Mock()
         sm._maybe_pause_media = mock.Mock()
         sm._setup_streaming_delivery = mock.Mock()

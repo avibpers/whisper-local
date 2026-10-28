@@ -33,7 +33,7 @@ def _build_settings_header():
 
 # Maps whose entries are the user's own (not defined in the defaults), so a
 # settings save must keep every entry rather than drop unknown keys.
-EXTENSIBLE_PATHS = {'whisper.models', 'streaming.models',
+EXTENSIBLE_PATHS = {'whisper.models', 'streaming.models', 'live_words.prices',
                     'postprocess.styles', 'postprocess.corrections'}
 
 def deep_merge_config(default_config: Dict[str, Any],
