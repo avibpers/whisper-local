@@ -605,6 +605,9 @@ export function createMock(emit) {
     tasks_list: () => ok(Object.values(tasks)),
     task_result: (id) => ok(tasks[id] || null),
     bar_resize: () => ok({ max_height: Math.max(20, window.innerHeight - 56) }),
+    live_words_usage: () => ok([
+      { key: 'cloud/openai/gpt-live-transcribe', label: 'OpenAI · gpt-live-transcribe', first_day: '2026-10-21', last_day: '2026-10-27', days: 6, minutes: 84.2, words: 9310, words_per_minute: 110.6, fixes: 23, cost: 1.4314 },
+      { key: 'phrases', label: 'Phrases (Whisper)', first_day: '2026-10-14', last_day: '2026-10-20', days: 7, minutes: 91.5, words: 9902, words_per_minute: 108.2, fixes: 41, cost: 0 }]),
     // The dictation bubble: calls are kept in window.mockBubble for checks;
     // window.mockEmit('live_words', {...}) shows words in the bubble.
     bubble_open: () => { (window.mockBubble = window.mockBubble || []).push(['open']); window.mockLive = { ...(window.mockLive || {}), opened: true }; emit('live_words', window.mockLive); return ok(true); },

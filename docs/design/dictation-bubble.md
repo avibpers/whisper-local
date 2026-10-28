@@ -1,7 +1,7 @@
 # The dictation bubble: see the words while you speak, fix one before it is written
 
-*Design spec, 2026-10-28. Agreed in conversation; implementation plan to follow
-in `docs/plans/`. Background: `docs/research/claude-code-voice-dictation.md`.
+*Design spec, 2026-10-28. Agreed in conversation; built from
+`docs/plans/2026-10-28-dictation-bubble-implementation.md`. Background: `docs/research/claude-code-voice-dictation.md`.
 Replaces the earlier "live typing" draft, which pasted into the app while you
 spoke; that idea died on the held hotkey (Koli can only type through the
 keyboard, and Ctrl+V under a held Ctrl+Win is not a paste).*

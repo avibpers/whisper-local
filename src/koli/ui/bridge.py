@@ -486,6 +486,12 @@ class Bridge:
         from ..services import insights
         return insights.summary(int(days))
 
+    # What each "words while you speak" engine was used for and cost.
+    @_api
+    def live_words_usage(self):
+        from .. import live_words_usage
+        return live_words_usage.summary(self._cm.get_path('live_words.prices') or {})
+
     # ── Vocabulary ───────────────────────────────────────────────────────────
 
     @_api

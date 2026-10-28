@@ -1052,6 +1052,35 @@ class BubblePaneTests(unittest.TestCase):
 
     def test_the_page_reports_when_it_shows_the_pane(self):
         self.assertIn('resting, pane)', self.js)
+# ── Task 11: the usage card and the doctor line ─────────────────────────────
+
+class LiveWordsReportTests(unittest.TestCase):
+    def test_doctor_line_names_the_engine_and_the_key(self):
+        from koli.live_words import describe
+        self.assertEqual(describe({'engine': 'off'}, lambda p: True), 'off')
+        self.assertEqual(describe({'engine': 'phrases'}, lambda p: True), 'Phrases (Whisper)')
+        self.assertIn('English only', describe({'engine': 'local'}, lambda p: True))
+        self.assertEqual(describe({'engine': 'cloud', 'cloud': {'provider': 'openai'}}, lambda p: True),
+                         'Cloud: OpenAI gpt-live-transcribe (key found)')
+        self.assertIn('no Gemini key', describe({'engine': 'cloud', 'cloud': {'provider': 'gemini'}}, lambda p: False))
+
+    def test_doctor_prints_it(self):
+        source = (ROOT / 'src' / 'koli' / 'doctor.py').read_text(encoding='utf-8')
+        self.assertIn('Words while you speak', source)
+
+    def test_bridge_returns_the_usage_rows(self):
+        import unittest.mock as mock
+        from koli.ui.bridge import Bridge
+        host = mock.Mock()
+        host.ctx.config_manager.get_path.return_value = {'openai/x': {'per_minute': 1}}
+        with mock.patch('koli.live_words_usage.summary', return_value=[{'key': 'phrases'}]) as summary:
+            self.assertEqual(Bridge(host).live_words_usage(), {'ok': True, 'data': [{'key': 'phrases'}]})
+        summary.assert_called_once_with({'openai/x': {'per_minute': 1}})
+
+    def test_history_screen_shows_the_card(self):
+        js = (ROOT / 'src' / 'koli' / 'ui' / 'web' / 'js' / 'screens' / 'history.js').read_text(encoding='utf-8')
+        self.assertIn("call('live_words_usage'", js)
+        self.assertIn('Words while you speak', js)
 
 if __name__ == '__main__':
     unittest.main()

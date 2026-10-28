@@ -73,3 +73,22 @@ def usage_key(choice: EngineChoice) -> str:
     if choice.engine in PROVIDERS:
         return f"cloud/{choice.provider or choice.engine}/{choice.model}"
     return choice.engine
+
+
+# One line for `koli --doctor`: the engine, and for the cloud whether the
+# provider's key is there (without it dictations run as Phrases).
+def describe(cfg: dict, has_key: Callable[[str], bool]) -> str:
+    engine = (cfg or {}).get('engine') or 'off'
+    if engine == 'phrases':
+        return 'Phrases (Whisper)'
+    if engine == 'local':
+        return 'Local words (English only, a preview)'
+    if engine != 'cloud':
+        return 'off'
+    cloud = cfg.get('cloud') or {}
+    provider = cloud.get('provider') if cloud.get('provider') in PROVIDERS else 'openai'
+    model = cloud.get(f'{provider}_model') or DEFAULT_MODELS[provider]
+    name = PROVIDERS[provider]
+    if has_key(provider):
+        return f"Cloud: {name} {model} (key found)"
+    return f"Cloud: {name} {model} - no {name} key in AI providers, so dictations run as Phrases"
