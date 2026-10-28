@@ -338,5 +338,171 @@ class WebSocketFramingTests(unittest.TestCase):
         self.assertIsNone(sock.recv())
 
 
+# ── Task 5: OpenAI live transcription ───────────────────────────────────────
+
+class _FakeSocket:
+    def __init__(self):
+        import queue
+        self.sent, self.incoming, self.closed = [], queue.Queue(), False
+
+    def send_text(self, text):
+        import json
+        self.sent.append(json.loads(text))
+
+    def push(self, **event):
+        import json
+        self.incoming.put(('text', json.dumps(event)))
+
+    def recv(self):
+        import queue
+        try:
+            return self.incoming.get(timeout=3)
+        except queue.Empty:
+            return None
+
+    def close(self):
+        self.closed = True
+        self.incoming.put(None)
+
+
+def _wait(cond, seconds=2):
+    import time
+    end = time.time() + seconds
+    while time.time() < end and not cond():
+        time.sleep(0.01)
+    return cond()
+
+
+class OpenAILiveTests(unittest.TestCase):
+    def _client(self, language='he', connect=None):
+        from koli.cloud_stt.openai_live import OpenAILive
+        self.sock = _FakeSocket()
+        self.calls = []
+        self.interims, self.finals, self.errors = [], [], []
+
+        def default_connect(url, headers, timeout=10):
+            self.calls.append((url, headers))
+            return self.sock
+        return OpenAILive('sk-test', 'gpt-live-transcribe', language, self.interims.append, self.finals.append,
+                          self.errors.append, connect=connect or default_connect, retry_delay=0.01)
+
+    def test_session_update_is_first_and_key_only_in_header(self):
+        c = self._client()
+        c.start()
+        self.assertTrue(_wait(lambda: self.sock.sent))
+        url, headers = self.calls[0]
+        self.assertEqual(url, 'wss://api.openai.com/v1/realtime?intent=transcription')
+        self.assertEqual(headers['Authorization'], 'Bearer sk-test')
+        self.assertNotIn('sk-test', url)
+        self.assertEqual(self.sock.sent[0], {'type': 'session.update', 'session': {
+            'type': 'transcription', 'audio': {'input': {
+                'format': {'type': 'audio/pcm', 'rate': 24000},
+                'transcription': {'model': 'gpt-live-transcribe', 'languages': ['he'], 'delay': 'low'},
+                'turn_detection': None}}}})
+        c.cancel()
+
+    def test_no_language_sends_no_languages(self):
+        c = self._client(language='')
+        c.start()
+        self.assertTrue(_wait(lambda: self.sock.sent))
+        self.assertNotIn('languages', self.sock.sent[0]['session']['audio']['input']['transcription'])
+        c.cancel()
+
+    def test_audio_before_open_is_sent_after_the_session_update(self):
+        import base64
+        import threading
+        import numpy as np
+        gate = threading.Event()
+
+        def slow_connect(url, headers, timeout=10):
+            gate.wait(2)
+            return self.sock
+        c = self._client(connect=slow_connect)
+        c.start()
+        c.feed(np.zeros(16000, dtype=np.float32))     # 1 s while still connecting
+        gate.set()
+        c.finish(timeout=0.3)
+        kinds = [m['type'] for m in self.sock.sent]
+        self.assertEqual(kinds[0], 'session.update')
+        appended = sum(len(base64.b64decode(m['audio'])) for m in self.sock.sent
+                       if m['type'] == 'input_audio_buffer.append')
+        self.assertEqual(appended, 48000)                # 24 kHz PCM16: 24000 samples x 2 bytes
+        self.assertEqual(kinds[-1], 'input_audio_buffer.commit')
+        self.assertAlmostEqual(c.seconds_sent, 1.0, places=2)
+
+    def test_deltas_grow_the_interim_and_completions_keep_commit_order(self):
+        c = self._client()
+        c.start()
+        self.assertTrue(_wait(lambda: self.sock.sent))
+        s = self.sock
+        s.push(type='input_audio_buffer.committed', item_id='A')
+        s.push(type='conversation.item.input_audio_transcription.delta', item_id='A', content_index=0, delta='Hel')
+        s.push(type='conversation.item.input_audio_transcription.delta', item_id='A', content_index=0, delta='lo')
+        s.push(type='input_audio_buffer.committed', item_id='B')
+        s.push(type='conversation.item.input_audio_transcription.completed', item_id='B', content_index=0,
+               transcript='world')
+        s.push(type='conversation.item.input_audio_transcription.completed', item_id='A', content_index=0,
+               transcript='Hello')
+        self.assertTrue(_wait(lambda: len(self.finals) == 2))
+        self.assertEqual(self.finals, ['Hello', 'world'])
+        self.assertIn('Hel', self.interims)
+        self.assertIn('Hello', self.interims)
+        self.assertTrue(c.transcribed_any)
+        c.cancel()
+
+    def test_one_retry_then_failure(self):
+        attempts = []
+
+        def failing(url, headers, timeout=10):
+            attempts.append(1)
+            raise ConnectionError('no network')
+        c = self._client(connect=failing)
+        c.start()
+        self.assertTrue(_wait(lambda: c.failed))
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(len(self.errors), 1)
+
+    def test_retry_succeeds(self):
+        attempts = []
+
+        def flaky(url, headers, timeout=10):
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise ConnectionError('blip')
+            return self.sock
+        c = self._client(connect=flaky)
+        c.start()
+        self.assertTrue(_wait(lambda: self.sock.sent))
+        self.assertFalse(c.failed)
+        c.cancel()
+
+    def test_error_event_is_reported(self):
+        c = self._client()
+        c.start()
+        self.assertTrue(_wait(lambda: self.sock.sent))
+        self.sock.push(type='error', error={'message': 'Invalid model'})
+        self.assertTrue(_wait(lambda: self.errors))
+        self.assertIn('Invalid model', self.errors[0])
+        self.assertTrue(c.failed)
+
+    def test_unsent_audio_is_the_turns_without_a_transcript(self):
+        import numpy as np
+        c = self._client()
+        c.start()
+        self.assertTrue(_wait(lambda: self.sock.sent))
+        c.feed(np.ones(8000, dtype=np.float32) * 0.1)
+        c.commit()
+        c.feed(np.ones(16000, dtype=np.float32) * 0.2)
+        c.commit()
+        self.sock.push(type='input_audio_buffer.committed', item_id='A')
+        self.sock.push(type='input_audio_buffer.committed', item_id='B')
+        self.sock.push(type='conversation.item.input_audio_transcription.completed', item_id='A', content_index=0,
+                       transcript='one')
+        self.assertTrue(_wait(lambda: self.finals))
+        left = c.unsent_audio()
+        self.assertEqual(len(left), 16000)
+        self.assertAlmostEqual(float(left[0]), 0.2, places=5)
+        c.cancel()
+
 if __name__ == '__main__':
     unittest.main()
