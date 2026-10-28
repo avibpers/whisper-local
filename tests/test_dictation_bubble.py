@@ -232,5 +232,63 @@ class DictationSessionTests(unittest.TestCase):
         self.assertEqual(self.join('Dear Ann,' + chr(10), 'thanks', ''), 'Thanks')
 
 
+# ── Task 3: usage and cost ──────────────────────────────────────────────────
+
+PRICES = {'openai/gpt-live-transcribe': {'per_minute': 0.017},
+          'gemini/gemini-3.6-flash': {'input_per_million': 0.75, 'output_per_million': 3.75}}
+
+
+class LiveWordsUsageTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        from koli import live_words_usage
+        self.u = live_words_usage
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.path = Path(self.dir.name) / 'live_words_usage.json'
+
+    def test_records_add_up_per_day_and_engine(self):
+        self.u.record('phrases', 30, 50, False, path=self.path, day='2026-10-28')
+        self.u.record('phrases', 30, 70, True, path=self.path, day='2026-10-28')
+        rows = self.u.summary(PRICES, path=self.path)
+        self.assertEqual(len(rows), 1)
+        r = rows[0]
+        self.assertEqual((r['key'], r['recordings'], r['words'], r['fixes'], r['days']), ('phrases', 2, 120, 1, 1))
+        self.assertAlmostEqual(r['minutes'], 1.0)
+        self.assertAlmostEqual(r['words_per_minute'], 120.0)
+        self.assertEqual(r['cost'], 0)
+
+    def test_openai_cost_is_per_minute(self):
+        self.assertAlmostEqual(self.u.cost('cloud/openai/gpt-live-transcribe', 120, 0, 0, PRICES), 0.034)
+
+    def test_gemini_cost_is_per_token(self):
+        self.assertAlmostEqual(self.u.cost('cloud/gemini/gemini-3.6-flash', 60, 1_000_000, 0, PRICES), 0.75)
+        self.assertAlmostEqual(self.u.cost('cloud/gemini/gemini-3.6-flash', 60, 0, 1_000_000, PRICES), 3.75)
+
+    def test_unknown_model_and_local_cost_nothing(self):
+        self.assertEqual(self.u.cost('cloud/openai/mystery', 600, 0, 0, PRICES), 0)
+        self.assertEqual(self.u.cost('local', 600, 0, 0, PRICES), 0)
+
+    def test_summary_spans_days_newest_first(self):
+        self.u.record('phrases', 60, 100, False, path=self.path, day='2026-10-20')
+        self.u.record('cloud/openai/gpt-live-transcribe', 60, 90, False, path=self.path, day='2026-10-27')
+        self.u.record('cloud/openai/gpt-live-transcribe', 60, 90, False, path=self.path, day='2026-10-28')
+        rows = self.u.summary(PRICES, path=self.path)
+        self.assertEqual([r['key'] for r in rows], ['cloud/openai/gpt-live-transcribe', 'phrases'])
+        self.assertEqual((rows[0]['first_day'], rows[0]['last_day'], rows[0]['days']), ('2026-10-27', '2026-10-28', 2))
+        self.assertAlmostEqual(rows[0]['cost'], 0.034)
+        self.assertEqual(rows[0]['label'], 'OpenAI · gpt-live-transcribe')
+
+    def test_no_minutes_means_zero_words_per_minute(self):
+        self.u.record('phrases', 0, 3, False, path=self.path, day='2026-10-28')
+        self.assertEqual(self.u.summary(PRICES, path=self.path)[0]['words_per_minute'], 0)
+
+    def test_a_corrupt_file_reads_empty_and_is_replaced(self):
+        self.path.write_text('{not json', encoding='utf-8')
+        self.assertEqual(self.u.summary(PRICES, path=self.path), [])
+        self.u.record('phrases', 6, 1, False, path=self.path, day='2026-10-28')
+        self.assertEqual(len(self.u.summary(PRICES, path=self.path)), 1)
+
+
 if __name__ == '__main__':
     unittest.main()
