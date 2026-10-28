@@ -173,6 +173,15 @@ def _section_config() -> int:
         hotkey_cfg = cfg.get_hotkey_config()
         Check("Recording mode").info(hotkey_cfg.get('recording_mode', 'toggle')).print()
         Check("Recording hotkey").info(hotkey_cfg.get('recording_hotkey', '?')).print()
+        from .live_words import describe
+
+        def has_key(provider):
+            try:
+                from .llm import credentials
+                return bool(credentials.load(provider).get('key'))
+            except Exception:
+                return False
+        Check("Words while you speak").info(describe(cfg.config.get('live_words') or {}, has_key)).print()
     except Exception as e:
         Check("Effective config loads").fail(str(e)).print()
         failures += 1

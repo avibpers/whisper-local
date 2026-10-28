@@ -605,6 +605,16 @@ export function createMock(emit) {
     tasks_list: () => ok(Object.values(tasks)),
     task_result: (id) => ok(tasks[id] || null),
     bar_resize: () => ok({ max_height: Math.max(20, window.innerHeight - 56) }),
+    live_words_usage: () => ok([
+      { key: 'cloud/openai/gpt-live-transcribe', label: 'OpenAI · gpt-live-transcribe', first_day: '2026-10-21', last_day: '2026-10-27', days: 6, minutes: 84.2, words: 9310, words_per_minute: 110.6, fixes: 23, cost: 1.4314 },
+      { key: 'phrases', label: 'Phrases (Whisper)', first_day: '2026-10-14', last_day: '2026-10-20', days: 7, minutes: 91.5, words: 9902, words_per_minute: 108.2, fixes: 41, cost: 0 }]),
+    // The dictation bubble: calls are kept in window.mockBubble for checks;
+    // window.mockEmit('live_words', {...}) shows words in the bubble.
+    bubble_open: () => { (window.mockBubble = window.mockBubble || []).push(['open']); window.mockLive = { ...(window.mockLive || {}), opened: true }; emit('live_words', window.mockLive); return ok(true); },
+    bubble_edit: (text, start, end) => { (window.mockBubble = window.mockBubble || []).push(['edit', text, start, end]); window.mockLive = { ...(window.mockLive || {}), settled: text, start, end }; return ok(); },
+    bubble_write: (send) => { (window.mockBubble = window.mockBubble || []).push(['write', send]); emit('live_words', { id: null }); return ok(true); },
+    bubble_listen: (on) => { (window.mockBubble = window.mockBubble || []).push(['listen', on]); window.mockLive = { ...(window.mockLive || {}), listening: on }; emit('live_words', window.mockLive); return ok(true); },
+    bubble_cancel: () => { (window.mockBubble = window.mockBubble || []).push(['cancel']); emit('live_words', { id: null }); return ok(); },
     // Kept on the page so a drag can be checked in the browser.
     bar_drag: (...args) => { (window.mockDrags = window.mockDrags || []).push(args); return ok(); },
     resources: () => ok({ device: 'cuda', gpu_index: 1, models: ['large-v3-turbo', 'hebrew-large-v3-turbo'],

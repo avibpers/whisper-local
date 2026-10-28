@@ -53,9 +53,10 @@ def summary_panel_action(phase: str) -> tuple:
 
 # Topics each page cares about. Latest-wins topics are coalesced per batch.
 BAR_TOPICS = {'state', 'bar', 'pipeline', 'notify', 'task', 'level', 'streaming_text', 'settings',
-              'profile', 'window', 'auto_send', 'problem', 'meeting', 'meeting_shot', 'wake', 'agent'}
+              'profile', 'window', 'auto_send', 'problem', 'meeting', 'meeting_shot', 'wake', 'agent',
+              'live_words'}
 PANEL_TOPICS = {'meeting', 'meeting_turn', 'meeting_shot', 'meeting_summary', 'settings', 'task', 'problem'}
-COALESCE = {'level', 'vad', 'foreground', 'streaming_text'}
+COALESCE = {'level', 'vad', 'foreground', 'streaming_text', 'live_words'}
 PUSH_INTERVAL = 0.05
 
 
@@ -159,6 +160,9 @@ class UiHost:
         self._bar_upright = None    # last shape told to the page
         self._bar_thin = None       # last corner style applied
         self._field_rect = None     # the text field the tab follows (physical px)
+        self._recording_field = None  # the field a dictation with words in the bubble is for
+        self._live_id = None        # the bubble session the page shows
+        self._bar_pane = False      # the page shows your words (its own opacity)
         self._focus_token = 0       # input_watch listener while following
         self._drag = None           # window rect where a drag began
         self._drag_seq = 0          # newest drag message handled
@@ -201,6 +205,9 @@ class UiHost:
             self.ctx.bar = bar
         sm.fallback_window = FallbackToWindow(self)
         self.bar_enabled = bool(self.settings.get('overlay.enabled', True))
+        # The dictation bubble asks the host about focus (live_session_flow.py).
+        sm.bubble_has_focus = self.bubble_has_focus
+        sm.bubble_focus = self
 
         # Tray and hotkey actions that change settings go through the settings
         # service, so every window hears about them and Undo works.
@@ -533,7 +540,7 @@ class UiHost:
         size = (int(w * scale), int(h * scale))
         position = self.settings.get('overlay.position', 'right-edge') or 'right-edge'
         custom = self._custom_spot()
-        field = self._field_rect
+        field = self._recording_field or self._field_rect
         if field:
             area = win32.work_area(((field[0] + field[2]) // 2, (field[1] + field[3]) // 2))
         elif position == 'custom' and custom:
@@ -552,12 +559,16 @@ class UiHost:
 
     # The page reports its size after every change, and whether it is the
     # resting tab (which may be see-through).
-    def resize_bar(self, width, height, resting=None):
+    def resize_bar(self, width, height, resting=None, pane=False):
         width = max(4, min(width, 640))
         height = max(4, min(height, self._max_bar_height()))
         self._bar_size = (width, height)
+        changed = bool(pane) != self._bar_pane
+        self._bar_pane = bool(pane)
         if resting is not None and bool(resting) != self._bar_resting:
             self._bar_resting = bool(resting)
+            changed = True
+        if changed:
             self._apply_bar_opacity()
         self.place_bar()
 
@@ -576,10 +587,66 @@ class UiHost:
             self._bar_upright = upright
             publish('bar', {'cmd': 'shape', 'upright': upright})
 
-    # The resting tab takes the chosen opacity; anything else is solid.
+    # The resting tab and the pane with your words take their chosen
+    # opacity; anything else is solid.
     def _apply_bar_opacity(self):
-        percent = self.settings.get('overlay.rest_opacity', 100) or 100
-        win32.set_opacity(self.bar_hwnd, percent / 100.0 if self._bar_resting else 1.0)
+        if self._bar_resting:
+            percent = self.settings.get('overlay.rest_opacity', 100) or 100
+        elif self._bar_pane:
+            percent = self.settings.get('overlay.live_opacity', 90) or 90
+        else:
+            percent = 100
+        win32.set_opacity(self.bar_hwnd, percent / 100.0)
+
+    # ── The dictation bubble: where it sits, and keyboard focus ──
+
+    # A dictation with words in the bubble began: the bubble goes beside the
+    # text field you are writing in, wherever it usually rests. It ended: back.
+    def _on_live_words(self, snapshot):
+        live_id = snapshot.get('id')
+        if live_id == self._live_id:
+            return
+        self._live_id = live_id
+        if live_id is None:
+            if self._recording_field is not None:
+                self._recording_field = None
+                self.place_bar()
+            return
+
+        def probe():
+            try:
+                from ..platform import input_watch
+                info = input_watch.probe_focused() if hasattr(input_watch, 'probe_focused') else {}
+            except Exception as e:
+                logger.debug(f"Bubble: field probe failed: {e}")
+                info = {}
+            rect = info.get('rect')
+            if info.get('editable') and rect and rect[2] > rect[0] and info.get('root_pid') != os.getpid():
+                self._recording_field = tuple(rect)
+                self.place_bar()
+        threading.Thread(target=probe, daemon=True, name='bubble-field').start()
+
+    def bubble_has_focus(self) -> bool:
+        return bool(self.bar_hwnd) and win32.foreground() == self.bar_hwnd
+
+    # You clicked into the bubble's words: it takes the keyboard.
+    def take(self):
+        if not self.bar_hwnd:
+            return
+        win32.set_activatable(self.bar_hwnd, True)
+        win32.restore_foreground(self.bar_hwnd)
+
+    # Writing the text: the keyboard goes back to the app it is for. False
+    # when that window is gone (the text then goes to the fallback window).
+    def give_back(self, window) -> bool:
+        if self.bar_hwnd:
+            win32.set_activatable(self.bar_hwnd, False)
+        hwnd = (window or {}).get('hwnd') or self._last_external_hwnd
+        if not hwnd or not win32.is_window(hwnd):
+            return False
+        win32.restore_foreground(hwnd)
+        time.sleep(0.15)
+        return win32.foreground() == hwnd
 
     # ── Following the text field ──
 
@@ -873,6 +940,9 @@ class UiHost:
             # meeting (a detected call counts down in the bubble too).
             data['upright'] = self._bar_geometry(*self._bar_size)[3]
             data['meeting'] = self._meeting_payload()
+            live = getattr(self.ctx.state_manager, 'live', None)
+            if live is not None and live.session is not None:
+                data['live'] = live.session.snapshot()
         return data
 
     def _meeting_payload(self):
@@ -894,6 +964,8 @@ class UiHost:
             self._on_meeting_state(payload.get('state', 'idle'))
         elif topic == 'meeting_summary' and isinstance(payload, dict):
             self._on_summary_status(payload.get('phase', 'none'))
+        elif topic == 'live_words' and isinstance(payload, dict):
+            self._on_live_words(payload)
         item = {'topic': topic, 'payload': payload}
         self.main.queue.put(item)
         if topic in self.bar.topics:
@@ -941,7 +1013,7 @@ class UiHost:
             self.place_bar()
         elif path == 'overlay.follow_focus':
             self._apply_follow_focus()
-        elif path == 'overlay.rest_opacity':
+        elif path in ('overlay.rest_opacity', 'overlay.live_opacity'):
             self._apply_bar_opacity()
         elif path == 'overlay.hide_from_sharing':
             self.apply_capture_flags()

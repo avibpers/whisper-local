@@ -90,6 +90,7 @@ class AudioRecorder:
         self._test_audio_source()
 
         self.continuous_streaming = self._setup_continuous_streaming()
+        self.stream_partials = False
 
         self._configure_for_device_rate()
         self._buffer = collections.deque()
@@ -358,7 +359,9 @@ class AudioRecorder:
                 else:
                     self.continuous_vad.process_chunk(chunk)
 
-            if self.continuous_streaming:
+            # The local words model runs only for a dictation whose bubble
+            # uses it (live_session_flow.py sets this per recording).
+            if self.continuous_streaming and self.stream_partials:
                 self.continuous_streaming.process_chunk(chunk)
 
         if status:

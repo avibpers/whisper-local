@@ -114,9 +114,28 @@ SCHEMA = [
     _S('auto_dictation.silence_timeout_seconds', 'Auto-listen silence limit', 'general', 'number',
        apply=NEXT_RECORDING, min=1, max=60, step=1, unit='seconds',
        help='How long it listens for you to start, and how long a pause ends it, when it started from a focused field.'),
-    _S('auto_dictation.phrase_pause_seconds', 'Paste after each pause of', 'general', 'number',
-       apply=NEXT_RECORDING, min=0, max=10, step=0.5, unit='seconds',
-       help='While auto-listening, a pause this long pastes what you said and keeps listening. 0 pastes only at the end.'),
+
+    # ── Words while you speak (the dictation bubble) ────────────────────────
+    _S('live_words.engine', 'Words while you speak', 'general', 'segmented', apply=NEXT_RECORDING, mode=SIMPLE,
+       group='Words while you speak',
+       choices=[['off', 'Off'], ['local', 'Local words'], ['phrases', 'Phrases'], ['cloud', 'Cloud']],
+       help='Shows your words in the bubble beside the text field while you dictate with the hotkey. '
+            'Phrases and Cloud let you click into the bubble, select a wrong word and say the right one; '
+            'the text is written when you let go of the keys in the app, or press Enter in the bubble to send it. '
+            'Local words is English only and a preview (Whisper writes the text). Cloud sends your audio to '
+            'OpenAI or Gemini. "Only my voice" works with Off and Phrases only. App rules can choose per app.'),
+    _S('live_words.phrase_pause_seconds', 'A phrase ends after a pause of', 'general', 'number', apply=NEXT_RECORDING,
+       group='Words while you speak', min=0.5, max=5, step=0.5, unit='seconds',
+       help='Phrases and Gemini transcribe at each pause this long; auto-dictation pastes at it.'),
+    _S('live_words.cloud.provider', 'Cloud provider', 'general', 'segmented', apply=NEXT_RECORDING,
+       group='Words while you speak', choices=[['openai', 'OpenAI'], ['gemini', 'Gemini']],
+       help='Uses the key saved in AI providers. OpenAI shows words as you speak; Gemini shows each phrase after you pause.'),
+    _S('live_words.cloud.openai_model', 'OpenAI model', 'general', 'text', apply=NEXT_RECORDING,
+       group='Words while you speak', help='gpt-live-transcribe streams words; gpt-transcribe is cheaper.'),
+    _S('live_words.cloud.gemini_model', 'Gemini model', 'general', 'text', apply=NEXT_RECORDING,
+       group='Words while you speak', help='Any Gemini model that accepts audio, e.g. gemini-3.6-flash or gemini-3.5-flash-lite.'),
+    _S('live_words.prices', 'Prices', 'general', 'readonly', group='Words while you speak',
+       help='What each cloud model costs, for the usage card. Edit in user_settings.yaml.'),
 
     # ── Learning (its own Training screen) ──────────────────────────────────
     _S('learning.enabled', 'Learn from my dictations', 'learning', 'toggle',
@@ -214,15 +233,10 @@ SCHEMA = [
        group='A second model for one language',
        help='Loaded next to the main model (about as much graphics memory again). It gets no prompt, only '
             'your favored words.'),
-    _S('streaming.streaming_enabled', 'Show words while you speak', 'model', 'toggle', apply=BACKGROUND,
-       group='Live preview (experimental)',
-       help='A small streaming model shows text in the bubble. English only for now.'),
-    _S('streaming.deliver_to_cursor', 'Type as you speak', 'model', 'toggle', apply=NEXT_RECORDING,
-       group='Live preview (experimental)',
-       help='Types finished phrases straight away and skips the final Whisper pass. Faster, less accurate.'),
     _S('streaming.streaming_model', 'Preview model', 'model', 'select', apply=BACKGROUND,
-       group='Live preview (experimental)', source='streaming_models'),
-    _S('streaming.models', 'Preview models', 'model', 'readonly', group='Live preview (experimental)',
+       group='Local words model', source='streaming_models',
+       help='The small English streaming model behind Local words.'),
+    _S('streaming.models', 'Preview models', 'model', 'readonly', group='Local words model',
        help='Defined in user_settings.yaml.'),
 
     # ── Hotkeys ──────────────────────────────────────────────────────────────
@@ -365,6 +379,8 @@ SCHEMA = [
        help='Empty is Koli turquoise, or a colour such as #7C5CFF.'),
     _S('overlay.rest_opacity', 'Resting opacity', 'overlay', 'range', min=20, max=100, step=5, unit='%',
        help='How solid the tab is while Koli waits. Full as soon as it does something.'),
+    _S('overlay.live_opacity', 'Opacity while showing your words', 'overlay', 'range', min=20, max=100, step=5, unit='%',
+       help='How solid the bubble is while it shows the words you are saying.'),
     _S('overlay.click_through', 'Clicks pass through', 'overlay', 'toggle', apply=NEXT_LAUNCH,
        help='Only used by the classic overlay (--legacy-ui). The new bar is sized to its content.'),
     _S('audio_feedback.enabled', 'Start, stop and cancel sounds', 'overlay', 'toggle', mode=SIMPLE,
@@ -529,7 +545,7 @@ SCHEMA = [
 BY_PATH = {s.path: s for s in SCHEMA}
 
 # Maps whose entries are the user's own: the schema covers the map as a whole.
-MAP_PATHS = {'whisper.models', 'streaming.models', 'meeting.speaker_models', 'postprocess.styles', 'postprocess.corrections'}
+MAP_PATHS = {'whisper.models', 'streaming.models', 'live_words.prices', 'meeting.speaker_models', 'postprocess.styles', 'postprocess.corrections'}
 
 
 def get(path: str) -> Optional[Setting]:

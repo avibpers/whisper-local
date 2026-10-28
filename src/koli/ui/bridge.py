@@ -125,8 +125,8 @@ class Bridge:
         self._host.toggle_maximize()
 
     @_api
-    def bar_resize(self, width, height, resting=None):
-        self._host.resize_bar(int(width), int(height), resting)
+    def bar_resize(self, width, height, resting=None, pane=False):
+        self._host.resize_bar(int(width), int(height), resting, bool(pane))
         # The page caps its menu at this height and scrolls the rest.
         return {'max_height': self._host._max_bar_height()}
 
@@ -204,6 +204,30 @@ class Bridge:
     @_api
     def dictation_cancel(self):
         self._sm.cancel_active_recording()
+
+    # ── The dictation bubble (live_session_flow.py) ──
+    # You clicked into the bubble's words to fix something.
+    @_api
+    def bubble_open(self):
+        return self._sm.bubble_open()
+
+    # The bubble's text and caret after you typed or selected (code points).
+    @_api
+    def bubble_edit(self, text, start, end, rev=None):
+        return self._sm.bubble_edit(str(text or ''), int(start), int(end), None if rev is None else int(rev))
+
+    # Write the text into the app; `send` also presses Enter there.
+    @_api
+    def bubble_write(self, send=False):
+        return self._sm.bubble_write(bool(send))
+
+    @_api
+    def bubble_listen(self, on):
+        return self._sm.bubble_listen(bool(on))
+
+    @_api
+    def bubble_cancel(self):
+        self._sm.bubble_cancel()
 
     # The bubble's Stop on "Writing it down": drop that dictation.
     @_api
@@ -461,6 +485,12 @@ class Bridge:
     def insights(self, days=14):
         from ..services import insights
         return insights.summary(int(days))
+
+    # What each "words while you speak" engine was used for and cost.
+    @_api
+    def live_words_usage(self):
+        from .. import live_words_usage
+        return live_words_usage.summary(self._cm.get_path('live_words.prices') or {})
 
     # ── Vocabulary ───────────────────────────────────────────────────────────
 

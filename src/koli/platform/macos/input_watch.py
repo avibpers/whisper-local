@@ -24,5 +24,10 @@ def stop(token: int = 0) -> None:
     pass
 
 
+# The focused element right now (Windows only for now).
+def probe_focused() -> dict:
+    return {}
+
+
 def is_running() -> bool:
     return False

@@ -1956,105 +1956,6 @@ class ReviewFixTests(unittest.TestCase):
                 self.assertFalse(autostart.toggle())
 
 
-class StreamingDeliveryDecisionTests(unittest.TestCase):
-    def _cfg(self, on=True):
-        return {'deliver_to_cursor': on}
-
-    def test_off_by_default(self):
-        from koli.streaming_delivery import decide_stream_delivery
-        self.assertFalse(decide_stream_delivery({}, True, True, True, None))
-
-    def test_all_conditions_met(self):
-        from koli.streaming_delivery import decide_stream_delivery
-        self.assertTrue(decide_stream_delivery(self._cfg(), True, True, True, None))
-
-    def test_requires_streaming_available(self):
-        from koli.streaming_delivery import decide_stream_delivery
-        self.assertFalse(decide_stream_delivery(self._cfg(), False, True, True, None))
-
-    def test_requires_auto_paste(self):
-        from koli.streaming_delivery import decide_stream_delivery
-        self.assertFalse(decide_stream_delivery(self._cfg(), True, False, True, None))
-
-    def test_requires_textable_foreground(self):
-        from koli.streaming_delivery import decide_stream_delivery
-        self.assertFalse(decide_stream_delivery(self._cfg(), True, True, False, None))
-
-    def test_respects_app_rule_suppress_and_copyonly(self):
-        from koli.streaming_delivery import decide_stream_delivery
-        self.assertFalse(decide_stream_delivery(self._cfg(), True, True, True, {'suppress': True}))
-        self.assertFalse(decide_stream_delivery(self._cfg(), True, True, True, {'auto_paste': False}))
-        # a rule that doesn't touch delivery is fine
-        self.assertTrue(decide_stream_delivery(self._cfg(), True, True, True, {'initial_prompt': 'x'}))
-
-
-class StreamingDeliveryWorkerTests(unittest.TestCase):
-    def test_segments_delivered_in_order_and_recorded(self):
-        from koli.streaming_delivery import StreamingDelivery
-        delivered = []
-        sd = StreamingDelivery(deliver_fn=delivered.append)
-        sd.start()
-        sd.submit_final("hello")
-        sd.submit_final("world")
-        full = sd.stop()
-        self.assertEqual(delivered, ["hello ", "world "])
-        self.assertEqual(full, "hello world")
-        self.assertTrue(sd.submitted_any)
-
-    def test_blank_segments_ignored(self):
-        from koli.streaming_delivery import StreamingDelivery
-        delivered = []
-        sd = StreamingDelivery(deliver_fn=delivered.append)
-        sd.start()
-        sd.submit_final("   ")
-        sd.submit_final("")
-        self.assertEqual(sd.stop(), "")
-        self.assertEqual(delivered, [])
-        self.assertFalse(sd.submitted_any)
-
-    def test_stop_is_idempotent(self):
-        from koli.streaming_delivery import StreamingDelivery
-        sd = StreamingDelivery(deliver_fn=lambda s: None)
-        sd.start()
-        sd.submit_final("x")
-        self.assertEqual(sd.stop(), "x")
-        self.assertEqual(sd.stop(), "x")  # second stop returns same, no error
-
-    def test_deliver_fn_exception_does_not_crash_and_flags_failure(self):
-        from koli.streaming_delivery import StreamingDelivery
-        def boom(_):
-            raise RuntimeError("boom")
-        sd = StreamingDelivery(deliver_fn=boom)
-        sd.start()
-        sd.submit_final("x")
-        # stop() must still return cleanly even though delivery raised
-        self.assertEqual(sd.stop(), "")
-        self.assertTrue(sd.had_failure)
-
-    def test_no_failure_flag_on_clean_delivery(self):
-        from koli.streaming_delivery import StreamingDelivery
-        sd = StreamingDelivery(deliver_fn=lambda s: None)
-        sd.start()
-        sd.submit_final("ok")
-        sd.stop()
-        self.assertFalse(sd.had_failure)
-
-    def test_submit_after_stop_is_ignored(self):
-        # Closes the submit/stop race: a late segment after stop is dropped, not enqueued.
-        from koli.streaming_delivery import StreamingDelivery
-        delivered = []
-        sd = StreamingDelivery(deliver_fn=delivered.append)
-        sd.start()
-        sd.submit_final("a")
-        sd.stop()
-        sd.submit_final("late")
-        self.assertEqual(delivered, ["a "])
-
-
-if __name__ == "__main__":
-    unittest.main()
-
-
 class MergedFeatureTests(unittest.TestCase):
     """Features merged in 0.18.0, pinned here so a
     future refactor can't quietly drop them."""
@@ -2750,8 +2651,8 @@ class UserReportedSeptemberTests(unittest.TestCase):
 
     def test_recovery_paths_check_the_policy(self):
         source = (ROOT / 'src' / 'koli' / 'state_manager.py').read_text(encoding='utf-8')
-        self.assertEqual(source.count('silent_copy_allowed'), 2,
-                         'both recovery paths (suppress + no-text-field) must check it')
+        self.assertEqual(source.count('silent_copy_allowed'), 3,
+                         'every recovery path (suppress, no text field, the bubble window gone) must check it')
 
     # --- #11: an app rule silencing paste looked like a broken app ---
     def test_copy_only_is_announced_once_per_rule(self):
@@ -5782,8 +5683,6 @@ class AutoDictationStateManagerTests(unittest.TestCase):
         sm._rephrase_selection = ''
         sm._continuous_aborted = False
         sm._streaming_display_active = False
-        sm._streaming_delivery_active = False
-        sm.streaming_delivery = None
         sm.is_paused = False
         sm.is_processing = False
         sm.is_model_loading = False
@@ -5827,10 +5726,9 @@ class AutoDictationStateManagerTests(unittest.TestCase):
         import unittest.mock as mock
         sm = self._sm(had_speech=False)
         sm._auto_started = False
-        sm.config_manager = mock.Mock(config={'auto_dictation': {'silence_timeout_seconds': 5, 'phrase_pause_seconds': 1}})
+        sm.config_manager = mock.Mock(config={'auto_dictation': {'silence_timeout_seconds': 5}, 'live_words': {'phrase_pause_seconds': 1}})
         sm._apply_recording_context = mock.Mock()
         sm._maybe_pause_media = mock.Mock()
-        sm._setup_streaming_delivery = mock.Mock()
         sm.audio_recorder.start_recording.return_value = True
         sm.audio_recorder.get_recording_status.return_value = False   # idle before the start
         with mock.patch('builtins.print') as out, mock.patch('koli.state_manager.publish'):
