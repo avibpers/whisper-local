@@ -253,6 +253,10 @@ class WhisperEngine:
     # which the Hebrew model then translated; large-v3-turbo read it as
     # English at 1.00.
     SMALL_MODELS = ('tiny', 'base', 'small')
+    # The first of your languages is your main one. Another of them wins only
+    # when Whisper is at least this sure of it: on 2026-10-28 a short Hebrew
+    # clip scored English 0.15 and came out as English.
+    OTHER_LANGUAGE_MIN_CONFIDENCE = 0.5
 
     def _route(self, audio: np.ndarray, language: Optional[str] = None) -> tuple:
         self._raw_language_probability = None
@@ -267,6 +271,16 @@ class WhisperEngine:
         if not language and (allowed or second is not None):
             language, probability = self._detect_language(audio, allowed)
             detected = True
+            # A weak guess of another of your languages loses to your main
+            # one. The main model writes it, told your main language: a weak
+            # guess never goes to the second model (it would translate).
+            main = allowed[0] if len(allowed) > 1 else None
+            sure = getattr(self, '_raw_language_probability', None)
+            top = getattr(self, '_raw_top_language', None)
+            if (main and language and language != main and top in allowed
+                    and sure is not None and sure < self.OTHER_LANGUAGE_MIN_CONFIDENCE):
+                self.logger.info(f"Only {sure:.2f} sure it's {language}: your main language {main} is used")
+                return self.model, self.model_key, main, self.initial_prompt, probability
         if second is not None and language == self.language_model_lang:
             sure = getattr(self, '_raw_language_probability', None)
             small = self._main_model_is_small()

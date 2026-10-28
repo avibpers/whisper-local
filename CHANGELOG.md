@@ -18,6 +18,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
   chatted about it and what that cost (its new Cost tab, the list, the panel
   while it runs); AI calls for polish, rewrites and Practice are counted too
   (design: `docs/design/online-models.md`).
+- **Words while you speak.** Settings › General › **Words while you speak**
+  shows your words in the bubble beside the text field while you dictate
+  with the hotkey: *Phrases* (Whisper, each phrase after a pause), *Cloud*
+  (OpenAI as you speak, or Gemini per phrase, with the keys saved in AI
+  providers) or *Local words* (English preview). With Phrases or Cloud,
+  click into the bubble, select a wrong word and say or type the right one;
+  let go of the keys in the app to write it, or press Enter in the bubble
+  to write and send. App rules can choose per app (`live_words:`). History &
+  insights counts minutes, words, fixes and cost per engine, so a week with
+  each provider can be compared (design: `docs/design/dictation-bubble.md`).
 - **Screenshots in meetings.** A snip you take during a meeting joins the
   transcript at that moment: Settings → Meetings → **Screenshots in
   meetings** chooses *Only with my key* (a new **Screenshot into the
@@ -280,6 +290,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
   while you are still talking, ends a command at a 0.45 s pause and reads it
   with Whisper's fast setting. A word said with a gap ("Hey… Via") still
   wakes. The log line of each try says how long Whisper took.
+
+### Removed
+- **Type as you speak** (`streaming.deliver_to_cursor`) and **Show words
+  while you speak** (`streaming.streaming_enabled`): replaced by the
+  dictation bubble's engines. `auto_dictation.phrase_pause_seconds` is now
+  `live_words.phrase_pause_seconds`.
 
 ### Fixed
 - **Background noise no longer wakes your own word and runs a command.**

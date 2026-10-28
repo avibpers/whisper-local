@@ -58,6 +58,28 @@ async function suggest() {
       <button type="button" class="btn pri" onClick=${() => { closeModal(); call('vocab_add', [...picked]).then(() => toast(`Added ${picked.size} words`)); }}>Add selected</button></div></div>`);
 }
 
+// "Words while you speak": each engine's days, minutes, words, fixes made in
+// the bubble and cost, so a week with one provider can be compared with the
+// next (live_words_usage.py). Hidden until an engine has been used.
+const money = (v) => `$${v < 1 ? v.toFixed(4) : v.toFixed(2)}`;
+function LiveWordsUsage({ refresh }) {
+  const [rows, setRows] = useState([]);
+  useEffect(() => { call('live_words_usage').then((r) => setRows(r || [])).catch(() => {}); }, [refresh]);
+  if (!rows.length) return null;
+  return html`<section class="card" style="min-width:0;overflow:hidden" aria-label="Words while you speak">
+    <div style="padding:16px 18px 10px"><span class="card-title">Words while you speak</span>
+      <p class="small muted" style="margin:4px 0 0">Use one engine for a week, switch in Settings, then compare. Cost uses the prices in Settings.</p></div>
+    <div class="tbl-wrap"><table class="tbl"><thead><tr><th scope="col">Engine</th><th scope="col">Days used</th>
+      <th scope="col" class="end">Minutes</th><th scope="col" class="end">Words</th><th scope="col" class="end">Words / min</th>
+      <th scope="col" class="end">Fixes</th><th scope="col" class="end">Cost</th></tr></thead>
+      <tbody>${rows.map((r) => html`<tr><td>${r.label}</td>
+        <td>${r.first_day === r.last_day ? r.first_day : `${r.first_day} – ${r.last_day}`} (${r.days})</td>
+        <td class="end">${r.minutes.toFixed(1)}</td><td class="end">${r.words.toLocaleString()}</td>
+        <td class="end">${r.words_per_minute}</td><td class="end">${r.fixes}</td><td class="end">${r.key.startsWith('cloud/') ? money(r.cost) : 'Free'}</td></tr>`)}</tbody>
+    </table></div>
+  </section>`;
+}
+
 export function HistoryScreen() {
   const [data, setData] = useState(null);
   const [list, setList] = useState({ items: [], total: 0, all: 0 });
@@ -87,6 +109,7 @@ export function HistoryScreen() {
     </div>
     ${data && html`<${Stats} data=${data} />`}
     ${data && mode === 'advanced' && html`<${Charts} data=${data} />`}
+    ${mode === 'advanced' && html`<${LiveWordsUsage} refresh=${delivered} />`}
     <section class="card" style="min-width:0;overflow:hidden" aria-label="Transcripts">
       <div class="row-flex" style="padding:12px 18px">
         <label class="search-field" style="flex:1 1 240px">

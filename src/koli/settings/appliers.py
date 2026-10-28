@@ -26,7 +26,7 @@ _LISTENER_KEYS = {
 
 # Settings that are simply read from the config whenever they are used.
 _READ_ON_USE = {
-    'whisper.prompt_from_selection', 'whisper.online_model', 'streaming.deliver_to_cursor', 'audio.pause_media_on_record',
+    'whisper.prompt_from_selection', 'whisper.online_model', 'audio.pause_media_on_record',
     'audio.lower_volume.enabled', 'audio.lower_volume.level',
     'audio.continuous_mode', 'audit.enabled', 'ui.mode', 'ui.theme', 'ui.open_on_start',
     'console.start_hidden', 'overlay.click_through', 'onboarding.gpu', 'onboarding.gpu_class',
@@ -264,19 +264,25 @@ class Appliers:
             vad.ten_vad = vad._check_and_init_ten_vad()
         return self.recorder_rebuild('vad.vad_realtime_enabled', value, old)
 
+    # The local words model is loaded while Local words is the engine and
+    # dropped otherwise; switching between the other engines needs nothing.
     def streaming(self, path, value, old):
         sm, cm, ctx = self.sm, self.cm, self.ctx
+        if path == 'live_words.engine' and (value == 'local') == (old == 'local'):
+            return None
 
         def job(reporter):
             from ..streaming_manager import StreamingManager
             cfg = cm.get_streaming_config()
-            reporter.report(None, 'Preparing the live preview model…' if cfg.get('streaming_enabled') else 'Turning off live preview…')
-            manager = StreamingManager(streaming_enabled=cfg.get('streaming_enabled', False),
+            # The model is loaded only while Local words is the engine.
+            wanted = cm.get_path('live_words.engine') == 'local'
+            reporter.report(None, 'Preparing the local words model…' if wanted else 'Turning off local words…')
+            manager = StreamingManager(streaming_enabled=wanted,
                                        streaming_model=cfg.get('streaming_model', ''),
                                        model_registry=ctx.model_registry)
             manager.initialize()
-            if cfg.get('streaming_enabled') and not manager.is_available():
-                raise RuntimeError("The live preview model could not be loaded")
+            if wanted and not manager.is_available():
+                raise RuntimeError("The local words model could not be loaded")
             ctx.streaming_manager = manager
             box = {}
 
@@ -292,9 +298,9 @@ class Appliers:
                 time.sleep(0.1)
             if 'err' in box:
                 raise box['err']
-        label = 'Turning on live preview' if value else 'Turning off live preview'
+        label = 'Turning on local words' if value == 'local' else 'Turning off local words'
         if path == 'streaming.streaming_model':
-            label = 'Switching the preview model'
+            label = 'Switching the local words model'
         return self._background(label, 'streaming', path, old, job)
 
     # ── Hotkeys ──────────────────────────────────────────────────────────────
@@ -516,7 +522,7 @@ _HANDLERS = {
     'audio.host': Appliers.audio_host,
     'audio.max_duration': Appliers.recorder_live,
     'vad.vad_realtime_enabled': Appliers.vad_realtime,
-    'streaming.streaming_enabled': Appliers.streaming,
+    'live_words.engine': Appliers.streaming,
     'streaming.streaming_model': Appliers.streaming,
     'voice_commands.enabled': Appliers.voice_commands,
     'update_check.enabled': Appliers.update_check,

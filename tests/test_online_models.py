@@ -27,6 +27,7 @@ class _Isolated(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         folder = self.tmp.name
         self.patches = [mock.patch('koli.utils.get_user_app_data_path', lambda: folder),
+                        mock.patch.object(ledger, 'path', lambda: Path(folder) / 'usage.json'),
                         mock.patch('koli.ui.events.publish', lambda *a, **k: None)]
         for p in self.patches:
             p.start()

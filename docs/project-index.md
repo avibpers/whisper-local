@@ -66,7 +66,10 @@ Koli is a fork of `drajb/whisper-local` by Rohit Burani (repo `avibpers/whisper-
 | **Whisper Mode** | `audio_gain.py` | Boosts quiet recordings before transcription | numpy |
 | **Corrections** | `corrections.py` | Persist post-transcription replacements (history "Fix this everywhere") | ruamel.yaml |
 | **System Audio** | `system_audio.py` | `--transcribe-system` loopback capture (experimental, opt-in) | soundcard |
-| **Streaming** | `streaming_manager.py` + `streaming_recognizer.py` | Real-time partial transcription (experimental) | sherpa-onnx |
+| **Streaming** | `streaming_manager.py` + `streaming_recognizer.py` | The Local words engine's English partials, fed only while that engine runs | sherpa-onnx |
+| **Dictation Bubble** | `live_session_flow.py` + `dictation_session.py` + `live_words.py` | Words while you speak: the bubble beside the text field shows your words; with Phrases or Cloud you click in, fix a word by voice or keyboard, and the text is written once at the end (Enter also sends). Engines off / local / phrases / cloud per Settings and app rule (design: `docs/design/dictation-bubble.md`) | faster-whisper, sherpa-onnx |
+| **Cloud Speech** | `cloud_stt/` | OpenAI live transcription over a standard-library WebSocket (`ws.py`, `openai_live.py`) and Gemini one phrase at a time (`gemini_phrase.py`), with the keys from AI providers | stdlib ssl/socket, numpy |
+| **Live Words Usage** | `live_words_usage.py` | Per day and engine: recordings, minutes, words, fixes, cloud tokens and cost from `live_words.prices`; the card in History & insights | json |
 | **Noise Suppression** | `noise_suppression.py` | Optional spectral-gating noise reduction | noisereduce |
 | **Stats** | `stats.py` | Usage stats, streaks, daily summary | json |
 | **Audit Log** | `audit_log.py` | Optional append-only delivery audit trail | - |

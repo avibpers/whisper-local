@@ -164,18 +164,7 @@ whisper: # Whisper AI Model Settings
         language: ''
         model: hebrew-large-v3-turbo
 
-streaming: # Real-time STT (Experimental)
-    # Real-time streaming speech recognition using sherpa-onnx
-    streaming_enabled: false
-
-    # Commit-on-endpoint delivery (experimental). When true AND streaming_enabled,
-    # finalized phrases are typed to the cursor AS you speak (Wispr-Flow style),
-    # and the final Whisper pass is skipped for that recording. Trade-off: you get
-    # the lighter streaming model's accuracy, not the full Whisper transcription.
-    # Only applies to plain dictation into a real text field with auto-paste on;
-    # command/rephrase modes and copy-only/suppressed apps are unaffected.
-    deliver_to_cursor: false
-
+streaming: # The local words model (sherpa-onnx), used when live_words.engine is local
     # Streaming model type
     streaming_model: zipformer.tiny.en
 
@@ -191,6 +180,36 @@ streaming: # Real-time STT (Experimental)
                 decoder: decoder-epoch-99-avg-1.int8.onnx
                 joiner: joiner-epoch-99-avg-1.int8.onnx
                 tokens: tokens.txt
+
+live_words: # Words while you speak: the dictation bubble (docs/design/dictation-bubble.md)
+    # What shows your words in the bubble beside the text field while you
+    # dictate with the hotkey:
+    #   off      - a timer, as before; Whisper writes the text after you stop
+    #   local    - words as you say them from the small streaming model below
+    #              (English only, a preview: Whisper still writes the text)
+    #   phrases  - Whisper, each phrase a second or two after you pause; you
+    #              can click into the bubble and fix a word before it is written
+    #   cloud    - OpenAI (words as you speak) or Gemini (phrase by phrase);
+    #              the audio is sent to that provider. Fixable like phrases.
+    # An app rule can set live_words: off | local | phrases | cloud for one app.
+    engine: off
+    # Seconds of silence that end a phrase (phrases, Gemini, and the turns
+    # sent to OpenAI). Auto-dictation pastes at the same pauses.
+    phrase_pause_seconds: 1
+    cloud:
+        # openai | gemini - uses the key saved in AI providers
+        provider: openai
+        openai_model: gpt-live-transcribe
+        gemini_model: gemini-3.6-flash
+    # What each cloud model costs, for the usage card in History & insights.
+    # Taken from the providers' price pages on 2026-10-28; edit when they change.
+    # OpenAI bills per minute of audio; Gemini per million tokens in and out.
+    prices:
+        openai/gpt-live-transcribe: {per_minute: 0.017}
+        openai/gpt-transcribe: {per_minute: 0.0045}
+        gemini/gemini-3.6-flash: {input_per_million: 0.75, output_per_million: 3.75}
+        gemini/gemini-3.5-flash-lite: {input_per_million: 0.30, output_per_million: 2.50}
+        gemini/gemini-2.5-flash: {input_per_million: 1.00, output_per_million: 2.50}
 
 hotkey: # Hotkey Configuration
     # Key combination to start recording
@@ -271,9 +290,7 @@ auto_dictation: # Start listening when a text field gets focus (Windows)
     # Needs "Stop on silence" (vad_realtime_enabled) for the silence rules.
     enabled: false
     silence_timeout_seconds: 5
-    # Paste each phrase as you go: after this many seconds of silence the words
-    # so far are pasted and listening continues. 0 pastes only at the end.
-    phrase_pause_seconds: 1
+    # Each pause of live_words.phrase_pause_seconds pastes what you said so far.
 
 learning: # Koli learns your voice from your own dictations
     # Keeps each dictation's audio and what happened to it in
@@ -592,6 +609,8 @@ overlay: # Floating speech-level overlay (Wispr-style bottom-center bar)
     rest_color: ''
     # How solid the resting tab is while Koli waits, 20 to 100 (percent)
     rest_opacity: 100
+    # How solid the bubble is while it shows your words, 20 to 100 (percent)
+    live_opacity: 90
     # When true, the overlay is transparent to mouse clicks (you can click
     # through it to apps below). Set to false if you want to interact with
     # the overlay itself.

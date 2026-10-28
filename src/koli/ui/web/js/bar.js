@@ -24,6 +24,7 @@ const bar = createStore({
   meeting: { state: 'idle' },   // the meeting's state, as the meeting panel gets it
   wake: null,      // 'awake' after "Hey Koli", 'follow_up' after a command ran
   agent: null,     // an AI action: { phase, text, lines, needs, run_id, undo, phrase, heard }
+  live: null,      // the dictation bubble's words: { id, engine, settled, interim, start, end, opened, listening, ... }
 });
 
 // AI action phases that stay until the next event, and how long the others show.
@@ -53,6 +54,7 @@ function wire() {
     bar.set({ levels });
   });
   on('streaming_text', (p) => bar.set({ streaming: p.text }));
+  on('live_words', (p) => bar.set({ live: p && p.id != null ? p : null }));
   // Waking Koli again clears a finished AI message ("I couldn't identify…"),
   // so the bubble shows it is listening for the new command. A question or a
   // step still running stays.
@@ -339,8 +341,10 @@ function Status() {
   const meeting = bar.use((s) => s.meeting);
   const wake = bar.use((s) => s.wake);
   const agent = bar.use((s) => s.agent);
+  const live = bar.use((s) => s.live);
   const openMenu = () => bar.set({ menu: true });
   if (!settings) return html`<div class="bub rest" aria-label="Koli is starting"></div>`;
+  if (hasPane(live) && !agent) return html`<${LivePane} live=${live} />`;
   const keys = prettyKeys(settings.hotkey.recording_hotkey).join(' ');
 
   if (st.state === 'recording' && !waitingForSpeech(st)) {
@@ -498,10 +502,125 @@ function waitingForSpeech(st) {
 
 // True while the bubble is the slim resting tab (painted in its resting colour).
 function isResting(s) {
-  return !!s.settings && !s.menu && !s.hover && !s.flash && !s.task && !s.sending && !s.wake && !s.agent
+  return !!s.settings && !s.menu && !s.hover && !s.flash && !s.task && !s.sending && !s.wake && !s.agent && !s.live
     && (s.state.state !== 'recording' || waitingForSpeech(s.state))
     && s.state.state !== 'processing' && !s.state.paused && s.meeting.state !== 'offered'
     && !(s.meeting.state === 'idle' && s.meeting.standby);
+}
+
+// ── Words while you speak (the dictation bubble) ─────────────────────────
+// The words you are saying, beside the text field: settled words, then the
+// ones still being recognised in a lighter italic. With Phrases or Cloud a
+// click opens it: select a wrong word and say (or type) the right one, click
+// at the end and keep talking. Enter writes and sends, Esc throws it away.
+// Offsets go to Koli in code points, so an emoji before the caret counts once.
+
+// The pane shows once there is something to show, or while you are editing.
+const hasPane = (live) => !!live && (live.opened || !!live.settled || !!live.interim || live.listening === false);
+
+const codePoints = (text) => [...text].length;
+const utf16At = (text, cp) => [...text].slice(0, cp).join('').length;
+
+// Where the caret or selection is inside `el`, in code points.
+function caretIn(el) {
+  const sel = window.getSelection();
+  const text = el.textContent || '';
+  if (!sel || !sel.rangeCount || !el.contains(sel.anchorNode)) return [codePoints(text), codePoints(text)];
+  const range = sel.getRangeAt(0);
+  const upTo = (node, offset) => {
+    const r = document.createRange();
+    r.selectNodeContents(el);
+    r.setEnd(node, offset);
+    return codePoints(r.toString());
+  };
+  return [upTo(range.startContainer, range.startOffset), upTo(range.endContainer, range.endOffset)];
+}
+
+function placeCaret(el, startCp, endCp) {
+  const node = el.firstChild;
+  const sel = window.getSelection();
+  if (!sel) return;
+  const r = document.createRange();
+  if (!node) { r.selectNodeContents(el); r.collapse(false); } else {
+    const text = node.textContent || '';
+    r.setStart(node, Math.min(text.length, utf16At(text, startCp)));
+    r.setEnd(node, Math.min(text.length, utf16At(text, endCp)));
+  }
+  sel.removeAllRanges();
+  sel.addRange(r);
+}
+
+function LivePane({ live }) {
+  const box = useRef(null);
+  const selTimer = useRef(0);
+  const opened = !!live.opened;
+  const preview = live.engine === 'local';
+
+  // Koli's text wins only when it differs (a new phrase landed); then the
+  // caret goes where Koli put it, right after the new words.
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (!el || !opened) return;
+    if ((el.textContent || '') !== (live.settled || '')) {
+      el.textContent = live.settled || '';
+      if (document.activeElement === el) placeCaret(el, live.start, live.end);
+    }
+  }, [live.settled, live.start, live.end, opened]);
+
+  useEffect(() => {
+    if (!opened || !box.current) return undefined;
+    const el = box.current;
+    el.textContent = live.settled || '';
+    el.focus();
+    placeCaret(el, live.start, live.end);
+    const onSelection = () => {
+      if (document.activeElement !== el) return;
+      clearTimeout(selTimer.current);
+      selTimer.current = setTimeout(() => send(), 120);
+    };
+    document.addEventListener('selectionchange', onSelection);
+    return () => { document.removeEventListener('selectionchange', onSelection); clearTimeout(selTimer.current); };
+  }, [opened]);
+
+  const send = () => {
+    const el = box.current;
+    if (!el) return Promise.resolve();
+    const [start, end] = caretIn(el);
+    return call('bubble_edit', el.textContent || '', start, end, live.rev).catch(() => {});
+  };
+  const write = (sendIt) => send().then(() => call('bubble_write', sendIt)).catch(() => {});
+  const open = (e) => {
+    if (opened || preview || e.button !== 0) return;
+    call('bubble_open').catch(() => {});
+  };
+  const onKeyDown = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); write(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); call('bubble_cancel').catch(() => {}); }
+  };
+  const listening = live.listening !== false;
+  const label = live.label || (live.cloud ? 'Cloud' : 'Phrases');
+  return html`<div class="bub talk stack pane" role="group" aria-label="Your words">
+    <div class="pane-head">
+      ${listening ? html`<${Wave} />` : html`<span class="badge mini quiet"><${Icon} name="pause" /></span>`}
+      <span class="muted">${listening ? 'Listening' : 'Paused'} · ${label}</span>
+      ${live.cloud && html`<span class="badge mini acc" title="Your audio goes to ${label}"><${Icon} name="cloud" /></span>`}
+    </div>
+    <div class="say words" dir="auto" onMouseDown=${open} title=${opened || preview ? '' : 'Click to fix a word'}>
+      ${opened
+        ? html`<span class="ed" ref=${box} contenteditable="plaintext-only" dir="auto" spellcheck="false"
+            aria-label="Your words, editable" onInput=${() => send()} onKeyDown=${onKeyDown}></span>`
+        : html`<span>${live.settled}</span>`}${live.interim && html`<span class="interim">${(live.settled ? ' ' : '') + live.interim}</span>`}
+    </div>
+    ${live.notice && html`<div class="muted small">${live.notice}</div>`}
+    <div class="acts">
+      <button type="button" class="btn" title=${listening ? 'Pause listening' : 'Listen again'}
+        onClick=${() => call('bubble_listen', !listening).catch(() => {})}><${Icon} name=${listening ? 'pause' : 'mic'} /></button>
+      <span style="flex:1"></span>
+      <button type="button" class="btn" onClick=${() => call('bubble_cancel').catch(() => {})}>Cancel</button>
+      ${!preview && html`<button type="button" class="btn pri" title="Write it into the app (Enter also sends it)"
+        onClick=${() => write(false)}>Write</button>`}
+    </div>
+  </div>`;
 }
 
 // ── Dragging ──────────────────────────────────────────────────────────────
@@ -528,7 +647,7 @@ function useDrag(enabled) {
   };
   return {
     onPointerDown: (e) => {
-      if (!enabled || e.button !== 0 || e.target.closest('button, input, label, select')) return;
+      if (!enabled || e.button !== 0 || e.target.closest('button, input, label, select, .words')) return;
       drag.current = { x: e.screenX, y: e.screenY, dx: 0, dy: 0, moving: false, frame: 0, id: e.pointerId };
     },
     onPointerMove: (e) => {
@@ -560,6 +679,7 @@ function useDrag(enabled) {
 function Bar() {
   const menu = bar.use((s) => s.menu);
   const resting = bar.use(isResting);
+  const pane = bar.use((s) => hasPane(s.live) && !s.menu);
   const ref = useRef(null);
   const last = useRef('');
   const drag = useDrag(!menu);
@@ -569,10 +689,10 @@ function Bar() {
     if (!el) return;
     const report = () => {
       const r = el.getBoundingClientRect();
-      const key = `${Math.ceil(r.width)}x${Math.ceil(r.height)}:${resting}`;
+      const key = `${Math.ceil(r.width)}x${Math.ceil(r.height)}:${resting}:${pane}`;
       if (key !== last.current) {
         last.current = key;
-        call('bar_resize', Math.ceil(r.width), Math.ceil(r.height), resting).then((res) => {
+        call('bar_resize', Math.ceil(r.width), Math.ceil(r.height), resting, pane).then((res) => {
           if (res && res.max_height) document.documentElement.style.setProperty('--menu-max', `${res.max_height}px`);
         }).catch(() => {});
       }
@@ -595,7 +715,7 @@ async function boot() {
   render(html`<${Bar} />`, document.getElementById('root'));
   const data = await call('app_bootstrap', 'bar');
   bar.set({ settings: data.settings, state: data.state, profile: data.profile, upright: data.upright !== false,
-            meeting: data.meeting || { state: 'idle' } });
+            meeting: data.meeting || { state: 'idle' }, live: data.live || null });
   applyTheme(data.settings);
   applyRestColor(data.settings);
   const running = (data.tasks || []).filter((t) => t.status === 'running');

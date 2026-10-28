@@ -34,8 +34,11 @@ _write_lock = threading.Lock()
 # ids after a window closes, so the pid is kept alongside to tell them apart.
 # `clip_id`: the kept clip of this dictation ("Learn from my dictations"), so
 # History can find its audio.
+# `original`: what the bubble's engine heard, when you changed it before it
+# was written; `cancelled`: a bubble's text you threw away (kept findable).
 def record_transcript(text: str, window: dict | None = None, duration_s: float = 0.0,
-                      language: str = '', clip_id: str | None = None):
+                      language: str = '', clip_id: str | None = None, original: str = '',
+                      cancelled: bool = False):
     if not text:
         return
     window = window or {}
@@ -50,6 +53,10 @@ def record_transcript(text: str, window: dict | None = None, duration_s: float =
         entry['language'] = language
     if clip_id:
         entry['clip_id'] = clip_id
+    if original and original != text:
+        entry['original'] = original
+    if cancelled:
+        entry['cancelled'] = True
     # Window identity — only what this platform reports (macOS has no window id,
     # and its "title" is the app name until a per-window probe exists).
     if window.get('title'):

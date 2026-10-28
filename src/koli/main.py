@@ -210,9 +210,10 @@ def setup_vad(vad_config):
         vad_silence_timeout_seconds=vad_config['vad_silence_timeout_seconds']
     )
 
-def setup_streaming(streaming_config, model_registry):
+# The local words model, loaded only while Local words is the bubble's engine.
+def setup_streaming(streaming_config, model_registry, live_words_engine='off'):
     return StreamingManager(
-        streaming_enabled=streaming_config.get('streaming_enabled', False),
+        streaming_enabled=live_words_engine == 'local',
         streaming_model=streaming_config.get('streaming_model', 'standard'),
         model_registry=model_registry
     )
@@ -818,7 +819,8 @@ def main():
             speaker_models_config=(config_manager.config.get('meeting') or {}).get('speaker_models') or {},
         )
         vad_manager = setup_vad(vad_config)
-        streaming_manager = setup_streaming(streaming_config, model_registry)
+        streaming_manager = setup_streaming(streaming_config, model_registry,
+                                            config_manager.get_path('live_words.engine') or 'off')
         whisper_engine = setup_whisper_engine(whisper_config, vad_manager, model_registry, log_transcriptions, config_manager,
                                               ask=not use_ui)
         streaming_manager.initialize()

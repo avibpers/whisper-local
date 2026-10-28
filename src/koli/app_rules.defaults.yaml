@@ -17,6 +17,9 @@
 #                                 focus in this app: true turns it on here
 #                                 even with the Settings switch off, false
 #                                 turns it off here
+#   live_words:  off | local | phrases | cloud - what shows your words in the
+#                                 bubble while you dictate in this app (see
+#                                 live_words.engine in Settings)
 #   keep_audio:  false          - never keep this app's dictations for
 #                                 "Learn from my dictations" (banking,
 #                                 passwords, private chats)

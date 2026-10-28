@@ -231,6 +231,14 @@ class HotkeyListener:
         self.logger.info("Push-to-talk key released")
         self.state_manager.stop_recording()
 
+    # While you edit in the dictation bubble, Ctrl and Alt are for editing
+    # (Ctrl+A, Ctrl+C); the bubble has its own Enter and Esc.
+    def _in_bubble(self) -> bool:
+        try:
+            return self.state_manager.bubble_has_focus() is True
+        except Exception:
+            return False
+
     # Koli's own keys (its Ctrl+V, its Enter) are not yours: never a stop.
     @staticmethod
     def own_keys() -> bool:
@@ -241,6 +249,9 @@ class HotkeyListener:
         self.logger.debug(f"Stop key pressed: {self.stop_key}, keys_armed={self.keys_armed}")
         if self.own_keys():
             self.logger.debug("Stop key ignored - Koli's own paste")
+            return
+        if self._in_bubble():
+            self.logger.debug("Stop key ignored - you are editing in the bubble")
             return
         if self.tap_latch and self.tap_latch.intercept_stop_key():
             self.logger.debug("Stop key ignored - second tap of a double-tap")
@@ -287,6 +298,8 @@ class HotkeyListener:
     def _auto_send_key_pressed(self):
         self.logger.debug(f"Auto-send key pressed: {self.auto_send_key}, keys_armed={self.keys_armed}")
         if self.own_keys():
+            return
+        if self._in_bubble():
             return
         if self.tap_latch and self.tap_latch.intercept_stop_key():
             return
