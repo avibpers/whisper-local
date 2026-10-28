@@ -46,6 +46,15 @@ button { font: inherit; color: inherit; }
 .badge.mini { display: inline-grid; width: 22px; height: 22px; vertical-align: -5px; margin-inline-end: 8px; }
 .badge.mini .ic { width: 13px; height: 13px; }
 .acts { display: flex; justify-content: flex-end; gap: 8px; }
+/* The dictation bubble: your words while you speak (bar.js LivePane). */
+.bub.talk.stack.pane { width: 420px; gap: 8px; }
+.pane-head { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+.pane-head .wv { height: 18px; }
+.pane-head .wv span { height: 18px; }
+.words { max-height: 7.6em; overflow-y: auto; font-size: 15px; line-height: 1.5; white-space: pre-wrap; cursor: text; user-select: text; }
+.words .ed { outline: none; caret-color: var(--acc); }
+.interim { color: var(--mute); font-style: italic; }
+.pane .small { font-size: 12px; }
 .wv { display: inline-flex; align-items: center; gap: 3px; height: 26px; }
 .wv span { width: 4px; height: 26px; border-radius: 3px; background: var(--brand); transform: scaleY(.12); will-change: transform; }
 .time { font-family: var(--mono); font-size: 12.5px; color: var(--ink2); }

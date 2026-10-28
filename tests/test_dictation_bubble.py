@@ -1033,6 +1033,25 @@ class BubbleBridgeTests(unittest.TestCase):
     def test_bubble_page_listens_to_the_session(self):
         from koli.ui.host import BAR_TOPICS
         self.assertIn('live_words', BAR_TOPICS)
+# ── Task 10: the bubble pane ────────────────────────────────────────────────
+
+class BubblePaneTests(unittest.TestCase):
+    def setUp(self):
+        self.js = (ROOT / 'src' / 'koli' / 'ui' / 'web' / 'js' / 'bar.js').read_text(encoding='utf-8')
+
+    def test_the_pane_calls_every_bubble_bridge_call(self):
+        for name in ('bubble_open', 'bubble_edit', 'bubble_write', 'bubble_listen', 'bubble_cancel'):
+            self.assertIn(f"call('{name}'", self.js, name)
+
+    def test_the_pane_follows_the_session(self):
+        self.assertIn("on('live_words'", self.js)
+        self.assertIn('contenteditable', self.js)
+
+    def test_offsets_are_code_points(self):
+        self.assertIn('codePoints', self.js)
+
+    def test_the_page_reports_when_it_shows_the_pane(self):
+        self.assertIn('resting, pane)', self.js)
 
 if __name__ == '__main__':
     unittest.main()
