@@ -504,5 +504,67 @@ class OpenAILiveTests(unittest.TestCase):
         self.assertAlmostEqual(float(left[0]), 0.2, places=5)
         c.cancel()
 
+# ── Task 6: Gemini transcribes a phrase ─────────────────────────────────────
+
+class GeminiPhraseTests(unittest.TestCase):
+    def setUp(self):
+        import numpy as np
+        from koli.cloud_stt import gemini_phrase
+        self.g = gemini_phrase
+        self.audio = (np.sin(np.arange(8000) / 8.0) * 0.1).astype(np.float32)   # a tone, not silence
+        self.posts = []
+
+    def _post(self, answer):
+        def post(url, payload, headers=None, timeout=30):
+            self.posts.append((url, payload, headers))
+            return answer
+        return post
+
+    def test_request_shape_and_key_in_header_only(self):
+        import base64
+        answer = {'candidates': [{'content': {'parts': [{'text': 'שלום לכולם'}]}}],
+                  'usageMetadata': {'promptTokenCount': 120, 'candidatesTokenCount': 6}}
+        text, tin, tout = self.g.transcribe(self.audio, 'he', 'earlier words', 'AIza-test', 'gemini-3.6-flash',
+                                            post=self._post(answer))
+        self.assertEqual((text, tin, tout), ('שלום לכולם', 120, 6))
+        url, payload, headers = self.posts[0]
+        self.assertTrue(url.endswith('/models/gemini-3.6-flash:generateContent'))
+        self.assertNotIn('AIza-test', url)
+        self.assertEqual(headers, {'x-goog-api-key': 'AIza-test'})
+        parts = payload['contents'][0]['parts']
+        audio = [p for p in parts if 'inline_data' in p]
+        self.assertEqual(len(audio), 1)
+        self.assertEqual(audio[0]['inline_data']['mime_type'], 'audio/wav')
+        self.assertTrue(base64.b64decode(audio[0]['inline_data']['data']).startswith(b'RIFF'))
+        said = ' '.join(p.get('text', '') for p in parts)
+        self.assertIn('Hebrew', said)
+        self.assertIn('earlier words', said)
+        self.assertIn('verbatim', payload['systemInstruction']['parts'][0]['text'])
+
+    def test_thought_parts_are_dropped(self):
+        answer = {'candidates': [{'content': {'parts': [{'text': 'thinking…', 'thought': True}, {'text': 'Hello.'}]}}]}
+        self.assertEqual(self.g.transcribe(self.audio, '', '', 'k', 'm', post=self._post(answer))[0], 'Hello.')
+
+    def test_no_candidates_is_empty_text(self):
+        answer = {'candidates': [], 'usageMetadata': {'promptTokenCount': 50}}
+        self.assertEqual(self.g.transcribe(self.audio, 'en', '', 'k', 'm', post=self._post(answer)), ('', 50, 0))
+
+    def test_wav_is_16k_mono_pcm16(self):
+        import io
+        import wave
+        with wave.open(io.BytesIO(self.g.wav_bytes(self.audio))) as w:
+            self.assertEqual((w.getframerate(), w.getnchannels(), w.getsampwidth(), w.getnframes()), (16000, 1, 2, 8000))
+class GeminiSilenceTests(unittest.TestCase):
+    # Gemini invents a sentence for pure silence (seen 2026-10-28 with
+    # gemini-3.6-flash), so silence is never sent.
+    def test_silence_is_not_sent(self):
+        import numpy as np
+        from koli.cloud_stt import gemini_phrase
+        posts = []
+        result = gemini_phrase.transcribe(np.zeros(16000, dtype=np.float32), 'he', '', 'k', 'm',
+                                          post=lambda *a, **k: posts.append(a) or {})
+        self.assertEqual(result, ('', 0, 0))
+        self.assertEqual(posts, [])
+
 if __name__ == '__main__':
     unittest.main()
