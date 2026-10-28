@@ -235,7 +235,7 @@ class HotkeyListener:
     # (Ctrl+A, Ctrl+C); the bubble has its own Enter and Esc.
     def _in_bubble(self) -> bool:
         try:
-            return bool(self.state_manager.bubble_has_focus())
+            return self.state_manager.bubble_has_focus() is True
         except Exception:
             return False
 
