@@ -646,7 +646,7 @@ class UiHost:
             return False
         win32.restore_foreground(hwnd)
         time.sleep(0.15)
-        return True
+        return win32.foreground() == hwnd
 
     # ── Following the text field ──
 

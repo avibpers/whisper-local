@@ -213,8 +213,8 @@ class Bridge:
 
     # The bubble's text and caret after you typed or selected (code points).
     @_api
-    def bubble_edit(self, text, start, end):
-        self._sm.bubble_edit(str(text or ''), int(start), int(end))
+    def bubble_edit(self, text, start, end, rev=None):
+        return self._sm.bubble_edit(str(text or ''), int(start), int(end), None if rev is None else int(rev))
 
     # Write the text into the app; `send` also presses Enter there.
     @_api

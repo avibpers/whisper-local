@@ -653,6 +653,7 @@ class LiveWordsFlowTests(unittest.TestCase):
         sm._maybe_restart_continuous = mock.Mock()
         sm._begin_clip = mock.Mock(return_value=None)
         sm.recent_transcriptions = collections.deque(maxlen=10)
+        sm._keep_my_voice = mock.Mock(side_effect=lambda text, audio, info, unprompted: (text, info))
         sm.bubble_has_focus = lambda: self.focus[0]
         sm.bubble_focus = mock.Mock()
         sm.bubble_focus.give_back.return_value = True
@@ -780,7 +781,6 @@ class LiveWordsFlowTests(unittest.TestCase):
         sm = self._sm(phrases=['Late words.'])
         self._start(sm)
         old = sm.live.session
-        sm.live.phrase_session_check = lambda: None
         sm.bubble_cancel()
         self.assertIsNone(sm.live.session)
         import numpy as np
@@ -849,6 +849,8 @@ class _FakeOpenAI:
 
     def finish(self, timeout=5.0):
         self.finished = True
+        if not self.failed:
+            self.left = None
 
     def cancel(self):
         self.cancelled = True
@@ -1022,7 +1024,7 @@ class BubbleBridgeTests(unittest.TestCase):
         self.assertEqual(bridge.bubble_write(True), {'ok': True, 'data': True})
         sm.bubble_write.assert_called_once_with(True)
         bridge.bubble_edit('fixed text', 3, 5)
-        sm.bubble_edit.assert_called_once_with('fixed text', 3, 5)
+        sm.bubble_edit.assert_called_once_with('fixed text', 3, 5, None)
         bridge.bubble_open()
         sm.bubble_open.assert_called_once()
         bridge.bubble_listen(False)
@@ -1081,6 +1083,189 @@ class LiveWordsReportTests(unittest.TestCase):
         js = (ROOT / 'src' / 'koli' / 'ui' / 'web' / 'js' / 'screens' / 'history.js').read_text(encoding='utf-8')
         self.assertIn("call('live_words_usage'", js)
         self.assertIn('Words while you speak', js)
+
+# ── Final review fixes ──────────────────────────────────────────────────────
+
+class ReviewFixTests(unittest.TestCase):
+    def setUp(self):
+        self.base = LiveWordsFlowTests('test_off_engine_keeps_todays_flow')
+        self.base.setUp()
+        self.addCleanup(self.base.doCleanups)
+        _FakeOpenAI.instances = []
+
+    def _paused_open_session(self, phrases=('Fix this.',)):
+        sm = self.base._sm(phrases=list(phrases))
+        self.base._start(sm)
+        self.base._pause(sm)
+        sm.bubble_open()
+        self.base.focus[0] = True
+        sm.stop_recording()                     # paused, the text waits in the bubble
+        self.base.focus[0] = False
+        return sm
+
+    # 1. Clicking back into the field must not wipe a paused session.
+    def test_auto_dictation_waits_while_the_bubble_holds_text(self):
+        sm = self._paused_open_session()
+        sm.config_manager.config['auto_dictation'] = {'silence_timeout_seconds': 5}
+        self.assertFalse(sm.begin_auto_recording())
+        self.assertEqual(sm.live.session.text(), 'Fix this.')
+
+    # 2. The length limit stops the recorder before Koli hears about it.
+    def test_max_duration_with_local_words_still_transcribes(self):
+        import numpy as np
+        sm = self.base._sm(engine='local', phrases=['A very long dictation.'])
+        sm.audio_recorder.continuous_streaming = object()
+        self.base._start(sm)
+        self.base.recording[0] = False          # the recorder already stopped itself
+        sm.handle_max_recording_duration_reached(np.ones(16000, dtype=np.float32) * 0.1)
+        self.assertEqual(self.base._delivered(sm), ['A very long dictation.'])
+
+    # 3. Enter then Write (or Esc) while the last phrase is still being written.
+    def test_a_second_finish_during_the_first_is_ignored(self):
+        sm = self.base._sm(phrases=[])
+        self.base._start(sm)
+        sm.audio_recorder.continuous_vad.speech_since_phrase = True
+
+        def tail(audio):
+            sm.bubble_write(True)                # a second press while the tail is transcribed
+            sm.bubble_cancel()
+            return 'The tail.'
+        sm.whisper_engine.transcribe_audio.side_effect = tail
+        sm.stop_recording()
+        self.assertEqual(self.base._delivered(sm), ['The tail.'])
+
+    # 4. Phrases go into the bubble in the order they were spoken.
+    def test_phrases_are_written_in_spoken_order(self):
+        import threading
+        import time
+        import numpy as np
+        sm = self.base._sm(phrases=[])
+        self.base._start(sm)
+        first = np.ones(16000, dtype=np.float32) * 0.1
+        second = np.ones(16000, dtype=np.float32) * 0.2
+
+        def transcribe(audio):
+            if float(audio[0]) < 0.15:
+                time.sleep(0.3)
+                return 'First.'
+            return 'Second.'
+        sm.whisper_engine.transcribe_audio.side_effect = transcribe
+        session = sm.live.session
+        t1, t2 = sm.live.ticket(), sm.live.ticket()
+        b = threading.Thread(target=sm.live.on_phrase, args=(second,), kwargs={'session': session, 'ticket': t2})
+        a = threading.Thread(target=sm.live.on_phrase, args=(first,), kwargs={'session': session, 'ticket': t1})
+        b.start()
+        time.sleep(0.05)
+        a.start()
+        a.join(3)
+        b.join(3)
+        self.assertEqual(session.text(), 'First. Second.')
+
+    # 5. OpenAI failing while Koli waits for its last words.
+    def test_openai_failing_during_finish_sends_the_rest_to_whisper(self):
+        sm = self.base._sm(engine='cloud', phrases=['the last words'])
+        sm.config_manager.config['live_words']['cloud'] = {'provider': 'openai'}
+        sm.live._has_key = lambda p: True
+        sm.live._key = lambda p: 'k'
+        sm.live.openai_factory = _FakeOpenAI
+        self.base._start(sm)
+        client = _FakeOpenAI.instances[-1]
+        client.on_final('Words from OpenAI,')
+
+        def finish(timeout=5.0):
+            client.failed = True               # dropped during the wait
+            client.on_error('OpenAI closed the connection')
+        client.finish = finish
+        sm.stop_recording()
+        self.assertEqual(self.base._delivered(sm), ['Words from OpenAI, the last words'])
+
+    def test_a_tiny_last_turn_is_not_committed(self):
+        import numpy as np
+        t = OpenAILiveTests('test_no_language_sends_no_languages')
+        c = t._client()
+        c.start()
+        self.assertTrue(_wait(lambda: t.sock.sent))
+        c.feed(np.zeros(800, dtype=np.float32))     # 50 ms
+        c.finish(timeout=0.2)
+        self.assertNotIn('input_audio_buffer.commit', [m['type'] for m in t.sock.sent])
+        self.assertIsNone(c.unsent_audio())
+
+    def test_commit_empty_is_not_fatal(self):
+        t = OpenAILiveTests('test_no_language_sends_no_languages')
+        c = t._client()
+        c.start()
+        self.assertTrue(_wait(lambda: t.sock.sent))
+        t.sock.push(type='error', error={'code': 'input_audio_buffer_commit_empty', 'message': 'buffer too small'})
+        import time
+        time.sleep(0.2)
+        self.assertFalse(c.failed)
+        c.cancel()
+
+    # 6. Once the bubble has focus, the app's rule still decides formatting.
+    def test_the_app_rule_is_read_once_per_session(self):
+        sm = self._paused_open_session(phrases=('Fix this.', 'more'))
+        calls = sm.app_rules.match_for_foreground.call_count
+        sm._apply_recording_context.reset_mock()
+        sm.start_recording()                      # resume with the bubble in front
+        self.base._pause(sm)
+        self.assertEqual(sm.app_rules.match_for_foreground.call_count, calls)
+        sm._apply_recording_context.assert_not_called()
+
+    # 8. A tap is still a tap.
+    def test_a_tap_with_a_words_engine_is_refused(self):
+        sm = self.base._sm(phrases=['Thank you.'])
+        sm._begin_recording()                     # released at once
+        sm.stop_recording()
+        sm.clipboard_manager.deliver_transcription.assert_not_called()
+        sm.whisper_engine.transcribe_audio.assert_not_called()
+        sm.level_overlay.flash_failure.assert_called_with('Hold the keys while you talk')
+
+    def test_only_my_voice_filters_bubble_phrases(self):
+        import unittest.mock as mock
+        sm = self.base._sm(phrases=['TV in the background.'])
+        sm._keep_my_voice = mock.Mock(return_value=('', {}))
+        self.base._start(sm)
+        self.base._pause(sm)
+        self.assertEqual(sm.live.session.text(), '')
+        sm._keep_my_voice.assert_called_once()
+
+    def test_a_bubble_dictation_keeps_a_clip(self):
+        sm = self.base._sm(phrases=['One.', 'two'])
+        sm._begin_clip.return_value = 'clip-7'
+        self.base._start(sm)
+        self.base._pause(sm)
+        self.base._pause(sm)
+        sm.stop_recording()
+        sm._begin_clip.assert_called_once()
+        self.assertEqual(len(sm._begin_clip.call_args.args[0]), 32000)      # both phrases' audio
+        self.assertEqual(self.base.record_transcript.call_args.kwargs.get('clip_id'), 'clip-7')
+
+    # 9. An edit typed against older text must not erase a phrase that landed.
+    def test_a_stale_edit_is_rejected(self):
+        from koli.dictation_session import DictationSession
+        s = DictationSession('phrases', 1, None)
+        s.add_final('One.')
+        s.open()
+        rev = s.snapshot()['rev']
+        s.add_final('two')
+        self.assertFalse(s.edit('One!', 4, 4, rev=rev))
+        self.assertEqual(s.text(), 'One. Two')
+        self.assertTrue(s.edit('One. Two!', 9, 9, rev=s.snapshot()['rev']))
+
+
+class GiveBackTests(unittest.TestCase):
+    # 7. Writing goes ahead only when the app is really in front again.
+    def test_give_back_checks_the_window_is_in_front(self):
+        import unittest.mock as mock
+        from koli.ui.host import UiHost
+        host = UiHost.__new__(UiHost)
+        host.bar_hwnd, host._last_external_hwnd = 9, 0
+        with mock.patch('koli.ui.host.win32') as win32, mock.patch('koli.ui.host.time'):
+            win32.is_window.return_value = True
+            win32.foreground.return_value = 77              # something else stayed in front
+            self.assertFalse(host.give_back({'hwnd': 5}))
+            win32.foreground.return_value = 5
+            self.assertTrue(host.give_back({'hwnd': 5}))
 
 if __name__ == '__main__':
     unittest.main()

@@ -12,6 +12,8 @@ import threading
 import time
 from typing import Optional
 
+import numpy as np
+
 from . import live_words_usage
 from .cloud_stt import gemini_phrase
 from .cloud_stt.openai_live import OpenAILive
@@ -24,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 PROMPT_CONTEXT_CHARS = 200     # how much of the bubble's text primes the next phrase
 PHRASE_WAIT_S = 10.0           # the most a finish waits for phrases still being transcribed
+TURN_WAIT_S = 30.0             # the most a phrase waits for the one spoken before it
 
 
 class LiveWordsFlow:
@@ -47,6 +50,19 @@ class LiveWordsFlow:
         self.gemini_transcribe = gemini_phrase.transcribe
         self.cloud = None               # the OpenAI client of the current listening run
         self._tap = None                # the recorder tap feeding it
+        self._rule = None               # the app rule from the session's start (the bubble may be in front later)
+        self._audio_parts = []          # the phrases' audio, kept as the dictation's clip for Training
+        # Phrases are put into the bubble in the order they were spoken: each
+        # takes a ticket when its pause happens and waits for its turn.
+        self.order_lock = threading.Lock()
+        self._ticket_lock = threading.Lock()
+        self._next_ticket = 0
+        self._serving = 0
+        self._turn = threading.Condition()
+        # A finish or cancel claims the session first, so a second press
+        # (Enter then Write, Esc while writing) does nothing.
+        self._claim_lock = threading.Lock()
+        self._closing = None
 
     # ── Starting and resuming ────────────────────────────────────────────────
 
@@ -77,6 +93,8 @@ class LiveWordsFlow:
         self.session = DictationSession(self.choice.engine, self._next_id, foreground.get_foreground_app() or {})
         self._seconds, self._tokens_in, self._tokens_out = 0.0, 0, 0
         self._base_prompt = None
+        self._rule = rule or None
+        self._audio_parts = []
         if self.choice.notice and self.choice.notice not in self._notices_said:
             self._notices_said.add(self.choice.notice)
             self._notice = self.choice.notice
@@ -122,7 +140,7 @@ class LiveWordsFlow:
 
         def on_final(text):
             if session is self.session:
-                session.add_final(self.sm._postprocess_piece(text))
+                session.add_final(self._piece(text))
                 self.publish()
 
         client = self.openai_factory(self._key('openai'), self.choice.model, self._language,
@@ -136,7 +154,9 @@ class LiveWordsFlow:
         recorder.add_tap(tap)
         client.start()
 
-    def _stop_openai(self, wait: bool) -> None:
+    # `session` given: after waiting for OpenAI's last words, any audio it
+    # never answered (it dropped, failed or was too slow) goes to Whisper.
+    def _stop_openai(self, wait: bool, session: Optional[DictationSession] = None) -> None:
         client, tap = self.cloud, self._tap
         self.cloud, self._tap = None, None
         if tap is not None:
@@ -144,11 +164,17 @@ class LiveWordsFlow:
                 self.sm.audio_recorder.remove_tap(tap)
             except Exception:
                 pass
-        if client is not None:
-            if wait and not client.failed:
-                client.finish(timeout=5.0)
-            else:
-                client.cancel()
+        if client is None:
+            return
+        if wait and not client.failed:
+            client.finish(timeout=5.0)
+        else:
+            client.cancel()
+        if session is not None:
+            left = client.unsent_audio()
+            if left is not None and len(left):
+                logger.warning("Words while you speak: OpenAI didn't answer everything - Whisper takes the rest")
+                self.on_phrase(left, session=session)
 
     # OpenAI could not be reached, or dropped: what it never answered goes
     # to Whisper, and the rest of this dictation runs as Phrases. No word lost.
@@ -207,34 +233,68 @@ class LiveWordsFlow:
     def active(self) -> bool:
         return self.session is not None
 
+    # A session you opened and paused is being resumed.
+    def continuing(self) -> bool:
+        session = self.session
+        return session is not None and session.opened
+
+    def ticket(self) -> int:
+        with self._ticket_lock:
+            ticket, self._next_ticket = self._next_ticket, self._next_ticket + 1
+            return ticket
+
+    def _wait_turn(self, ticket: int) -> None:
+        with self._turn:
+            self._turn.wait_for(lambda: self._serving >= ticket, timeout=TURN_WAIT_S)
+
+    def _done_turn(self, ticket: int) -> None:
+        with self._turn:
+            self._serving = max(self._serving, ticket + 1)
+            self._turn.notify_all()
+
+    def _piece(self, text: str) -> str:
+        return self.sm._postprocess_piece(text, self._rule, rule_known=True)
+
+    # Claims the session for a finish or cancel; None when another already did.
+    def _claim(self) -> Optional[DictationSession]:
+        with self._claim_lock:
+            session = self.session
+            if session is None or session is self._closing:
+                return None
+            self._closing = session
+            return session
+
     # ── Words coming in ──────────────────────────────────────────────────────
 
     # A phrase pause: transcribe what was said since the last one into the
     # bubble. `session` is the one the audio belongs to (read when the pause
     # happened): if it has ended since, the words have nowhere to go.
-    def on_phrase(self, audio, session: Optional[DictationSession] = None) -> None:
+    def on_phrase(self, audio, session: Optional[DictationSession] = None, ticket: Optional[int] = None) -> None:
+        if ticket is None:
+            ticket = self.ticket()
         session = session or self.session
-        if session is None or audio is None:
-            return
-        if self.choice.engine == 'openai' and self.cloud is not None:
-            self.cloud.commit()          # OpenAI already has the audio: close its turn
-            return
-        if self.choice.engine == 'local':
-            return
         self._begin_work()
         try:
+            self._wait_turn(ticket)
+            if session is None or audio is None or self.choice.engine == 'local':
+                return
+            if self.choice.engine == 'openai' and self.cloud is not None:
+                self.cloud.commit()          # OpenAI already has the audio: close its turn
+                return
             with self._phrase_lock:
                 text = self._gemini_phrase(audio, session) if self.choice.engine == 'gemini' else None
                 if text is None:
                     text = self._transcribe_phrase(audio, session)
                 if text and session is self.session:
-                    session.add_final(self.sm._postprocess_piece(text))
+                    self._audio_parts.append(audio)
+                    session.add_final(self._piece(text))
                     self.publish()
                 elif text:
                     logger.info("Words while you speak: a phrase finished after its session ended - dropped")
         except Exception as e:
             logger.error(f"Words while you speak: a phrase failed: {e}", exc_info=True)
         finally:
+            self._done_turn(ticket)
             self._end_work()
 
     # Gemini for one phrase; None means "ask Whisper" (Gemini failed).
@@ -271,7 +331,14 @@ class LiveWordsFlow:
         if text and prompt and is_prompt_echo(text, prompt):
             logger.info("Words while you speak: Whisper repeated its prompt - not speech")
             return ''
-        return text.strip()
+        # Only my voice: speech much quieter than you (a TV, someone nearby) is left out.
+        if text:
+            try:
+                info = dict(getattr(engine, 'last_info', None) or {})
+                text, _ = self.sm._keep_my_voice(text, audio, info, False)
+            except Exception as e:
+                logger.debug(f"Only my voice skipped for a phrase: {e}")
+        return (text or '').strip()
 
     def _begin_work(self) -> None:
         with self._idle:
@@ -311,7 +378,7 @@ class LiveWordsFlow:
             return
         audio = self.sm.audio_recorder.stop_recording() if self.sm.audio_recorder.get_recording_status() else None
         self._take_tail(audio, session)
-        self._stop_openai(wait=True)
+        self._stop_openai(wait=True, session=session)
         session.set_listening(False)
         self.sm.audio_feedback.play_stop_sound()
         self.sm._update_ui_state('idle')
@@ -319,12 +386,22 @@ class LiveWordsFlow:
         logger.info("Words while you speak: paused - the text waits in the bubble")
 
     # Write the bubble's text into the app (and press Enter when `send`).
-    def finish(self, send: bool = False) -> None:
-        session = self.session
+    # `tail`: the audio of a recording the recorder already stopped (its
+    # length limit).
+    def finish(self, send: bool = False, tail=None) -> None:
+        session = self._claim()
         if session is None:
             return
+        try:
+            self._finish(session, send, tail)
+        finally:
+            with self._claim_lock:
+                if self._closing is session:
+                    self._closing = None
+
+    def _finish(self, session: DictationSession, send: bool, tail) -> None:
         recording = self.sm.audio_recorder.get_recording_status()
-        audio = self.sm.audio_recorder.stop_recording() if recording else None
+        audio = self.sm.audio_recorder.stop_recording() if recording else tail
         if self.choice.engine == 'local':
             # A preview: Whisper writes the whole dictation, as without the bubble.
             self.session = None
@@ -335,7 +412,7 @@ class LiveWordsFlow:
             self.sm._transcription_pipeline(audio, send)
             return
         self._take_tail(audio, session)
-        self._stop_openai(wait=True)
+        self._stop_openai(wait=True, session=session)
         self._wait_for_phrases()
         session.commit_interim()
         self.session = None
@@ -353,9 +430,12 @@ class LiveWordsFlow:
         if session.opened and not self._give_focus_back(session):
             self.sm.keep_in_fallback(text, "The window you dictated into is gone - your text is safe here.")
         else:
+            clip_id = None
+            if self._audio_parts:
+                clip_id = self.sm._begin_clip(np.concatenate(self._audio_parts), 'dictate', False, False, False)
             self.sm._transcription_pipeline(None, send, written={
                 'text': text, 'edited': session.edited, 'engine': session.engine,
-                'original': session.original(), 'duration': self._seconds})
+                'original': session.original(), 'duration': self._seconds, 'clip_id': clip_id})
         self._record_usage(session)
 
     def _give_focus_back(self, session: DictationSession) -> bool:
@@ -371,10 +451,12 @@ class LiveWordsFlow:
     # Esc, Cancel, or a cancelled recording: the text is dropped (History
     # keeps it as cancelled).
     def cancel(self) -> None:
-        session = self.session
+        session = self._claim()
         if session is None:
             return
         self.session = None
+        with self._claim_lock:
+            self._closing = None
         self._stop_openai(wait=False)
         self._stream_partials(False)
         if self.sm.audio_recorder.get_recording_status():
@@ -419,10 +501,14 @@ class LiveWordsFlow:
         self.publish()
         return True
 
-    def edit(self, text: str, start: int, end: int) -> None:
+    def edit(self, text: str, start: int, end: int, rev: Optional[int] = None) -> bool:
         session = self.session
-        if session is not None and session.opened:
-            session.edit(text, start, end)
+        if session is None or not session.opened:
+            return False
+        accepted = session.edit(text, start, end, rev)
+        if not accepted:
+            self.publish()          # the page catches up with the phrase that landed
+        return accepted
 
     def publish(self) -> None:
         session = self.session

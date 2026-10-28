@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 URL = 'wss://api.openai.com/v1/realtime?intent=transcription'
 SEND_RATE = 24000          # the realtime API takes 24 kHz PCM16
 MIN_APPEND_BYTES = 4800    # 100 ms at 24 kHz: fewer, larger messages
+MIN_TURN_SAMPLES = 1600    # 100 ms at 16 kHz: shorter turns are not committed (OpenAI refuses them)
 
 
 def _resample_to_24k(mono16k: np.ndarray) -> np.ndarray:
@@ -161,10 +162,14 @@ class OpenAILive:
 
     # A phrase pause: the turn so far is complete, OpenAI may finish it.
     def commit(self) -> None:
+        with self._lock:
+            if sum(len(a) for a in self._turns[-1]['audio']) < MIN_TURN_SAMPLES:
+                # A click or a breath after the last pause: not worth a turn.
+                self._turns[-1]['audio'] = []
+                self._pending_bytes = b''
+                return
         self._flush()
         with self._lock:
-            if not self._turns[-1]['audio']:
-                return
             self._committed += 1
             self._turns.append({'audio': [], 'done': False})
         self._outbox.put({'type': 'input_audio_buffer.commit'})
@@ -230,6 +235,9 @@ class OpenAILive:
                     self._on_final(text)
         elif kind == 'error':
             error = event.get('error') or {}
+            if error.get('code') == 'input_audio_buffer_commit_empty':
+                logger.debug("OpenAI: an empty turn was not committed")
+                return
             self._fail(f"OpenAI: {error.get('message') or error or 'error'}")
 
     # The audio whose text never came back (the current turn included), for

@@ -66,6 +66,7 @@ class DictationSession:
         self._interim = ''
         self._original = ''      # the engine's own words, joined, for History and Training
         self._start = self._end = 0
+        self._rev = 0            # bumped whenever an engine changes the text
         self._lock = threading.Lock()
 
     # ── What the engines call ────────────────────────────────────────────────
@@ -97,6 +98,7 @@ class DictationSession:
             return
         self._settled = before + piece + after
         self._start = self._end = len(before) + len(piece.rstrip(' '))
+        self._rev += 1
 
     # ── What the bubble page calls ───────────────────────────────────────────
 
@@ -110,9 +112,13 @@ class DictationSession:
             return True
 
     # The pane's text and caret, in code points (the page converts from its
-    # UTF-16 offsets), after you typed, selected or clicked.
-    def edit(self, text: str, start: int, end: int) -> None:
+    # UTF-16 offsets), after you typed, selected or clicked. `rev` is the
+    # revision the page was showing: an edit made against older text (a
+    # phrase landed meanwhile) is refused, so it cannot erase that phrase.
+    def edit(self, text: str, start: int, end: int, rev: Optional[int] = None) -> bool:
         with self._lock:
+            if rev is not None and int(rev) != self._rev:
+                return False
             text = text or ''
             if text != self._settled:
                 self.edited = True
@@ -120,6 +126,7 @@ class DictationSession:
             start = max(0, min(int(start), len(text)))
             end = max(start, min(int(end), len(text)))
             self._start, self._end = start, end
+            return True
 
     def set_listening(self, on: bool) -> None:
         with self._lock:
@@ -143,4 +150,4 @@ class DictationSession:
         with self._lock:
             return {'id': self.session_id, 'engine': self.engine, 'settled': self._settled,
                     'interim': self._interim, 'start': self._start, 'end': self._end,
-                    'opened': self.opened, 'listening': self.listening}
+                    'opened': self.opened, 'listening': self.listening, 'rev': self._rev}

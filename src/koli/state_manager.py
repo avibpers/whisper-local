@@ -242,8 +242,7 @@ class StateManager:
     def handle_max_recording_duration_reached(self, audio_data):
         self.logger.info("Max recording duration reached - starting transcription")
         if self._live_session_on():
-            self.live.on_phrase(audio_data)    # the recorder already stopped; its audio is the tail
-            self.live.finish(False)
+            self.live.finish(False, tail=audio_data)    # the recorder already stopped; this is its audio
             return
         self._transcription_pipeline(audio_data, use_auto_enter=False)
 
@@ -266,7 +265,9 @@ class StateManager:
             # said so far goes into the bubble, the microphone stays open.
             session = self.live.session
             if self.audio_recorder.get_recording_status():
-                self.live.on_phrase(self.audio_recorder.take_recorded_audio(), session=session)
+                with self.live.order_lock:
+                    audio, ticket = self.audio_recorder.take_recorded_audio(), self.live.ticket()
+                self.live.on_phrase(audio, session=session, ticket=ticket)
             return
         if event == VadEvent.PHRASE_PAUSE:
             # A short pause while auto-dictation listens: paste the words so
@@ -362,6 +363,14 @@ class StateManager:
             session = self.live.session
             if session.opened and self.bubble_has_focus():
                 self.live.pause()
+                return True
+            held = time.monotonic() - (getattr(self, '_recording_started_at', None) or 0.0)
+            if currently_recording and not session.opened and held < self.MIN_HOTKEY_HOLD_S:
+                self.logger.info(f"Hotkey tapped ({held:.2f} s): nothing recorded")
+                print("   ✗ Too short - hold the keys while you talk")
+                self.cancel_active_recording(quiet=True)
+                if self.level_overlay:
+                    self.level_overlay.flash_failure("Hold the keys while you talk")
                 return True
             if currently_recording or session.opened:
                 self._clear_streaming_display()
@@ -579,7 +588,11 @@ class StateManager:
     # `hands_free`: a continuous-mode restart, not a key you pressed (see
     # _hands_free above).
     def _begin_recording(self, auto_started: bool = False, hands_free: bool = False):
-        self._apply_recording_context()
+        # Resuming a session you opened: the bubble is in front now, so the
+        # app's rule, language and prompt from the session's start still hold.
+        continuing = not auto_started and self.live is not None and self.live.continuing()
+        if not continuing:
+            self._apply_recording_context()
         self._maybe_pause_media(auto_started)
         silence_timeout = self._auto_silence_timeout() if auto_started else None
         if auto_started:
@@ -638,6 +651,10 @@ class StateManager:
 
     def begin_auto_recording(self) -> bool:
         if not self.can_start_recording() or self.is_paused:
+            return False
+        # A dictation waits in the bubble (you are fixing it, or clicking
+        # back into the field to finish it): it is not replaced.
+        if self.live is not None and self.live.active():
             return False
         # Focus moved to a field: a waiting Enter would land there instead.
         self._cancel_pending_send('a text field got focus')
@@ -1122,11 +1139,12 @@ class StateManager:
     # rule's formatting and your corrections, no AI polish (that runs once on
     # the whole text), and no stripped period (the pieces need their sentence
     # ends to join).
-    def _postprocess_piece(self, text: str) -> str:
-        try:
-            rule = self.app_rules.match_for_foreground()
-        except Exception:
-            rule = None
+    def _postprocess_piece(self, text: str, rule=None, rule_known: bool = False) -> str:
+        if not rule_known:
+            try:
+                rule = self.app_rules.match_for_foreground()
+            except Exception:
+                rule = None
         cfg = effective_postprocess_config(self.config_manager.get_postprocess_config(), rule)
         cfg = dict(self._with_learned_corrections(cfg) if hasattr(self, '_with_learned_corrections') else cfg)
         cfg['strip_trailing_period'] = False
@@ -1151,9 +1169,10 @@ class StateManager:
     def bubble_open(self) -> bool:
         return bool(self.live is not None and self.live.open())
 
-    def bubble_edit(self, text: str, start: int, end: int) -> None:
-        if self.live is not None:
-            self.live.edit(text, int(start), int(end))
+    def bubble_edit(self, text: str, start: int, end: int, rev: Optional[int] = None) -> bool:
+        if self.live is None:
+            return False
+        return self.live.edit(text, int(start), int(end), rev)
 
     # Write the bubble's text (the Write button, or Enter to also send it).
     def bubble_write(self, send: bool = False) -> bool:
@@ -1356,7 +1375,7 @@ class StateManager:
 
             if written is not None:
                 # Words from the bubble: heard, checked and post-processed already.
-                transcribed_text, info, clip_id = written['text'], {}, None
+                transcribed_text, info, clip_id = written['text'], {}, written.get('clip_id')
                 duration = float(written.get('duration') or 0.0)
                 self._stop_requested = False
             else:

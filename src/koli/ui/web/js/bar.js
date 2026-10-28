@@ -581,7 +581,7 @@ function LivePane({ live }) {
     const el = box.current;
     if (!el) return Promise.resolve();
     const [start, end] = caretIn(el);
-    return call('bubble_edit', el.textContent || '', start, end).catch(() => {});
+    return call('bubble_edit', el.textContent || '', start, end, live.rev).catch(() => {});
   };
   const write = (sendIt) => send().then(() => call('bubble_write', sendIt)).catch(() => {});
   const open = (e) => {
