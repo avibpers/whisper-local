@@ -2652,7 +2652,7 @@ class UserReportedSeptemberTests(unittest.TestCase):
     def test_recovery_paths_check_the_policy(self):
         source = (ROOT / 'src' / 'koli' / 'state_manager.py').read_text(encoding='utf-8')
         self.assertEqual(source.count('silent_copy_allowed'), 3,
-                         'every recovery path (suppress, no text field, the bubble's window gone) must check it')
+                         'every recovery path (suppress, no text field, the bubble window gone) must check it')
 
     # --- #11: an app rule silencing paste looked like a broken app ---
     def test_copy_only_is_announced_once_per_rule(self):
