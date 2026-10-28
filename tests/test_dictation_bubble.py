@@ -111,5 +111,126 @@ class LiveWordsSettingsTests(unittest.TestCase):
         self.assertIn('live_words:', text)
 
 
+# ── Task 2: the session model ───────────────────────────────────────────────
+
+class DictationSessionTests(unittest.TestCase):
+    def setUp(self):
+        from koli.dictation_session import DictationSession, join_piece
+        self.S, self.join = DictationSession, join_piece
+
+    def test_finals_append_with_spaces_and_capitals(self):
+        s = self.S('phrases', 1, None)
+        s.add_final('Hello there.')
+        s.add_final('how are you?')
+        self.assertEqual(s.text(), 'Hello there. How are you?')
+
+    def test_mid_sentence_piece_is_lowercased_but_not_I(self):
+        s = self.S('phrases', 1, None)
+        s.add_final('I went to the')
+        s.add_final('Store')
+        self.assertEqual(s.text(), 'I went to the store')
+        s.add_final('I think')
+        self.assertEqual(s.text(), 'I went to the store I think')
+
+    def test_all_caps_word_is_kept(self):
+        self.assertEqual(self.join('send it to', 'NASA today', ''), ' NASA today')
+
+    def test_selection_is_replaced_by_the_next_final(self):
+        s = self.S('phrases', 1, None)
+        s.add_final('Send it to Jon today.')
+        self.assertTrue(s.open())
+        s.edit(s.text(), 11, 14)
+        s.add_final('John')
+        self.assertEqual(s.text(), 'Send it to John today.')
+
+    def test_caret_in_the_middle_inserts_there(self):
+        s = self.S('openai', 1, None)
+        s.add_final('one three')
+        s.open()
+        s.edit('one three', 4, 4)
+        s.add_final('two')
+        self.assertEqual(s.text(), 'one two three')
+
+    def test_caret_moves_after_the_insertion(self):
+        s = self.S('openai', 1, None)
+        s.add_final('one four')
+        s.open()
+        s.edit('One four', 4, 4)
+        s.add_final('two')
+        s.add_final('three')
+        self.assertEqual(s.text(), 'One two three four')
+
+    def test_emoji_before_caret_uses_code_points(self):
+        s = self.S('phrases', 1, None)
+        s.open()
+        s.edit('🙂 hi', 4, 4)
+        s.add_final('there')
+        self.assertEqual(s.text(), '🙂 hi there')
+
+    def test_hebrew_join(self):
+        s = self.S('phrases', 1, None)
+        s.add_final('שלום')
+        s.add_final('מה נשמע')
+        self.assertEqual(s.text(), 'שלום מה נשמע')
+
+    def test_interim_is_shown_not_settled(self):
+        s = self.S('openai', 1, None)
+        s.set_interim('hel')
+        self.assertEqual(s.text(), '')
+        self.assertEqual(s.snapshot()['interim'], 'hel')
+        s.commit_interim()
+        self.assertEqual(s.text(), 'Hel')
+        self.assertEqual(s.snapshot()['interim'], '')
+
+    def test_a_final_clears_the_interim(self):
+        s = self.S('openai', 1, None)
+        s.set_interim('hello the')
+        s.add_final('Hello there.')
+        self.assertEqual(s.snapshot()['interim'], '')
+
+    def test_local_engine_never_opens(self):
+        self.assertFalse(self.S('local', 1, None).open())
+
+    def test_edit_marks_edited_and_original_keeps_engine_text(self):
+        s = self.S('phrases', 1, None)
+        s.add_final('teh cat')
+        s.open()
+        s.edit('The cat', 7, 7)
+        self.assertTrue(s.edited)
+        self.assertEqual(s.original(), 'Teh cat')
+        self.assertEqual(s.text(), 'The cat')
+
+    def test_moving_the_caret_alone_is_not_an_edit(self):
+        s = self.S('phrases', 1, None)
+        s.add_final('the cat')
+        s.open()
+        s.edit('The cat', 2, 2)
+        self.assertFalse(s.edited)
+
+    def test_snapshot_shape_and_words(self):
+        s = self.S('phrases', 7, {'exe': 'notepad.exe'})
+        s.add_final('two words')
+        snap = s.snapshot()
+        for key in ('id', 'engine', 'settled', 'interim', 'start', 'end', 'opened', 'listening'):
+            self.assertIn(key, snap)
+        self.assertEqual((snap['id'], snap['settled'], snap['start'], snap['end']), (7, 'Two words', 9, 9))
+        self.assertEqual(s.words(), 2)
+
+    def test_replacement_follows_the_case_of_the_replaced_word(self):
+        self.assertEqual(self.join('Fix ', 'The', ' cat', replaced='teh'), 'the')
+        self.assertEqual(self.join('Send it to ', 'john', ' today.', replaced='Jon'), 'John')
+
+    def test_mid_text_insertion_drops_whispers_closing_period(self):
+        s = self.S('phrases', 1, None)
+        s.add_final('One three.')
+        s.open()
+        s.edit('One three.', 4, 4)
+        s.add_final('Two.')
+        self.assertEqual(s.text(), 'One two three.')
+
+    def test_newline_ends_a_sentence(self):
+        self.assertEqual(self.join('Dear Ann,' + chr(10), 'thanks', ''), 'Thanks')
+
+
 if __name__ == '__main__':
     unittest.main()
