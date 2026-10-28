@@ -142,6 +142,61 @@ export function AiModelPicker({ value, onChange, empty = 'None', label = 'Model'
   </span>`;
 }
 
+// ── Online transcription models and their prices ────────────────────────────
+// docs/design/online-models.md. The price list comes from usage/prices.yaml
+// with your own prices on top; it is read again after an edit.
+
+let sttCatalog = null;
+
+export function usePriceList(fresh = 0) {
+  const [list, setList] = useState(sttCatalog || []);
+  useEffect(() => {
+    if (sttCatalog && !fresh) return;
+    call('usage_prices').then((rows) => { sttCatalog = rows; setList(rows); }).catch(() => {});
+  }, [fresh]);
+  return list;
+}
+
+// Dollars as a person reads them: cents for big amounts, more places for the
+// fractions of a cent one dictation costs. `null` means the model has no price.
+export function money(x) {
+  if (x == null) return 'no price';
+  if (x === 0) return '$0';
+  if (x >= 1) return `$${x.toFixed(2)}`;
+  if (x >= 0.01) return `$${x.toFixed(3).replace(/0$/, '')}`;
+  return `$${x.toFixed(4)}`;
+}
+
+const PROVIDER_NAMES = { openai: 'OpenAI', gemini: 'Gemini', local: 'This computer' };
+export const providerName = (id) => PROVIDER_NAMES[id] || id;
+
+// Local Whisper, or an online model grouped by provider with its price an
+// hour. Live-stream models are listed but can't be picked yet; a provider
+// without a key says so.
+function SttModelPicker({ value, onChange, label }) {
+  const rows = usePriceList().filter((r) => r.transcribe);
+  const providers = [...new Set(rows.map((r) => r.provider))];
+  const chosen = rows.find((r) => r.spec === value);
+  const known = !value || !!chosen;
+  const optionText = (r) => `${r.model}${r.per_hour != null ? ` · ~${money(r.per_hour)}/hour` : ''}`
+    + `${r.transcribe === 'live' ? ' · live, coming next' : ''}${r.has_key ? '' : ' · needs a key'}`;
+  return html`<span class="stack" style="gap:4px;align-items:flex-end">
+    <select class="sel" aria-label=${label} style="max-width:340px" onChange=${(e) => onChange(e.currentTarget.value)}>
+      <option value="" selected=${!value}>Local Whisper (free, on this computer)</option>
+      ${!known && html`<option value=${value} selected>${value} (not in the price list)</option>`}
+      ${providers.map((p) => html`<optgroup label=${providerName(p)}>
+        ${rows.filter((r) => r.provider === p).map((r) => html`<option value=${r.spec} selected=${r.spec === value}
+          disabled=${r.transcribe === 'live'}>${optionText(r)}</option>`)}
+      </optgroup>`)}
+    </select>
+    ${chosen && html`<span class="small muted" style="text-align:end">
+      ${chosen.per_minute != null ? `${money(chosen.per_minute)} a minute` : `${money(chosen.audio_in)} per 1M audio tokens, ${money(chosen.text_out)} per 1M out`}
+      ${chosen.note ? ` · ${chosen.note}` : ''}
+      ${!chosen.has_key && html`<span class="chip sm warn" style="margin-inline-start:6px">Add the ${providerName(chosen.provider)} key in Settings › AI</span>`}
+    </span>`}
+  </span>`;
+}
+
 // The fallback list: each model with Remove, then a picker to add one.
 function AiModelList({ s, value }) {
   const items = value || [];
@@ -178,6 +233,7 @@ export function SettingControl({ s }) {
     case 'textarea': return html`<${TextArea} value=${value} label=${s.label} mono=${s.path.startsWith('ai.')} onCommit=${save} />`;
     case 'ai_model': return html`<${AiModelPicker} value=${value} label=${s.label} empty=${s.path === 'ai.model' ? 'None' : 'Same as default'} onChange=${save} />`;
     case 'ai_models': return html`<${AiModelList} s=${s} value=${value} />`;
+    case 'stt_model': return html`<${SttModelPicker} value=${value || ''} label=${s.label} onChange=${save} />`;
     case 'tags': return html`<${TagInput} values=${value || []} label=${s.label} onChange=${save}
       locked=${s.path === 'postprocess.voice_editing_phrases' ? ['scratch that', 'delete that', 'strike that'] : []} />`;
     case 'choice_tags': return html`<${ChoiceTags} values=${value || []} options=${s.choices} label=${s.label} onChange=${save} />`;

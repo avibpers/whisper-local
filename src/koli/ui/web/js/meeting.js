@@ -19,6 +19,7 @@ import { Lightbox, Thumb, rowsByTime } from './shots.js';
 const panel = createStore({
   settings: null, meeting: { state: 'idle' }, turns: [], screenshots: [], pending: null, menu: false, collapsed: false,
   shownInSharing: false, stuck: true,   // stuck: the list follows new turns
+  cost: 0,                              // dollars this meeting's online calls cost so far
   open: null,      // the screenshot shown full size
   summary: null,   // the ended meeting's automatic summary: { id, phase, title }
   templates: [],   // the summary templates to pick from
@@ -26,7 +27,10 @@ const panel = createStore({
 
 function dir(text) { return /[֐-׿؀-ۿ]/.test(text || '') ? 'rtl' : 'ltr'; }
 function clock(s) { s = Math.max(0, Math.floor(s)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; }
-function loadTurns(id) { call('meeting_get', id).then((d) => panel.set({ turns: d.turns, screenshots: d.screenshots || [] })).catch(() => {}); }
+function loadTurns(id) { call('meeting_get', id).then((d) => panel.set({ turns: d.turns, screenshots: d.screenshots || [], cost: d.usage ? d.usage.cost : 0 })).catch(() => {}); }
+
+// The meeting's cost so far; cents once it passes one.
+function money(x) { return x >= 0.01 ? `$${x.toFixed(2)}` : `$${x.toFixed(4)}`; }
 
 // A screenshot joined (or its caption changed): keyed by its file name.
 function mergeShot(list, shot) {
@@ -39,7 +43,7 @@ function wire() {
     const prev = panel.get().meeting;
     const patch = { meeting: m };
     if (['offered', 'live', 'paused'].includes(m.state)) patch.summary = null;   // a new call takes the panel
-    if (m.id !== prev.id) { patch.turns = []; patch.screenshots = []; patch.pending = null; patch.open = null; }
+    if (m.id !== prev.id) { patch.turns = []; patch.screenshots = []; patch.pending = null; patch.open = null; patch.cost = 0; }
     panel.set(patch);
     if (m.id && m.id !== prev.id) loadTurns(m.id);
   });
@@ -51,6 +55,8 @@ function wire() {
     panel.set({ turns: [...s.turns, p.turn], pending: null });
   });
   on('meeting_summary', (p) => panel.set({ summary: p.phase === 'none' ? null : p }));
+  // An online model transcribed a chunk: what the meeting has cost so far.
+  on('usage', (u) => { if (u.meeting_id && u.meeting_id === panel.get().meeting.id) panel.set({ cost: u.meeting_cost || 0 }); });
   on('meeting_shot', (p) => {
     const s = panel.get();
     if (p.id !== s.meeting.id) return;
@@ -221,6 +227,7 @@ function Panel() {
   const m = panel.use((s) => s.meeting);
   const summary = panel.use((s) => s.summary);
   const menu = panel.use((s) => s.menu);
+  const cost = panel.use((s) => s.cost);
   const collapsed = panel.use((s) => s.collapsed);
   const open = panel.use((s) => s.open);
   const drag = useDrag('meeting_drag');
@@ -247,6 +254,7 @@ function Panel() {
       <span class=${'dot ' + m.state}></span><span class="title" title=${title}>${title}</span>
       <${Timer} since=${m.started_at} paused=${paused} />
       ${m.behind_s > 5 && html`<span class="sub" title="Transcription is catching up">· ${Math.round(m.behind_s)} s behind</span>`}
+      ${cost > 0 && html`<span class="sub" title="What the online model has cost for this meeting so far">· ${money(cost)}</span>`}
       <button type="button" class="btn icon" aria-label="Menu" onClick=${() => panel.set({ menu: !menu })}><${Icon} name="dots" /></button>
       <button type="button" class="btn icon" aria-label="Collapse" onClick=${() => panel.set({ collapsed: true })}><${Icon} name="down" /></button>
       <button type="button" class="btn icon" aria-label="End meeting" title="End meeting" onClick=${() => call('meeting_end')}><${Icon} name="x" /></button>

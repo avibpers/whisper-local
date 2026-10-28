@@ -21,6 +21,7 @@ from .dictation_session import DictationSession
 from .live_words import choose_engine, resolve_languages, usage_key, EngineChoice
 from .platform import foreground
 from .ui.events import publish
+from .usage import ledger as usage_ledger
 
 logger = logging.getLogger(__name__)
 
@@ -485,6 +486,16 @@ class LiveWordsFlow:
                                     self._tokens_in, self._tokens_out)
         except Exception as e:
             logger.debug(f"Usage not recorded: {e}")
+        # A cloud recording also joins the spending of the Usage screen
+        # (usage/ledger.py, priced from usage/prices.yaml). Gemini's prompt is
+        # the phrase's audio, so its input is priced as audio tokens.
+        key = usage_key(self.choice)
+        if key.startswith('cloud/'):
+            spec = key[len('cloud/'):]
+            gemini = spec.startswith('gemini/')
+            usage_ledger.record('dictation', spec, seconds=self._seconds,
+                                audio_tokens=self._tokens_in if gemini else 0,
+                                tokens_in=0 if gemini else self._tokens_in, tokens_out=self._tokens_out)
 
     # ── The bubble page ──────────────────────────────────────────────────────
 

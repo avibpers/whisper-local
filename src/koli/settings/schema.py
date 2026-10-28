@@ -26,7 +26,7 @@ class Setting:
     section: str
     control: str                  # toggle | segmented | select | number | range | text | textarea |
                                   # tags | choice_tags | hotkey | sound | microphone | audiohost | model_table |
-                                  # cue_table | styles | table | readonly | ai_model | ai_models
+                                  # cue_table | styles | table | readonly | ai_model | ai_models | stt_model
     help: str = ''
     apply: str = LIVE
     mode: str = ADVANCED
@@ -206,6 +206,10 @@ SCHEMA = [
        help='Switching downloads the model if needed, then swaps it in while you keep dictating.'),
     _S('whisper.models', 'Available models', 'model', 'model_table',
        help='Show or hide models in menus, or add your own CTranslate2 model.'),
+    _S('whisper.online_model', 'Transcribe dictation online with', 'model', 'stt_model', group='Online',
+       help='Sends each dictation to this model with the API key from Settings › AI, and shows what it cost. '
+            'Empty keeps dictation on this computer. The wake word and voice commands always stay local, and '
+            'local Whisper takes over if the online model fails.'),
     _S('whisper.backend', 'Engine', 'model', 'segmented', apply=BACKGROUND,
        choices=[['faster_whisper', 'faster-whisper'], ['whisper_cpp', 'whisper.cpp']],
        help='whisper.cpp is optional: faster on Apple Silicon, uses GGUF models.'),
@@ -449,8 +453,9 @@ SCHEMA = [
        unit='seconds', help='How long the AI may take to write one summary.'),
     # The default template is chosen in Meetings › Templates.
     _S('meeting.summary.template', 'Default summary template', 'meetings', 'text', apply=INTERNAL, mode=HIDDEN),
-    # Reserved: a separate model for meetings is not wired yet, so it stays out of the page.
-    _S('meeting.model', 'Meeting model', 'meetings', 'text', apply=INTERNAL, mode=HIDDEN),
+    _S('meeting.model', 'Transcribe meetings with', 'meetings', 'stt_model', apply=NEXT_RECORDING,
+       help='An online model, with the API key from Settings › AI, or empty for local Whisper. Each meeting '
+            'shows which models transcribed and summarized it, and what that cost.'),
     _S('meeting.speaker_model', 'Voiceprint model', 'meetings', 'select', apply=BACKGROUND,
        choices=[['eres2net-en', '3D-Speaker ERes2Net VoxCeleb (26 MB)'], ['eres2net', '3D-Speaker ERes2Net Chinese (40 MB)']],
        help='Tells speakers apart. Downloaded at the first meeting.'),

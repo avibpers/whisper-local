@@ -26,6 +26,9 @@ from ..meeting.summary_templates import TemplateLibrary, layout as template_layo
 from ..meeting.transcriber import YOU_FIRM, MeetingTranscriber
 from ..meeting.voices import FILE as VOICES_FILE, VoiceBook, is_default_name
 from ..platform import screenshots as platform_shots
+from ..online_stt import OnlineEngine, usable as online_usable
+from ..usage import ledger as usage_ledger
+from ..usage.ledger import for_meeting
 from ..ui.events import publish as publish_event, report_problem
 from ..ui.tasks import get_task_manager
 
@@ -129,12 +132,14 @@ class MeetingService:
         self.tracker = SpeakerTracker(embed=None, voices=self.voices)
         self._meeting_mic = ''            # the meeting microphone's name, for your voice on it
         self._embedder_task = None
+        self._online = None               # the OnlineEngine of meeting.model, made on first use
         self.session = SessionManager(self.store, start_capture=self._start_capture, stop_capture=self._stop_capture,
                                       publish=self._publish, settings=self._setting, on_speakers=self.tracker.load,
                                       on_ended=self._meeting_ended)
         self.transcriber = MeetingTranscriber(
-            engine_provider=lambda: self.ctx.state_manager.whisper_engine,
-            is_busy=lambda: not self.ctx.state_manager.is_idle(), tracker=self.tracker,
+            engine_provider=self._engine,
+            is_busy=lambda: not isinstance(self._engine(), OnlineEngine) and not self.ctx.state_manager.is_idle(),
+            tracker=self.tracker,
             language_provider=lambda: str(self._setting('meeting.language', 'auto') or 'auto'),
             on_turn=self.session.add_turn, on_speaker=self.session.ensure_speaker,
             on_pending=self._on_pending, on_behind=self.session.set_behind, keep_audio=self._keep_audio)
@@ -148,6 +153,18 @@ class MeetingService:
     def ui_ready(self):
         if self._setting('meeting.enabled', True):
             self.start_detector()
+
+    # The engine meetings transcribe with: the online model of meeting.model,
+    # else the dictation engine (local Whisper). An online one needn't wait
+    # for dictation, and falls back to the local engine when it fails.
+    def _engine(self):
+        spec = str(self._setting('meeting.model', '') or '').strip()
+        if not spec or not online_usable(spec):
+            return self.ctx.state_manager.whisper_engine
+        if self._online is None or self._online.spec != spec:
+            self._online = OnlineEngine(spec, lambda: self.ctx.state_manager.whisper_engine, feature='meeting',
+                                        timeout=120)
+        return self._online
 
     # ── Settings ─────────────────────────────────────────────────────────────
 
@@ -586,9 +603,10 @@ class MeetingService:
         def job(reporter):
             m = self.store.load(meeting_id)
             reporter.report(None, f"Writing it with the {chosen.get('name')} template")
-            brief = summary_ai.summarize(m, self.templates, chosen['id'], self._ai(), language=language,
-                                         language_setting=str(self._setting('meeting.summary.language', 'meeting')),
-                                         parse=self._parse, instructions=instructions)
+            with for_meeting(meeting_id, 'summary'):
+                brief = summary_ai.summarize(m, self.templates, chosen['id'], self._ai(), language=language,
+                                             language_setting=str(self._setting('meeting.summary.language', 'meeting')),
+                                             parse=self._parse, instructions=instructions)
             brief['written'] = how
             spec = chosen.get('title') or {}
             fixed = isinstance(spec, dict) and spec.get('mode') == 'fixed'
@@ -1257,17 +1275,25 @@ class MeetingService:
     def split_resumed(self):
         self.session.split_resumed()
 
+    # Each meeting's row carries what it cost and which models transcribed it.
     def list(self) -> list:
-        return self.store.list()
+        return self._with_usage(self.store.list())
 
     def search(self, query: str) -> list:
-        return self.store.search(query)
+        return self._with_usage(self.store.search(query))
 
-    # The meeting with its roster: everyone there, with their talk time.
+    @staticmethod
+    def _with_usage(rows: list) -> list:
+        spent = usage_ledger.meetings_brief()
+        return [{**r, 'usage': spent.get(r.get('id'))} if isinstance(r, dict) else r for r in rows]
+
+    # The meeting with its roster (everyone there, with their talk time) and
+    # its use: models and cost per part (transcription, summary, chat).
     def get(self, meeting_id: str) -> dict:
         m = self.session.meeting
         m = dict(m) if m and m['id'] == meeting_id else self.store.load(meeting_id)
         m['roster'] = roster(m)
+        m['usage'] = usage_ledger.meeting(meeting_id)
         return m
 
     # ── Chat about a meeting (meeting/chat.py) ───────────────────────────────
@@ -1286,7 +1312,8 @@ class MeetingService:
         m = self.get(meeting_id)
         brief = self.store.load_brief(meeting_id)
         history = self.store.load_chat(meeting_id)
-        answer = meeting_chat.ask(m, brief, history, question, self._ai(), parse=self._parse)
+        with for_meeting(meeting_id, 'chat'):
+            answer = meeting_chat.ask(m, brief, history, question, self._ai(), parse=self._parse)
         done = self._chat_changes(meeting_id, answer['changes'])
         now = time.strftime('%Y-%m-%dT%H:%M:%S')
         history = history + [{'role': 'user', 'text': str(question).strip(), 'at': now},
@@ -1361,7 +1388,10 @@ class MeetingService:
         m = self.session.meeting
         if m and m['id'] == meeting_id:
             raise ValueError("End the meeting before deleting it")
-        return self.store.delete(meeting_id)
+        deleted = self.store.delete(meeting_id)
+        if deleted:
+            usage_ledger.forget_meeting(meeting_id)
+        return deleted
 
     def export(self, meeting_id: str, fmt: str, shots_folder: str = '') -> str:
         return self.store.export(meeting_id, fmt, shots_folder)

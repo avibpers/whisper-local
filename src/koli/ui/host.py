@@ -54,8 +54,8 @@ def summary_panel_action(phase: str) -> tuple:
 # Topics each page cares about. Latest-wins topics are coalesced per batch.
 BAR_TOPICS = {'state', 'bar', 'pipeline', 'notify', 'task', 'level', 'streaming_text', 'settings',
               'profile', 'window', 'auto_send', 'problem', 'meeting', 'meeting_shot', 'wake', 'agent',
-              'live_words'}
-PANEL_TOPICS = {'meeting', 'meeting_turn', 'meeting_shot', 'meeting_summary', 'settings', 'task', 'problem'}
+              'live_words', 'usage'}
+PANEL_TOPICS = {'meeting', 'meeting_turn', 'meeting_shot', 'meeting_summary', 'settings', 'task', 'problem', 'usage'}
 COALESCE = {'level', 'vad', 'foreground', 'streaming_text', 'live_words'}
 PUSH_INTERVAL = 0.05
 

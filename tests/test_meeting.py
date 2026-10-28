@@ -1646,9 +1646,13 @@ class ReviewFixTests(unittest.TestCase):
         from koli.ui.host import COALESCE
         self.assertNotIn('meeting', COALESCE)
 
-    def test_meeting_model_setting_is_hidden(self):
+    # meeting.model picks the online model meetings transcribe with
+    # (docs/design/online-models.md), so it is shown with that picker.
+    def test_meeting_model_setting_picks_an_online_model(self):
         from koli.settings import schema
-        self.assertEqual(schema.get('meeting.model').mode, schema.HIDDEN)
+        entry = schema.get('meeting.model')
+        self.assertNotEqual(entry.mode, schema.HIDDEN)
+        self.assertEqual(entry.control, 'stt_model')
 
     def _service(self, **kw):
         from koli.services.meetings import MeetingService

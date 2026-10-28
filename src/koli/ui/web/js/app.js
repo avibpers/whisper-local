@@ -21,11 +21,12 @@ import { WelcomeScreen } from './screens/welcome.js';
 import { MeetingsScreen } from './screens/meetings.js';
 import { PracticeScreen } from './screens/practice.js';
 import { TrainingScreen } from './screens/training.js';
+import { UsageScreen } from './screens/usage.js';
 
 const ADVANCED_NAV = [
   ['live', 'Live', 'wave'], ['history', 'History', 'clock'], ['meetings', 'Meetings', 'people'],
   ['vocabulary', 'Vocabulary', 'book'], ['training', 'Training', 'refresh'],
-  ['commands', 'Commands', 'command'], ['apps', 'Apps', 'grid'],
+  ['commands', 'Commands', 'command'], ['apps', 'Apps', 'grid'], ['usage', 'Usage', 'coin'],
   ['settings', 'Settings', 'sliders'], ['diagnostics', 'Diagnostics', 'pulse'],
 ];
 const SIMPLE_NAV = [
@@ -36,7 +37,7 @@ const SCREENS = {
   live: LiveScreen, home: HomeScreen, history: HistoryScreen, meetings: MeetingsScreen, vocabulary: VocabularyScreen,
   commands: CommandsScreen, apps: AppsScreen, settings: SettingsScreen, 'simple-settings': SimpleSettingsScreen,
   diagnostics: DiagnosticsScreen, welcome: WelcomeScreen, practice: PracticeScreen,
-  training: TrainingScreen,
+  training: TrainingScreen, usage: UsageScreen,
 };
 const SIMPLE_ROUTES = new Set(['home', 'history', 'vocabulary', 'simple-settings', 'welcome', 'practice', 'training']);
 
@@ -124,6 +125,7 @@ function wireEvents() {
   on('foreground', (f) => app.set({ foreground: f }));
   on('profile', (p) => app.set({ profile: p.active }));
   on('meeting', (m) => app.set({ meeting: m }));
+  on('usage', (u) => app.set((s) => ({ usage: { session_cost: u.session_cost, recent: [u, ...s.usage.recent].slice(0, 50) } })));
   on('notify', (n) => {
     if (n.kind === 'fallback') app.set({ notice: n });
     if (n.kind === 'settings_file') toast(n.message, { kind: 'warn', timeout: 0 });

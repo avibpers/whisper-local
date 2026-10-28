@@ -1117,6 +1117,43 @@ class Bridge:
         from ..llm.oauth import SUBSCRIPTIONS
         SUBSCRIPTIONS[provider].cancel_login()
 
+    # ── Usage & cost ─────────────────────────────────────────────────────────
+    # What the online models cost (usage/prices.yaml with your own prices on
+    # top) and what Koli used: this session, per day, per meeting
+    # (docs/design/online-models.md).
+
+    # Every priced model, each with whether its provider has a key saved.
+    @_api
+    def usage_prices(self, transcribe_only=False):
+        from .. import llm
+        from ..usage import prices
+        keyed = {p['id']: bool(p.get('connected')) for p in llm.provider_status()
+                 if p.get('auth') == 'key'}
+        return [{**row, 'has_key': keyed.get(row['provider'], False)}
+                for row in prices.catalog(transcribe_only=bool(transcribe_only))]
+
+    @_api
+    def usage_price_save(self, spec, values):
+        from ..usage import prices
+        prices.save_own(spec, values or {})
+
+    # Back to the shipped price.
+    @_api
+    def usage_price_reset(self, spec):
+        from ..usage import prices
+        prices.save_own(spec, None)
+
+    # One meeting's models and cost, part by part (updates while it runs).
+    @_api
+    def meeting_usage(self, meeting_id):
+        from ..usage import ledger
+        return ledger.meeting(meeting_id)
+
+    @_api
+    def usage_summary(self, days=30):
+        from ..usage import ledger
+        return {'session': ledger.session(), 'days': ledger.days(int(days or 30))}
+
     # ── Google Drive ─────────────────────────────────────────────────────────
     # One Google account, signed in through the browser (design:
     # docs/design/google-drive.md). The pasted client id and secret and the

@@ -15,6 +15,7 @@ import time
 from . import http, providers, routing
 from .oauth import SUBSCRIPTIONS
 from .types import ConfigError, ProviderError, ReconnectNeeded, Result
+from ..usage import ledger
 
 logger = logging.getLogger(__name__)
 
@@ -116,10 +117,17 @@ def complete(feature: str, messages: list, json: bool = False, on_text=None,
             text, tokens_in, tokens_out = provider.complete(model_id, messages, json, on_text, remaining)
             text = strip_reasoning(text)
             if text:
+                # Every answer is counted (Usage screen); a meeting's own calls
+                # land on that meeting (usage.for_meeting).
+                cost = None
+                if feature != 'test':
+                    cost = ledger.record(ledger.ai_feature(feature), spec, tokens_in=tokens_in,
+                                         tokens_out=tokens_out).get('cost')
                 logger.info(f"AI {feature}: {spec} answered in {time.monotonic() - started:.1f}s "
-                            f"({tokens_in}→{tokens_out} tokens)")
+                            f"({tokens_in}→{tokens_out} tokens"
+                            f"{f', ${cost:.4f}' if cost else ''})")
                 return Result(text=text, provider=provider_id, model=model_id,
-                              tokens_in=tokens_in, tokens_out=tokens_out)
+                              tokens_in=tokens_in, tokens_out=tokens_out, cost=cost)
             last = Result(error=f"{provider.label} gave an empty answer", provider=provider_id, model=model_id)
         except Exception as e:
             last = Result(error=describe_error(provider_id, e), provider=provider_id, model=model_id)

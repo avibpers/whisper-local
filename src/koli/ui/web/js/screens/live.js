@@ -9,7 +9,7 @@ import { html, useEffect, useMemo, useRef, useState } from '../../vendor/preact-
 import { call } from '../api.js';
 import { app, getPath, live, promptModal, saveSetting, setting, textDir, toast, useSetting } from '../store.js';
 import { Icon, Keys, Toggle } from '../ui.js';
-import { useAudio, MicSelect } from './shared.js';
+import { useAudio, MicSelect, money } from './shared.js';
 
 const LANG_NAMES = { auto: 'Auto-detect', en: 'English', he: 'Hebrew' };
 
@@ -109,6 +109,7 @@ function ContextCard() {
   const profile = app.use((s) => s.profile);
   const settings = app.use((s) => s.settings);
   const pipeline = app.use((s) => s.pipeline);
+  const usage = app.use((s) => s.usage);
   const info = (pipeline.find((p) => p.stage === 'transcribed') || {}).info;
   const g = (p) => getPath(settings, p);
   const lang = g('whisper.language') || 'auto';
@@ -122,7 +123,9 @@ function ContextCard() {
       <dt class="muted">App</dt><dd style="margin:0" dir="auto">${fg.exe ? `${fg.exe}${fg.title ? ` — “${fg.title.slice(0, 40)}”` : ''}` : '—'}</dd>
       <dt class="muted">App rule</dt><dd style="margin:0">${fg.rule || 'None'}</dd>
       <dt class="muted">Language</dt><dd style="margin:0">${LANG_NAMES[lang] || lang}${info && info.language ? ` · last heard ${info.language}${info.language_probability ? ` (${info.language_probability})` : ''}` : ''}</dd>
-      <dt class="muted">Model</dt><dd style="margin:0">${g('whisper.model')}, ${g('whisper.device') === 'cuda' ? 'GPU' : 'CPU'} ${g('whisper.compute_type')}</dd>
+      <dt class="muted">Model</dt><dd style="margin:0">${g('whisper.online_model') ? html`${g('whisper.online_model')} <span class="chip sm warn">Online</span>`
+        : `${g('whisper.model')}, ${g('whisper.device') === 'cuda' ? 'GPU' : 'CPU'} ${g('whisper.compute_type')}`}</dd>
+      <dt class="muted">Spent</dt><dd style="margin:0"><a href="#/usage">${money(usage.session_cost)} this session</a>${usage.recent[0] ? html` <span class="muted small">· last ${usage.recent[0].model} ${money(usage.recent[0].cost)}</span>` : ''}</dd>
       <dt class="muted">Delivery</dt><dd style="margin:0">${g('clipboard.auto_paste') ? (g('clipboard.delivery_method') === 'type' ? 'Typed in' : 'Pasted') : 'Copied only'}${g('clipboard.paste_preserve_clipboard') ? ', clipboard restored' : ''}</dd>
     </dl>
     <div class="stack" style="border-top:1px solid var(--line);padding-top:14px;gap:10px">
@@ -141,7 +144,7 @@ function ContextCard() {
 }
 
 const STAGES = [
-  ['captured', '1 · Captured'], ['transcribed', '2 · Whisper'], ['postprocessed', '3 · Clean-up'], ['delivered', '4 · Delivered'],
+  ['captured', '1 · Captured'], ['transcribed', '2 · Transcribed'], ['postprocessed', '3 · Clean-up'], ['delivered', '4 · Delivered'],
 ];
 const OUTCOME = { pasted: 'Pasted', copied: 'Copied (copy-only)', suppressed: 'Not delivered (app rule)', fallback: 'Shown here (no text field)',
   failed: 'Delivery failed', empty: 'Nothing left to type', streamed: 'Typed live' };
@@ -173,7 +176,10 @@ function LastDictation() {
   const typed = dl.text || pp.text || '';
   const detail = {
     captured: cap.duration != null ? `${cap.duration} s${cap.mode && cap.mode !== 'dictate' ? ` · ${cap.mode}` : ''}` : '',
-    transcribed: tr.info ? `${tr.info.language || '?'}${tr.info.language_probability ? ` ${tr.info.language_probability}` : ''} · ${tr.info.seconds} s · beam ${tr.info.beam_size}` : by.transcribing ? 'Working…' : '',
+    transcribed: tr.info ? (tr.info.backend === 'online'
+      ? `${tr.info.model} · ${tr.info.language || '?'} · ${tr.info.seconds} s · ${money(tr.info.cost)}`
+      : `${tr.info.language || '?'}${tr.info.language_probability ? ` ${tr.info.language_probability}` : ''} · ${tr.info.seconds} s · beam ${tr.info.beam_size}`
+        + `${tr.info.online_error ? ' · online failed, local used' : ''}`) : by.transcribing ? 'Working…' : '',
     postprocessed: pp.steps ? (pp.steps.length ? pp.steps.map((s) => STEP_NAMES[s] || s.replace('style:', 'style ')).join(', ') : 'No changes') : '',
     delivered: dl.outcome ? `${OUTCOME[dl.outcome] || dl.outcome}${dl.app ? ` · ${dl.app}` : ''}${dl.auto_enter ? ' + Enter' : ''}` : '',
   };
