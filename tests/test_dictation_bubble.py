@@ -954,5 +954,85 @@ class CloudAndLocalEngineTests(unittest.TestCase):
         self.assertEqual(self.base._delivered(sm), ['Whisper wins.'])
         self.assertFalse(sm.audio_recorder.stream_partials)
 
+# ── Task 9: bridge, bubble focus and placement, the hotkey focus rule ───────
+
+class BubbleFocusRuleTests(unittest.TestCase):
+    def _listener(self, bubble_focused):
+        import unittest.mock as mock
+        from koli.hotkey_listener import HotkeyListener
+        listener = HotkeyListener.__new__(HotkeyListener)
+        listener.logger = __import__('logging').getLogger('test')
+        listener.is_paused = False
+        listener.keys_armed = True
+        listener.tap_latch = None
+        listener.stop_key, listener.auto_send_key, listener.recording_hotkey = 'ctrl', 'alt', 'ctrl+win'
+        listener.state_manager = mock.Mock()
+        listener.state_manager.bubble_has_focus.return_value = bubble_focused
+        listener.state_manager.is_auto_recording.return_value = False
+        listener.state_manager.audio_recorder.get_recording_status.return_value = True
+        return listener
+
+    def test_stop_and_send_keys_are_editing_keys_in_the_bubble(self):
+        import unittest.mock as mock
+        listener = self._listener(bubble_focused=True)
+        with mock.patch.object(type(listener), 'own_keys', staticmethod(lambda: False)):
+            listener._stop_key_pressed()
+            listener._auto_send_key_pressed()
+        listener.state_manager.stop_recording.assert_not_called()
+
+    def test_stop_and_send_keys_work_in_the_app(self):
+        import unittest.mock as mock
+        listener = self._listener(bubble_focused=False)
+        with mock.patch.object(type(listener), 'own_keys', staticmethod(lambda: False)):
+            listener._stop_key_pressed()
+        listener.state_manager.stop_recording.assert_called_once()
+
+
+class BubblePlacementTests(unittest.TestCase):
+    def test_a_recording_field_wins_over_the_resting_spot(self):
+        from koli.ui.floating_bar import bar_origin
+        area, size = (0, 0, 1920, 1040), (420, 120)
+        field = (100, 500, 900, 540)
+        x, y = bar_origin(area, size, 1.0, 'bottom-center', field=field)
+        self.assertEqual(x, 906)                      # just past the field's right end
+        self.assertEqual(y, 520 - 60)
+
+    def test_probe_focused_is_on_both_platforms(self):
+        import importlib
+        for name in ('koli.platform.windows.input_watch', 'koli.platform.macos.input_watch'):
+            try:
+                module = importlib.import_module(name)
+            except Exception:
+                continue
+            self.assertTrue(callable(getattr(module, 'probe_focused', None)), name)
+        source = (ROOT / 'src' / 'koli' / 'platform' / 'macos' / 'input_watch.py').read_text(encoding='utf-8')
+        self.assertIn('def probe_focused', source)
+
+
+class BubbleBridgeTests(unittest.TestCase):
+    def _bridge(self):
+        import unittest.mock as mock
+        from koli.ui.bridge import Bridge
+        host = mock.Mock()
+        return Bridge(host), host.ctx.state_manager
+
+    def test_calls_reach_the_state_manager(self):
+        bridge, sm = self._bridge()
+        sm.bubble_write.return_value = True
+        self.assertEqual(bridge.bubble_write(True), {'ok': True, 'data': True})
+        sm.bubble_write.assert_called_once_with(True)
+        bridge.bubble_edit('fixed text', 3, 5)
+        sm.bubble_edit.assert_called_once_with('fixed text', 3, 5)
+        bridge.bubble_open()
+        sm.bubble_open.assert_called_once()
+        bridge.bubble_listen(False)
+        sm.bubble_listen.assert_called_once_with(False)
+        bridge.bubble_cancel()
+        sm.bubble_cancel.assert_called_once()
+
+    def test_bubble_page_listens_to_the_session(self):
+        from koli.ui.host import BAR_TOPICS
+        self.assertIn('live_words', BAR_TOPICS)
+
 if __name__ == '__main__':
     unittest.main()

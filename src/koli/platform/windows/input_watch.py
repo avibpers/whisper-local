@@ -465,3 +465,16 @@ def stop(token: int = 0) -> None:
 
 def is_running() -> bool:
     return _watcher is not None
+
+
+_probe_local = threading.local()
+
+
+# The focused element right now, without a listener: the dictation bubble
+# asks where the text field is when a recording starts. One UI Automation
+# object per calling thread (COM objects stay on their thread).
+def probe_focused() -> dict:
+    probe = getattr(_probe_local, 'probe', None)
+    if probe is None:
+        probe = _probe_local.probe = _Probe()
+    return probe.focused(ctypes.windll.user32.GetForegroundWindow())

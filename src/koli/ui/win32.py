@@ -121,6 +121,19 @@ def make_tool_window(hwnd: int):
                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED)
 
 
+# The bubble takes keyboard focus while you edit in it, and gives it up after.
+def set_activatable(hwnd: int, on: bool):
+    if not IS_WINDOWS or not hwnd:
+        return
+    style = user32.GetWindowLongPtrW(hwnd, GWL_EXSTYLE)
+    style = (style & ~WS_EX_NOACTIVATE) if on else (style | WS_EX_NOACTIVATE)
+    user32.SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style)
+
+
+def is_window(hwnd: int) -> bool:
+    return bool(IS_WINDOWS and hwnd and user32.IsWindow(hwnd))
+
+
 # Move/resize in physical pixels without activating.
 def place(hwnd: int, x: int, y: int, w: int, h: int):
     if not IS_WINDOWS or not hwnd:
