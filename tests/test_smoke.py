@@ -7332,10 +7332,26 @@ class LanguageModelRoutingTests(unittest.TestCase):
         self.assertNotIn('initial_prompt', engine.language_model.calls[-1][1])
 
     def test_an_unsure_hebrew_guess_stays_on_the_main_model_undecided(self):
-        engine = self._engine(detected=('he', 0.45, [('he', 0.45), ('en', 0.25)]), allowed=['en', 'he'])
+        engine = self._engine(detected=('he', 0.45, [('he', 0.45), ('en', 0.25)]), allowed=['he', 'en'])
         self.assertEqual(self._run(engine), 'main text')
         self.assertIsNone(engine.model.calls[-1][1]['language'], 'not told Hebrew: it would translate')
         self.assertEqual(engine.language_model.calls, [])
+
+    # The first of your languages is your main one. A weak guess of another
+    # of them loses to it: on 2026-10-28 a short Hebrew clip scored English
+    # 0.15 and came out as English that read like a translation. It goes to
+    # the main model told your main language, not to the second model (a weak
+    # guess is what made the Hebrew model translate English on 2026-10-12).
+    def test_a_weak_guess_of_another_language_loses_to_your_main_one(self):
+        engine = self._engine(detected=('en', 0.15, [('en', 0.15), ('he', 0.01)]), allowed=['he', 'en'])
+        self.assertEqual(self._run(engine), 'main text')
+        self.assertEqual(engine.model.calls[-1][1]['language'], 'he')
+        self.assertEqual(engine.language_model.calls, [])
+
+    def test_a_clear_guess_of_another_language_still_wins(self):
+        engine = self._engine(detected=('en', 0.95, [('en', 0.95), ('he', 0.02)]), allowed=['he', 'en'])
+        self._run(engine)
+        self.assertEqual(engine.model.calls[-1][1]['language'], 'en')
 
     # Unsure, with Whisper's top guess outside your languages: left to decide,
     # the main model wrote Arabic for Hebrew speech (2026-10-19). It writes
