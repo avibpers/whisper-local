@@ -18,7 +18,7 @@ from . import live_words_usage
 from .cloud_stt import gemini_phrase
 from .cloud_stt.openai_live import OpenAILive
 from .dictation_session import DictationSession
-from .live_words import choose_engine, resolve_language, usage_key, EngineChoice
+from .live_words import choose_engine, resolve_languages, usage_key, EngineChoice
 from .platform import foreground
 from .ui.events import publish
 
@@ -82,7 +82,7 @@ class LiveWordsFlow:
         whisper_cfg = self.sm.config_manager.get_whisper_config() or {}
         if (rule.get('task') or whisper_cfg.get('task')) == 'translate' and mode == 'dictate':
             mode = 'translate'
-        language = resolve_language(whisper_cfg, rule)
+        language = resolve_languages(whisper_cfg, rule)
         self.choice = choose_engine(cfg, rule, mode=mode, language=language,
                                     has_key=self._has_key, local_ready=self._local_ready())
         self._stream_partials(self.choice.engine == 'local')

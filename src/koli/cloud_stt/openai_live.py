@@ -69,8 +69,10 @@ class OpenAILive:
 
     def _session_update(self) -> dict:
         transcription = {'model': self._model}
-        if self._language:
-            transcription['languages'] = [self._language]
+        languages = [self._language] if isinstance(self._language, str) else list(self._language or [])
+        languages = [code for code in languages if code]
+        if languages:
+            transcription['languages'] = languages
         transcription['delay'] = 'low'
         return {'type': 'session.update', 'session': {'type': 'transcription', 'audio': {'input': {
             'format': {'type': 'audio/pcm', 'rate': SEND_RATE},

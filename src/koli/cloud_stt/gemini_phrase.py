@@ -48,7 +48,9 @@ def transcribe(audio: np.ndarray, language: str, context: str, key: str, model: 
     samples = np.asarray(audio, dtype=np.float32)
     if not samples.size or float(np.sqrt(np.mean(samples ** 2))) < SILENCE_RMS:
         return '', 0, 0
-    hint =(f"Language: {_language_name(language) or 'detect it'}. "
+    codes = [language] if isinstance(language, str) else list(language or [])
+    names = ' or '.join(_language_name(code) for code in codes if code)
+    hint = (f"Language: {names or 'detect it'}. "
             f"What was said just before, for names and spelling: {context.strip() or 'nothing'}.")
     body = {
         'systemInstruction': {'parts': [{'text': SYSTEM}]},

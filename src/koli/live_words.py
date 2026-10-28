@@ -39,6 +39,18 @@ def resolve_language(whisper_cfg: dict, rule: Optional[dict]) -> str:
     return str(languages[0]) if languages else ''
 
 
+# Every language this dictation may be in: the app rule's, else the forced
+# dictation language, else all of your languages when it is "auto" (empty:
+# any language). Cloud providers get all of them as hints.
+def resolve_languages(whisper_cfg: dict, rule: Optional[dict]) -> list:
+    if rule and rule.get('language'):
+        return [str(rule['language'])]
+    language = str((whisper_cfg or {}).get('language') or 'auto')
+    if language != 'auto':
+        return [language]
+    return [str(code) for code in ((whisper_cfg or {}).get('languages') or [])]
+
+
 # The engine this recording uses. `cfg` is the live_words section, `rule` the
 # matched app rule, `mode` dictate / command / rephrase / translate / auto,
 # `has_key(provider)` whether that cloud login exists, `local_ready` whether
@@ -55,7 +67,11 @@ def choose_engine(cfg: dict, rule: Optional[dict], *, mode: str, language: str,
     if wanted == 'phrases':
         return EngineChoice('phrases')
     if wanted == 'local':
-        if language and not language.startswith('en'):
+        # `language` is one code or the list of your languages: Local words
+        # runs when English may be spoken (or any language may be).
+        languages = [language] if isinstance(language, str) else list(language or [])
+        languages = [code for code in languages if code]
+        if languages and not any(code.startswith('en') for code in languages):
             return EngineChoice('phrases', notice='Local words is English only, so this dictation shows phrases.')
         if not local_ready:
             return EngineChoice('phrases', notice="The local words model isn't loaded, so this dictation shows phrases.")

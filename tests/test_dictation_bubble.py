@@ -882,7 +882,7 @@ class CloudAndLocalEngineTests(unittest.TestCase):
         sm = self._sm('openai')
         self.base._start(sm)
         client = _FakeOpenAI.instances[-1]
-        self.assertEqual((client.key, client.model, client.language), ('test-key', 'gpt-live-transcribe', 'en'))
+        self.assertEqual((client.key, client.model, client.language), ('test-key', 'gpt-live-transcribe', ['en']))
         self.assertEqual(len(self.taps), 1)
         self.taps[0](np.zeros(160, dtype=np.float32), 0.0)
         self.assertEqual(len(client.fed), 1)
@@ -940,6 +940,14 @@ class CloudAndLocalEngineTests(unittest.TestCase):
         args = self.base.usage.record.call_args.args
         self.assertEqual(args[0], 'cloud/gemini/gemini-3.6-flash')
         self.assertEqual((args[4], args[5]), (100, 5))
+
+    # Hebrew first, English second, Auto-detect: Local words runs (2026-10-28).
+    def test_local_words_runs_for_hebrew_and_english_speakers(self):
+        sm = self._sm('local')
+        sm.config_manager.get_whisper_config.return_value = {'language': 'auto', 'languages': ['he', 'en']}
+        sm.audio_recorder.continuous_streaming = object()
+        self.base._start(sm)
+        self.assertEqual(sm.live.choice.engine, 'local')
 
     def test_local_words_are_a_preview_and_whisper_writes(self):
         sm = self._sm('local', phrases=['Whisper wins.'])
@@ -1266,6 +1274,44 @@ class GiveBackTests(unittest.TestCase):
             self.assertFalse(host.give_back({'hwnd': 5}))
             win32.foreground.return_value = 5
             self.assertTrue(host.give_back({'hwnd': 5}))
+# ── Your languages, all of them (2026-10-28: Local words refused English) ───
+
+class LiveWordsLanguagesTests(unittest.TestCase):
+    def test_auto_detect_hands_over_every_listed_language(self):
+        from koli.live_words import resolve_languages
+        self.assertEqual(resolve_languages({'language': 'auto', 'languages': ['he', 'en']}, None), ['he', 'en'])
+        self.assertEqual(resolve_languages({'language': 'he', 'languages': ['he', 'en']}, None), ['he'])
+        self.assertEqual(resolve_languages({'language': 'auto', 'languages': ['he']}, {'language': 'en'}), ['en'])
+        self.assertEqual(resolve_languages({'language': 'auto'}, None), [])
+
+    def test_local_words_runs_when_english_is_one_of_your_languages(self):
+        from koli.live_words import choose_engine
+        pick = lambda langs: choose_engine({'engine': 'local'}, None, mode='dictate', language=langs,
+                                           has_key=lambda p: True, local_ready=True).engine
+        self.assertEqual(pick(['he', 'en']), 'local')
+        self.assertEqual(pick([]), 'local')
+        self.assertEqual(pick(['he']), 'phrases')
+
+    def test_openai_hears_both_languages(self):
+        t = OpenAILiveTests('test_no_language_sends_no_languages')
+        from koli.cloud_stt.openai_live import OpenAILive
+        t.sock = _FakeSocket()
+        c = OpenAILive('k', 'gpt-live-transcribe', ['he', 'en'], lambda x: None, lambda x: None, lambda x: None,
+                       connect=lambda url, headers, timeout=10: t.sock, retry_delay=0.01)
+        c.start()
+        self.assertTrue(_wait(lambda: t.sock.sent))
+        self.assertEqual(t.sock.sent[0]['session']['audio']['input']['transcription']['languages'], ['he', 'en'])
+        c.cancel()
+
+    def test_gemini_is_told_both_languages(self):
+        import numpy as np
+        from koli.cloud_stt import gemini_phrase
+        posts = []
+        tone = (np.sin(np.arange(8000) / 8.0) * 0.1).astype(np.float32)
+        gemini_phrase.transcribe(tone, ['he', 'en'], '', 'k', 'm',
+                                 post=lambda url, body, headers=None, timeout=30: posts.append(body) or {'candidates': []})
+        said = posts[0]['contents'][0]['parts'][0]['text']
+        self.assertIn('Hebrew or English', said)
 
 if __name__ == '__main__':
     unittest.main()
