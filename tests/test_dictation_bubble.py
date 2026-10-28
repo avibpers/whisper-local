@@ -290,5 +290,53 @@ class LiveWordsUsageTests(unittest.TestCase):
         self.assertEqual(len(self.u.summary(PRICES, path=self.path)), 1)
 
 
+# ── Task 4: the WebSocket client ────────────────────────────────────────────
+
+class WebSocketFramingTests(unittest.TestCase):
+    def setUp(self):
+        from koli.cloud_stt import ws
+        self.ws = ws
+
+    def _reader(self, data: bytes):
+        buf = bytearray(data)
+
+        def read_exact(n):
+            chunk = bytes(buf[:n])
+            del buf[:n]
+            if len(chunk) < n:
+                raise ConnectionError('closed')
+            return chunk
+        return read_exact
+
+    def test_masked_text_frame_round_trips(self):
+        frame = self.ws.encode_frame(self.ws.TEXT, b'Hello', bytes.fromhex('37fa213d'))
+        self.assertEqual(frame, bytes.fromhex('818537fa213d7f9f4d5158'))   # RFC 6455 5.7
+        self.assertEqual(self.ws.read_frame(self._reader(frame)), (self.ws.TEXT, True, b'Hello'))
+
+    def test_length_forms(self):
+        for size, header_len in ((125, 2), (126, 4), (70000, 10)):
+            frame = self.ws.encode_frame(self.ws.BINARY, b'x' * size, b'abcd')
+            self.assertEqual(len(frame), header_len + 4 + size, size)
+            self.assertEqual(self.ws.read_frame(self._reader(frame))[2], b'x' * size)
+
+    def test_unmasked_server_frame(self):
+        self.assertEqual(self.ws.read_frame(self._reader(bytes.fromhex('810548656c6c6f'))), (1, True, b'Hello'))
+
+    def test_accept_check(self):
+        self.assertTrue(self.ws._check_accept('dGhlIHNhbXBsZSBub25jZQ==', 's3pPLMBiTxaQ9kYGzzhZRbK+xOo='))
+        self.assertFalse(self.ws._check_accept('dGhlIHNhbXBsZSBub25jZQ==', 'wrong'))
+
+    def test_recv_answers_ping_and_joins_continuations(self):
+        server = (bytes.fromhex('8900')                       # ping, no payload
+                  + bytes.fromhex('0103') + b'Hel'             # text, not final
+                  + bytes.fromhex('8002') + b'lo'              # continuation, final
+                  + bytes.fromhex('8800'))                     # close
+        sent = []
+        sock = self.ws.WebSocket(read_exact=self._reader(server), write=sent.append)
+        self.assertEqual(sock.recv(), ('text', 'Hello'))
+        self.assertEqual(sent[0][0] & 0x0f, self.ws.PONG)
+        self.assertIsNone(sock.recv())
+
+
 if __name__ == '__main__':
     unittest.main()
