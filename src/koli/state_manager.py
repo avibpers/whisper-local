@@ -54,6 +54,8 @@ from .platform import foreground
 from .level_overlay import LevelOverlay
 from .fallback_window import FallbackWindow
 from .ui.events import publish
+from .usage import ledger as usage_ledger
+from .online_stt import OnlineEngine, record_local, usable as online_usable
 
 # What _handle_command_transcription returns when the AI took the command (it
 # shows its own bubble, so no success or failure flash on top).
@@ -120,6 +122,7 @@ class StateManager:
 
         self.audio_recorder = audio_recorder
         self.whisper_engine = whisper_engine
+        self._online_engine = None   # dictation's OnlineEngine (whisper.online_model), made on first use
         self.clipboard_manager = clipboard_manager
         self.system_tray = OptionalComponent(_NotifyFanout(system_tray))
         self.terminal_title = OptionalComponent(terminal_title)
@@ -1351,8 +1354,13 @@ class StateManager:
                     self.level_overlay.show_processing()
 
             self._emit_pipeline('transcribing', mode=mode)
-            transcribed_text = self.whisper_engine.transcribe_audio(audio_data)
-            info = dict(getattr(self.whisper_engine, 'last_info', None) or {})
+            # A voice command stays local, like the wake word's; dictation
+            # and rephrase may go to the online model.
+            engine = self.whisper_engine if mode == 'command' else self.dictation_engine()
+            transcribed_text = engine.transcribe_audio(audio_data)
+            info = dict(getattr(engine, 'last_info', None) or {})
+            if transcribed_text:
+                record_local('dictation', info)
             if self._stopped_by_you(mode):
                 return
 
@@ -1920,7 +1928,19 @@ class StateManager:
         return new_recorder
 
     
+    # The engine a dictation is transcribed with: the online model of
+    # whisper.online_model, else local Whisper. Commands and the wake word
+    # always use self.whisper_engine (docs/design/online-models.md).
+    def dictation_engine(self):
+        spec = str(self.config_manager.get_path('whisper.online_model', '') or '').strip()
+        if not spec or not online_usable(spec):
+            return self.whisper_engine
+        if self._online_engine is None or self._online_engine.spec != spec:
+            self._online_engine = OnlineEngine(spec, lambda: self.whisper_engine, feature='dictation', timeout=15)
+        return self._online_engine
+
     def shutdown(self):        
+        usage_ledger.flush()
         self.terminal_title.stop()
         print("Koli is shutting down... goodbye!")
 

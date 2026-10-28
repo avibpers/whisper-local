@@ -1,0 +1,99 @@
+# usage/prices.yaml
+# What each online model costs, in USD, from the providers' pricing pages on
+# 2026-10-28 (standard tier, prompts under 200k tokens). A `prices.yaml` in
+# the settings folder is laid over this one, entry by entry (Usage screen ›
+# Prices), so a price change never needs a new Koli.
+#
+# Per model ("provider/model"):
+#   transcribe   upload: send a recording, get text (usable now)
+#                live:   a live stream over WebSocket (listed, coming next)
+#                absent: a text-only model (summaries, chat, polish)
+#   per_minute   price per minute of audio
+#   audio_in     price per 1M audio tokens in
+#   text_in      price per 1M text tokens in
+#   text_out     price per 1M text tokens out (thinking tokens count here)
+#   changes      later prices: [{from: YYYY-MM-DD, <field>: price, ...}]
+#   note         shown beside the model
+# A call is priced by its tokens when the answer gives them and the model has
+# token prices, else by the minute.
+
+# Gemini counts 25 tokens per second of audio (the pricing page's footnote).
+gemini_audio_tokens_per_second: 25
+
+models:
+  # ── OpenAI: transcription ──────────────────────────────────────────────────
+  openai/gpt-transcribe: {transcribe: upload, per_minute: 0.0045}
+  openai/gpt-4o-transcribe: {transcribe: upload, per_minute: 0.006, audio_in: 2.50, text_in: 2.50, text_out: 10.00}
+  openai/gpt-4o-mini-transcribe: {transcribe: upload, per_minute: 0.003, audio_in: 1.25, text_in: 1.25, text_out: 5.00}
+  openai/gpt-4o-transcribe-diarize: {transcribe: upload, per_minute: 0.006, audio_in: 2.50, text_in: 2.50, text_out: 10.00,
+                                     note: Also tells speakers apart}
+  openai/whisper-1: {transcribe: upload, per_minute: 0.006, note: Gives per-sentence certainty like local Whisper}
+  openai/gpt-live-transcribe: {transcribe: live, per_minute: 0.017}
+  openai/gpt-realtime-whisper: {transcribe: live, per_minute: 0.017}
+  openai/gpt-audio: {transcribe: live, audio_in: 32.00, text_in: 2.50, text_out: 10.00, note: Chat model that hears audio}
+  openai/gpt-audio-1.5: {transcribe: live, audio_in: 32.00, text_in: 2.50, text_out: 10.00, note: Chat model that hears audio}
+  openai/gpt-audio-mini: {transcribe: live, audio_in: 10.00, text_in: 0.60, text_out: 2.40, note: Chat model that hears audio}
+  openai/gpt-realtime: {transcribe: live, audio_in: 32.00, text_in: 4.00, text_out: 16.00}
+  openai/gpt-realtime-1.5: {transcribe: live, audio_in: 32.00, text_in: 4.00, text_out: 16.00}
+  openai/gpt-realtime-2: {transcribe: live, audio_in: 32.00, text_in: 4.00, text_out: 24.00}
+  openai/gpt-realtime-2.1: {transcribe: live, audio_in: 32.00, text_in: 4.00, text_out: 24.00}
+  openai/gpt-realtime-mini: {transcribe: live, audio_in: 10.00, text_in: 0.60, text_out: 2.40}
+  openai/gpt-realtime-2.1-mini: {transcribe: live, audio_in: 10.00, text_in: 0.60, text_out: 2.40}
+
+  # ── OpenAI: text (summaries, chat, polish) ─────────────────────────────────
+  openai/gpt-6-astra: {text_in: 10.00, text_out: 50.00}
+  openai/gpt-6.1-sol: {text_in: 2.00, text_out: 10.00}
+  openai/gpt-6.1-terra: {text_in: 1.00, text_out: 5.00}
+  openai/gpt-6-luna: {text_in: 0.10, text_out: 0.50}
+  openai/gpt-6-sol: {text_in: 2.00, text_out: 10.00}
+  openai/gpt-5.6-sol: {text_in: 4.00, text_out: 20.00}
+  openai/gpt-5.6-terra: {text_in: 2.00, text_out: 12.00}
+  openai/gpt-5.6-luna: {text_in: 0.20, text_out: 1.20}
+  openai/gpt-5.5: {text_in: 5.00, text_out: 30.00}
+  openai/gpt-5.5-pro: {text_in: 30.00, text_out: 180.00}
+  openai/gpt-5.4: {text_in: 2.50, text_out: 15.00}
+  openai/gpt-5.4-pro: {text_in: 30.00, text_out: 180.00}
+  openai/gpt-5.4-mini: {text_in: 0.75, text_out: 4.50}
+  openai/gpt-5.4-nano: {text_in: 0.20, text_out: 1.25}
+  openai/gpt-5.3-codex: {text_in: 1.75, text_out: 14.00}
+  openai/gpt-5.2: {text_in: 1.75, text_out: 14.00}
+  openai/gpt-5.2-pro: {text_in: 21.00, text_out: 168.00}
+  openai/gpt-5.1: {text_in: 1.25, text_out: 10.00}
+  openai/gpt-5: {text_in: 1.25, text_out: 10.00}
+  openai/gpt-5-mini: {text_in: 0.25, text_out: 2.00}
+  openai/gpt-5-nano: {text_in: 0.05, text_out: 0.40}
+  openai/gpt-5-pro: {text_in: 15.00, text_out: 120.00}
+  openai/gpt-4.1: {text_in: 2.00, text_out: 8.00}
+  openai/gpt-4.1-mini: {text_in: 0.40, text_out: 1.60}
+  openai/gpt-4.1-nano: {text_in: 0.10, text_out: 0.40}
+  openai/gpt-4o: {text_in: 2.50, text_out: 10.00}
+  openai/gpt-4o-mini: {text_in: 0.15, text_out: 0.60}
+  openai/o1: {text_in: 15.00, text_out: 60.00}
+  openai/o3: {text_in: 2.00, text_out: 8.00}
+  openai/o3-pro: {text_in: 20.00, text_out: 80.00}
+  openai/o3-mini: {text_in: 1.10, text_out: 4.40}
+  openai/o4-mini: {text_in: 1.10, text_out: 4.40}
+  openai/chat-latest: {text_in: 5.00, text_out: 30.00}
+
+  # ── Gemini: hear audio and write text (transcription, summaries, chat) ────
+  gemini/gemini-2.5-flash-lite: {transcribe: upload, audio_in: 0.30, text_in: 0.10, text_out: 0.40}
+  gemini/gemini-3.5-flash-lite: {transcribe: upload, audio_in: 0.30, text_in: 0.30, text_out: 2.50}
+  gemini/gemini-3.1-flash-lite: {transcribe: upload, audio_in: 0.50, text_in: 0.25, text_out: 1.50}
+  gemini/gemini-3.8-flash: {transcribe: upload, audio_in: 0.75, text_in: 0.75, text_out: 3.75,
+                            changes: [{from: '2027-01-01', audio_in: 1.50, text_in: 1.50, text_out: 7.50}]}
+  gemini/gemini-3.6-flash: {transcribe: upload, audio_in: 0.75, text_in: 0.75, text_out: 3.75,
+                            changes: [{from: '2027-01-01', audio_in: 1.50, text_in: 1.50, text_out: 7.50}]}
+  gemini/gemini-2.5-flash: {transcribe: upload, audio_in: 1.00, text_in: 0.30, text_out: 2.50}
+  gemini/gemini-3-flash-preview: {transcribe: upload, audio_in: 1.00, text_in: 0.50, text_out: 3.00}
+  gemini/gemini-2.5-pro: {transcribe: upload, audio_in: 1.25, text_in: 1.25, text_out: 10.00}
+  gemini/gemini-omni-1.1-flash: {transcribe: upload, audio_in: 1.50, text_in: 1.50, text_out: 9.00}
+  gemini/gemini-4-argon: {transcribe: upload, audio_in: 2.00, text_in: 2.00, text_out: 10.00,
+                          changes: [{from: '2026-12-01', audio_in: 4.00, text_in: 4.00, text_out: 20.00}]}
+  gemini/gemini-3.5-transcribe: {transcribe: upload, audio_in: 2.00, text_in: 2.00, text_out: 12.00,
+                                 note: Made for transcription}
+  gemini/gemini-3.1-pro-preview: {transcribe: upload, audio_in: 2.00, text_in: 2.00, text_out: 12.00}
+  gemini/gemini-2.5-flash-native-audio-preview-12-2025: {transcribe: live, audio_in: 3.00, text_in: 0.50, text_out: 2.00}
+  gemini/gemini-3.8-live: {transcribe: live, audio_in: 3.00, text_in: 0.75, text_out: 4.50}
+  gemini/gemini-3.8-live-extended-thinking: {transcribe: live, audio_in: 3.00, text_in: 0.75, text_out: 4.50}
+  gemini/gemini-3.1-flash-live-preview: {transcribe: live, audio_in: 3.00, text_in: 0.75, text_out: 4.50}
+  gemini/gemini-3.5-transcribe-live: {transcribe: live, audio_in: 3.50, text_in: 3.50, text_out: 21.00}

@@ -144,6 +144,44 @@ const MOCK_AI_MODELS = {
   gemini: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'],
 };
 
+// ── Usage & cost ────────────────────────────────────────────────────────────
+
+const priceRow = (spec, transcribe, p, note = '') => {
+  const [provider, ...rest] = spec.split('/');
+  const perHour = p.per_minute != null ? p.per_minute * 60 : p.audio_in != null ? (90000 * p.audio_in + 10500 * (p.text_out || 0)) / 1e6 : null;
+  return { spec, provider, model: rest.join('/'), transcribe, note, edited: false, has_key: provider === 'openai',
+    per_hour: transcribe ? Math.round(perHour * 10000) / 10000 : null, per_minute: null, audio_in: null, text_in: null, text_out: null, changes: [], ...p };
+};
+const MOCK_PRICES = [
+  priceRow('openai/gpt-transcribe', 'upload', { per_minute: 0.0045 }),
+  priceRow('openai/gpt-4o-mini-transcribe', 'upload', { per_minute: 0.003, audio_in: 1.25, text_in: 1.25, text_out: 5 }),
+  priceRow('openai/whisper-1', 'upload', { per_minute: 0.006 }, 'Gives per-sentence certainty like local Whisper'),
+  priceRow('openai/gpt-live-transcribe', 'live', { per_minute: 0.017 }),
+  priceRow('gemini/gemini-2.5-flash-lite', 'upload', { audio_in: 0.3, text_in: 0.1, text_out: 0.4 }),
+  priceRow('gemini/gemini-4-argon', 'upload', { audio_in: 2, text_in: 2, text_out: 10, changes: [{ from: '2026-12-01', audio_in: 4, text_in: 4, text_out: 20 }] }),
+  priceRow('gemini/gemini-3.8-live', 'live', { audio_in: 3, text_in: 0.75, text_out: 4.5 }),
+  priceRow('openai/gpt-6-luna', '', { text_in: 0.1, text_out: 0.5 }),
+  priceRow('openai/gpt-5.5', '', { text_in: 5, text_out: 30 }),
+];
+const MOCK_DAYS = [0, 1, 2, 4].map((ago, i) => ({
+  day: new Date(Date.now() - ago * 86400000).toLocaleDateString('sv'),
+  cost: [0.0213, 0.184, 0.0061, 0.3][i],
+  by_feature: {
+    dictation: { 'openai/gpt-4o-mini-transcribe': { calls: 14 - i, seconds: 260, tokens_in: 0, tokens_out: 900, audio_tokens: 2600, cost: 0.013 } },
+    meeting: i % 2 ? { 'gemini/gemini-2.5-flash-lite': { calls: 120, seconds: 2400, tokens_in: 9000, tokens_out: 7000, audio_tokens: 60000, cost: 0.03 } }
+      : { 'local/large-v3': { calls: 80, seconds: 1800, tokens_in: 0, tokens_out: 0, audio_tokens: 0, cost: 0 } },
+    summary: { 'codex/gpt-5.5': { calls: 1, seconds: 0, tokens_in: 12000, tokens_out: 1800, audio_tokens: 0, cost: 0 } },
+  },
+}));
+const MOCK_MEETING_USAGE = {
+  cost: 0.0421, transcribed_by: ['gemini/gemini-2.5-flash-lite'], unpriced: false,
+  by_feature: {
+    meeting: { 'gemini/gemini-2.5-flash-lite': { calls: 252, seconds: 2520, tokens_in: 21000, tokens_out: 9100, audio_tokens: 63000, cost: 0.0294 } },
+    summary: { 'openai/gpt-6-luna': { calls: 1, seconds: 0, tokens_in: 15400, tokens_out: 2100, audio_tokens: 0, cost: 0.0026 } },
+    chat: { 'openai/gpt-6-luna': { calls: 3, seconds: 0, tokens_in: 51000, tokens_out: 900, audio_tokens: 0, cost: 0.0101 } },
+  },
+};
+
 export function createMock(emit) {
   let data = { settings: {}, schema: { sections: [], settings: [] } };
   const loaded = fetch(new URL('./mock-data.json', import.meta.url)).then((r) => r.json()).then((d) => {
@@ -639,9 +677,11 @@ export function createMock(emit) {
       }));
     },
     meetings_list: () => ok(Object.values(saved).map((m) => ({ id: m.id, title: m.title, source: m.source, started_at: m.started_at,
-      ended_at: m.ended_at, duration_s: 2520, speakers: m.speakers.map((s) => s.name), turns: m.turns.length }))),
+      ended_at: m.ended_at, duration_s: 2520, speakers: m.speakers.map((s) => s.name), turns: m.turns.length,
+      usage: { cost: MOCK_MEETING_USAGE.cost, transcribed_by: MOCK_MEETING_USAGE.transcribed_by } }))),
     meeting_get: (id) => ok(withRoster(id === 'live-mock' ? { id, title: meeting.title, source: meeting.source, started_at: meeting.started_at,
-      speakers: SPEAKERS, turns: liveTurns.slice(), screenshots: liveShots.slice(), gaps: [], attendees: meeting.attendees || [] } : saved[id])),
+      speakers: SPEAKERS, turns: liveTurns.slice(), screenshots: liveShots.slice(), gaps: [], attendees: meeting.attendees || [],
+      usage: MOCK_MEETING_USAGE } : { ...saved[id], usage: MOCK_MEETING_USAGE })),
     // People added by hand; the roster is worked out again on the next get.
     meeting_attendees: (id, names) => {
       if (id === 'live-mock') meeting.attendees = names; else if (saved[id]) saved[id].attendees = names;
@@ -736,6 +776,12 @@ export function createMock(emit) {
     meeting_drag: () => ok(),
     meeting_show_in_sharing: (on) => ok({ shown: !!on }),
     problem_dismiss: () => ok(),
+    // Usage & cost (usage/ledger.py, usage/prices.yaml): a few models and a week of use.
+    usage_prices: () => ok(MOCK_PRICES),
+    usage_price_save: (spec, v) => { const r = MOCK_PRICES.find((x) => x.spec === spec); if (r) Object.assign(r, v, { edited: true }); return ok(); },
+    usage_price_reset: (spec) => { const r = MOCK_PRICES.find((x) => x.spec === spec); if (r) r.edited = false; return ok(); },
+    usage_summary: () => ok({ session: { started: Date.now() / 1000 - 3600, cost: 0.0213, by_feature: {} }, days: MOCK_DAYS }),
+    meeting_usage: () => ok(MOCK_MEETING_USAGE),
   };
 
   return new Proxy(api, {

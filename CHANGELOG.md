@@ -5,6 +5,19 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 ## [Unreleased]
 
 ### Added
+- **Online transcription, and what every model costs.** Dictation
+  (Settings › Model & engine › **Transcribe dictation online with**) and
+  meetings (Settings › Meetings › **Transcribe meetings with**) can each use
+  an OpenAI or Gemini model with the API key already saved in Settings › AI;
+  the pickers list every model both providers sell that hears audio, with its
+  price an hour. The wake word and voice commands always stay local, silence
+  is never sent, and local Whisper takes over when the online model fails.
+  The new **Usage** screen shows this session's spending live, the totals per
+  model and per day, each call, and the price list, where a price can be
+  changed. Every meeting says which models transcribed, summarized and
+  chatted about it and what that cost (its new Cost tab, the list, the panel
+  while it runs); AI calls for polish, rewrites and Practice are counted too
+  (design: `docs/design/online-models.md`).
 - **Screenshots in meetings.** A snip you take during a meeting joins the
   transcript at that moment: Settings → Meetings → **Screenshots in
   meetings** chooses *Only with my key* (a new **Screenshot into the

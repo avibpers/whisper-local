@@ -83,6 +83,7 @@ function wire() {
     if (b.cmd === 'shape') bar.set({ upright: b.upright });
   });
   on('pipeline', (p) => {
+    if (p.stage === 'captured') bar.set({ dictationCost: 0 });   // a new dictation: no cost yet
     if (p.stage !== 'delivered') return;
     const app = p.app ? p.app.replace('.exe', '') : 'the app';
     const map = {
@@ -96,8 +97,12 @@ function wire() {
     };
     if (p.send_pending) return;   // the countdown takes over; its end says what happened
     const [kind, message] = map[p.outcome] || ['ok', 'Done'];
-    flash(kind, message, { outcome: p.outcome, text: p.text }, p.outcome === 'pasted' ? 2400 : 4500);
+    // An online model wrote it: what that cost (usage/ledger.py).
+    const cost = bar.get().dictationCost;
+    const spent = cost > 0 ? ` · $${cost < 0.01 ? cost.toFixed(4) : cost.toFixed(2)}` : '';
+    flash(kind, message + spent, { outcome: p.outcome, text: p.text }, p.outcome === 'pasted' ? 2400 : 4500);
   });
+  on('usage', (u) => { if (u.feature === 'dictation') bar.set({ dictationCost: u.cost }); });
   on('auto_send', (a) => {
     if (a.state === 'counting') {
       bar.set({ sending: { remaining: a.remaining, total: a.total }, flash: null });

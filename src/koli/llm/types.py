@@ -4,6 +4,7 @@
 # provider that is down can never break dictation.
 
 from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass
@@ -14,6 +15,7 @@ class Result:
     model: str = ''
     tokens_in: int = 0
     tokens_out: int = 0
+    cost: Optional[float] = None    # dollars, from usage/prices.yaml; None when the model has no price
 
     @property
     def ok(self) -> bool:

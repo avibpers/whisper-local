@@ -7,13 +7,15 @@
 // writes the summary from a template (Summary templates, screens/templates.js).
 // The Chat tab (screens/chat.js) asks the AI about the meeting and changes it.
 // Beside the speakers sit the people who were there but said nothing; "+ Person"
-// adds one. A meeting saved to Google Drive follows its changes there.
+// adds one. A meeting saved to Google Drive follows its changes there. The
+// Cost tab says which models transcribed, summarized and chatted about it, and
+// what each cost (docs/design/online-models.md).
 
 import { html, useEffect, useRef, useState } from '../../vendor/preact-htm.module.js';
 import { call, on } from '../api.js';
 import { app, confirmModal, promptModal, textDir, toast } from '../store.js';
 import { Icon, Select } from '../ui.js';
-import { ExtraInstall } from './shared.js';
+import { ExtraInstall, money } from './shared.js';
 import { Lightbox, Thumb, rowsByTime } from '../shots.js';
 import { Brief, BriefData, COLOURS, DriveButton, SummaryBar, printBrief } from './brief.js';
 import { TemplatesView } from './templates.js';
@@ -58,6 +60,30 @@ function Caption({ meetingId, shot, onSaved }) {
   return html`<input id=${`cap-${shot.image}`} class="inp" type="text" value=${text} placeholder="Add a caption" dir=${textDir(text)}
     style="margin-top:6px;max-width:420px" onInput=${(e) => setText(e.currentTarget.value)} onBlur=${save}
     onKeyDown=${(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }} />`;
+}
+
+// "openai/gpt-4o-mini-transcribe" → "gpt-4o-mini-transcribe"; local Whisper
+// says so, so a meeting reads which models wrote it at a glance.
+const modelLabel = (spec) => (spec.startsWith('local/') ? `local ${spec.slice(6)}` : spec.split('/').slice(1).join('/'));
+const modelsLine = (specs) => specs.map(modelLabel).join(' + ');
+const PARTS = { meeting: 'Transcription', summary: 'Summary', chat: 'Chat' };
+
+// What the meeting used, part by part: each model, how much audio or text it
+// took, and what it cost; the total at the bottom.
+function MeetingCost({ usage, seconds }) {
+  if (!usage || !Object.keys(usage.by_feature).length) {
+    return html`<div class="empty">Nothing recorded for this meeting. Meetings from before this update don't have it.</div>`;
+  }
+  const rows = Object.entries(usage.by_feature).flatMap(([part, models]) => Object.entries(models).map(([spec, r]) => ({ part, spec, ...r })));
+  const hours = seconds / 3600;
+  return html`<div class="tbl-wrap"><table class="tbl">
+    <thead><tr><th>Part</th><th>Model</th><th>Calls</th><th>Audio</th><th>Tokens in → out</th><th>Cost</th></tr></thead>
+    <tbody>${rows.map((r) => html`<tr><td>${PARTS[r.part] || r.part}</td><td class="mono small">${r.spec}</td><td>${r.calls}</td>
+      <td>${r.seconds ? clock(r.seconds) : '—'}</td>
+      <td class="small">${r.tokens_in || r.tokens_out || r.audio_tokens ? `${(r.audio_tokens || 0) + (r.tokens_in || 0)} → ${r.tokens_out || 0}` : '—'}</td>
+      <td><b>${r.unpriced ? 'no price' : money(r.cost)}</b></td></tr>`)}
+      <tr><td colspan="5"><b>Total</b>${hours > 0.05 ? html` <span class="small muted">· ${money(usage.cost / hours)} an hour of meeting</span>` : ''}</td><td><b>${money(usage.cost)}</b></td></tr>
+    </tbody></table></div>`;
 }
 
 function Transcript({ id, live, onDeleted, focus }) {
@@ -107,6 +133,10 @@ function Transcript({ id, live, onDeleted, focus }) {
     if (p.id !== id) return;
     if (p.reload) { load(); return; }
     if (p.turn) setM((cur) => cur && { ...cur, turns: [...cur.turns, p.turn] });
+  }), [id]);
+  useEffect(() => on('usage', (u) => {
+    if (u.meeting_id !== id) return;
+    call('meeting_usage', id).then((usage) => setM((cur) => cur && { ...cur, usage })).catch(() => {});
   }), [id]);
   useEffect(() => on('meeting', (s) => {
     if (s.id === id && s.speakers) setM((cur) => cur && { ...cur, speakers: s.speakers.map((sp) => ({ ...sp })) });
@@ -164,7 +194,8 @@ function Transcript({ id, live, onDeleted, focus }) {
     <div class="mt-head">
       <div class="mt-title"><div class="mt-name" title=${m.title}>${m.title}
           <button type="button" class="btn ghost icon sm" aria-label="Rename meeting" title="Rename meeting" onClick=${renameMeeting}><${Icon} name="pen" size="sm" /></button></div>
-        <div class="small muted mt-when">${when(m.started_at)} · ${clock(last)} · ${m.source && m.source.app ? m.source.app.replace('.exe', '') : 'started by hand'}</div>
+        <div class="small muted mt-when">${when(m.started_at)} · ${clock(last)} · ${m.source && m.source.app ? m.source.app.replace('.exe', '') : 'started by hand'}
+          ${m.usage && m.usage.transcribed_by.length ? html` · <button type="button" class="btn ghost sm" style="min-height:22px;padding:0 6px" title="What this meeting cost" onClick=${() => setTab('cost')}>${modelsLine(m.usage.transcribed_by)} · ${money(m.usage.cost)}</button>` : ''}</div>
         <div class="mt-speakers">${m.speakers.map((sp) => html`<button type="button" class="chip sm" style=${`color:${COLOURS[sp.colour % 8]}`} title="Rename" onClick=${() => renameSpeaker(sp)}>${sp.name}</button>`)}
           ${quiet.map((r) => (attendees.includes(r.name)
             ? html`<button type="button" class="chip sm quiet" title="Didn't speak. Click to take them off the list" onClick=${() => setAttendees(attendees.filter((n) => n !== r.name))}>${r.name} ×</button>`
@@ -181,12 +212,13 @@ function Transcript({ id, live, onDeleted, focus }) {
       </div>
     </div>
     <div style="padding:10px 18px 0"><div class="seg" role="tablist" aria-label="Meeting view">
-      ${[['summary', 'Summary'], ['transcript', 'Transcript'], ['chat', 'Chat'], ['data', 'Data']].map(([k, label]) => html`<button type="button" role="tab" aria-selected=${tab === k}
+      ${[['summary', 'Summary'], ['transcript', 'Transcript'], ['chat', 'Chat'], ['data', 'Data'], ['cost', 'Cost']].map(([k, label]) => html`<button type="button" role="tab" aria-selected=${tab === k}
         class=${tab === k ? 'on' : ''} onClick=${() => setTab(k)}>${label}</button>`)}</div></div>
     ${tab === 'summary' && html`<div class="brief-scroll" style="overflow-y:auto;padding:12px 18px 18px">
       <${SummaryBar} meetingId=${id} brief=${brief} live=${live} />
       <div ref=${briefBox}><${Brief} m=${m} brief=${brief} layout=${layout} onJump=${jump} onOpenShot=${setOpen} /></div></div>`}
     ${tab === 'data' && html`<div style="overflow-y:auto;padding:12px 18px 18px"><${BriefData} brief=${brief} /></div>`}
+    ${tab === 'cost' && html`<div style="overflow-y:auto;padding:12px 0 18px"><${MeetingCost} usage=${m.usage} seconds=${last} /></div>`}
     ${tab === 'chat' && html`<div style="display:flex;flex-direction:column;min-height:0;flex:1;padding:12px 18px 18px">
       <${MeetingChat} meetingId=${id} onChanged=${() => { load(); loadBrief(false).catch(() => {}); }} /></div>`}
     ${tab === 'transcript' && html`<div ref=${box} style="overflow-y:auto;padding:8px 18px 16px">
@@ -291,7 +323,8 @@ export function MeetingsScreen({ route = 'meetings' } = {}) {
           ${list.length === 0 && html`<div class="empty">No meetings yet.</div>`}
           ${list.map((h) => html`<button type="button" class="menu-item" style=${`display:block;width:100%;text-align:start;padding:12px 16px;border-top:1px solid var(--line)${current === h.id ? ';background:var(--sunk)' : ''}`} onClick=${() => setSelected(h.id)}>
             <div style="font-weight:600">${h.title}${liveId === h.id ? html` <span class="chip rec">Live</span>` : ''}</div>
-            <div class="small muted">${when(h.started_at)} · ${clock(h.duration_s)} · ${h.speakers.join(', ')}</div></button>`)}
+            <div class="small muted">${when(h.started_at)} · ${clock(h.duration_s)} · ${h.speakers.join(', ')}</div>
+            ${h.usage && h.usage.transcribed_by.length ? html`<div class="small muted">${modelsLine(h.usage.transcribed_by)} · ${money(h.usage.cost)}</div>` : ''}</button>`)}
         </section>`}
         <${KnownVoices} />
       </div>

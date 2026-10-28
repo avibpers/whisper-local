@@ -33,6 +33,7 @@ TOPICS = (
     'meeting_shot',   # {'id', 'shot'} a screenshot joined the meeting; with 'caption': True its caption changed
     'wake',           # {'phase': awake|follow_up|sleeping} the wake word, see wake_word.py
     'agent',          # {'phase', 'text', ...} an AI action, see agent/runner.py
+    'usage',          # {'feature', 'model', 'seconds', 'tokens_*', 'cost', 'meeting_id', 'session_cost', 'meeting_cost'} see usage/ledger.py
 )
 
 Subscriber = Callable[[str, Any], None]

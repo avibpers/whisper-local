@@ -30,6 +30,7 @@ export function createStore(initial) {
 export const app = createStore({
   ready: false, version: '', settings: {}, schema: null, state: { state: 'idle' }, tasks: {},
   logs: [], pipeline: [], foreground: {}, profile: null, recent: [], route: 'live',
+  usage: { session_cost: 0, recent: [] },   // online and AI calls this session (usage/ledger.py)
   toasts: [], modal: null, undo: false, streaming: '', notice: null, dev: false,
   meeting: { state: 'idle' },   // the meeting panel's state, for the Meetings screen
 });

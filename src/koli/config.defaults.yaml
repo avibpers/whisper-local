@@ -22,6 +22,13 @@ whisper: # Whisper AI Model Settings
     # or 'small'/'medium'/'large' for higher accuracy (GPU recommended for large).
     model: base
 
+    # Send dictation to an online model instead (provider/model from
+    # Settings › Usage & cost, e.g. openai/gpt-4o-mini-transcribe or
+    # gemini/gemini-2.5-flash), with the API key saved in Settings › AI.
+    # Empty keeps it on this computer. The wake word and voice commands
+    # always stay local; if the online model fails, local Whisper takes over.
+    online_model: ''
+
     # Transcription device
     # Options: cpu, cuda (for both NVIDIA and AMD)
     # For GPU setup, see https://github.com/drajb/whisper-local/blob/master/docs/gpu-setup.md
@@ -652,8 +659,9 @@ meeting: # Meetings: calls in Discord, Zoom, Teams and the browser
         # Shorter meetings are not summarized by themselves (summarize by hand
         # works for any length)
         min_minutes: 10
-    # A separate Whisper model for meetings (a key from whisper.models), or
-    # empty for the dictation model. Only worth it on a GPU.
+    # An online model for meetings (provider/model, like
+    # whisper.online_model), or empty for local Whisper. Each meeting
+    # remembers which models transcribed it and what that cost.
     model: ''
     # Speaker voiceprint model (meeting.speaker_models). The VoxCeleb one
     # (English, many languages in the data) tells voices apart better on

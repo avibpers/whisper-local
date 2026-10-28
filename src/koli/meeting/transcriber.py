@@ -15,6 +15,8 @@ from typing import Callable, List, Optional
 
 import numpy as np
 
+from ..online_stt import record_local
+from ..usage.ledger import for_meeting
 from ..dictation_cleanup import SHORT_CLIP_MIN_LOGPROB, SHORT_CLIP_S, is_prompt_echo, unsure_piece
 from .diarize import parts_by_voice, voice_audio, voice_seconds
 from .speakers import SpeakerTracker
@@ -278,10 +280,15 @@ class MeetingTranscriber:
                 return
         # No dictation prompt: it's a style hint for the app in front, and on a
         # short or quiet clip Whisper wrote it back as the turn ("Friendly tone.").
-        text = engine.transcribe_audio(chunk['audio'], language=self.language_provider() or 'auto', use_prompt=False)
+        # The call's cost lands on this meeting (an online model's own record,
+        # or a free one naming the local model).
+        with for_meeting(chunk.get('meeting_id')):
+            text = engine.transcribe_audio(chunk['audio'], language=self.language_provider() or 'auto', use_prompt=False)
+        info = getattr(engine, 'last_info', None) or {}
+        if text:
+            record_local('meeting', info, chunk.get('meeting_id'))
         if not text or is_prompt_echo(text, getattr(engine, 'initial_prompt', None)):
             return
-        info = getattr(engine, 'last_info', None) or {}
         lang = info.get('language') or ''
         seconds = len(chunk['audio']) / RATE
         pieces = believable_pieces(text, info, seconds)
