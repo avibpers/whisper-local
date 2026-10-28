@@ -824,5 +824,135 @@ class LiveWordsFlowTests(unittest.TestCase):
         sm.clipboard_manager.deliver_transcription.assert_not_called()
         self.assertTrue(self.record_transcript.called)
 
+# ── Task 8: local, OpenAI and Gemini feed the bubble ────────────────────────
+
+class _FakeOpenAI:
+    instances = []
+
+    def __init__(self, key, model, language, on_interim, on_final, on_error, **kw):
+        import numpy as np
+        self.key, self.model, self.language = key, model, language
+        self.on_interim, self.on_final, self.on_error = on_interim, on_final, on_error
+        self.fed, self.commits, self.finished, self.cancelled = [], 0, False, False
+        self.failed, self.transcribed_any, self.seconds_sent = False, False, 0.0
+        self.left = np.ones(16000, dtype=np.float32) * 0.1
+        _FakeOpenAI.instances.append(self)
+
+    def start(self):
+        pass
+
+    def feed(self, mono):
+        self.fed.append(mono)
+
+    def commit(self):
+        self.commits += 1
+
+    def finish(self, timeout=5.0):
+        self.finished = True
+
+    def cancel(self):
+        self.cancelled = True
+
+    def unsent_audio(self):
+        return self.left
+
+
+class CloudAndLocalEngineTests(unittest.TestCase):
+    def setUp(self):
+        self.base = LiveWordsFlowTests('test_off_engine_keeps_todays_flow')
+        self.base.setUp()
+        self.addCleanup(self.base.doCleanups)
+        _FakeOpenAI.instances = []
+
+    def _sm(self, engine, provider='openai', phrases=()):
+        sm = self.base._sm(engine='cloud' if engine in ('openai', 'gemini') else engine, phrases=phrases)
+        sm.config_manager.config['live_words']['cloud'] = {'provider': provider}
+        sm.live._has_key = lambda p: True
+        sm.live._key = lambda p: 'test-key'
+        sm.live.openai_factory = _FakeOpenAI
+        self.taps = []
+        sm.audio_recorder.add_tap.side_effect = self.taps.append
+        sm.audio_recorder.remove_tap.side_effect = lambda fn: self.taps.remove(fn) if fn in self.taps else None
+        return sm
+
+    def test_openai_words_reach_the_bubble_and_are_written(self):
+        import numpy as np
+        sm = self._sm('openai')
+        self.base._start(sm)
+        client = _FakeOpenAI.instances[-1]
+        self.assertEqual((client.key, client.model, client.language), ('test-key', 'gpt-live-transcribe', 'en'))
+        self.assertEqual(len(self.taps), 1)
+        self.taps[0](np.zeros(160, dtype=np.float32), 0.0)
+        self.assertEqual(len(client.fed), 1)
+        client.on_interim('hello wor')
+        self.assertEqual(sm.live.session.snapshot()['interim'], 'hello wor')
+        client.on_final('Hello world.')
+        self.base._pause(sm)                                     # a phrase pause commits the turn
+        self.assertEqual(client.commits, 1)
+        sm.whisper_engine.transcribe_audio.assert_not_called()
+        sm.stop_recording()
+        self.assertTrue(client.finished)
+        self.assertEqual(self.taps, [])
+        self.assertEqual(self.base._delivered(sm), ['Hello world.'])
+        self.assertEqual(self.base.usage.record.call_args.args[0], 'cloud/openai/gpt-live-transcribe')
+
+    def test_openai_failing_at_the_start_continues_as_phrases(self):
+        sm = self._sm('openai', phrases=['Said while offline.', 'and after'])
+        self.base._start(sm)
+        client = _FakeOpenAI.instances[-1]
+        client.failed = True
+        client.on_error("Couldn't reach OpenAI")
+        sm.live._wait_for_phrases()
+        self.assertEqual(sm.live.session.text(), 'Said while offline.')   # the unsent audio, by Whisper
+        self.base._pause(sm)
+        self.assertEqual(sm.live.session.text(), 'Said while offline. And after')
+        self.assertEqual(sm.live.choice.engine, 'phrases')
+
+    def test_openai_dropping_mid_recording_keeps_every_word(self):
+        sm = self._sm('openai', phrases=['the rest'])
+        self.base._start(sm)
+        client = _FakeOpenAI.instances[-1]
+        client.on_final('First part,')
+        client.transcribed_any = True
+        client.failed = True
+        client.on_error('OpenAI closed the connection')
+        sm.live._wait_for_phrases()
+        sm.stop_recording()
+        self.assertEqual(self.base._delivered(sm), ['First part, the rest'])
+
+    def test_gemini_transcribes_phrases_and_falls_back_to_whisper(self):
+        sm = self._sm('gemini', provider='gemini', phrases=['by Whisper'])
+        answers = [('From Gemini.', 100, 5), RuntimeError('quota')]
+
+        def fake(audio, language, context, key, model):
+            answer = answers.pop(0)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+        sm.live.gemini_transcribe = fake
+        self.base._start(sm)
+        self.base._pause(sm)
+        self.base._pause(sm)
+        self.assertEqual(sm.live.session.text(), 'From Gemini. By Whisper')
+        sm.stop_recording()
+        args = self.base.usage.record.call_args.args
+        self.assertEqual(args[0], 'cloud/gemini/gemini-3.6-flash')
+        self.assertEqual((args[4], args[5]), (100, 5))
+
+    def test_local_words_are_a_preview_and_whisper_writes(self):
+        sm = self._sm('local', phrases=['Whisper wins.'])
+        sm.config_manager.get_whisper_config.return_value = {'language': 'en'}
+        sm.audio_recorder.continuous_streaming = object()
+        self.base._start(sm)
+        self.assertEqual(sm.live.choice.engine, 'local')
+        self.assertTrue(sm.audio_recorder.stream_partials)
+        self.assertIsNone(sm.audio_recorder.start_recording.call_args.kwargs.get('phrase_pause'))
+        sm.handle_streaming_result('whisper wins', False)
+        self.assertEqual(sm.live.session.snapshot()['interim'], 'whisper wins')
+        self.assertFalse(sm.bubble_open(), 'a preview never opens')
+        sm.stop_recording()
+        self.assertEqual(self.base._delivered(sm), ['Whisper wins.'])
+        self.assertFalse(sm.audio_recorder.stream_partials)
+
 if __name__ == '__main__':
     unittest.main()

@@ -13,6 +13,8 @@ import time
 from typing import Optional
 
 from . import live_words_usage
+from .cloud_stt import gemini_phrase
+from .cloud_stt.openai_live import OpenAILive
 from .dictation_session import DictationSession
 from .live_words import choose_engine, resolve_language, usage_key, EngineChoice
 from .platform import foreground
@@ -38,6 +40,13 @@ class LiveWordsFlow:
         self._in_flight = 0
         self._idle = threading.Condition()
         self._phrase_lock = threading.Lock()   # phrases are transcribed in the order they were spoken
+        self._language = ''
+        self._notice = ''
+        # The cloud engines; replaceable so tests run without a network.
+        self.openai_factory = OpenAILive
+        self.gemini_transcribe = gemini_phrase.transcribe
+        self.cloud = None               # the OpenAI client of the current listening run
+        self._tap = None                # the recorder tap feeding it
 
     # ── Starting and resuming ────────────────────────────────────────────────
 
@@ -60,6 +69,7 @@ class LiveWordsFlow:
         language = resolve_language(whisper_cfg, rule)
         self.choice = choose_engine(cfg, rule, mode=mode, language=language,
                                     has_key=self._has_key, local_ready=self._local_ready())
+        self._stream_partials(self.choice.engine == 'local')
         if self.choice.engine == 'off':
             return None
         self._language = language
@@ -85,6 +95,97 @@ class LiveWordsFlow:
         self._base_prompt = getattr(self.sm.whisper_engine, 'initial_prompt', None)
         self._started_at = time.monotonic()
         session.set_listening(True)
+        if self.choice.engine == 'openai':
+            self._start_openai(session)
+        self.publish()
+
+    # ── The engines ──────────────────────────────────────────────────────────
+
+    def _key(self, provider: str) -> str:
+        from .llm import credentials
+        return credentials.load(provider).get('key') or ''
+
+    def _stream_partials(self, on: bool) -> None:
+        try:
+            self.sm.audio_recorder.stream_partials = bool(on)
+        except Exception:
+            pass
+
+    # OpenAI hears the microphone through a recorder tap while it records.
+    def _start_openai(self, session: DictationSession) -> None:
+        recorder = self.sm.audio_recorder
+
+        def on_interim(text):
+            if session is self.session:
+                session.set_interim(text)
+                self.publish()
+
+        def on_final(text):
+            if session is self.session:
+                session.add_final(self.sm._postprocess_piece(text))
+                self.publish()
+
+        client = self.openai_factory(self._key('openai'), self.choice.model, self._language,
+                                     on_interim, on_final, lambda message: self._openai_failed(client, session, message))
+        self.cloud = client
+
+        def tap(mono, _when):
+            if recorder.get_recording_status():
+                client.feed(mono)
+        self._tap = tap
+        recorder.add_tap(tap)
+        client.start()
+
+    def _stop_openai(self, wait: bool) -> None:
+        client, tap = self.cloud, self._tap
+        self.cloud, self._tap = None, None
+        if tap is not None:
+            try:
+                self.sm.audio_recorder.remove_tap(tap)
+            except Exception:
+                pass
+        if client is not None:
+            if wait and not client.failed:
+                client.finish(timeout=5.0)
+            else:
+                client.cancel()
+
+    # OpenAI could not be reached, or dropped: what it never answered goes
+    # to Whisper, and the rest of this dictation runs as Phrases. No word lost.
+    def _openai_failed(self, client, session: DictationSession, message: str) -> None:
+        if session is not self.session or client is not self.cloud:
+            return
+        logger.warning(f"Words while you speak: {message} - continuing with Whisper")
+        self._stop_openai(wait=False)
+        self.choice = EngineChoice('phrases', notice=f"{message}. Continuing with Whisper.")
+        self._notice = self.choice.notice
+        try:
+            self.sm.audio_recorder.take_recorded_audio()   # already in the client's unsent audio
+        except Exception:
+            pass
+        audio = client.unsent_audio()
+        self._begin_work()
+        threading.Thread(target=self._fallback_phrase, args=(audio, session), daemon=True,
+                         name='live-words-fallback').start()
+
+    def _fallback_phrase(self, audio, session: DictationSession) -> None:
+        try:
+            if audio is not None and len(audio):
+                self.on_phrase(audio, session=session)
+            else:
+                self.publish()
+        finally:
+            self._end_work()
+
+    # The local streaming model's words, shown as they come (a preview).
+    def on_stream(self, text: str, is_final: bool) -> None:
+        session = self.session
+        if session is None or self.choice.engine != 'local':
+            return
+        if is_final:
+            session.add_final(text)
+        else:
+            session.set_interim(text)
         self.publish()
 
     def _phrase_pause(self) -> Optional[float]:
@@ -115,10 +216,17 @@ class LiveWordsFlow:
         session = session or self.session
         if session is None or audio is None:
             return
+        if self.choice.engine == 'openai' and self.cloud is not None:
+            self.cloud.commit()          # OpenAI already has the audio: close its turn
+            return
+        if self.choice.engine == 'local':
+            return
         self._begin_work()
         try:
             with self._phrase_lock:
-                text = self._transcribe_phrase(audio, session)
+                text = self._gemini_phrase(audio, session) if self.choice.engine == 'gemini' else None
+                if text is None:
+                    text = self._transcribe_phrase(audio, session)
                 if text and session is self.session:
                     session.add_final(self.sm._postprocess_piece(text))
                     self.publish()
@@ -128,6 +236,18 @@ class LiveWordsFlow:
             logger.error(f"Words while you speak: a phrase failed: {e}", exc_info=True)
         finally:
             self._end_work()
+
+    # Gemini for one phrase; None means "ask Whisper" (Gemini failed).
+    def _gemini_phrase(self, audio, session: DictationSession) -> Optional[str]:
+        try:
+            text, tokens_in, tokens_out = self.gemini_transcribe(
+                audio, self._language, session.text()[-PROMPT_CONTEXT_CHARS:], self._key('gemini'), self.choice.model)
+        except Exception as e:
+            logger.warning(f"Words while you speak: Gemini failed ({e}) - Whisper takes this phrase")
+            return None
+        self._tokens_in += tokens_in
+        self._tokens_out += tokens_out
+        return (text or '').strip()
 
     # Whisper for one phrase, primed with the words already in the bubble so
     # names and spellings stay the same.
@@ -170,11 +290,16 @@ class LiveWordsFlow:
     # go into the bubble, if voice detection heard any (Whisper fills silence
     # with "Thank you.").
     def _take_tail(self, audio, session: DictationSession) -> None:
+        self._take_seconds()
+        if self.choice.engine == 'openai' and self.cloud is not None:
+            return                       # OpenAI has heard it already; finishing waits for its text
+        if audio is not None and self.sm._detector_heard_speech():
+            self.on_phrase(audio, session=session)
+
+    def _take_seconds(self) -> None:
         if self._started_at is not None:
             self._seconds += time.monotonic() - self._started_at
             self._started_at = None
-        if audio is not None and self.sm._detector_heard_speech():
-            self.on_phrase(audio, session=session)
 
     # ── Pause, finish, cancel ────────────────────────────────────────────────
 
@@ -186,6 +311,7 @@ class LiveWordsFlow:
             return
         audio = self.sm.audio_recorder.stop_recording() if self.sm.audio_recorder.get_recording_status() else None
         self._take_tail(audio, session)
+        self._stop_openai(wait=True)
         session.set_listening(False)
         self.sm.audio_feedback.play_stop_sound()
         self.sm._update_ui_state('idle')
@@ -199,10 +325,21 @@ class LiveWordsFlow:
             return
         recording = self.sm.audio_recorder.get_recording_status()
         audio = self.sm.audio_recorder.stop_recording() if recording else None
+        if self.choice.engine == 'local':
+            # A preview: Whisper writes the whole dictation, as without the bubble.
+            self.session = None
+            self._stream_partials(False)
+            self.publish()
+            self._take_seconds()
+            self._record_usage(session)
+            self.sm._transcription_pipeline(audio, send)
+            return
         self._take_tail(audio, session)
+        self._stop_openai(wait=True)
         self._wait_for_phrases()
         session.commit_interim()
         self.session = None
+        self._stream_partials(False)
         self.publish()
         text = session.text().strip()
         self.sm.audio_feedback.play_stop_sound()
@@ -238,6 +375,8 @@ class LiveWordsFlow:
         if session is None:
             return
         self.session = None
+        self._stop_openai(wait=False)
+        self._stream_partials(False)
         if self.sm.audio_recorder.get_recording_status():
             self.sm.audio_recorder.cancel_recording()
         if session.opened:
@@ -252,6 +391,8 @@ class LiveWordsFlow:
     # The recording was cancelled elsewhere (a tap, Esc on the recorder):
     # drop the session without touching the recorder again.
     def drop(self) -> None:
+        self._stop_openai(wait=False)
+        self._stream_partials(False)
         if self.session is not None:
             self.session = None
             self.publish()

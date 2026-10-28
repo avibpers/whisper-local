@@ -339,6 +339,8 @@ class StateManager:
             publish('streaming_text', {'text': text, 'final': bool(is_final)})
         if self.level_overlay and text:
             self.level_overlay.set_streaming_text(text)
+        if self.live is not None:
+            self.live.on_stream(text, is_final)
 
     def _clear_streaming_display(self):
         if self._streaming_display_active:
