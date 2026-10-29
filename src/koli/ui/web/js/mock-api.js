@@ -141,7 +141,7 @@ const MOCK_AGENT_HISTORY = [
 const MOCK_AI_MODELS = {
   lmstudio: ['qwen/qwen3-8b', 'google/gemma-3-12b', 'openai/gpt-oss-20b', 'mistralai/mistral-small-3.2'],
   codex: ['gpt-5.5', 'gpt-5.4-mini', 'gpt-5.3-codex'],
-  gemini: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'],
+  gemini: ['gemini-2.5-flash', 'gemini-3.5-flash-lite'],
 };
 
 // ── Usage & cost ────────────────────────────────────────────────────────────
@@ -156,10 +156,12 @@ const MOCK_PRICES = [
   priceRow('openai/gpt-transcribe', 'upload', { per_minute: 0.0045 }),
   priceRow('openai/gpt-4o-mini-transcribe', 'upload', { per_minute: 0.003, audio_in: 1.25, text_in: 1.25, text_out: 5 }),
   priceRow('openai/whisper-1', 'upload', { per_minute: 0.006 }, 'Gives per-sentence certainty like local Whisper'),
-  priceRow('openai/gpt-live-transcribe', 'live', { per_minute: 0.017 }),
-  priceRow('gemini/gemini-2.5-flash-lite', 'upload', { audio_in: 0.3, text_in: 0.1, text_out: 0.4 }),
+  priceRow('openai/gpt-live-transcribe', 'live', { per_minute: 0.017 }, 'Words as you speak'),
+  priceRow('openai/gpt-realtime-2', 'chat', { audio_in: 32, text_in: 4, text_out: 24 }, 'Voice chat model, not for dictation'),
+  priceRow('gemini/gemini-3.5-flash-lite', 'upload', { audio_in: 0.3, text_in: 0.3, text_out: 2.5 }),
   priceRow('gemini/gemini-4-argon', 'upload', { audio_in: 2, text_in: 2, text_out: 10, changes: [{ from: '2026-12-01', audio_in: 4, text_in: 4, text_out: 20 }] }),
-  priceRow('gemini/gemini-3.8-live', 'live', { audio_in: 3, text_in: 0.75, text_out: 4.5 }),
+  priceRow('gemini/gemini-3.5-transcribe-live', 'live', { audio_in: 3.5, text_in: 3.5, text_out: 21 }, 'Words as you speak'),
+  priceRow('gemini/gemini-3.8-live', 'chat', { audio_in: 3, text_in: 0.75, text_out: 4.5 }, 'Voice chat model, not for dictation'),
   priceRow('openai/gpt-6-luna', '', { text_in: 0.1, text_out: 0.5 }),
   priceRow('openai/gpt-5.5', '', { text_in: 5, text_out: 30 }),
 ];
@@ -168,15 +170,15 @@ const MOCK_DAYS = [0, 1, 2, 4].map((ago, i) => ({
   cost: [0.0213, 0.184, 0.0061, 0.3][i],
   by_feature: {
     dictation: { 'openai/gpt-4o-mini-transcribe': { calls: 14 - i, seconds: 260, tokens_in: 0, tokens_out: 900, audio_tokens: 2600, cost: 0.013 } },
-    meeting: i % 2 ? { 'gemini/gemini-2.5-flash-lite': { calls: 120, seconds: 2400, tokens_in: 9000, tokens_out: 7000, audio_tokens: 60000, cost: 0.03 } }
+    meeting: i % 2 ? { 'gemini/gemini-3.5-flash-lite': { calls: 120, seconds: 2400, tokens_in: 9000, tokens_out: 7000, audio_tokens: 60000, cost: 0.03 } }
       : { 'local/large-v3': { calls: 80, seconds: 1800, tokens_in: 0, tokens_out: 0, audio_tokens: 0, cost: 0 } },
     summary: { 'codex/gpt-5.5': { calls: 1, seconds: 0, tokens_in: 12000, tokens_out: 1800, audio_tokens: 0, cost: 0 } },
   },
 }));
 const MOCK_MEETING_USAGE = {
-  cost: 0.0421, transcribed_by: ['gemini/gemini-2.5-flash-lite'], unpriced: false,
+  cost: 0.0421, transcribed_by: ['gemini/gemini-3.5-flash-lite'], unpriced: false,
   by_feature: {
-    meeting: { 'gemini/gemini-2.5-flash-lite': { calls: 252, seconds: 2520, tokens_in: 21000, tokens_out: 9100, audio_tokens: 63000, cost: 0.0294 } },
+    meeting: { 'gemini/gemini-3.5-flash-lite': { calls: 252, seconds: 2520, tokens_in: 21000, tokens_out: 9100, audio_tokens: 63000, cost: 0.0294 } },
     summary: { 'openai/gpt-6-luna': { calls: 1, seconds: 0, tokens_in: 15400, tokens_out: 2100, audio_tokens: 0, cost: 0.0026 } },
     chat: { 'openai/gpt-6-luna': { calls: 3, seconds: 0, tokens_in: 51000, tokens_out: 900, audio_tokens: 0, cost: 0.0101 } },
   },

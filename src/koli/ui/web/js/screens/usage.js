@@ -117,7 +117,7 @@ function Recent() {
 
 // ── The price list ──────────────────────────────────────────────────────────
 
-const KIND = { upload: 'Transcribes', live: 'Live (coming next)', '': 'Text' };
+const KIND = { upload: 'Transcribes', live: 'Live, words as you speak', chat: 'Voice chat', '': 'Text' };
 const perM = (v) => (v == null ? '—' : `$${v}`);
 
 function editPrice(row, reload) {

@@ -54,6 +54,13 @@ def _unit(vec) -> np.ndarray:
     return vec / norm if norm > 0 else vec
 
 
+# Voiceprints from another speaker model (meeting.speaker_model changed) have
+# another size and can't be compared: such a voice is skipped when matching,
+# and refining it starts it over with the new model.
+def _same_model(a, b) -> bool:
+    return np.shape(a) == np.shape(b)
+
+
 def _now() -> str:
     return datetime.datetime.now().astimezone().isoformat(timespec='seconds')
 
@@ -132,7 +139,7 @@ class VoiceBook:
         with self._lock:
             best, best_sim = None, FIRST_MATCH if first else MATCH
             for v in self._loaded():
-                if v['id'] in taken or v['self']:
+                if v['id'] in taken or v['self'] or not _same_model(v['centroid'], vec):
                     continue
                 sim = float(np.dot(v['centroid'], vec))
                 if sim >= best_sim:
@@ -158,6 +165,8 @@ class VoiceBook:
                 self._voices.append(v)
             elif meeting_id and meeting_id in v['meetings']:
                 v['last_seen'] = now     # a resumed meeting ending again: its audio already counts
+            elif not _same_model(v['centroid'], centroid):
+                v['centroid'], v['count'], v['last_seen'] = _unit(centroid), count, now
             else:
                 v['centroid'] = _unit(v['centroid'] * v['count'] + _unit(centroid) * count)
                 v['count'] += count
@@ -196,6 +205,8 @@ class VoiceBook:
                 v = {'id': new_voice_id(), 'name': 'You', 'centroid': _unit(centroid), 'count': count,
                      'first_seen': now, 'last_seen': now, 'meetings': [], 'self': True, 'mic': mic or ''}
                 self._voices.append(v)
+            elif not _same_model(v['centroid'], centroid):
+                v['centroid'], v['count'] = _unit(centroid), count
             elif not meeting_id or meeting_id not in v['meetings']:
                 v['centroid'] = _unit(v['centroid'] * v['count'] + _unit(centroid) * count)
                 v['count'] += count

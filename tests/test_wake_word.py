@@ -828,6 +828,18 @@ class PersonalWakeWordTests(ListenerTestCase):
         self.assertEqual(len(notices), 1)
         self.assertIn('microphone', notices[0]['message'])
 
+    # Meetings › Speaker model changed after the word was recorded: the new
+    # model's voiceprints have another size. Said once, never a crash per frame.
+    def test_a_recording_from_another_speaker_model_asks_to_record_again(self):
+        self.make_personal(np.ones(5, dtype=np.float32))
+        for _ in range(3):            # feed() raised here before: shapes not aligned
+            self.say(4, seconds=0.6)
+            self.quiet(0.8)
+        self.assertEqual(self.transcribed, [])
+        notices = [p['message'] for t, p in self.events if t == 'notify']
+        self.assertEqual(len(notices), 1)
+        self.assertIn('another speaker model', notices[0])
+
     def test_no_voiceprint_yet_doesnt_wake(self):
         self.make_personal(None)
         self.say(4, 2, seconds=0.6)

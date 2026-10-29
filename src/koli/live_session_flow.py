@@ -16,6 +16,7 @@ import numpy as np
 
 from . import live_words_usage
 from .cloud_stt import gemini_phrase
+from .cloud_stt.gemini_live import GeminiLive
 from .cloud_stt.openai_live import OpenAILive
 from .dictation_session import DictationSession
 from .live_words import choose_engine, resolve_languages, usage_key, EngineChoice
@@ -48,8 +49,9 @@ class LiveWordsFlow:
         self._notice = ''
         # The cloud engines; replaceable so tests run without a network.
         self.openai_factory = OpenAILive
+        self.gemini_live_factory = GeminiLive
         self.gemini_transcribe = gemini_phrase.transcribe
-        self.cloud = None               # the OpenAI client of the current listening run
+        self.cloud = None               # the live client (OpenAI or Gemini) of the current listening run
         self._tap = None                # the recorder tap feeding it
         self._rule = None               # the app rule from the session's start (the bubble may be in front later)
         self._audio_parts = []          # the phrases' audio, kept as the dictation's clip for Training
@@ -118,8 +120,8 @@ class LiveWordsFlow:
         self._base_prompt = getattr(self.sm.whisper_engine, 'initial_prompt', None)
         self._started_at = time.monotonic()
         session.set_listening(True)
-        if self.choice.engine == 'openai':
-            self._start_openai(session)
+        if self.choice.stream:
+            self._start_stream(session)
         self.publish()
 
     # ── The engines ──────────────────────────────────────────────────────────
@@ -134,8 +136,8 @@ class LiveWordsFlow:
         except Exception:
             pass
 
-    # OpenAI hears the microphone through a recorder tap while it records.
-    def _start_openai(self, session: DictationSession) -> None:
+    # A live model hears the microphone through a recorder tap while it records.
+    def _start_stream(self, session: DictationSession) -> None:
         recorder = self.sm.audio_recorder
 
         def on_interim(text):
@@ -148,8 +150,9 @@ class LiveWordsFlow:
                 session.add_final(self._piece(text))
                 self.publish()
 
-        client = self.openai_factory(self._key('openai'), self.choice.model, self._language,
-                                     on_interim, on_final, lambda message: self._openai_failed(client, session, message))
+        factory = self.gemini_live_factory if self.choice.provider == 'gemini' else self.openai_factory
+        client = factory(self._key(self.choice.provider or 'openai'), self.choice.model, self._language,
+                         on_interim, on_final, lambda message: self._stream_failed(client, session, message))
         self.cloud = client
 
         def tap(mono, _when):
@@ -159,9 +162,9 @@ class LiveWordsFlow:
         recorder.add_tap(tap)
         client.start()
 
-    # `session` given: after waiting for OpenAI's last words, any audio it
-    # never answered (it dropped, failed or was too slow) goes to Whisper.
-    def _stop_openai(self, wait: bool, session: Optional[DictationSession] = None) -> None:
+    # `session` given: after waiting for the live model's last words, any audio
+    # it never answered (it dropped, failed or was too slow) goes to Whisper.
+    def _stop_stream(self, wait: bool, session: Optional[DictationSession] = None) -> None:
         client, tap = self.cloud, self._tap
         self.cloud, self._tap = None, None
         if tap is not None:
@@ -178,16 +181,16 @@ class LiveWordsFlow:
         if session is not None:
             left = client.unsent_audio()
             if left is not None and len(left):
-                logger.warning("Words while you speak: OpenAI didn't answer everything - Whisper takes the rest")
+                logger.warning(f"Words while you speak: {self.choice.model} didn't answer everything - Whisper takes the rest")
                 self.on_phrase(left, session=session)
 
-    # OpenAI could not be reached, or dropped: what it never answered goes
-    # to Whisper, and the rest of this dictation runs as Phrases. No word lost.
-    def _openai_failed(self, client, session: DictationSession, message: str) -> None:
+    # The live model could not be reached, or dropped: what it never answered
+    # goes to Whisper, and the rest of this dictation runs as Phrases. No word lost.
+    def _stream_failed(self, client, session: DictationSession, message: str) -> None:
         if session is not self.session or client is not self.cloud:
             return
         logger.warning(f"Words while you speak: {message} - continuing with Whisper")
-        self._stop_openai(wait=False)
+        self._stop_stream(wait=False)
         self.choice = EngineChoice('phrases', notice=f"{message}. Continuing with Whisper.")
         self._notice = self.choice.notice
         try:
@@ -283,11 +286,12 @@ class LiveWordsFlow:
             self._wait_turn(ticket)
             if session is None or audio is None or self.choice.engine == 'local':
                 return
-            if self.choice.engine == 'openai' and self.cloud is not None:
-                self.cloud.commit()          # OpenAI already has the audio: close its turn
+            if self.choice.stream and self.cloud is not None:
+                self.cloud.commit()          # the live model already has the audio: close its turn
                 return
             with self._phrase_lock:
-                text = self._gemini_phrase(audio, session) if self.choice.engine == 'gemini' else None
+                text = (self._gemini_phrase(audio, session)
+                        if self.choice.engine == 'gemini' and not self.choice.stream else None)
                 if text is None:
                     text = self._transcribe_phrase(audio, session)
                 if text and session is self.session:
@@ -363,8 +367,8 @@ class LiveWordsFlow:
     # with "Thank you.").
     def _take_tail(self, audio, session: DictationSession) -> None:
         self._take_seconds()
-        if self.choice.engine == 'openai' and self.cloud is not None:
-            return                       # OpenAI has heard it already; finishing waits for its text
+        if self.choice.stream and self.cloud is not None:
+            return                       # the live model has heard it already; finishing waits for its text
         if audio is not None and self.sm._detector_heard_speech():
             self.on_phrase(audio, session=session)
 
@@ -383,7 +387,7 @@ class LiveWordsFlow:
             return
         audio = self.sm.audio_recorder.stop_recording() if self.sm.audio_recorder.get_recording_status() else None
         self._take_tail(audio, session)
-        self._stop_openai(wait=True, session=session)
+        self._stop_stream(wait=True, session=session)
         session.set_listening(False)
         self.sm.audio_feedback.play_stop_sound()
         self.sm._update_ui_state('idle')
@@ -417,7 +421,7 @@ class LiveWordsFlow:
             self.sm._transcription_pipeline(audio, send)
             return
         self._take_tail(audio, session)
-        self._stop_openai(wait=True, session=session)
+        self._stop_stream(wait=True, session=session)
         self._wait_for_phrases()
         session.commit_interim()
         self.session = None
@@ -462,7 +466,7 @@ class LiveWordsFlow:
         self.session = None
         with self._claim_lock:
             self._closing = None
-        self._stop_openai(wait=False)
+        self._stop_stream(wait=False)
         self._stream_partials(False)
         if self.sm.audio_recorder.get_recording_status():
             self.sm.audio_recorder.cancel_recording()
@@ -478,7 +482,7 @@ class LiveWordsFlow:
     # The recording was cancelled elsewhere (a tap, Esc on the recorder):
     # drop the session without touching the recorder again.
     def drop(self) -> None:
-        self._stop_openai(wait=False)
+        self._stop_stream(wait=False)
         self._stream_partials(False)
         if self.session is not None:
             self.session = None
@@ -497,9 +501,15 @@ class LiveWordsFlow:
         if key.startswith('cloud/'):
             spec = key[len('cloud/'):]
             gemini = spec.startswith('gemini/')
-            usage_ledger.record('dictation', spec, seconds=self._seconds,
-                                audio_tokens=self._tokens_in if gemini else 0,
-                                tokens_in=0 if gemini else self._tokens_in, tokens_out=self._tokens_out)
+            audio_tokens = self._tokens_in if gemini else 0
+            tokens_out = self._tokens_out
+            if gemini and self.choice.stream and not audio_tokens:
+                # Gemini Live reports no tokens: 25 a second of audio in, and
+                # about 1.4 a word written out.
+                audio_tokens = int(self._seconds * 25)
+                tokens_out = int(session.words() * 1.4)
+            usage_ledger.record('dictation', spec, seconds=self._seconds, audio_tokens=audio_tokens,
+                                tokens_in=0 if gemini else self._tokens_in, tokens_out=tokens_out)
 
     # ── The bubble page ──────────────────────────────────────────────────────
 

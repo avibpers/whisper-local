@@ -75,6 +75,10 @@ YOU_MARGIN = 0.05         # your voice known: you may sound this much less like 
 # Whether a microphone chunk's voiceprint `vec` is you: `you` is your
 # voiceprint (None until known), `others` the call speakers' voiceprints.
 def sounds_like_you(vec, you, others: list) -> bool:
+    # Voiceprints from another speaker model have another size: not comparable.
+    others = [c for c in others if np.shape(c) == np.shape(vec)]
+    if you is not None and np.shape(you) != np.shape(vec):
+        you = None
     sim_call = max((float(np.dot(vec, c)) for c in others), default=-1.0)
     if you is not None:
         return float(np.dot(vec, you)) + YOU_MARGIN >= sim_call

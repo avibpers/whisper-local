@@ -4,7 +4,20 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 
 ## [Unreleased]
 
+### Fixed
+- **Wake word after changing the speaker model.** Recordings made with the
+  other model can't be compared: the wake word now asks once to record it
+  again instead of failing on every sound, and meetings skip saved voices of
+  the other model. Gemini models closed to new users are off the list, and a
+  404 shows the provider's reason.
+
 ### Added
+- **Live models in the Model table.** OpenAI `gpt-live-transcribe` and
+  Gemini `gemini-3.5-transcribe-live` can be picked beside the other models:
+  your words appear in the bubble as you speak, and voice commands and
+  auto-dictation go to the same provider's upload model. Gemini Live is new
+  (a live connection like OpenAI's). Voice chat models are listed with their
+  prices, marked not for dictation.
 - **Online transcription, and what every model costs.** Dictation
   (the Model table in Settings › Model & engine, where OpenAI and Gemini
   models sit below the local ones) and
@@ -19,9 +32,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
   chatted about it and what that cost (its new Cost tab, the list, the panel
   while it runs); AI calls for polish, rewrites and Practice are counted too
   (design: `docs/design/online-models.md`).
-- **Online mode and a monthly budget.** Settings › Model & engine ›
-  **Online mode** sends dictation and voice commands to the online model
-  and keeps only a small **Listening model** (`base`) on this computer for
+- **Online mode and a monthly budget.** Picking an online model in the
+  Model table sends dictation and voice commands there (there is no separate
+  switch: a local row brings dictation back to this computer), with your
+  languages as a hint so Hebrew stays in Hebrew letters, and keeps only a small **Listening model** (`base`) on this computer for
   the wake word and as the backup, so the big models aren't loaded and a PC
   without a GPU can use Koli all day. Meetings use their own model when one
   is set, else follow dictation. **Monthly budget** caps what online models

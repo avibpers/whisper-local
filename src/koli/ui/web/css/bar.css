@@ -19,6 +19,14 @@ button { font: inherit; color: inherit; }
 /* The resting tab: a thin line, upright on a side, flat at the top or bottom. */
 .bub.rest { width: 6px; height: 44px; padding: 0; cursor: pointer; }
 .bub.rest.flat { width: 44px; height: 6px; }
+/* A background job is running: a light moves along the tab. */
+.bub.rest.busy { background: linear-gradient(180deg, transparent 0%, rgba(255,255,255,.65) 50%, transparent 100%) 0 0 / 100% 300% no-repeat;
+  animation: busy-sweep 1.6s linear infinite; }
+.bub.rest.flat.busy { background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,.65) 50%, transparent 100%) 0 0 / 300% 100% no-repeat;
+  animation-name: busy-sweep-flat; }
+@keyframes busy-sweep { from { background-position: 0 150%; } to { background-position: 0 -150%; } }
+@keyframes busy-sweep-flat { from { background-position: 150% 0; } to { background-position: -150% 0; } }
+@media (prefers-reduced-motion: reduce) { .bub.rest.busy { animation: none; background-color: rgba(255,255,255,.35); } }
 .brand-mark { width: 40px; height: 40px; border-radius: 50%; background: var(--brand); color: var(--on-brand); display: grid; place-items: center; flex: none; }
 .badge { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; flex: none; }
 .badge.acc { background: var(--acc-soft); color: var(--acc); }

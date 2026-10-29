@@ -548,6 +548,7 @@ class WakeListener:
         self._busy_checked = -1e9
         self._enrolling = False
         self._noticed_mics = set()
+        self._other_model_mics = set()     # wake recordings made with another speaker model
         self._noticed_loading = False
         self._voice_model_ready = False
         self._warm_checked = -1e9
@@ -1073,6 +1074,12 @@ class WakeListener:
         if vec is None:
             return None
         vec = np.asarray(vec, dtype=np.float32)
+        if vec.shape != mine.shape:
+            # Recorded with another voiceprint model (meeting.speaker_model
+            # changed): the two can't be compared, so it counts as not recorded.
+            self._other_model_mics.add(self._mic())
+            return None
+        self._other_model_mics.discard(self._mic())
         norm = float(np.linalg.norm(vec))
         return float(np.dot(vec / norm, mine)) if norm > 0 else None
 
@@ -1095,11 +1102,13 @@ class WakeListener:
     # recorded there, once per session while the voice model loads.
     def _notice_unknown_voice(self) -> None:
         mic = self._mic()
-        if self.wake_voices.get(mic) is None:
+        if self.wake_voices.get(mic) is None or mic in self._other_model_mics:
             if mic in self._noticed_mics:
                 return
             self._noticed_mics.add(mic)
-            message = "Your wake word isn't recorded on this microphone yet. Record it in Commands."
+            message = ("Your wake word was recorded with another speaker model. Record it again in Commands, "
+                       "or set Meetings › Speaker model back." if mic in self._other_model_mics
+                       else "Your wake word isn't recorded on this microphone yet. Record it in Commands.")
         else:
             if self._noticed_loading:
                 return

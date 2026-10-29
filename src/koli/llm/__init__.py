@@ -7,6 +7,7 @@
 # empty Result with the reason, and the next fallback model is tried while the
 # feature's time allows. Design: docs/design/ai-providers.md.
 
+import json
 import logging
 import re
 import threading
@@ -156,13 +157,25 @@ def describe_error(provider_id: str, e: Exception) -> str:
         if e.status in (401, 403):
             return f"{label} refused the login or key (HTTP {e.status})"
         if e.status == 404:
-            return f"{label} doesn't have that model (HTTP 404)"
+            # Google says why (a model closed to new users, and what replaces it).
+            why = _error_message(e.body)
+            return f"{label} doesn't have that model (HTTP 404){': ' + why if why else ''}"
         if e.status in (402, 429):
             return f"{label}: usage limit or quota reached (HTTP {e.status})"
         if e.status == 426:
             return f"{label} wants a newer client version (HTTP 426); try again"
         return f"{label} error (HTTP {e.status}): {e.body[:160]}"
     return f"{label}: {e}"
+
+
+# The provider's own error sentence from a JSON error body
+# ({"error": {"message": ...}}), its first two sentences, or ''.
+def _error_message(body: str) -> str:
+    try:
+        message = str((json.loads(body or '{}').get('error') or {}).get('message') or '')
+    except (ValueError, AttributeError):
+        return ''
+    return '. '.join(message.split('. ')[:2]).strip()[:200]
 
 
 # ── Settings screen ──────────────────────────────────────────────────────────

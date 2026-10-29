@@ -2193,6 +2193,16 @@ class VoiceBookTests(unittest.TestCase):
         v = self.book.get(vid)
         self.assertEqual((v['count'], v['meetings']), (5, ['m1', 'm2']))
 
+    # Voices kept with another speaker model (another size) are not matched,
+    # and refining one starts it over with the new model.
+    def test_voices_from_another_speaker_model_are_skipped(self):
+        vid = self.book.keep([1.0, 0.0], 3, 'm1')
+        self.assertIsNone(self.book.match([1.0, 0.0, 0.0]))
+        self.book.keep([0.0, 0.0, 1.0], 2, 'm2', voice_id=vid)
+        v = self.book.get(vid)
+        self.assertEqual(v['count'], 2)
+        self.assertEqual(self.book.match([0.0, 0.0, 1.0])['id'], vid)
+
     # A meeting resumed and ended again must not count its audio twice.
     def test_the_same_meeting_counts_once(self):
         vid = self.book.keep([1.0, 0.0], 3, 'm1')

@@ -13,9 +13,10 @@ what that cost.
 
 ## Online mode
 
-`whisper.online_mode` (Settings › Model & engine, and turned on by picking an
-online row in the Model table) sends dictation and voice commands to
-`whisper.online_model`. This computer then loads only `whisper.listen_model`
+Picking an online row in the Model table (Settings › Model & engine) sets
+`whisper.online_model`, and dictation and voice commands go there. There is
+no separate switch: the row picked is what dictation uses (a switch of its
+own disagreed with the table, 2026-10-29). This computer then loads only `whisper.listen_model`
 (`base` by default): the main model and the second-language model are not
 loaded, so a PC without a GPU can run Koli all day. The listening model:
 
@@ -25,20 +26,46 @@ loaded, so a PC without a GPU can run Koli all day. The listening model:
 - serves Practice, Training and the bubble's Phrases engine.
 
 Voice activity detection runs before any upload: silence is never sent.
-Picking a local model in the table turns online mode off and loads it again.
+Picking a local row empties `whisper.online_model` and loads that model, in
+one settings change so the engine is rebuilt once.
+
+Your languages (`whisper.languages`) go to Gemini's upload models as a
+neutral hint ("Hebrew or English, sometimes both; write each word in its own
+alphabet"). Tested on real clips (2026-10-29): naming a main language made
+gemini-3.5-flash-lite write English in Hebrew letters, and a Hebrew lead
+sentence in OpenAI's prompt came back as the transcript of a short clip, so
+OpenAI gets no hint. On those clips `gpt-transcribe` was right every time
+(Hebrew, English and mixed); `gemini-3.5-flash-lite` was weak on Hebrew.
+`gemini-3.5-transcribe` refuses JSON mode and answers in
+`parts[].audioTranscription`, and ignores the instruction's language hint.
 
 ## Choosing
 
 | Setting | What it picks | Empty / off |
 |---------|---------------|-------------|
-| `whisper.online_mode` | dictation and commands online | local Whisper (the Model table's model) |
-| `whisper.online_model` | the online model, picked in the Model table | — |
-| `whisper.listen_model` | the only local model in online mode | `base` |
-| `meeting.model` | meetings' own model, online or local, in any mode | follow dictation: the online model in online mode, else local |
+| `whisper.online_model` | dictation and commands online, picked in the Model table | local Whisper (the Model table's model) |
+| `whisper.listen_model` | the only local model while an online model is picked | `base` |
+| `meeting.model` | meetings' own model, online or local | follow dictation: its online model, else local |
 
 The Model table lists every model of the price list that takes audio, one
-group per provider with its price an hour. Live-stream models (WebSocket /
-Live API) are listed with "live, coming next" and can't be chosen yet.
+group per provider with its price an hour. Live models (`transcribe: live`:
+OpenAI `gpt-live-transcribe` and `gpt-realtime-whisper`, Gemini
+`gemini-3.5-transcribe-live`) can be picked: they become the Cloud engine of
+Words while you speak, so your words show in the bubble as you speak, and the
+provider's upload model (`gpt-transcribe`, `gemini-3.5-transcribe`) takes
+what can't stream (voice commands, auto-dictation). Leaving a live row turns
+Words while you speak off again. Voice chat models (`transcribe: chat`:
+gpt-realtime*, gpt-audio*, the Gemini Live chat models) are listed with
+their prices but can't be picked. Meetings send chunks, so they use upload
+models only.
+
+Gemini Live (`cloud_stt/gemini_live.py`) is Gemini's BidiGenerateContent
+WebSocket with its own voice detection off: Koli opens and closes each turn
+(activityStart / activityEnd) at its phrase pauses. Checked on the real API
+(2026-10-29): a turn opened before the previous turn's final text came back
+is ignored, so the next turn opens only after that text, and its audio waits.
+Gemini Live reports no tokens; the cost is estimated at 25 audio tokens a
+second and about 1.4 output tokens a word.
 
 ## Monthly budget
 
@@ -121,5 +148,5 @@ the meeting.
 
 ## Not now
 
-Live-stream models, batch/flex discounts, currencies other than USD, cost
+Live models for meetings, batch/flex discounts, currencies other than USD, cost
 limits.

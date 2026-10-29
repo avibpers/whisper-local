@@ -91,7 +91,8 @@ class OnlineEngine:
         try:
             text, info = TRANSPORTS[self.provider_id](
                 PROVIDERS[self.provider_id].key(), self.model, to_wav(audio), language=forced or '',
-                prompt=self._prompt(local) if use_prompt else '', timeout=max(self.timeout, seconds))
+                prompt=self._prompt(local) if use_prompt else '', timeout=max(self.timeout, seconds),
+                speaks=tuple(getattr(local, 'allowed_languages', None) or ()))
         except Exception as e:
             return self._fall_back(local, audio, language, use_prompt, e)
 
@@ -100,7 +101,11 @@ class OnlineEngine:
                             tokens_in=info['tokens_in'], tokens_out=info['tokens_out'],
                             audio_tokens=info['audio_tokens'])
         cost = rec.get('cost')
+        # The console shows the words, like local Whisper; app.log only when
+        # logging.log_transcriptions allows (whisper_engine.py does the same).
         print(f"   ✓ {self.spec} transcribed in {elapsed:.1f} s" + (f" · ${cost:.4f}" if cost is not None else ''))
+        if text:
+            print(f"   ✓ Transcribed: '{text}'")
         logger.info(f"Online {self.feature}: {self.spec} in {elapsed:.2f}s, {seconds:.1f} s audio, "
                     f"{info['audio_tokens']} audio + {info['tokens_in']} text → {info['tokens_out']} tokens, "
                     f"cost {cost if cost is not None else 'unknown'}")

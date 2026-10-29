@@ -49,7 +49,7 @@ class PriceTests(_Isolated):
         self.assertGreaterEqual(len([r for r in rows if r['provider'] == 'openai']), 5)
         self.assertGreaterEqual(len([r for r in rows if r['provider'] == 'gemini']), 12)
         for r in rows:
-            self.assertIn(r['transcribe'], ('upload', 'live'), r['spec'])
+            self.assertIn(r['transcribe'], ('upload', 'live', 'chat'), r['spec'])
             self.assertIsNotNone(r['per_hour'], r['spec'])
 
     def test_minutes_when_no_tokens_tokens_when_given(self):
@@ -160,6 +160,46 @@ class TransportTests(_Isolated):
             text, info = openai.transcribe('sk', 'gpt-4o-mini-transcribe', b'x')
         self.assertEqual((text, info['audio_tokens'], info['tokens_in'], info['tokens_out']), ('Hi', 120, 10, 5))
 
+    # Your languages reach Gemini as a neutral hint (naming a main language
+    # made English come back in Hebrew letters); OpenAI gets no lead sentence
+    # (it wrote that sentence back for a short clip).
+    def test_your_languages_reach_gemini_neutrally_and_not_openai(self):
+        from koli.online_stt import gemini, openai
+        sent = {}
+
+        def raw(method, url, headers, body, timeout):
+            sent['body'] = body
+            return 200, {}, b'{"text": "x"}'
+
+        with mock.patch('koli.llm.http.raw', raw):
+            openai.transcribe('sk', 'gpt-4o-transcribe', b'x', speaks=('he', 'en'))
+        self.assertNotIn(b'name="prompt"', sent['body'])
+
+        def post_json(url, body, headers, timeout):
+            sent['body'] = body
+            return {'candidates': [{'content': {'parts': [{'text': '{"language": "he", "text": "x"}'}]}}]}
+
+        with mock.patch('koli.llm.http.post_json', post_json):
+            gemini.transcribe('key', 'gemini-3.5-flash-lite', b'x', speaks=('he', 'en'))
+        instruction = sent['body']['contents'][0]['parts'][1]['text']
+        self.assertIn('Hebrew or English', instruction)
+        self.assertNotIn('main language', instruction)
+
+    # gemini-3.5-transcribe refuses JSON mode and answers in audioTranscription.
+    def test_the_gemini_transcription_model_answers_in_plain_text(self):
+        from koli.online_stt import gemini
+        sent = {}
+
+        def post_json(url, body, headers, timeout):
+            sent['body'] = body
+            return {'candidates': [{'content': {'parts': [
+                {'audioTranscription': {'text': 'As you recommended.', 'languageCode': 'en'}}]}}]}
+
+        with mock.patch('koli.llm.http.post_json', post_json):
+            text, info = gemini.transcribe('key', 'gemini-3.5-transcribe', b'x', speaks=('he', 'en'))
+        self.assertNotIn('responseMimeType', sent['body']['generationConfig'])
+        self.assertEqual((text, info['language']), ('As you recommended.', 'en'))
+
     def test_gemini_answer_splits_audio_and_text_tokens(self):
         from koli.online_stt import gemini
         answer = {'candidates': [{'content': {'parts': [{'text': '{"language": "he", "text": "שלום לכולם"}'}]}}],
@@ -203,7 +243,7 @@ class EngineTests(_Isolated):
         info = {'language': 'en', 'segments': [], 'audio_tokens': 0, 'tokens_in': 0, 'tokens_out': 0, 'billed_seconds': 1.0}
         seen = {}
 
-        def fake(key, model, wav, language='', prompt='', timeout=0):
+        def fake(key, model, wav, language='', prompt='', timeout=0, speaks=()):
             seen.update(model=model, prompt=prompt, wav=wav[:4])
             return 'online text', info
 
@@ -239,7 +279,7 @@ class EngineTests(_Isolated):
     def test_live_models_are_not_usable_yet(self):
         from koli.online_stt import usable
         self.assertTrue(usable('openai/gpt-4o-mini-transcribe'))
-        self.assertTrue(usable('gemini/gemini-2.5-flash-lite'))
+        self.assertTrue(usable('gemini/gemini-3.5-flash-lite'))
         self.assertFalse(usable('openai/gpt-live-transcribe'))
         self.assertFalse(usable('openai/gpt-5.5'))
         self.assertFalse(usable('ollama/llama3'))
@@ -266,31 +306,31 @@ class OnlineModeTests(_Isolated):
         budget.configure(FakeSettings(self.settings))
         budget._state.update({'over': None, 'warned': '', 'reported': ''})
         self.cfg = {'model': 'large-v3-turbo', 'language_model': {'language': 'he', 'model': 'hebrew-large-v3-turbo'},
-                    'online_mode': True, 'online_model': 'openai/gpt-4o-mini-transcribe', 'listen_model': 'base'}
+                    'online_model': 'openai/gpt-4o-mini-transcribe', 'listen_model': 'base'}
 
     def tearDown(self):
         self.budget.configure(FakeSettings({}))
         super().tearDown()
 
-    def test_online_mode_loads_only_the_listening_model(self):
+    def test_an_online_model_loads_only_the_listening_model(self):
         from koli.online_stt import mode
         local = mode.local_config(self.cfg)
         self.assertEqual(local['model'], 'base')
         self.assertEqual(local['language_model']['language'], '')
         self.assertEqual(mode.dictation_spec(self.cfg), 'openai/gpt-4o-mini-transcribe')
 
-    def test_off_or_without_a_usable_model_is_local_as_set(self):
+    def test_without_a_usable_online_model_is_local_as_set(self):
         from koli.online_stt import mode
-        for cfg in ({**self.cfg, 'online_mode': False}, {**self.cfg, 'online_model': ''},
+        for cfg in ({**self.cfg, 'online_model': ''},
                     {**self.cfg, 'online_model': 'openai/gpt-live-transcribe'}):
             self.assertEqual(mode.local_config(cfg)['model'], 'large-v3-turbo')
             self.assertEqual(mode.dictation_spec(cfg), '')
 
     def test_meetings_use_their_own_model_else_follow_dictation(self):
         from koli.online_stt import mode
-        self.assertEqual(mode.meeting_spec('gemini/gemini-2.5-flash-lite', self.cfg), 'gemini/gemini-2.5-flash-lite')
+        self.assertEqual(mode.meeting_spec('gemini/gemini-3.5-flash-lite', self.cfg), 'gemini/gemini-3.5-flash-lite')
         self.assertEqual(mode.meeting_spec('', self.cfg), 'openai/gpt-4o-mini-transcribe')
-        self.assertEqual(mode.meeting_spec('', {**self.cfg, 'online_mode': False}), '')
+        self.assertEqual(mode.meeting_spec('', {**self.cfg, 'online_model': ''}), '')
 
     def test_budget_used_up_with_a_takeover_model_loads_it(self):
         from koli.online_stt import mode
@@ -348,5 +388,58 @@ class OnlineModeTests(_Isolated):
             result = llm.complete('polish', [{'role': 'user', 'content': 'hi'}])
         self.assertEqual(result.provider, 'codex')
 
+
+# ── Meetings: their own local model ─────────────────────────────────────────
+
+class MeetingModelTests(unittest.TestCase):
+    def _service(self, settings: dict, dictation_key='large-v3-turbo', second=None):
+        import threading
+        from types import SimpleNamespace
+        from koli.services.meetings import MeetingService
+        svc = MeetingService.__new__(MeetingService)
+        engine = SimpleNamespace(model_key=dictation_key, language_model=second)
+        svc.ctx = SimpleNamespace(state_manager=SimpleNamespace(whisper_engine=engine),
+                                  config_manager=FakeSettings(settings))
+        svc._lock = threading.Lock()
+        svc._meeting_local = None
+        svc._online = None
+        svc._setting = lambda path, default=None: settings.get(path, default)
+        return svc, engine
+
+    def test_same_local_model_as_dictation_reuses_its_engine(self):
+        svc, engine = self._service({'meeting.model': 'local/large-v3-turbo'})
+        self.assertIs(svc._engine(), engine)
+
+    def test_another_local_model_loads_in_the_background(self):
+        svc, engine = self._service({'meeting.model': 'local/hebrew-large-v3-turbo'})
+        started = []
+        with mock.patch('koli.services.meetings.get_task_manager') as tasks:
+            tasks.return_value.run.side_effect = lambda label, fn, **kw: started.append(label)
+            self.assertIs(svc._engine(), engine)          # dictation's engine until it is loaded
+            svc._engine()                                 # asked again while loading: one load only
+        self.assertEqual(started, ['Loading hebrew-large-v3-turbo for meetings'])
+        loaded = object()
+        svc._meeting_local = ('hebrew-large-v3-turbo', loaded)
+        self.assertIs(svc._engine(), loaded)
+
+    def test_empty_follows_dictation(self):
+        svc, engine = self._service({'meeting.model': '', 'whisper.online_model': ''})
+        self.assertIs(svc._engine(), engine)
+        svc, _ = self._service({'meeting.model': '', 'whisper.online_model': 'openai/gpt-4o-mini-transcribe'})
+        self.assertEqual(svc._engine().spec, 'openai/gpt-4o-mini-transcribe')
+
 if __name__ == '__main__':
     unittest.main()
+
+
+class ErrorMessageTests(unittest.TestCase):
+    # Google's 404 says why (closed to new users) and what to use instead.
+    def test_a_404_carries_the_providers_reason(self):
+        from koli.llm import describe_error, http
+        body = ('{"error": {"code": 404, "message": "This model models/gemini-2.5-flash-lite is no longer '
+                'available to new users. Please update your code to use models/gemini-3.5-flash-lite for '
+                'the latest features. More text."}}')
+        text = describe_error('gemini', http.HttpError(404, body))
+        self.assertIn('no longer available to new users', text)
+        self.assertIn('gemini-3.5-flash-lite', text)
+        self.assertNotIn('More text', text)

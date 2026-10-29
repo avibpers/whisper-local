@@ -11,6 +11,22 @@ from typing import Callable, Optional
 ENGINES = ('off', 'local', 'phrases', 'cloud')
 PROVIDERS = {'openai': 'OpenAI', 'gemini': 'Gemini'}
 DEFAULT_MODELS = {'openai': 'gpt-live-transcribe', 'gemini': 'gemini-3.6-flash'}
+# The provider's upload model that takes over what can't stream (commands,
+# auto-dictation) when a live model is picked in the Model table.
+UPLOAD_SIBLING = {'openai': 'openai/gpt-transcribe', 'gemini': 'gemini/gemini-3.5-transcribe'}
+
+
+# A model that streams (words as you speak, over a WebSocket), from the
+# price list; OpenAI's Cloud engine always streams.
+def is_live_model(provider: str, model: str) -> bool:
+    if provider == 'openai':
+        return True
+    try:
+        from .usage import prices
+        entry = prices.entry(f"{provider}/{model}") or {}
+    except Exception:
+        entry = {}
+    return entry.get('transcribe') == 'live'
 
 # Recordings that never get words in the bubble: there is nothing to fix by
 # hand in a command, a rephrase or a translation, and auto-dictation starts on
@@ -24,6 +40,7 @@ class EngineChoice:
     provider: str = ''
     model: str = ''
     notice: str = ''          # said once when the choice differs from the setting
+    stream: bool = False      # words as you speak over a live connection (else phrase by phrase)
 
 
 # The language hint for a cloud provider: the app rule's, then the dictation
@@ -81,7 +98,7 @@ def choose_engine(cfg: dict, rule: Optional[dict], *, mode: str, language: str,
     if not has_key(provider):
         return EngineChoice('phrases', notice=f"No {PROVIDERS[provider]} key in AI providers, so this dictation shows phrases.")
     model = str(cloud.get(f'{provider}_model') or DEFAULT_MODELS[provider])
-    return EngineChoice(provider, provider=provider, model=model)
+    return EngineChoice(provider, provider=provider, model=model, stream=is_live_model(provider, model))
 
 
 # The name usage is counted under (live_words_usage.py).

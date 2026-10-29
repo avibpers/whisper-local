@@ -185,7 +185,7 @@ class Appliers:
         ref = value if path in ('whisper.model', 'whisper.language_model.model') else None
         return self._background(label, 'engine', path, old, job, ref=ref)
 
-    # Online mode, its model and the listening model: a new local engine only
+    # The online model and the listening model: a new local engine only
     # when what it loads changes (online_stt/mode.py); otherwise the next
     # dictation simply reads the new choice.
     def online_mode(self, path, value, old):
@@ -195,8 +195,8 @@ class Appliers:
         if online.local_models(before) == online.local_models(now):
             return self._live()
         model = online.local_config(now)['model']
-        label = (f"Online mode: keeping only {model} on this computer" if online.active(now)
-                 else f"Online mode off: loading {model}")
+        label = (f"Online model: keeping only {model} on this computer" if online.active(now)
+                 else f"Back on this computer: loading {model}")
         return self.engine_rebuild(path, value, old, label=label)
 
     # The month's budget went over or came back: in online mode with a local
@@ -561,7 +561,6 @@ _HANDLERS = {
     'whisper.backend': Appliers.engine_rebuild,
     'whisper.language_model.language': Appliers.engine_rebuild,
     'whisper.language_model.model': Appliers.engine_rebuild,
-    'whisper.online_mode': Appliers.online_mode,
     'whisper.online_model': Appliers.online_mode,
     'whisper.listen_model': Appliers.online_mode,
     'audio.input_device': Appliers.recorder_rebuild,

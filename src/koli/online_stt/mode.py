@@ -1,7 +1,7 @@
 # online_stt/mode.py
-# Online mode (whisper.online_mode): dictation and voice commands go to the
-# online model picked in the Model table (whisper.online_model), and this
-# computer keeps only a small listening model (whisper.listen_model, base by
+# Online mode: an online model picked in the Model table (whisper.online_model,
+# empty when a local model is picked) takes dictation and voice commands, and
+# this computer keeps only a small listening model (whisper.listen_model, base by
 # default) for the wake word and as the backup, so the big models and the
 # second-language model are not loaded at all. Meetings use their own model
 # (meeting.model) when one is set, else they follow dictation. When the
@@ -15,10 +15,9 @@ from .engine import usable
 DEFAULT_LISTEN_MODEL = 'base'
 
 
-# Online mode is on with a model it can send recordings to (budget aside).
+# An online model is picked that Koli can send recordings to (budget aside).
 def chosen(whisper_cfg: dict) -> bool:
-    cfg = whisper_cfg or {}
-    return bool(cfg.get('online_mode')) and usable(str(cfg.get('online_model') or ''))
+    return usable(str((whisper_cfg or {}).get('online_model') or ''))
 
 
 # Whether recordings go online now: chosen, and the month's budget isn't used

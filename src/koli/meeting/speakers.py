@@ -102,7 +102,10 @@ class SpeakerTracker:
         short = speech_s is not None and float(speech_s) < MIN_NEW_SPEECH_S
         exclude = set(exclude)
         with self._lock:
-            candidates = [s for s in self._speakers if s['id'] not in exclude]
+            # A meeting resumed after the speaker model changed holds
+            # voiceprints of another size: those speakers can't be matched.
+            comparable = [s for s in self._speakers if np.shape(s['centroid']) == vec.shape]
+            candidates = [s for s in comparable if s['id'] not in exclude]
             best, best_sim = None, -1.0
             for s in candidates:
                 sim = float(np.dot(s['centroid'], vec))
@@ -111,7 +114,7 @@ class SpeakerTracker:
             last = self._last if self._last in candidates else None
             last_sim = float(np.dot(last['centroid'], vec)) if last is not None else -1.0
             twin, twin_sim = None, SAME_VOICE
-            for s in self._speakers:
+            for s in comparable:
                 if s['id'] in exclude:
                     sim = float(np.dot(s['centroid'], vec))
                     if sim >= twin_sim:

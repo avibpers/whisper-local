@@ -22,6 +22,13 @@ def to_wav(audio: np.ndarray) -> bytes:
     return buf.getvalue()
 
 
+# "he" -> "Hebrew", for an instruction to the model.
+def language_name(code: str) -> str:
+    from ..settings.schema import LANGUAGES
+    label = dict(LANGUAGES).get(str(code or ''), '')
+    return label.split(' ')[0] if label else str(code or '')
+
+
 # whisper-1's verbose answer names the language ("hebrew"); Koli keeps codes.
 def language_code(name: str) -> str:
     name = str(name or '').strip().lower()

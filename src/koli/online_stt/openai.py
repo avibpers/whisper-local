@@ -27,8 +27,10 @@ def _multipart(fields: dict, wav: bytes) -> tuple:
 
 
 # (text, info) where info has language, segments and usage numbers.
+# `speaks` (your languages) is not sent: a lead sentence in Hebrew made
+# gpt-4o-transcribe write that sentence back for a short clip (2026-10-29).
 def transcribe(key: str, model: str, wav: bytes, language: str = '', prompt: str = '',
-               timeout: float = 60) -> tuple:
+               timeout: float = 60, speaks: tuple = ()) -> tuple:
     verbose = model == 'whisper-1'
     diarize = 'diarize' in model
     fields = {'model': model, 'response_format': 'verbose_json' if verbose else 'json', 'temperature': '0'}

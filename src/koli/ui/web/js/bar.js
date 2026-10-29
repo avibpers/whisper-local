@@ -405,15 +405,15 @@ function Status() {
     return html`<div class="bub"><${Badge} tone="quiet" icon="pause" /><span>Koli is paused</span>
       <button type="button" class="btn" onClick=${() => call('dictation_pause', false)}>Resume</button></div>`;
   }
-  if (task) {
-    const pct = task.progress != null ? task.progress * 100 : null;
-    return html`<div class="bub" style="padding-inline-end:16px"><${Badge} tone="acc" icon="refresh" />
-      <span class="text">${task.label}</span>${pct != null && html`<span class="prog"><span style=${`width:${pct}%`}></span></span>`}</div>`;
-  }
+  // A background job (a meeting summary, a download, a model switch) never
+  // takes the bubble: it rests with a moving light, and hovering shows what
+  // runs beside the quick actions.
   if (hover) {
     const inMeeting = MEETING_ON.has(meeting.state);
     return html`<div class="bub" style="cursor:pointer" onClick=${openMenu} title="Quick actions">
-      <${KoliMark} size=${40} />${settings.hotkey.recording_mode === 'toggle' ? 'Press' : 'Hold'} <span class="keys">${keys}</span>
+      <${KoliMark} size=${40} />${task ? html`<span class="text" title=${task.label}>${task.label}</span>${task.progress != null
+        && html`<span class="prog"><span style=${`width:${task.progress * 100}%`}></span></span>`}`
+        : html`${settings.hotkey.recording_mode === 'toggle' ? 'Press' : 'Hold'} <span class="keys">${keys}</span>`}
       ${inMeeting && meeting.screenshots !== 'off' && html`<button type="button" class="btn round" aria-label="Screenshot" title="Snip a screenshot into the meeting" style="width:34px;height:34px"
         onClick=${(e) => { e.stopPropagation(); call('meeting_screenshot'); }}><${Icon} name="camera" /></button>`}
       ${inMeeting && html`<button type="button" class="btn" title="Stop the meeting and save it"
@@ -421,7 +421,8 @@ function Status() {
       <button type="button" class="btn round" aria-label="Quick actions" style="width:34px;height:34px"><${Icon} name="dots" /></button></div>`;
   }
   // Upright on a side of the screen or beside a field, flat at the top or bottom.
-  return html`<div class=${upright ? 'bub rest' : 'bub rest flat'} role="button" tabindex="0" aria-label="Koli is ready. Open quick actions" onClick=${openMenu}></div>`;
+  return html`<div class=${(upright ? 'bub rest' : 'bub rest flat') + (task ? ' busy' : '')} role="button" tabindex="0"
+    aria-label=${task ? `Koli is working: ${task.label}. Open quick actions` : 'Koli is ready. Open quick actions'} onClick=${openMenu}></div>`;
 }
 
 // ── AI actions ────────────────────────────────────────────────────────────
@@ -502,7 +503,7 @@ function waitingForSpeech(st) {
 
 // True while the bubble is the slim resting tab (painted in its resting colour).
 function isResting(s) {
-  return !!s.settings && !s.menu && !s.hover && !s.flash && !s.task && !s.sending && !s.wake && !s.agent && !s.live
+  return !!s.settings && !s.menu && !s.hover && !s.flash && !s.sending && !s.wake && !s.agent && !s.live
     && (s.state.state !== 'recording' || waitingForSpeech(s.state))
     && s.state.state !== 'processing' && !s.state.paused && s.meeting.state !== 'offered'
     && !(s.meeting.state === 'idle' && s.meeting.standby);

@@ -145,7 +145,7 @@ def save_own(spec: str, prices: Optional[dict]) -> None:
             v = prices.get(k)
             if v not in (None, ''):
                 clean[k] = float(v)
-        if prices.get('transcribe') in ('upload', 'live'):
+        if prices.get('transcribe') in ('upload', 'live', 'chat'):
             clean['transcribe'] = prices['transcribe']
         models[spec] = clean
     data['models'] = models

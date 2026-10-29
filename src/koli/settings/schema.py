@@ -202,16 +202,13 @@ SCHEMA = [
        mode=SIMPLE, group='Voice detection', min=1, max=36000, step=1, unit='seconds'),
 
     # ── Model & engine ───────────────────────────────────────────────────────
-    _S('whisper.online_mode', 'Online mode', 'model', 'toggle', apply=BACKGROUND,
-       help='Dictation and voice commands go to the online model picked below, and this computer keeps only the '
-            'small listening model for the wake word and as the backup. The big models are not loaded.'),
     _S('whisper.model', 'Model', 'model', 'model_table', apply=BACKGROUND, mode=SIMPLE,
        help='Switching downloads the model if needed, then swaps it in while you keep dictating.'),
     _S('whisper.models', 'Available models', 'model', 'model_table',
        help='Show or hide models in menus, or add your own CTranslate2 model.'),
     _S('whisper.listen_model', 'Listening model', 'model', 'select', apply=BACKGROUND, source='whisper_models',
        group='Online mode',
-       help='The only model this computer loads in online mode: it hears the wake word all day and transcribes '
+       help='The only model this computer loads while an online model is picked: it hears the wake word all day and transcribes '
             'when the online model does not answer. Base runs well on any CPU.'),
     _S('usage.monthly_budget', 'Monthly budget', 'model', 'number', group='Online budget', min=0, max=10000,
        step=1, unit='$',
@@ -222,11 +219,11 @@ SCHEMA = [
        help='Switch to this model on this computer until the month ends, or stop: the bubble then says the budget '
             'is used up.'),
     # Picked in the Model table with the local models (an online row), so not
-    # a row of its own.
-    _S('whisper.online_model', 'Online model for dictation', 'model', 'stt_model', mode=HIDDEN,
-       help='Sends each dictation to this model with the API key from Settings › AI, and shows what it cost. '
-            'Empty keeps dictation on this computer. The wake word and voice commands always stay local, and '
-            'local Whisper takes over if the online model fails.'),
+    # a row of its own; picking a local row empties it.
+    _S('whisper.online_model', 'Online model for dictation', 'model', 'stt_model', mode=HIDDEN, apply=BACKGROUND,
+       help='Sends each dictation and voice command to this model with the API key from Settings › AI, and shows '
+            'what it cost. Empty keeps dictation on this computer. The wake word stays local, and the listening '
+            'model takes over if the online model fails.'),
     _S('whisper.backend', 'Engine', 'model', 'segmented', apply=BACKGROUND,
        choices=[['faster_whisper', 'faster-whisper'], ['whisper_cpp', 'whisper.cpp']],
        help='whisper.cpp is optional: faster on Apple Silicon, uses GGUF models.'),
@@ -471,8 +468,9 @@ SCHEMA = [
     # The default template is chosen in Meetings › Templates.
     _S('meeting.summary.template', 'Default summary template', 'meetings', 'text', apply=INTERNAL, mode=HIDDEN),
     _S('meeting.model', 'Transcribe meetings with', 'meetings', 'stt_model', apply=NEXT_RECORDING,
-       help='An online model, with the API key from Settings › AI, or empty for local Whisper. Each meeting '
-            'shows which models transcribed and summarized it, and what that cost.'),
+       help='Same as dictation (the model of Settings › Model & engine, online in online mode), or an online model '
+            'just for meetings, with the API key from Settings › AI. Each meeting shows which models transcribed '
+            'and summarized it, and what that cost.'),
     _S('meeting.speaker_model', 'Voiceprint model', 'meetings', 'select', apply=BACKGROUND,
        choices=[['eres2net-en', '3D-Speaker ERes2Net VoxCeleb (26 MB)'], ['eres2net', '3D-Speaker ERes2Net Chinese (40 MB)']],
        help='Tells speakers apart. Downloaded at the first meeting.'),

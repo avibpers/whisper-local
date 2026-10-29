@@ -32,6 +32,9 @@ from ..usage.ledger import for_meeting
 from ..ui.events import publish as publish_event, report_problem
 from ..ui.tasks import get_task_manager
 
+
+# meeting.model names a local Whisper model this way; anything else is online.
+LOCAL_PREFIX = 'local/'
 logger = logging.getLogger(__name__)
 
 MIN_KEEP_CHUNKS = 3   # chunks a remote voice needs before it is saved when the meeting ends
@@ -61,6 +64,14 @@ def _call_app(meeting: dict, sessions: Callable[[], list] = lambda: []) -> Optio
 
 
 # The colour for a speaker added to a saved meeting: the next of the others'.
+# Cosine of two unit voiceprints, or None when one is missing or they come
+# from different speaker models (another size).
+def _cosine(vec, mine) -> Optional[float]:
+    if vec is None or mine is None or np.shape(vec) != np.shape(mine):
+        return None
+    return float(np.dot(vec, mine))
+
+
 def _next_colour(meeting: dict) -> int:
     return len([s for s in meeting['speakers'] if s['id'] != 'you']) % 7 + 1
 
@@ -133,6 +144,7 @@ class MeetingService:
         self._meeting_mic = ''            # the meeting microphone's name, for your voice on it
         self._embedder_task = None
         self._online = None               # the OnlineEngine of meeting.model, made on first use
+        self._meeting_local = None        # (key, WhisperEngine or None while loading) for meeting.model "local/<key>"
         self.session = SessionManager(self.store, start_capture=self._start_capture, stop_capture=self._stop_capture,
                                       publish=self._publish, settings=self._setting, on_speakers=self.tracker.load,
                                       on_ended=self._meeting_ended)
@@ -154,20 +166,82 @@ class MeetingService:
         if self._setting('meeting.enabled', True):
             self.start_detector()
 
-    # The engine meetings transcribe with: the online model of meeting.model,
-    # else dictation's online model in online mode, else local Whisper
-    # (online_stt/mode.py). An online one needn't wait for dictation, falls
-    # back to the local engine when it fails, and stops on a used-up budget.
+    # The engine meetings transcribe with (online_stt/mode.py): meeting.model
+    # when set, a local model ("local/<key>") or an online one; else
+    # dictation's online model in online mode, else dictation's local engine.
+    # An online one needn't wait for dictation, falls back to the local
+    # engine when it fails, and stops on a used-up budget.
     def _engine(self):
-        whisper = {'online_mode': self._setting('whisper.online_mode', False),
-                   'online_model': self._setting('whisper.online_model', '')}
-        spec = online_mode.meeting_spec(self._setting('meeting.model', ''), whisper)
+        own = str(self._setting('meeting.model', '') or '').strip()
+        if own.startswith(LOCAL_PREFIX):
+            return self._local_engine(own[len(LOCAL_PREFIX):])
+        whisper = {'online_model': self._setting('whisper.online_model', '')}
+        spec = online_mode.meeting_spec(own, whisper)
         if not spec:
             return self.ctx.state_manager.whisper_engine
         if self._online is None or self._online.spec != spec:
             self._online = OnlineEngine(spec, lambda: self.ctx.state_manager.whisper_engine, feature='meeting',
                                         timeout=120)
         return self._online
+
+    # A local model of its own for meetings. Dictation's engine when it
+    # already runs that model alone; else loaded in the background on the
+    # first chunk (dictation's engine transcribes meanwhile), and unloaded
+    # once the meeting ended and its transcript caught up, so the graphics
+    # memory isn't held all day.
+    def _local_engine(self, key: str):
+        dictation = self.ctx.state_manager.whisper_engine
+        if getattr(dictation, 'model_key', None) == key and getattr(dictation, 'language_model', None) is None:
+            return dictation
+        with self._lock:
+            loaded = self._meeting_local
+            if loaded is not None and loaded[0] == key and loaded[1] is not None:
+                return loaded[1]
+            if loaded is None or loaded[0] != key:
+                self._meeting_local = (key, None)
+                get_task_manager().run(f"Loading {key} for meetings", lambda reporter: self._load_local(key, reporter),
+                                       kind='engine', ref=key)
+        return dictation
+
+    def _load_local(self, key: str, reporter):
+        from ..main import setup_whisper_engine
+        from ..services import models as model_service
+        cm = self.ctx.config_manager
+        cfg = {**cm.get_whisper_config(), 'model': key, 'online_model': '',
+               'language_model': {'language': ''}}
+        registry = getattr(self.ctx, 'model_registry', None)
+        if registry is not None:
+            model_service.ensure_downloaded(registry, key, reporter)
+        reporter.report(None, f"Loading {key}…")
+        log_t = cm.get_logging_config().get('log_transcriptions', False)
+        engine = setup_whisper_engine(cfg, self.ctx.state_manager.vad_manager, registry, log_t, None)
+        with self._lock:
+            if self._meeting_local and self._meeting_local[0] == key:
+                self._meeting_local = (key, engine)
+                engine = None
+        if engine is not None:          # the setting changed while it loaded
+            engine.unload()
+        logger.info(f"Meetings transcribe with {key} on this computer")
+
+    def _unload_local(self, why: str):
+        with self._lock:
+            loaded, self._meeting_local = self._meeting_local, None
+        if loaded and loaded[1] is not None:
+            logger.info(f"Meetings' own model {loaded[0]} unloaded: {why}")
+            loaded[1].unload()
+
+    # After a meeting: once its transcript caught up and no meeting runs,
+    # the meetings' own local model leaves the graphics card.
+    def _unload_local_when_done(self, poll_s: float = 5.0):
+        def wait():
+            while not self._closed:
+                if self.is_running():
+                    return
+                if self.transcriber.queued_seconds() <= 0 and not self.transcriber.working:
+                    self._unload_local('the meeting ended')
+                    return
+                time.sleep(poll_s)
+        threading.Thread(target=wait, daemon=True, name='meeting-model-unload').start()
 
     # ── Settings ─────────────────────────────────────────────────────────────
 
@@ -185,6 +259,8 @@ class MeetingService:
                 self.stop_detector()
         elif path == 'meeting.segmentation_model':
             self.transcriber.split = None
+        elif path == 'meeting.model':
+            self._unload_local('another meeting model was chosen')
         elif path == 'meeting.screenshots':
             if value == 'all' and self.is_running():
                 self._start_watcher()
@@ -652,6 +728,8 @@ class MeetingService:
     # then "Summary ready" with Open; 'none' lets it close.
     def _meeting_ended(self, meeting: dict):
         self._keep_voices(meeting)
+        if self._meeting_local is not None:
+            self._unload_local_when_done()
         why_not = self._no_auto_summary(meeting)
         if why_not:
             logger.info(f"Meeting summary: {why_not}")
@@ -930,7 +1008,7 @@ class MeetingService:
 
     def _load_embedder(self):
         registry = self.ctx.model_registry
-        key = str(self._setting('meeting.speaker_model', 'eres2net') or 'eres2net')
+        key = str(self._setting('meeting.speaker_model', 'eres2net-en') or 'eres2net-en')
         if registry is None:
             return None
         path = registry.get_speaker_model_path(key)
@@ -945,7 +1023,7 @@ class MeetingService:
             return None
         segmentation = registry.get_speaker_model_path(key)
         voiceprint = registry.get_speaker_model_path(
-            str(self._setting('meeting.speaker_model', 'eres2net') or 'eres2net'))
+            str(self._setting('meeting.speaker_model', 'eres2net-en') or 'eres2net-en'))
         return make_splitter(segmentation, voiceprint) if segmentation and voiceprint else None
 
     # Loads the voiceprint model (and the voice splitter) in the background
@@ -1121,6 +1199,8 @@ class MeetingService:
             for i, a in enumerate(remote):
                 for b in remote[i + 1:]:
                     va, vb = np.asarray(a['centroid']), np.asarray(b['centroid'])
+                    if va.shape != vb.shape:
+                        continue      # one is from another speaker model
                     sim = float(np.dot(va, vb) / ((np.linalg.norm(va) * np.linalg.norm(vb)) or 1.0))
                     if sim >= SAME_VOICE:
                         keep, drop = (a, b) if a.get('count', 0) >= b.get('count', 0) else (b, a)
@@ -1229,7 +1309,7 @@ class MeetingService:
         if mine is None or mine[2] < MY_VOICE_MIN:
             return None
         vec = self._voiceprint(audio)
-        return None if vec is None else float(np.dot(vec, mine[1]))
+        return _cosine(vec, mine[1])
 
     # For the Settings voice check: the score, plus why there may be none -
     # how many hotkey dictations taught your voice on `mic` (MY_VOICE_MIN
@@ -1247,7 +1327,8 @@ class MeetingService:
         score = None
         if ready and learned >= MY_VOICE_MIN:
             vec = self._voiceprint(audio)
-            score = None if vec is None else round(float(np.dot(vec, mine[1])), 2)
+            score = _cosine(vec, mine[1])
+            score = None if score is None else round(score, 2)
         return {'score': score, 'learned': learned, 'needed': MY_VOICE_MIN, 'ready': ready}
 
     # ── Your voice for the wake word ─────────────────────────────────────────

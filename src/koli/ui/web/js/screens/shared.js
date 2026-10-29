@@ -171,25 +171,52 @@ export function money(x) {
 const PROVIDER_NAMES = { openai: 'OpenAI', gemini: 'Gemini', local: 'This computer' };
 export const providerName = (id) => PROVIDER_NAMES[id] || id;
 
-// Local Whisper, or an online model grouped by provider with its price an
-// hour. Live-stream models are listed but can't be picked yet; a provider
+// What "Same as dictation" means right now: dictation's online model when
+// one is picked, else the local model of Model & engine and the second model
+// for its language (docs/design/online-models.md).
+function useSameAsDictation() {
+  const online = useSetting('whisper.online_model') || '';
+  const model = useSetting('whisper.model') || '';
+  const second = useSetting('whisper.language_model') || {};
+  if (online) {
+    return { short: online, long: `Dictation uses ${online}, so meetings go there too (Settings › Model & engine).` };
+  }
+  const extra = second.language && second.model ? `, and ${second.model} for ${second.language}` : '';
+  return { short: `local ${model}${extra ? ' + ' + second.model : ''}`,
+    long: `Local Whisper on this computer, free: ${model}${extra} (Settings › Model & engine).` };
+}
+
+// Same as dictation, or an online model grouped by provider with its price an
+// hour. Live-stream models (dictation only: a meeting sends chunks) and voice
+// chat models are listed but can't be picked; a provider
 // without a key says so.
 function SttModelPicker({ value, onChange, label }) {
   const rows = usePriceList().filter((r) => r.transcribe);
+  const same = useSameAsDictation();
+  // Local models of their own ("local/<key>"): loaded for a meeting, unloaded after.
+  const [locals, setLocals] = useState([]);
+  useEffect(() => { call('models_list').then((m) => setLocals(m.models.filter((x) => x.enabled || `local/${x.key}` === value))).catch(() => {}); }, []);
+  const local = locals.find((m) => `local/${m.key}` === value);
   const providers = [...new Set(rows.map((r) => r.provider))];
   const chosen = rows.find((r) => r.spec === value);
-  const known = !value || !!chosen;
+  const known = !value || !!chosen || !!local || (value.startsWith('local/') && !locals.length);
   const optionText = (r) => `${r.model}${r.per_hour != null ? ` · ~${money(r.per_hour)}/hour` : ''}`
-    + `${r.transcribe === 'live' ? ' · live, coming next' : ''}${r.has_key ? '' : ' · needs a key'}`;
+    + `${r.transcribe === 'live' ? ' · live, dictation only' : r.transcribe === 'chat' ? ' · voice chat' : ''}${r.has_key ? '' : ' · needs a key'}`;
   return html`<span class="stack" style="gap:4px;align-items:flex-end">
     <select class="sel" aria-label=${label} style="max-width:340px" onChange=${(e) => onChange(e.currentTarget.value)}>
-      <option value="" selected=${!value}>Local Whisper (free, on this computer)</option>
+      <option value="" selected=${!value}>Same as dictation · ${same.short}</option>
       ${!known && html`<option value=${value} selected>${value} (not in the price list)</option>`}
+      ${locals.length > 0 && html`<optgroup label="This computer · free">
+        ${locals.map((m) => html`<option value=${`local/${m.key}`} selected=${`local/${m.key}` === value}>${m.label}${m.cached ? '' : ' · downloads first'}</option>`)}
+      </optgroup>`}
       ${providers.map((p) => html`<optgroup label=${providerName(p)}>
         ${rows.filter((r) => r.provider === p).map((r) => html`<option value=${r.spec} selected=${r.spec === value}
-          disabled=${r.transcribe === 'live'}>${optionText(r)}</option>`)}
+          disabled=${r.transcribe === 'live' || r.transcribe === 'chat'}>${optionText(r)}</option>`)}
       </optgroup>`)}
     </select>
+    ${!value && html`<span class="small muted" style="text-align:end">${same.long}</span>`}
+    ${value.startsWith('local/') && html`<span class="small muted" style="text-align:end">On this computer, free. Loaded when a meeting starts
+      transcribing and unloaded after it, unless dictation already uses it.</span>`}
     ${chosen && html`<span class="small muted" style="text-align:end">
       ${chosen.per_minute != null ? `${money(chosen.per_minute)} a minute` : `${money(chosen.audio_in)} per 1M audio tokens, ${money(chosen.text_out)} per 1M out`}
       ${chosen.note ? ` · ${chosen.note}` : ''}

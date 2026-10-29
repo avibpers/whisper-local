@@ -60,6 +60,13 @@ class LiveWordsDecisionTests(unittest.TestCase):
         c = self._pick({'engine': 'cloud', 'cloud': {'provider': 'gemini', 'gemini_model': 'gemini-3.5-flash-lite'}})
         self.assertEqual((c.engine, c.model), ('gemini', 'gemini-3.5-flash-lite'))
 
+    def test_a_live_gemini_model_streams_and_a_phrase_model_does_not(self):
+        live = self._pick({'engine': 'cloud', 'cloud': {'provider': 'gemini', 'gemini_model': 'gemini-3.5-transcribe-live'}})
+        self.assertEqual((live.engine, live.stream), ('gemini', True))
+        phrase = self._pick({'engine': 'cloud', 'cloud': {'provider': 'gemini', 'gemini_model': 'gemini-3.6-flash'}})
+        self.assertFalse(phrase.stream)
+        self.assertTrue(self._pick({'engine': 'cloud', 'cloud': {}}).stream)
+
     def test_unknown_engine_is_off(self):
         self.assertEqual(self._pick({'engine': 'banana'}).engine, 'off')
 
@@ -859,6 +866,96 @@ class _FakeOpenAI:
         return self.left
 
 
+class GeminiLiveTests(unittest.TestCase):
+    def _client(self, language=('he', 'en')):
+        from koli.cloud_stt.gemini_live import GeminiLive
+        self.sock = _FakeSocket()
+        self.urls = []
+        self.interims, self.finals, self.errors = [], [], []
+
+        def connect(url, headers, timeout=10):
+            self.urls.append((url, headers))
+            return self.sock
+        return GeminiLive('g-key', 'gemini-3.5-transcribe-live', list(language), self.interims.append,
+                          self.finals.append, self.errors.append, connect=connect, retry_delay=0.01)
+
+    def _kinds(self):
+        out = []
+        for m in self.sock.sent:
+            if 'setup' in m:
+                out.append('setup')
+            else:
+                out.append(next(iter(m['realtimeInput'])))
+        return out
+
+    def test_setup_turns_off_gemini_voice_detection_and_sends_languages(self):
+        c = self._client()
+        c.start()
+        self.assertTrue(_wait(lambda: self.sock.sent))
+        url, headers = self.urls[0]
+        self.assertTrue(url.endswith('BidiGenerateContent'))
+        self.assertNotIn('g-key', url)                     # the key only in the header
+        self.assertEqual(headers, {'x-goog-api-key': 'g-key'})
+        setup = self.sock.sent[0]['setup']
+        self.assertEqual(setup['model'], 'models/gemini-3.5-transcribe-live')
+        self.assertEqual(setup['inputAudioTranscription'], {'languageCodes': ['he', 'en']})
+        self.assertTrue(setup['realtimeInputConfig']['automaticActivityDetection']['disabled'])
+        c.cancel()
+
+    # Checked on the real API: a turn opened before the last one's text came
+    # back is ignored. So turn 2 opens only after turn 1's final.
+    def test_the_next_turn_opens_only_after_the_last_ones_text(self):
+        import numpy as np
+        c = self._client()
+        c.start()
+        self.assertTrue(_wait(lambda: self.sock.sent))
+        c.feed(np.zeros(3200, dtype=np.float32))           # before the setup is complete: held
+        self.assertEqual(self._kinds(), ['setup'])
+        self.sock.push(setupComplete={})
+        self.assertTrue(_wait(lambda: self._kinds()[:3] == ['setup', 'activityStart', 'audio']))
+        c.commit()
+        c.feed(np.zeros(3200, dtype=np.float32))           # turn 2 audio while turn 1 is out
+        self.assertTrue(_wait(lambda: self._kinds()[-1] == 'activityEnd'))
+        self.assertEqual(self._kinds().count('activityStart'), 1)
+        self.sock.push(serverContent={'interimInputTranscription': {'text': 'שלום'}})
+        self.sock.push(serverContent={'inputTranscription': {'text': 'שלום לכולם'}})
+        self.assertTrue(_wait(lambda: self._kinds().count('activityStart') == 2))
+        self.assertEqual((self.interims, self.finals), (['שלום'], ['שלום לכולם']))
+        self.assertEqual(self._kinds()[-1], 'audio')       # turn 2's held audio follows its start
+        c.cancel()
+
+    def test_finish_waits_for_the_last_turn_and_nothing_is_left(self):
+        import numpy as np
+        import threading
+        c = self._client()
+        c.start()
+        self.assertTrue(_wait(lambda: self.sock.sent))
+        self.sock.push(setupComplete={})
+        c.feed(np.zeros(3200, dtype=np.float32))
+        self.assertTrue(_wait(lambda: 'audio' in self._kinds()))
+        done = threading.Thread(target=c.finish, kwargs={'timeout': 2})
+        done.start()
+        self.assertTrue(_wait(lambda: self._kinds()[-1] == 'activityEnd'))
+        self.sock.push(serverContent={'inputTranscription': {'text': 'Done.'}})
+        done.join(3)
+        self.assertEqual(self.finals, ['Done.'])
+        self.assertIsNone(c.unsent_audio())
+
+    def test_a_silent_turn_ends_on_generation_complete(self):
+        import numpy as np
+        c = self._client()
+        c.start()
+        self.assertTrue(_wait(lambda: self.sock.sent))
+        self.sock.push(setupComplete={})
+        c.feed(np.zeros(3200, dtype=np.float32))
+        c.commit()
+        c.feed(np.zeros(3200, dtype=np.float32))
+        self.assertTrue(_wait(lambda: self._kinds()[-1] == 'activityEnd'))
+        self.sock.push(serverContent={'generationComplete': True})
+        self.assertTrue(_wait(lambda: self._kinds().count('activityStart') == 2))
+        c.cancel()
+
+
 class CloudAndLocalEngineTests(unittest.TestCase):
     def setUp(self):
         self.base = LiveWordsFlowTests('test_off_engine_keeps_todays_flow')
@@ -876,6 +973,24 @@ class CloudAndLocalEngineTests(unittest.TestCase):
         sm.audio_recorder.add_tap.side_effect = self.taps.append
         sm.audio_recorder.remove_tap.side_effect = lambda fn: self.taps.remove(fn) if fn in self.taps else None
         return sm
+
+    # A live Gemini model streams like OpenAI: the Gemini Live client is used,
+    # pauses close its turns, and Whisper isn't asked.
+    def test_gemini_live_model_streams(self):
+        import numpy as np
+        sm = self._sm('gemini', provider='gemini')
+        sm.config_manager.config['live_words']['cloud']['gemini_model'] = 'gemini-3.5-transcribe-live'
+        sm.live.gemini_live_factory = _FakeOpenAI
+        self.base._start(sm)
+        client = _FakeOpenAI.instances[-1]
+        self.assertEqual(client.model, 'gemini-3.5-transcribe-live')
+        self.taps[0](np.zeros(160, dtype=np.float32), 0.0)
+        client.on_final('שלום לכולם')
+        self.base._pause(sm)
+        self.assertEqual(client.commits, 1)
+        sm.whisper_engine.transcribe_audio.assert_not_called()
+        sm.stop_recording()
+        self.assertEqual(self.base._delivered(sm), ['שלום לכולם'])
 
     def test_openai_words_reach_the_bubble_and_are_written(self):
         import numpy as np

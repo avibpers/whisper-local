@@ -22,12 +22,11 @@ whisper: # Whisper AI Model Settings
     # or 'small'/'medium'/'large' for higher accuracy (GPU recommended for large).
     model: base
 
-    # Online mode: dictation and voice commands go to online_model (picked in
-    # the Model table, provider/model like openai/gpt-4o-mini-transcribe) with
-    # the API key saved in Settings › AI, and this computer loads only
-    # listen_model, for the wake word and as the backup when the online
-    # model fails. The model above and the second model are not loaded.
-    online_mode: false
+    # An online model picked in the Model table (provider/model like
+    # openai/gpt-4o-mini-transcribe; empty = the local model above) takes
+    # dictation and voice commands with the API key saved in Settings › AI,
+    # and this computer loads only listen_model, for the wake word and as the
+    # backup when the online model fails. Picking a local model empties it.
     online_model: ''
     listen_model: base
 

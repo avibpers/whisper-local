@@ -23,6 +23,8 @@ URL = 'wss://api.openai.com/v1/realtime?intent=transcription'
 SEND_RATE = 24000          # the realtime API takes 24 kHz PCM16
 MIN_APPEND_BYTES = 4800    # 100 ms at 24 kHz: fewer, larger messages
 MIN_TURN_SAMPLES = 1600    # 100 ms at 16 kHz: shorter turns are not committed (OpenAI refuses them)
+# Live models that refuse the `languages` hint (checked 2026-10-29).
+NO_LANGUAGE_HINT = {'gpt-realtime-whisper'}
 
 
 def _resample_to_24k(mono16k: np.ndarray) -> np.ndarray:
@@ -71,7 +73,7 @@ class OpenAILive:
         transcription = {'model': self._model}
         languages = [self._language] if isinstance(self._language, str) else list(self._language or [])
         languages = [code for code in languages if code]
-        if languages:
+        if languages and self._model not in NO_LANGUAGE_HINT:
             transcription['languages'] = languages
         transcription['delay'] = 'low'
         return {'type': 'session.update', 'session': {'type': 'transcription', 'audio': {'input': {

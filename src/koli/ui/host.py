@@ -85,6 +85,39 @@ _drag_regions_applied = threading.Event()
 _chromes = {}
 
 
+# Resizes the bubble or the panel, a WinForms window with the WebView2 docked
+# inside. Resized straight from a page call's thread (pywebview gives each
+# call its own), SetWindowPos raced the form's own layout and left the web
+# view off the window: the menu's top cut off, then a 6 px tab whose page sat
+# 1043 px below it, grey and deaf to the mouse until a recording resized it
+# again (2026-10-29). So the resize runs in order on the window's own thread,
+# and the web view is laid back over the whole window if it still strayed.
+def _place_docked(window, hwnd, x, y, w, h):
+    chrome = _chromes.get(getattr(window, 'uid', None))
+    control = getattr(chrome, 'webview', None)
+    if control is None:
+        win32.place(hwnd, x, y, w, h)
+        return
+
+    def run():
+        win32.place(hwnd, x, y, w, h)
+        form = control.Parent
+        if form is None:
+            return
+        if control.Left or control.Top or not control.Size.Equals(form.ClientSize):
+            logger.debug(f"Web view off its window ({control.Left}, {control.Top}, {control.Width}x{control.Height} "
+                         f"in {form.ClientSize.Width}x{form.ClientSize.Height}); laying it out again")
+            form.PerformLayout()
+            if control.Left or control.Top:
+                control.Bounds = form.ClientRectangle
+    try:
+        from System import Action
+        control.BeginInvoke(Action(run))
+    except Exception as e:
+        logger.debug(f"Resize on the window's thread failed ({e}); resizing directly")
+        win32.place(hwnd, x, y, w, h)
+
+
 def _enable_drag_regions() -> bool:
     if not win32.IS_WINDOWS:
         return False
@@ -577,7 +610,7 @@ class UiHost:
             return
         w, h = self._bar_size
         x, y, size, upright = self._bar_geometry(w, h)
-        win32.place(self.bar_hwnd, x, y, *size)
+        _place_docked(self.bar.window, self.bar_hwnd, x, y, *size)
         # Small corners on the thin tab, the normal ones on the bubble.
         thin = min(w, h) < 16
         if thin != self._bar_thin:
@@ -741,7 +774,7 @@ class UiHost:
         if not self.panel_hwnd or self._panel_drag is not None:
             return
         x, y, size = self._panel_geometry()
-        win32.place(self.panel_hwnd, x, y, *size)
+        _place_docked(self.panel.window, self.panel_hwnd, x, y, *size)
 
     def _show_panel(self):
         if self._panel_hide_timer is not None:
