@@ -790,7 +790,8 @@ export function createMock(emit) {
     usage_prices: () => ok(MOCK_PRICES),
     usage_price_save: (spec, v) => { const r = MOCK_PRICES.find((x) => x.spec === spec); if (r) Object.assign(r, v, { edited: true }); return ok(); },
     usage_price_reset: (spec) => { const r = MOCK_PRICES.find((x) => x.spec === spec); if (r) r.edited = false; return ok(); },
-    usage_summary: () => ok({ session: { started: Date.now() / 1000 - 3600, cost: 0.0213, by_feature: {} }, days: MOCK_DAYS }),
+    usage_summary: () => ok({ session: { started: Date.now() / 1000 - 3600, cost: 0.0213, by_feature: {} }, days: MOCK_DAYS,
+      budget: { limit: getPath(data.settings, 'usage.monthly_budget') || 0, spent: 0.511, over: false, share: 0.05, fallback: '' } }),
     meeting_usage: () => ok(MOCK_MEETING_USAGE),
   };
 

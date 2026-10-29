@@ -123,7 +123,7 @@ function ContextCard() {
       <dt class="muted">App</dt><dd style="margin:0" dir="auto">${fg.exe ? `${fg.exe}${fg.title ? ` — “${fg.title.slice(0, 40)}”` : ''}` : '—'}</dd>
       <dt class="muted">App rule</dt><dd style="margin:0">${fg.rule || 'None'}</dd>
       <dt class="muted">Language</dt><dd style="margin:0">${LANG_NAMES[lang] || lang}${info && info.language ? ` · last heard ${info.language}${info.language_probability ? ` (${info.language_probability})` : ''}` : ''}</dd>
-      <dt class="muted">Model</dt><dd style="margin:0">${g('whisper.online_model') ? html`${g('whisper.online_model')} <span class="chip sm warn">Online</span>`
+      <dt class="muted">Model</dt><dd style="margin:0">${g('whisper.online_mode') && g('whisper.online_model') ? html`${g('whisper.online_model')} <span class="chip sm warn">Online</span> <span class="muted small">· listening on ${g('whisper.listen_model') || 'base'}</span>`
         : `${g('whisper.model')}, ${g('whisper.device') === 'cuda' ? 'GPU' : 'CPU'} ${g('whisper.compute_type')}`}</dd>
       <dt class="muted">Spent</dt><dd style="margin:0"><a href="#/usage">${money(usage.session_cost)} this session</a>${usage.recent[0] ? html` <span class="muted small">· last ${usage.recent[0].model} ${money(usage.recent[0].cost)}</span>` : ''}</dd>
       <dt class="muted">Delivery</dt><dd style="margin:0">${g('clipboard.auto_paste') ? (g('clipboard.delivery_method') === 'type' ? 'Typed in' : 'Pasted') : 'Copied only'}${g('clipboard.paste_preserve_clipboard') ? ', clipboard restored' : ''}</dd>

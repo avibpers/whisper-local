@@ -26,7 +26,7 @@ _LISTENER_KEYS = {
 
 # Settings that are simply read from the config whenever they are used.
 _READ_ON_USE = {
-    'whisper.prompt_from_selection', 'whisper.online_model', 'audio.pause_media_on_record',
+    'whisper.prompt_from_selection', 'audio.pause_media_on_record',
     'audio.lower_volume.enabled', 'audio.lower_volume.level',
     'audio.continuous_mode', 'audit.enabled', 'ui.mode', 'ui.theme', 'ui.open_on_start',
     'console.start_hidden', 'overlay.click_through', 'onboarding.gpu', 'onboarding.gpu_class',
@@ -57,6 +57,10 @@ class Appliers:
     def __init__(self, ctx: AppContext):
         self.ctx = ctx
         self.tasks = get_task_manager()
+        # The online budget going over (or a new month lifting it) swaps the
+        # local model online mode keeps (online_stt/mode.py).
+        from ..usage import budget
+        budget.on_change(self._budget_changed)
 
     # Apply one changed setting. Returns {'applied': kind, 'task_id': id|None}.
     def apply(self, path: str, value: Any, old: Any) -> dict:
@@ -137,7 +141,7 @@ class Appliers:
 
     # A new engine for a new model, device, precision or backend. Built and
     # warmed up off-thread, then swapped in when idle.
-    def engine_rebuild(self, path, value, old):
+    def engine_rebuild(self, path, value, old, label: str = ''):
         labels = {'whisper.model': f"Switching to the {value} model",
                   'whisper.device': 'Switching to GPU' if value == 'cuda' else 'Switching to CPU',
                   'whisper.compute_type': f"Switching precision to {value}",
@@ -145,7 +149,7 @@ class Appliers:
                   'whisper.backend': f"Switching engine to {value}",
                   'whisper.language_model.language': 'Setting up the second model' if value else 'Removing the second model',
                   'whisper.language_model.model': f"Loading {value} as the second model"}
-        label = labels.get(path, 'Reloading the model')
+        label = label or labels.get(path, 'Reloading the model')
         sm, cm = self.sm, self.cm
         # Picking the second model while it is off changes nothing yet.
         if path == 'whisper.language_model.model' and not cm.get_path('whisper.language_model.language'):
@@ -153,8 +157,9 @@ class Appliers:
 
         def job(reporter):
             from ..main import language_model_choice, setup_whisper_engine
+            from ..online_stt import mode as online_mode
             from ..services import models as model_service
-            whisper_cfg = cm.get_whisper_config()
+            whisper_cfg = online_mode.local_config(cm.get_whisper_config())
             registry = self.ctx.model_registry
             if whisper_cfg.get('backend', 'faster_whisper') == 'faster_whisper' and registry is not None:
                 model_service.ensure_downloaded(registry, whisper_cfg['model'], reporter)
@@ -179,6 +184,46 @@ class Appliers:
         # A model switch is "about" the new model, so its row shows the download.
         ref = value if path in ('whisper.model', 'whisper.language_model.model') else None
         return self._background(label, 'engine', path, old, job, ref=ref)
+
+    # Online mode, its model and the listening model: a new local engine only
+    # when what it loads changes (online_stt/mode.py); otherwise the next
+    # dictation simply reads the new choice.
+    def online_mode(self, path, value, old):
+        from ..online_stt import mode as online
+        now = self.cm.get_whisper_config()
+        before = {**now, path.split('.', 1)[1]: old}
+        if online.local_models(before) == online.local_models(now):
+            return self._live()
+        model = online.local_config(now)['model']
+        label = (f"Online mode: keeping only {model} on this computer" if online.active(now)
+                 else f"Online mode off: loading {model}")
+        return self.engine_rebuild(path, value, old, label=label)
+
+    # The month's budget went over or came back: in online mode with a local
+    # model set to take over, load that model, or the listening model again.
+    def _budget_changed(self, over: bool):
+        from ..online_stt import mode as online
+        from ..usage import budget
+        cfg = self.cm.get_whisper_config()
+        if not online.chosen(cfg) or not budget.fallback_model():
+            return
+        model = online.local_config(cfg)['model']
+        label = (f"Online budget used up: loading {model}" if over
+                 else f"Online budget available again: keeping only {model} on this computer")
+        self.engine_rebuild('usage.monthly_budget', None, None, label=label)
+
+    # The budget and its takeover model: checked now; a new takeover model
+    # while the budget is used up is loaded at once.
+    def budget(self, path, value, old):
+        from ..online_stt import mode as online
+        from ..usage import budget
+        budget.check()
+        cfg = self.cm.get_whisper_config()
+        if path == 'usage.over_budget_model' and online.chosen(cfg) and budget.over():
+            model = online.local_config(cfg)['model']
+            return self.engine_rebuild(path, None, None, label=f"Online budget used up: loading {model}"
+                                       if value else f"Online budget used up: keeping only {model}")
+        return self._live()
 
     # ── Audio ────────────────────────────────────────────────────────────────
 
@@ -516,6 +561,9 @@ _HANDLERS = {
     'whisper.backend': Appliers.engine_rebuild,
     'whisper.language_model.language': Appliers.engine_rebuild,
     'whisper.language_model.model': Appliers.engine_rebuild,
+    'whisper.online_mode': Appliers.online_mode,
+    'whisper.online_model': Appliers.online_mode,
+    'whisper.listen_model': Appliers.online_mode,
     'audio.input_device': Appliers.recorder_rebuild,
     'audio.channels': Appliers.recorder_rebuild,
     'audio.dtype': Appliers.recorder_rebuild,
@@ -543,4 +591,5 @@ _PREFIX_HANDLERS = [
     ('learning.', Appliers.learning),
     ('wake_word.', Appliers.wake_word),
     ('server.', Appliers.server),
+    ('usage.', Appliers.budget),
 ]

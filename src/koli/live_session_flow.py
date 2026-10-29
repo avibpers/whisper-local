@@ -21,7 +21,7 @@ from .dictation_session import DictationSession
 from .live_words import choose_engine, resolve_languages, usage_key, EngineChoice
 from .platform import foreground
 from .ui.events import publish
-from .usage import ledger as usage_ledger
+from .usage import budget as usage_budget, ledger as usage_ledger
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +86,10 @@ class LiveWordsFlow:
         language = resolve_languages(whisper_cfg, rule)
         self.choice = choose_engine(cfg, rule, mode=mode, language=language,
                                     has_key=self._has_key, local_ready=self._local_ready())
+        # The month's online budget is used up: the Cloud engine shows phrases
+        # instead (usage/budget.py).
+        if self.choice.engine in ('openai', 'gemini') and usage_budget.over():
+            self.choice = EngineChoice('phrases', notice=f"{usage_budget.used_up_message()}, so this dictation shows phrases.")
         self._stream_partials(self.choice.engine == 'local')
         if self.choice.engine == 'off':
             return None

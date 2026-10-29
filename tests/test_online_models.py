@@ -246,5 +246,107 @@ class EngineTests(_Isolated):
         self.assertFalse(usable(''))
 
 
+
+# ── Online mode and the monthly budget ──────────────────────────────────────
+
+class FakeSettings:
+    def __init__(self, values):
+        self.values = values
+
+    def get_path(self, path, default=None):
+        return self.values.get(path, default)
+
+
+class OnlineModeTests(_Isolated):
+    def setUp(self):
+        super().setUp()
+        from koli.usage import budget
+        self.budget = budget
+        self.settings = {}
+        budget.configure(FakeSettings(self.settings))
+        budget._state.update({'over': None, 'warned': '', 'reported': ''})
+        self.cfg = {'model': 'large-v3-turbo', 'language_model': {'language': 'he', 'model': 'hebrew-large-v3-turbo'},
+                    'online_mode': True, 'online_model': 'openai/gpt-4o-mini-transcribe', 'listen_model': 'base'}
+
+    def tearDown(self):
+        self.budget.configure(FakeSettings({}))
+        super().tearDown()
+
+    def test_online_mode_loads_only_the_listening_model(self):
+        from koli.online_stt import mode
+        local = mode.local_config(self.cfg)
+        self.assertEqual(local['model'], 'base')
+        self.assertEqual(local['language_model']['language'], '')
+        self.assertEqual(mode.dictation_spec(self.cfg), 'openai/gpt-4o-mini-transcribe')
+
+    def test_off_or_without_a_usable_model_is_local_as_set(self):
+        from koli.online_stt import mode
+        for cfg in ({**self.cfg, 'online_mode': False}, {**self.cfg, 'online_model': ''},
+                    {**self.cfg, 'online_model': 'openai/gpt-live-transcribe'}):
+            self.assertEqual(mode.local_config(cfg)['model'], 'large-v3-turbo')
+            self.assertEqual(mode.dictation_spec(cfg), '')
+
+    def test_meetings_use_their_own_model_else_follow_dictation(self):
+        from koli.online_stt import mode
+        self.assertEqual(mode.meeting_spec('gemini/gemini-2.5-flash-lite', self.cfg), 'gemini/gemini-2.5-flash-lite')
+        self.assertEqual(mode.meeting_spec('', self.cfg), 'openai/gpt-4o-mini-transcribe')
+        self.assertEqual(mode.meeting_spec('', {**self.cfg, 'online_mode': False}), '')
+
+    def test_budget_used_up_with_a_takeover_model_loads_it(self):
+        from koli.online_stt import mode
+        self.settings.update({'usage.monthly_budget': 1, 'usage.over_budget_model': 'large-v3-turbo'})
+        ledger.record('dictation', 'openai/whisper-1', seconds=60 * 200)   # $1.20
+        self.assertTrue(self.budget.over())
+        self.assertEqual(mode.local_config(self.cfg)['model'], 'large-v3-turbo')
+        self.assertEqual(mode.dictation_spec(self.cfg), '')
+
+    def test_budget_used_up_without_takeover_stops_the_engine(self):
+        from koli.online_stt import engine as online_engine
+        self.settings.update({'usage.monthly_budget': 1})
+        ledger.record('dictation', 'openai/whisper-1', seconds=60 * 200)
+        local = FakeLocal()
+        eng = online_engine.OnlineEngine('openai/whisper-1', lambda: local)
+        with mock.patch.dict('koli.online_stt.engine.TRANSPORTS', {'openai': None}):
+            self.assertIsNone(eng.transcribe_audio(np.zeros(16000, dtype=np.float32)))
+        self.assertIn('budget', eng.last_info['budget_stop'])
+        self.assertEqual(local.calls, [])
+
+    def test_warns_at_80_percent_and_says_when_used_up(self):
+        said = []
+        self.settings.update({'usage.monthly_budget': 1})
+        with mock.patch.object(self.budget, '_problem', said.append):
+            ledger.record('dictation', 'openai/whisper-1', seconds=60 * 140)   # $0.84
+            ledger.record('dictation', 'openai/whisper-1', seconds=60 * 30)    # $1.02
+        self.assertEqual(len(said), 2)
+        self.assertIn('of this month', said[0])
+        self.assertIn('used up', said[1])
+
+    def test_listeners_hear_the_budget_go_over(self):
+        heard = []
+        self.budget._listeners.append(heard.append)
+        try:
+            self.settings.update({'usage.monthly_budget': 1})
+            self.budget.check()
+            with mock.patch.object(self.budget, '_problem', lambda m: None):
+                ledger.record('dictation', 'openai/whisper-1', seconds=60 * 200)
+        finally:
+            self.budget._listeners.remove(heard.append)
+        self.assertEqual(heard, [True])
+
+    def test_paid_ai_models_wait_while_free_ones_answer(self):
+        from koli import llm
+        self.settings.update({'usage.monthly_budget': 1})
+        ledger.record('dictation', 'openai/whisper-1', seconds=60 * 200)
+
+        class Fake:
+            label = 'x'
+
+            def complete(self, *a):
+                return 'answer', 10, 10
+
+        with mock.patch('koli.llm.routing.route', lambda *a, **k: (['openai/gpt-6-luna', 'codex/gpt-5.5'], 30)),                 mock.patch('koli.llm.providers.get', lambda pid: Fake()):
+            result = llm.complete('polish', [{'role': 'user', 'content': 'hi'}])
+        self.assertEqual(result.provider, 'codex')
+
 if __name__ == '__main__':
     unittest.main()

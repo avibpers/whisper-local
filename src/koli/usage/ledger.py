@@ -151,6 +151,9 @@ def record(feature: str, spec: str, seconds: float = 0.0, tokens_in: int = 0, to
             totals = {'session_cost': _total(_state['session']),
                       'meeting_cost': _total(_state['meetings'].get(meeting_id) or {}) if meeting_id else None}
         _publish({**rec, **totals})
+        if cost:
+            from . import budget
+            budget.check()
         return rec
     except Exception as e:
         logger.warning(f"Usage not recorded: {e}")
@@ -201,6 +204,14 @@ def forget_meeting(meeting_id: str) -> None:
         _load()
         if _state['meetings'].pop(meeting_id, None) is not None:
             _save_soon()
+
+
+# What this calendar month has cost so far (the budget, usage/budget.py).
+def month_cost() -> float:
+    with _lock:
+        _load()
+        month = datetime.date.today().strftime('%Y-%m')
+        return round(sum(_total(v) for d, v in _state['days'].items() if d.startswith(month)), 6)
 
 
 # Day by day for the last `days` days: [{day, cost, by_feature}], newest first.

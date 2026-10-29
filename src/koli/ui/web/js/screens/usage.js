@@ -7,9 +7,9 @@
 
 import { html, useEffect, useState } from '../../vendor/preact-htm.module.js';
 import { call } from '../api.js';
-import { app, closeModal, openModal, toast } from '../store.js';
+import { app, closeModal, openModal, toast, useSetting } from '../store.js';
 import { Icon, Segmented } from '../ui.js';
-import { money, providerName, usePriceList } from './shared.js';
+import { money, providerName, SettingRow, usePriceList } from './shared.js';
 
 // What each feature name in the ledger is called on screen.
 const FEATURES = { dictation: 'Dictation', meeting: 'Meeting transcription', summary: 'Meeting summary', chat: 'Meeting chat',
@@ -35,6 +35,23 @@ function byModel(days) {
     }
   }
   return Object.values(out).sort((a, b) => b.cost - a.cost || b.calls - a.calls);
+}
+
+// ── The month's budget ──────────────────────────────────────────────────────
+// What this month has cost against the limit (usage/budget.py), with the
+// limit and what happens when it is used up, edited right here.
+
+function Budget({ b }) {
+  const schema = app.use((s) => s.schema);
+  const rows = schema ? schema.settings.filter((s) => s.path.startsWith('usage.')) : [];
+  const share = b && b.limit ? Math.min(1, b.spent / b.limit) : 0;
+  return html`<section class="card" aria-labelledby="h-use-budget">
+    <div class="card-head"><div><h2 id="h-use-budget">This month</h2>
+      <p>${b && b.limit ? html`<b>${money(b.spent)}</b> of ${money(b.limit)} this month${b.over ? ' · used up' : ''}` : 'No limit set.'}</p></div></div>
+    ${b && b.limit ? html`<div style="padding:0 18px 12px"><div class="bar-meter" role="meter" aria-label="Budget used" aria-valuemin="0" aria-valuemax="100" aria-valuenow=${Math.round(share * 100)}>
+      <span style=${`transform:scaleX(${share});background:${share >= 1 ? 'var(--rec)' : share >= 0.8 ? 'var(--warn)' : 'var(--acc)'}`}></span></div></div>` : ''}
+    ${rows.map((s) => html`<${SettingRow} s=${s} />`)}
+  </section>`;
 }
 
 // ── Totals ──────────────────────────────────────────────────────────────────
@@ -161,12 +178,13 @@ export function UsageScreen() {
   const [period, setPeriod] = useState(30);
   const [summary, setSummary] = useState(null);
   const lastCall = app.use((s) => s.usage.recent[0]);
-  useEffect(() => { call('usage_summary', period).then(setSummary).catch((e) => toast(e.message, { kind: 'err' })); }, [period, lastCall]);
+  const limit = useSetting('usage.monthly_budget');   // a new limit shows at once
+  useEffect(() => { call('usage_summary', period).then(setSummary).catch((e) => toast(e.message, { kind: 'err' })); }, [period, lastCall, limit]);
   return html`<div class="page">
     <div class="page-head"><div><h1 class="page-title">Usage & cost</h1>
       <p class="page-sub">What the online models cost you, model by model. Pick them in Settings › Model & engine (dictation) and Settings › Meetings.</p></div>
       <${Segmented} value=${period} label="Period" options=${[[7, '7 days'], [30, '30 days'], [90, '90 days']]} onChange=${setPeriod} /></div>
-    ${summary ? html`<${Totals} summary=${summary} period=${period} /><${ModelTable} days=${summary.days} />` : html`<p class="muted">Loading…</p>`}
+    ${summary ? html`<${Totals} summary=${summary} period=${period} /><${Budget} b=${summary.budget} /><${ModelTable} days=${summary.days} />` : html`<p class="muted">Loading…</p>`}
     <${Recent} />
     <${PriceList} />
     ${summary && html`<${DayTable} days=${summary.days} />`}

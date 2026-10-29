@@ -202,10 +202,25 @@ SCHEMA = [
        mode=SIMPLE, group='Voice detection', min=1, max=36000, step=1, unit='seconds'),
 
     # ── Model & engine ───────────────────────────────────────────────────────
+    _S('whisper.online_mode', 'Online mode', 'model', 'toggle', apply=BACKGROUND,
+       help='Dictation and voice commands go to the online model picked below, and this computer keeps only the '
+            'small listening model for the wake word and as the backup. The big models are not loaded.'),
     _S('whisper.model', 'Model', 'model', 'model_table', apply=BACKGROUND, mode=SIMPLE,
        help='Switching downloads the model if needed, then swaps it in while you keep dictating.'),
     _S('whisper.models', 'Available models', 'model', 'model_table',
        help='Show or hide models in menus, or add your own CTranslate2 model.'),
+    _S('whisper.listen_model', 'Listening model', 'model', 'select', apply=BACKGROUND, source='whisper_models',
+       group='Online mode',
+       help='The only model this computer loads in online mode: it hears the wake word all day and transcribes '
+            'when the online model does not answer. Base runs well on any CPU.'),
+    _S('usage.monthly_budget', 'Monthly budget', 'model', 'number', group='Online budget', min=0, max=10000,
+       step=1, unit='$',
+       help='The most online models may cost in a month; 0 is no limit. At 80% Koli tells you. When it is used up, '
+            'nothing more goes to a paid model until the month ends. Subscriptions and local models keep working.'),
+    _S('usage.over_budget_model', 'When the budget is used up', 'model', 'select', apply=BACKGROUND,
+       source='whisper_models', group='Online budget', choices=[['', 'Stop transcribing']],
+       help='Switch to this model on this computer until the month ends, or stop: the bubble then says the budget '
+            'is used up.'),
     # Picked in the Model table with the local models (an online row), so not
     # a row of its own.
     _S('whisper.online_model', 'Online model for dictation', 'model', 'stt_model', mode=HIDDEN,

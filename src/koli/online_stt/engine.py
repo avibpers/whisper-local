@@ -14,7 +14,7 @@ import numpy as np
 
 from ..llm import describe_error, routing
 from ..llm.providers import PROVIDERS
-from ..usage import ledger, prices
+from ..usage import budget, ledger, prices
 from . import gemini, openai
 from .audio import RATE, to_wav
 
@@ -69,6 +69,15 @@ class OnlineEngine:
             return local.transcribe_audio(audio_data, language=language, use_prompt=use_prompt, beam_size=beam_size,
                                           task=task, quiet=quiet, hotwords=hotwords, pieces=pieces)
         if audio_data is None or len(audio_data) == 0:
+            return None
+        # The month's budget is used up: the local model takes over, or with
+        # none set nothing is sent and the caller shows why (last_info).
+        if budget.over():
+            if budget.fallback_model():
+                return local.transcribe_audio(audio_data, language=language, use_prompt=use_prompt)
+            message = budget.used_up_message()
+            print(f"   ✗ {message}")
+            self.last_info = {'backend': 'online', 'model': self.spec, 'budget_stop': message}
             return None
         audio = np.asarray(audio_data, dtype=np.float32).flatten()
         vad = getattr(local, 'vad_manager', None)
