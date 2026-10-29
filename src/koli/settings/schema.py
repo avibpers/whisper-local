@@ -206,7 +206,9 @@ SCHEMA = [
        help='Switching downloads the model if needed, then swaps it in while you keep dictating.'),
     _S('whisper.models', 'Available models', 'model', 'model_table',
        help='Show or hide models in menus, or add your own CTranslate2 model.'),
-    _S('whisper.online_model', 'Transcribe dictation online with', 'model', 'stt_model', group='Online',
+    # Picked in the Model table with the local models (an online row), so not
+    # a row of its own.
+    _S('whisper.online_model', 'Online model for dictation', 'model', 'stt_model', mode=HIDDEN,
        help='Sends each dictation to this model with the API key from Settings › AI, and shows what it cost. '
             'Empty keeps dictation on this computer. The wake word and voice commands always stay local, and '
             'local Whisper takes over if the online model fails.'),

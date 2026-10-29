@@ -27,9 +27,14 @@ what that cost.
 | `whisper.online_model` | dictation's model, `provider/model` | local Whisper |
 | `meeting.model` | meetings' model, `provider/model` | local Whisper |
 
-Both pickers list every model of the price list that takes audio. Live-stream
-models (WebSocket / Live API) are listed with "live, coming next" and can't be
-chosen yet; upload models can.
+Dictation's online models sit in the Model table of Settings › Model &
+engine, below the local Whisper models, one group per provider with the price
+an hour: an online model replaces the local one, so it is picked in the same
+place. Picking one sets `whisper.online_model` (the local model in use stays
+loaded and is marked "Backup · commands"); picking a local model clears it.
+Meetings have their own picker in Settings › Meetings. Live-stream models
+(WebSocket / Live API) are listed with "live, coming next" and can't be chosen
+yet; upload models can, once their provider's key is saved.
 
 ## The engine
 
