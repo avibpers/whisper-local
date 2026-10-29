@@ -1151,8 +1151,8 @@ class Bridge:
 
     @_api
     def usage_summary(self, days=30):
-        from ..usage import ledger
-        return {'session': ledger.session(), 'days': ledger.days(int(days or 30))}
+        from ..usage import budget, ledger
+        return {'session': ledger.session(), 'days': ledger.days(int(days or 30)), 'budget': budget.status()}
 
     # ── Google Drive ─────────────────────────────────────────────────────────
     # One Google account, signed in through the browser (design:

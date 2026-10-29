@@ -238,6 +238,9 @@ def language_model_choice(whisper_config, model_registry):
 
 def setup_whisper_engine(whisper_config, vad_manager, model_registry, log_transcriptions=False, config_manager=None,
                          ask=True):
+    # Online mode loads only the small listening model (online_stt/mode.py).
+    from .online_stt import mode as online_mode
+    whisper_config = online_mode.local_config(whisper_config)
     backend = whisper_config.get('backend', 'faster_whisper')
 
     # A model this version doesn't define (removed in an update, a typo) would
@@ -821,6 +824,9 @@ def main():
         vad_manager = setup_vad(vad_config)
         streaming_manager = setup_streaming(streaming_config, model_registry,
                                             config_manager.get_path('live_words.engine') or 'off')
+        # The online budget decides which local model online mode loads.
+        from .usage import budget as usage_budget
+        usage_budget.configure(config_manager)
         whisper_engine = setup_whisper_engine(whisper_config, vad_manager, model_registry, log_transcriptions, config_manager,
                                               ask=not use_ui)
         streaming_manager.initialize()

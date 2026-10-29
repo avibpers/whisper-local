@@ -15,7 +15,7 @@ import time
 from . import http, providers, routing
 from .oauth import SUBSCRIPTIONS
 from .types import ConfigError, ProviderError, ReconnectNeeded, Result
-from ..usage import ledger
+from ..usage import budget, ledger, prices
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +111,11 @@ def complete(feature: str, messages: list, json: bool = False, on_text=None,
         if remaining < 0.5:
             break
         provider_id, model_id = routing.parse(spec)
+        # A paid model waits for next month once the online budget is used
+        # up; a subscription or local model in the fallbacks still answers.
+        if feature != 'test' and not prices.is_free(spec) and budget.over():
+            last = Result(error=budget.used_up_message(), provider=provider_id, model=model_id)
+            continue
         started = time.monotonic()
         try:
             provider = providers.get(provider_id)

@@ -20,12 +20,15 @@ const useTasks = useRunningTasks;
 
 // The models dictation can use: the local Whisper models (downloaded once),
 // then the online ones of OpenAI and Gemini with their price an hour
-// (docs/design/online-models.md). Picking an online model sends dictation
-// there; the local model in use stays loaded underneath for the wake word,
-// voice commands, and as the backup when the online model doesn't answer.
+// (docs/design/online-models.md). Picking an online model turns on online
+// mode: dictation and commands go there, and this computer keeps only the
+// small listening model. Picking a local model turns online mode off.
 function ModelsTable() {
   const current = useSetting('whisper.model');
-  const online = useSetting('whisper.online_model') || '';
+  const chosenOnline = useSetting('whisper.online_model') || '';
+  const onlineMode = !!useSetting('whisper.online_mode');
+  const listenModel = useSetting('whisper.listen_model') || 'base';
+  const online = onlineMode ? chosenOnline : '';
   const prices = usePriceList().filter((r) => r.transcribe);
   const modelsVersion = useSetting('whisper.models');
   const tasks = app.use((s) => s.tasks);
@@ -50,28 +53,22 @@ function ModelsTable() {
     return now ? now.label : current;
   };
   const pick = async (m) => {
-    // Back from an online model to the local one already loaded: no swap.
-    if (online && m.key === current) {
-      const ok = await confirmModal({ title: `Dictate locally with ${m.label}?`,
-        body: `Dictation uses ${online} now. It goes back to ${m.label} on this computer, free.`, confirm: 'Switch' });
-      if (ok) saveSetting('whisper.online_model', ''); else reload();
-      return;
-    }
     const ok = await confirmModal({ title: `Switch to ${m.label}?`,
-      body: `Dictation uses ${nowLabel()} now. ${m.label} loads in the background and takes over when it is ready.`,
+      body: `Dictation uses ${nowLabel()} now. ${online ? 'Online mode turns off and ' : ''}${m.label} loads in the background and takes over when it is ready.`,
       confirm: 'Switch' });
     if (!ok) { reload(); return; }
-    if (online) await saveSetting('whisper.online_model', '');
-    saveSetting('whisper.model', m.key);
+    if (online) await saveSetting('whisper.online_mode', false);
+    if (m.key !== current) saveSetting('whisper.model', m.key);
   };
   const pickOnline = async (r) => {
-    const local = data.models.find((x) => x.key === current);
     const ok = await confirmModal({ title: `Switch to ${r.model}?`,
-      body: `Dictation uses ${nowLabel()} now. Each recording will be sent to ${providerName(r.provider)}`
+      body: `Dictation and voice commands will be sent to ${providerName(r.provider)}`
         + `${r.per_hour != null ? `, about ${money(r.per_hour)} an hour of speech` : ''}. `
-        + `${local ? local.label : current} stays loaded for the wake word and voice commands, and takes over if ${providerName(r.provider)} doesn't answer.`,
+        + `Online mode turns on: this computer keeps only ${listenModel} for the wake word and as the backup, and the big models are unloaded.`,
       confirm: 'Switch' });
-    if (ok) saveSetting('whisper.online_model', r.spec); else reload();
+    if (!ok) { reload(); return; }
+    await saveSetting('whisper.online_model', r.spec);
+    if (!onlineMode) saveSetting('whisper.online_mode', true);
   };
   const onlineProviders = [...new Set(prices.map((r) => r.provider))];
   const addHf = async () => {
@@ -94,9 +91,10 @@ function ModelsTable() {
             return html`<tr>
               <td><input type="radio" name="model" checked=${!online && m.key === current} aria-label=${`Use ${m.label}`}
                 onChange=${() => pick(m)} /></td>
-              <td><span style=${m.in_use && !online ? 'font-weight:600' : ''}>${m.label}</span>${m.in_use && (online
-                ? html` <span class="chip sm" title="Loaded for the wake word, voice commands, and when the online model doesn't answer">Backup · commands</span>`
-                : html` <span class="chip acc sm">In use</span>`)}
+              <td><span style=${m.key === current && !online ? 'font-weight:600' : ''}>${m.label}</span>${online
+                ? (m.key === listenModel ? html` <span class="chip sm" title="The only model loaded in online mode: the wake word, and the backup when the online model doesn't answer">Listening · backup</span>`
+                  : m.key === current ? html` <span class="chip sm" title="Not loaded while online mode is on">When online mode is off</span>` : '')
+                : m.in_use && html` <span class="chip acc sm">In use</span>`}
                 <div class="small muted mono">${m.source}</div></td>
               <td class="mono">${m.cached ? fmtBytes(m.size_bytes) : m.size_hint || ''}</td>
               <td>${p ? html`<${TaskProgress} task=${p} />`
@@ -118,7 +116,8 @@ function ModelsTable() {
             return html`<tr>
               <td><input type="radio" name="model" checked=${online === r.spec} disabled=${!usable && online !== r.spec}
                 aria-label=${`Use ${r.model}`} onChange=${() => pickOnline(r)} /></td>
-              <td><span style=${online === r.spec ? 'font-weight:600' : ''}>${r.model}</span>${online === r.spec && html` <span class="chip acc sm">In use</span>`}
+              <td><span style=${online === r.spec ? 'font-weight:600' : ''}>${r.model}</span>${online === r.spec ? html` <span class="chip acc sm">In use</span>`
+                : !onlineMode && chosenOnline === r.spec ? html` <span class="chip sm" title="Used when online mode is on">Online mode</span>` : ''}
                 <div class="small muted">${r.note || (r.per_minute != null ? `${money(r.per_minute)} a minute` : `${money(r.audio_in)} per 1M audio tokens`)}</div></td>
               <td class="mono">${r.per_hour != null ? `~${money(r.per_hour)}/h` : ''}</td>
               <td>${live ? html`<span class="chip sm">Live · coming next</span>`
@@ -134,6 +133,17 @@ function ModelsTable() {
         <button type="button" class="btn" onClick=${addFolder}>Add a local folder…</button>
         <span class="small muted">Any CTranslate2 Whisper model.</span></div></td></tr>
     </tbody></table></div>`;
+}
+
+// Under the Online mode switch: which model it sends to, or that one still
+// has to be picked in the table below.
+function OnlineModeNote() {
+  const on = !!useSetting('whisper.online_mode');
+  const spec = useSetting('whisper.online_model') || '';
+  const listen = useSetting('whisper.listen_model') || 'base';
+  if (!on) return null;
+  return spec ? html`<span class="small muted" style="display:block;text-align:end;margin-top:6px">Sending to ${spec} · ${listen} stays on this computer</span>`
+    : html`<span class="chip sm warn" style="margin-top:6px">Pick an online model in the table below</span>`;
 }
 
 // The graphics card: whether GPU support is installed (with an Install button
@@ -632,6 +642,7 @@ function SectionCard({ section, schema, highlight, terms }) {
     if (s.control === 'styles') return html`<div class="srow"><div class="slabel"><b>${s.label}</b><small>${s.help}</small></div><div class="sctl"><${StylesEditor} /></div></div>`;
     if (s.control === 'ai_model') return html`<${SettingRow} s=${s} highlight=${highlight === s.path} extra=${html`<${AiTest} path=${s.path} />`} />`;
     if (s.path === 'audio.voice_filter.margin_db') return html`<${SettingRow} s=${s} highlight=${highlight === s.path} extra=${html`<${LoudnessTuner} />`} />`;
+    if (s.path === 'whisper.online_mode') return html`<${SettingRow} s=${s} highlight=${highlight === s.path} extra=${html`<${OnlineModeNote} />`} />`;
     if (s.path === 'whisper.device') return html`<${SettingRow} s=${s} highlight=${highlight === s.path} /><${GpuRow} />`;
     return html`<${SettingRow} s=${s} highlight=${highlight === s.path} />`;
   };

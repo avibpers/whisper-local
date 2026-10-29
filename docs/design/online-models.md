@@ -11,30 +11,50 @@ what each call costs as it happens, so models can be compared on quality and
 price. Every meeting records which models transcribed and summarized it and
 what that cost.
 
-## What stays local
+## Online mode
 
-- The wake word, voice commands, quick commands, Practice and the vocabulary
-  "say it" check always use the local Whisper engine: they run on every burst
-  of speech, so online they would be slow and run a bill all day.
-- The local engine stays loaded. When an online call fails (no network, a bad
-  key, a quota), the same clip is transcribed locally and the reason is shown.
-- Voice activity detection runs before any upload: silence is never sent.
+`whisper.online_mode` (Settings › Model & engine, and turned on by picking an
+online row in the Model table) sends dictation and voice commands to
+`whisper.online_model`. This computer then loads only `whisper.listen_model`
+(`base` by default): the main model and the second-language model are not
+loaded, so a PC without a GPU can run Koli all day. The listening model:
+
+- hears the wake word (its quick check on each burst of speech, and the quick
+  command at a pause, never go online: they run all day),
+- transcribes when the online model fails (no network, a bad key, a quota),
+- serves Practice, Training and the bubble's Phrases engine.
+
+Voice activity detection runs before any upload: silence is never sent.
+Picking a local model in the table turns online mode off and loads it again.
 
 ## Choosing
 
-| Setting | What it picks | Empty |
-|---------|---------------|-------|
-| `whisper.online_model` | dictation's model, `provider/model` | local Whisper |
-| `meeting.model` | meetings' model, `provider/model` | local Whisper |
+| Setting | What it picks | Empty / off |
+|---------|---------------|-------------|
+| `whisper.online_mode` | dictation and commands online | local Whisper (the Model table's model) |
+| `whisper.online_model` | the online model, picked in the Model table | — |
+| `whisper.listen_model` | the only local model in online mode | `base` |
+| `meeting.model` | meetings' own model, online or local, in any mode | follow dictation: the online model in online mode, else local |
 
-Dictation's online models sit in the Model table of Settings › Model &
-engine, below the local Whisper models, one group per provider with the price
-an hour: an online model replaces the local one, so it is picked in the same
-place. Picking one sets `whisper.online_model` (the local model in use stays
-loaded and is marked "Backup · commands"); picking a local model clears it.
-Meetings have their own picker in Settings › Meetings. Live-stream models
-(WebSocket / Live API) are listed with "live, coming next" and can't be chosen
-yet; upload models can, once their provider's key is saved.
+The Model table lists every model of the price list that takes audio, one
+group per provider with its price an hour. Live-stream models (WebSocket /
+Live API) are listed with "live, coming next" and can't be chosen yet.
+
+## Monthly budget
+
+`usage.monthly_budget` ($, 0 = no limit) caps what paid models may cost in a
+calendar month (`usage/budget.py`, summed from the ledger). At 80% Koli says
+so once; when it is used up, until the month ends:
+
+- with `usage.over_budget_model` set, that local model is loaded and
+  dictation, commands and meetings use it;
+- with it empty, nothing is transcribed and the bubble says "Online budget
+  used up this month";
+- AI features on a paid key answer "budget used up" and fall through to a
+  subscription or local fallback if the route has one; the bubble's Cloud
+  engine shows Phrases.
+
+A new month lifts it by itself; the local model is swapped back when it does.
 
 ## The engine
 

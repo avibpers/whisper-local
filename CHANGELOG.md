@@ -19,6 +19,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
   chatted about it and what that cost (its new Cost tab, the list, the panel
   while it runs); AI calls for polish, rewrites and Practice are counted too
   (design: `docs/design/online-models.md`).
+- **Online mode and a monthly budget.** Settings › Model & engine ›
+  **Online mode** sends dictation and voice commands to the online model
+  and keeps only a small **Listening model** (`base`) on this computer for
+  the wake word and as the backup, so the big models aren't loaded and a PC
+  without a GPU can use Koli all day. Meetings use their own model when one
+  is set, else follow dictation. **Monthly budget** caps what online models
+  cost; at 80% Koli says so, and when it is used up it switches to the local
+  model you chose, or stops and the bubble says the budget is used up.
 - **Words while you speak.** Settings › General › **Words while you speak**
   shows your words in the bubble beside the text field while you dictate
   with the hotkey: *Phrases* (Whisper, each phrase after a pause), *Cloud*

@@ -1,7 +1,9 @@
 # online_stt/__init__.py
 # Speech-to-text in the cloud (OpenAI, Gemini) with the API keys of Settings ›
-# AI, in front of local Whisper. Dictation picks its model with
-# whisper.online_model, meetings with meeting.model; empty is local. Design:
-# docs/design/online-models.md.
+# AI, in front of local Whisper. Online mode (whisper.online_mode, mode.py)
+# sends dictation and commands to whisper.online_model and keeps only a small
+# listening model loaded; meetings use meeting.model, else follow dictation.
+# Design: docs/design/online-models.md.
 
 from .engine import OnlineEngine, record_local, usable  # noqa: F401
+from . import mode  # noqa: F401

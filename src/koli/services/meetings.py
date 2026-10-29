@@ -26,7 +26,7 @@ from ..meeting.summary_templates import TemplateLibrary, layout as template_layo
 from ..meeting.transcriber import YOU_FIRM, MeetingTranscriber
 from ..meeting.voices import FILE as VOICES_FILE, VoiceBook, is_default_name
 from ..platform import screenshots as platform_shots
-from ..online_stt import OnlineEngine, usable as online_usable
+from ..online_stt import OnlineEngine, mode as online_mode
 from ..usage import ledger as usage_ledger
 from ..usage.ledger import for_meeting
 from ..ui.events import publish as publish_event, report_problem
@@ -155,11 +155,14 @@ class MeetingService:
             self.start_detector()
 
     # The engine meetings transcribe with: the online model of meeting.model,
-    # else the dictation engine (local Whisper). An online one needn't wait
-    # for dictation, and falls back to the local engine when it fails.
+    # else dictation's online model in online mode, else local Whisper
+    # (online_stt/mode.py). An online one needn't wait for dictation, falls
+    # back to the local engine when it fails, and stops on a used-up budget.
     def _engine(self):
-        spec = str(self._setting('meeting.model', '') or '').strip()
-        if not spec or not online_usable(spec):
+        whisper = {'online_mode': self._setting('whisper.online_mode', False),
+                   'online_model': self._setting('whisper.online_model', '')}
+        spec = online_mode.meeting_spec(self._setting('meeting.model', ''), whisper)
+        if not spec:
             return self.ctx.state_manager.whisper_engine
         if self._online is None or self._online.spec != spec:
             self._online = OnlineEngine(spec, lambda: self.ctx.state_manager.whisper_engine, feature='meeting',

@@ -54,7 +54,8 @@ from .level_overlay import LevelOverlay
 from .fallback_window import FallbackWindow
 from .ui.events import publish
 from .usage import ledger as usage_ledger
-from .online_stt import OnlineEngine, record_local, usable as online_usable
+from .online_stt import OnlineEngine, mode as online_mode, record_local
+from .usage import budget
 
 # What _handle_command_transcription returns when the AI took the command (it
 # shows its own bubble, so no success or failure flash on top).
@@ -130,7 +131,7 @@ class StateManager:
 
         self.audio_recorder = audio_recorder
         self.whisper_engine = whisper_engine
-        self._online_engine = None   # dictation's OnlineEngine (whisper.online_model), made on first use
+        self._online_engines = {}   # feature -> OnlineEngine in online mode (dictation, command), made on first use
         self.clipboard_manager = clipboard_manager
         self.system_tray = OptionalComponent(_NotifyFanout(system_tray))
         self.terminal_title = OptionalComponent(terminal_title)
@@ -741,9 +742,14 @@ class StateManager:
                     self._publish_state('processing')
                 # Beam 1: a command is a few words matched loosely, and the
                 # careful setting only made you wait (0.4-0.9 s on 2026-10-14).
-                text = self.whisper_engine.transcribe_audio(
+                engine = self.dictation_engine('command')
+                text = engine.transcribe_audio(
                     audio, language=self.wake_language(), use_prompt=False, beam_size=1, task='transcribe',
                     quiet=not report_miss) or ''
+                if not text and (getattr(engine, 'last_info', None) or {}).get('budget_stop'):
+                    if report_miss and self.level_overlay:
+                        self.level_overlay.flash_failure("Online budget used up this month")
+                    return EMPTY
             # The wake word at the start is dropped, even read another way
             # than the wake check heard it ("Views" for "Viush").
             listener = self._wake_listener
@@ -757,7 +763,7 @@ class StateManager:
             matched = self._handle_command_transcription(
                 text, only=is_media_command if only_media else None, announce_miss=report_miss,
                 confirm_runs=not personal, source='personal' if personal else 'generic',
-                info=getattr(self.whisper_engine, 'last_info', None) if audio is not None else None)
+                info=getattr(self.dictation_engine('command'), 'last_info', None) if audio is not None else None)
             if matched or report_miss:
                 self._emit_pipeline('command', mode='wake', raw=text, matched=bool(matched))
             if not matched and report_miss and can_retry:
@@ -1410,14 +1416,20 @@ class StateManager:
                         self.level_overlay.show_processing()
 
                 self._emit_pipeline('transcribing', mode=mode)
-                # A voice command stays local, like the wake word's; dictation
-                # and rephrase may go to the online model.
-                engine = self.whisper_engine if mode == 'command' else self.dictation_engine()
+                # In online mode dictation, rephrase and commands go to the
+                # online model (docs/design/online-models.md).
+                engine = self.dictation_engine('command' if mode == 'command' else 'dictation')
                 transcribed_text = engine.transcribe_audio(audio_data)
                 info = dict(getattr(engine, 'last_info', None) or {})
                 if transcribed_text:
-                    record_local('dictation', info)
+                    record_local('command' if mode == 'command' else 'dictation', info)
                 if self._stopped_by_you(mode):
+                    return
+                # The month's online budget is used up and no local model takes over.
+                if info.get('budget_stop'):
+                    self._emit_pipeline('empty', mode=mode, info=info, why=info['budget_stop'])
+                    if self.level_overlay:
+                        self.level_overlay.flash_failure("Online budget used up this month")
                     return
 
                 if not transcribed_text:
@@ -1976,16 +1988,20 @@ class StateManager:
         return new_recorder
 
     
-    # The engine a dictation is transcribed with: the online model of
-    # whisper.online_model, else local Whisper. Commands and the wake word
-    # always use self.whisper_engine (docs/design/online-models.md).
-    def dictation_engine(self):
-        spec = str(self.config_manager.get_path('whisper.online_model', '') or '').strip()
-        if not spec or not online_usable(spec):
+    # The engine for a dictation or a command: the online model in online
+    # mode (whisper.online_mode), else local Whisper. The wake word's own check
+    # and the quick command at a pause always stay local (quiet calls).
+    # Each feature has its own engine, so the Usage screen tells them apart.
+    def dictation_engine(self, feature: str = 'dictation'):
+        budget.check()   # a new month lifts a used-up budget
+        spec = online_mode.dictation_spec(self.config_manager.get_whisper_config())
+        if not spec:
             return self.whisper_engine
-        if self._online_engine is None or self._online_engine.spec != spec:
-            self._online_engine = OnlineEngine(spec, lambda: self.whisper_engine, feature='dictation', timeout=15)
-        return self._online_engine
+        engine = self._online_engines.get(feature)
+        if engine is None or engine.spec != spec:
+            engine = OnlineEngine(spec, lambda: self.whisper_engine, feature=feature, timeout=15)
+            self._online_engines[feature] = engine
+        return engine
 
     def shutdown(self):        
         usage_ledger.flush()
