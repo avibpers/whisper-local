@@ -6,7 +6,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 
 ### Added
 - **Online transcription, and what every model costs.** Dictation
-  (Settings › Model & engine › **Transcribe dictation online with**) and
+  (the Model table in Settings › Model & engine, where OpenAI and Gemini
+  models sit below the local ones) and
   meetings (Settings › Meetings › **Transcribe meetings with**) can each use
   an OpenAI or Gemini model with the API key already saved in Settings › AI;
   the pickers list every model both providers sell that hears audio, with its

@@ -12,14 +12,21 @@ import { call } from '../api.js';
 import { matchesTerms, searchTerms, settingHaystack } from '../search.js';
 import { app, confirmModal, fmtBytes, live, navigate, openModal, closeModal, promptModal, saveSetting, toast, undo, useSetting } from '../store.js';
 import { Icon, Select, TextField, Toggle } from '../ui.js';
-import { BgBadge, KindBadge, MicTest, SettingRow, settingsBySection, TaskProgress, useRunningTasks } from './shared.js';
+import { BgBadge, KindBadge, MicTest, money, providerName, SettingRow, settingsBySection, TaskProgress, usePriceList, useRunningTasks } from './shared.js';
 
 // ── Models ────────────────────────────────────────────────────────────────
 
 const useTasks = useRunningTasks;
 
+// The models dictation can use: the local Whisper models (downloaded once),
+// then the online ones of OpenAI and Gemini with their price an hour
+// (docs/design/online-models.md). Picking an online model sends dictation
+// there; the local model in use stays loaded underneath for the wake word,
+// voice commands, and as the backup when the online model doesn't answer.
 function ModelsTable() {
   const current = useSetting('whisper.model');
+  const online = useSetting('whisper.online_model') || '';
+  const prices = usePriceList().filter((r) => r.transcribe);
   const modelsVersion = useSetting('whisper.models');
   const tasks = app.use((s) => s.tasks);
   const [data, setData] = useState(null);
@@ -37,14 +44,36 @@ function ModelsTable() {
   // Switching the model asks first: a stray arrow key or click on these
   // radios swapped large-v3-turbo for base unnoticed (2026-10-19). Cancelled,
   // the reload re-renders the radios back onto the model in use.
-  const pick = async (m) => {
+  const nowLabel = () => {
+    if (online) return online;
     const now = data.models.find((x) => x.key === current);
-    const ok = await confirmModal({ title: `Switch to ${m.label}?`,
-      body: `Dictation uses ${now ? now.label : current} now. ${m.label} loads in the background and takes over when it is ready.`,
-      confirm: 'Switch' });
-    if (ok) saveSetting('whisper.model', m.key);
-    else reload();
+    return now ? now.label : current;
   };
+  const pick = async (m) => {
+    // Back from an online model to the local one already loaded: no swap.
+    if (online && m.key === current) {
+      const ok = await confirmModal({ title: `Dictate locally with ${m.label}?`,
+        body: `Dictation uses ${online} now. It goes back to ${m.label} on this computer, free.`, confirm: 'Switch' });
+      if (ok) saveSetting('whisper.online_model', ''); else reload();
+      return;
+    }
+    const ok = await confirmModal({ title: `Switch to ${m.label}?`,
+      body: `Dictation uses ${nowLabel()} now. ${m.label} loads in the background and takes over when it is ready.`,
+      confirm: 'Switch' });
+    if (!ok) { reload(); return; }
+    if (online) await saveSetting('whisper.online_model', '');
+    saveSetting('whisper.model', m.key);
+  };
+  const pickOnline = async (r) => {
+    const local = data.models.find((x) => x.key === current);
+    const ok = await confirmModal({ title: `Switch to ${r.model}?`,
+      body: `Dictation uses ${nowLabel()} now. Each recording will be sent to ${providerName(r.provider)}`
+        + `${r.per_hour != null ? `, about ${money(r.per_hour)} an hour of speech` : ''}. `
+        + `${local ? local.label : current} stays loaded for the wake word and voice commands, and takes over if ${providerName(r.provider)} doesn't answer.`,
+      confirm: 'Switch' });
+    if (ok) saveSetting('whisper.online_model', r.spec); else reload();
+  };
+  const onlineProviders = [...new Set(prices.map((r) => r.provider))];
   const addHf = async () => {
     const repo = await promptModal({ title: 'Add a model from Hugging Face', label: 'Repository (owner/name)', placeholder: 'ivrit-ai/whisper-large-v3-turbo-ct2', confirm: 'Add' });
     if (repo) call('model_add', 'hf', repo).then((k) => { toast(`Added ${k}`); reload(); }).catch((e) => toast(e.message, { kind: 'err' }));
@@ -63,9 +92,11 @@ function ModelsTable() {
           ${rows.map((m) => {
             const p = progressFor(m.key);
             return html`<tr>
-              <td><input type="radio" name="model" checked=${m.key === current} aria-label=${`Use ${m.label}`}
+              <td><input type="radio" name="model" checked=${!online && m.key === current} aria-label=${`Use ${m.label}`}
                 onChange=${() => pick(m)} /></td>
-              <td><span style=${m.in_use ? 'font-weight:600' : ''}>${m.label}</span>${m.in_use && html` <span class="chip acc sm">In use</span>`}
+              <td><span style=${m.in_use && !online ? 'font-weight:600' : ''}>${m.label}</span>${m.in_use && (online
+                ? html` <span class="chip sm" title="Loaded for the wake word, voice commands, and when the online model doesn't answer">Backup · commands</span>`
+                : html` <span class="chip acc sm">In use</span>`)}
                 <div class="small muted mono">${m.source}</div></td>
               <td class="mono">${m.cached ? fmtBytes(m.size_bytes) : m.size_hint || ''}</td>
               <td>${p ? html`<${TaskProgress} task=${p} />`
@@ -74,6 +105,27 @@ function ModelsTable() {
               <td><${Toggle} checked=${m.enabled} label=${`Show ${m.label} in menus`} onChange=${(v) => call('model_set_visible', m.key, v).then(reload)} /></td>
               <td class="end">${m.deletable && html`<button type="button" class="btn ghost sm" onClick=${() => remove(m)}>Delete</button>`}
                 ${g.id === 'yours' && !m.in_use && html`<button type="button" class="btn ghost sm" onClick=${() => call('model_remove', m.key).then(reload)}>Remove</button>`}</td>
+            </tr>`;
+          })}`;
+      })}
+      ${onlineProviders.map((p) => {
+        const rows = prices.filter((r) => r.provider === p);
+        return html`<tr class="grp"><td colspan="6">${providerName(p)} · online
+          ${!rows[0].has_key && html`<span class="chip sm warn" style="margin-inline-start:8px">Add the key in Settings › AI</span>`}</td></tr>
+          ${rows.map((r) => {
+            const live = r.transcribe === 'live';
+            const usable = !live && r.has_key;
+            return html`<tr>
+              <td><input type="radio" name="model" checked=${online === r.spec} disabled=${!usable && online !== r.spec}
+                aria-label=${`Use ${r.model}`} onChange=${() => pickOnline(r)} /></td>
+              <td><span style=${online === r.spec ? 'font-weight:600' : ''}>${r.model}</span>${online === r.spec && html` <span class="chip acc sm">In use</span>`}
+                <div class="small muted">${r.note || (r.per_minute != null ? `${money(r.per_minute)} a minute` : `${money(r.audio_in)} per 1M audio tokens`)}</div></td>
+              <td class="mono">${r.per_hour != null ? `~${money(r.per_hour)}/h` : ''}</td>
+              <td>${live ? html`<span class="chip sm">Live · coming next</span>`
+                : r.has_key ? html`<span class="chip warn sm" title="Audio is sent to this provider">Online</span>`
+                : html`<span class="chip sm">No key</span>`}</td>
+              <td></td>
+              <td class="end"><a class="btn ghost sm" href="#/usage">Prices</a></td>
             </tr>`;
           })}`;
       })}
