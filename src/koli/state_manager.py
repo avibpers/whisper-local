@@ -1819,8 +1819,12 @@ class StateManager:
                             voice_match=lambda: listener().voice_match() if listener() else 0.45,
                             has_voice=has_voice, voiceprint=voiceprint, mic=self._mic_key)
         # Your answer to a question the AI asked: up to 10 s of it, ended by a
-        # 1.2 s pause, in your voice when your wake voiceprint is on this
-        # microphone (someone else answering doesn't count).
+        # 1.2 s pause, in your voice when your wake word is recorded
+        # (someone else answering doesn't count). On a microphone without
+        # its own recording it is checked against your other microphones',
+        # like the wake word: an answer is only text for the AI, and anything
+        # dangerous it then plans still needs the password, which never
+        # borrows. Unchecked only while no voiceprint can be made at all.
         def hear(stop):
             wl = listener()
             if wl is None:
@@ -1828,8 +1832,8 @@ class StateManager:
             audio = wl.capture_word(timeout=8.0, max_seconds=10.0, end_silence_s=1.2, stop=stop)
             if audio is None:
                 return None
-            if has_voice():
-                score = wl.similarity(audio, borrow=False)
+            if wl.personal() and wl.wake_voices.mics():
+                score = wl.similarity(audio)
                 if score is not None and score < wl.voice_match():
                     self.logger.info(f"AI action: an answer in another voice ({score:.2f}) was ignored")
                     return None
