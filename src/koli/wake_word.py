@@ -1097,7 +1097,10 @@ class WakeListener:
     # under --legacy-ui). This microphone's recording first; a microphone
     # without its own is checked against your other microphones' (the best
     # of them), so a new microphone works without teaching it again.
-    def similarity(self, audio: np.ndarray) -> Optional[float]:
+    # `borrow=False` for what guards something (the spoken password, your
+    # answer to the AI): only this microphone's own recording counts there,
+    # since the best of several microphones is a looser match.
+    def similarity(self, audio: np.ndarray, borrow: bool = True) -> Optional[float]:
         mic = self._mic()
         recorded = self.wake_voices.all()
         if not recorded:
@@ -1123,6 +1126,8 @@ class WakeListener:
         self._other_model_mics.discard(mic)
         if mic in usable:
             return float(np.dot(vec, usable[mic]))
+        if not borrow:
+            return None
         best_mic, best = max(((m, float(np.dot(vec, v))) for m, v in usable.items()), key=lambda x: x[1])
         if mic not in self._borrowed_mics:
             self._borrowed_mics.add(mic)

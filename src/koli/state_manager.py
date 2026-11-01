@@ -1801,9 +1801,12 @@ class StateManager:
             return self.whisper_engine.transcribe_audio(audio, language=approval.language(), use_prompt=False,
                                                         beam_size=1, task='transcribe', quiet=True, hotwords='')
 
+        # Your wake voiceprint on this microphone itself: the password and
+        # your answers never borrow another microphone's recording (the wake
+        # word does), so approving by voice needs this microphone recorded.
         def has_voice():
             wl = listener()
-            return bool(wl and wl.personal() and wl.wake_voices.mics())   # any microphone's recording counts
+            return bool(wl and wl.personal() and wl.wake_voices.get(self._mic_key()) is not None)
 
         # Your recordings of the password are voiceprinted by the same model
         # as the wake word (the meeting voices').
@@ -1812,7 +1815,7 @@ class StateManager:
             return meetings.voiceprint_of(audio) if meetings is not None else None
 
         approval = Approval(listen=listen, transcribe=transcribe,
-                            similarity=lambda audio: listener().similarity(audio) if listener() else None,
+                            similarity=lambda audio: listener().similarity(audio, borrow=False) if listener() else None,
                             voice_match=lambda: listener().voice_match() if listener() else 0.45,
                             has_voice=has_voice, voiceprint=voiceprint, mic=self._mic_key)
         # Your answer to a question the AI asked: up to 10 s of it, ended by a
@@ -1826,7 +1829,7 @@ class StateManager:
             if audio is None:
                 return None
             if has_voice():
-                score = wl.similarity(audio)
+                score = wl.similarity(audio, borrow=False)
                 if score is not None and score < wl.voice_match():
                     self.logger.info(f"AI action: an answer in another voice ({score:.2f}) was ignored")
                     return None

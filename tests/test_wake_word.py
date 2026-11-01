@@ -827,6 +827,17 @@ class PersonalWakeWordTests(ListenerTestCase):
         self.assertTrue(self.transcribed, 'your voice from the Jabra recording is checked, and Whisper hears it')
         self.assertEqual([p for t, p in self.events if t == 'notify'], [])
 
+    # What guards something (the spoken password for AI actions, your answer
+    # to the AI) asks without borrowing: on a microphone you never recorded,
+    # the best of your other microphones is too loose a match to approve by.
+    def test_the_password_check_never_borrows_another_microphone(self):
+        listener = self.make_personal(self.mine)
+        audio = np.zeros(16000, dtype=np.float32)
+        self.assertIsNotNone(listener.similarity(audio, borrow=False), 'its own recording counts')
+        self.sm.mic = 'Laptop mic'
+        self.assertIsNotNone(listener.similarity(audio), 'the wake word borrows the Jabra recording')
+        self.assertIsNone(listener.similarity(audio, borrow=False))
+
     def test_another_voice_on_a_new_microphone_still_isnt_you(self):
         self.make_personal(self.theirs)
         self.sm.mic = 'Laptop mic'
