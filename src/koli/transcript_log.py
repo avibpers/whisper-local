@@ -3,7 +3,8 @@
 # `--history` browser window so users can search their dictation history.
 # Separate from `stats.jsonl` (which only stores metadata) — this file
 # contains the actual transcribed text and is auto-rotated to keep the
-# last ~2000 entries.
+# last ~2000 entries. It also tells which language you write in a chat
+# (chat_language), for Whisper when it can't tell from the audio.
 
 import datetime
 import json
@@ -99,6 +100,34 @@ def load_transcripts() -> list:
     except Exception as e:
         logger.warning(f"Failed to load transcripts: {e}")
     return list(reversed(entries))
+
+
+# The language you've been writing in this chat: the most common one among
+# your last `limit` dictations into this app and window title (the title
+# names the chat, channel or file), newer ones breaking a tie. Only `allowed`
+# languages count; '' when the chat has none. Only the chat, never the whole
+# app: a replay of 443 unsure clips (2026-11-01) fixed 38 and broke 1 with the
+# chat, but broke 6 when the app filled in (a quick Hebrew "תודה" in Cursor,
+# where you mostly write English).
+CHAT_HISTORY = 5
+
+
+def chat_language(app: str, title: str, allowed, entries: list | None = None, limit: int = CHAT_HISTORY) -> str:
+    if not app or not title:
+        return ''
+    recent = []
+    for entry in entries if entries is not None else load_transcripts():   # newest first
+        if entry.get('app') != app or entry.get('title') != title or entry.get('cancelled'):
+            continue
+        if entry.get('language') in allowed:
+            recent.append(entry['language'])
+            if len(recent) >= limit:
+                break
+    if not recent:
+        return ''
+    counts = {lang: recent.count(lang) for lang in recent}
+    top = max(counts.values())
+    return next(lang for lang in recent if counts[lang] == top)   # the newest of the most common
 
 
 # Cap the journal at roughly _MAX_ENTRIES. We allow it to grow to 1.2× before

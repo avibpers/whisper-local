@@ -4687,6 +4687,68 @@ class CustomTitleBarTests(unittest.TestCase):
         self.assertIn('app-region: no-drag', css)
 
 
+# Which language you write in a chat: your last dictations into the same app
+# and window title, the most common language, newer ones breaking a tie.
+class ChatLanguageTests(unittest.TestCase):
+    def _entries(self, *items):
+        # newest first, as load_transcripts gives them
+        return [{'app': app, 'title': title, 'language': lang, **extra} for app, title, lang, extra in items]
+
+    def test_the_most_common_recent_language_of_this_chat(self):
+        from koli.transcript_log import chat_language
+        chat = ('discord.exe', '@Ilona - Discord')
+        entries = self._entries((*chat, 'en', {}), (*chat, 'he', {}), (*chat, 'en', {}),
+                                ('discord.exe', '@Yuri - Discord', 'he', {}),
+                                ('cursor.exe', '@Ilona - Discord', 'he', {}))
+        self.assertEqual(chat_language(*chat, ['he', 'en'], entries=entries), 'en')
+
+    def test_newer_messages_break_a_tie_and_only_the_last_five_count(self):
+        from koli.transcript_log import chat_language
+        chat = ('whatsapp.root.exe', 'Moshe')
+        tie = self._entries((*chat, 'he', {}), (*chat, 'en', {}))
+        self.assertEqual(chat_language(*chat, ['he', 'en'], entries=tie), 'he')
+        old_english = self._entries(*[(*chat, 'he', {})] * 5, *[(*chat, 'en', {})] * 10)
+        self.assertEqual(chat_language(*chat, ['he', 'en'], entries=old_english), 'he')
+
+    def test_cancelled_unlisted_and_unknown_chats_dont_count(self):
+        from koli.transcript_log import chat_language
+        chat = ('discord.exe', 'memo - Discord')
+        entries = self._entries((*chat, 'en', {'cancelled': True}), (*chat, 'ar', {}), (*chat, 'he', {}))
+        self.assertEqual(chat_language(*chat, ['he', 'en'], entries=entries), 'he')
+        self.assertEqual(chat_language('discord.exe', 'Nobody - Discord', ['he', 'en'], entries=entries), '')
+        self.assertEqual(chat_language('discord.exe', '', ['he', 'en'], entries=entries), '', 'no title, no chat')
+
+
+# The dictation passes the chat's language to Whisper; the setting turned off
+# or a single language pass none.
+class ChatLanguageStateManagerTests(unittest.TestCase):
+    def _sm(self, whisper):
+        import unittest.mock as mock
+        from koli.state_manager import StateManager
+        sm = StateManager.__new__(StateManager)
+        sm.logger = __import__('logging').getLogger('test')
+        sm.config_manager = mock.Mock(get_whisper_config=lambda: whisper)
+        return sm
+
+    def test_the_window_youre_in_names_the_chat(self):
+        import unittest.mock as mock
+        from koli import state_manager
+        sm = self._sm({'languages': ['he', 'en']})
+        window = {'exe': 'discord.exe', 'title': '@Ilona - Discord'}
+        with mock.patch.object(state_manager.foreground, 'get_foreground_app', lambda: window), \
+                mock.patch.object(state_manager, 'chat_language', return_value='en') as lookup:
+            self.assertEqual(sm.chat_language(), 'en')
+        lookup.assert_called_once_with('discord.exe', '@Ilona - Discord', ['he', 'en'])
+
+    def test_off_or_one_language_means_no_chat_language(self):
+        import unittest.mock as mock
+        from koli import state_manager
+        with mock.patch.object(state_manager, 'chat_language', return_value='en'):
+            self.assertEqual(self._sm({'languages': ['he', 'en'], 'chat_language': False}).chat_language(), '')
+            self.assertEqual(self._sm({'languages': ['he']}).chat_language(), '')
+            self.assertEqual(self._sm({'languages': []}).chat_language(), '')
+
+
 class HostMethodCallsTests(unittest.TestCase):
     # UiHost.run only runs with a real window, so a call to a method that was
     # renamed away (self._bar_origin once) shows up as the app window failing
@@ -7352,6 +7414,47 @@ class LanguageModelRoutingTests(unittest.TestCase):
         engine = self._engine(detected=('en', 0.95, [('en', 0.95), ('he', 0.02)]), allowed=['he', 'en'])
         self._run(engine)
         self.assertEqual(engine.model.calls[-1][1]['language'], 'en')
+
+    # ── The chat's language ──
+    # A weak guess goes with the language of the chat you're writing in
+    # before your main one: "Commit it" (2026-10) scored English 0.26 in a
+    # chat written in English and came out as Hebrew. A replay of 443 unsure
+    # clips: 81% right with the main language, 89% with the chat's.
+    def _run_in_chat(self, engine, chat):
+        import unittest.mock as mock
+        import numpy as np
+        with mock.patch('builtins.print'):
+            return engine.transcribe_audio(np.zeros(16000, dtype=np.float32), chat_language=chat)
+
+    def test_a_weak_guess_goes_with_the_chats_language(self):
+        weak_english = ('en', 0.26, [('en', 0.26), ('he', 0.02)])
+        engine = self._engine(detected=weak_english, allowed=['he', 'en'])
+        self._run_in_chat(engine, 'en')
+        self.assertEqual(engine.model.calls[-1][1]['language'], 'en')
+        self.assertEqual(engine.last_info.get('language_from'), 'chat')
+        weak_hebrew = ('he', 0.3, [('he', 0.3), ('en', 0.2)])
+        engine = self._engine(detected=weak_hebrew, allowed=['he', 'en'])
+        self._run_in_chat(engine, 'en')
+        self.assertEqual(engine.model.calls[-1][1]['language'], 'en', 'a weak Hebrew guess in an English chat')
+        self.assertEqual(engine.language_model.calls, [], 'never the second model on a weak guess')
+
+    def test_a_chat_in_your_main_language_changes_nothing(self):
+        engine = self._engine(detected=('en', 0.15, [('en', 0.15), ('he', 0.01)]), allowed=['he', 'en'])
+        self._run_in_chat(engine, 'he')
+        self.assertEqual(engine.model.calls[-1][1]['language'], 'he')
+        self.assertNotIn('language_from', engine.last_info, 'your main language decided, as without a chat')
+
+    def test_a_clear_guess_beats_the_chats_language(self):
+        engine = self._engine(detected=('he', 0.97, [('he', 0.97), ('en', 0.01)]), allowed=['he', 'en'])
+        self.assertEqual(self._run_in_chat(engine, 'en'), 'hebrew text')
+        engine = self._engine(detected=('en', 0.95, [('en', 0.95), ('he', 0.02)]), allowed=['he', 'en'])
+        self._run_in_chat(engine, 'he')
+        self.assertEqual(engine.model.calls[-1][1]['language'], 'en')
+
+    def test_a_chat_language_you_dont_speak_is_ignored(self):
+        engine = self._engine(detected=('en', 0.15, [('en', 0.15), ('he', 0.01)]), allowed=['he', 'en'])
+        self._run_in_chat(engine, 'fr')
+        self.assertEqual(engine.model.calls[-1][1]['language'], 'he')
 
     # Unsure, with Whisper's top guess outside your languages: left to decide,
     # the main model wrote Arabic for Hebrew speech (2026-10-19). It writes
