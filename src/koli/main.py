@@ -866,6 +866,7 @@ def main():
             from .ui.host import UiHost
             state_manager.overlay_factory = UiHost.overlay_factory
         state_manager.attach_components(audio_recorder, system_tray)
+        state_manager.start_remote_desktop_watch()
         
         repair_unusable_hotkeys(hotkey_config, config_manager)
         try:

@@ -562,9 +562,15 @@ class UiHost:
 
     # ── Floating bar ─────────────────────────────────────────────────────────
 
+    # The spot you dragged the bubble to, or None while it is on no screen
+    # (saved with other screens: at the desk, now over Remote Desktop). Then
+    # the bubble takes bottom center here; the spot stays saved for later.
     def _custom_spot(self):
         x, y = self.settings.get('overlay.custom_x'), self.settings.get('overlay.custom_y')
-        return (int(x), int(y)) if x is not None and y is not None else None
+        if x is None or y is None:
+            return None
+        spot = (int(x), int(y))
+        return spot if win32.on_screen(spot) else None
 
     # Where the bubble goes for a page size of w x h, its physical size, and
     # whether the resting tab stands upright there (floating_bar has the rules).
@@ -766,6 +772,8 @@ class UiHost:
         position = self.settings.get('meeting.panel.position', 'right-edge') or 'right-edge'
         cx, cy = self.settings.get('meeting.panel.custom_x'), self.settings.get('meeting.panel.custom_y')
         custom = (int(cx), int(cy)) if cx is not None and cy is not None else None
+        if custom and not win32.on_screen(custom):
+            custom = None    # saved with other screens: the bubble's corner for now, the spot kept
         area = win32.work_area(custom) if position == 'custom' and custom else win32.work_area()
         x, y = panel_origin(area, size, scale, position, custom)
         return x, y, size
@@ -1061,13 +1069,22 @@ class UiHost:
 
     # The meeting panel and the bubble on every virtual desktop: twice a
     # second, either one Windows left on a desktop you switched away from
-    # moves to the one you're on (ui/win32.follow_current_desktop).
+    # moves to the one you're on (ui/win32.follow_current_desktop). The same
+    # check notices the screens changing (Remote Desktop connecting or
+    # ending, a monitor or resolution change) and fits both on the new ones.
     def _follow_desktops(self):
+        layout = win32.screen_layout()
         while not self._quitting:
             time.sleep(DESKTOP_FOLLOW_INTERVAL)
             moved = win32.follow_current_desktop([self.panel_hwnd, self.bar_hwnd])
             if moved:
                 logger.debug(f"Moved {len(moved)} window(s) to the current virtual desktop")
+            now = win32.screen_layout()
+            if now != layout:
+                layout = now
+                logger.info(f"Screens changed ({len(now)} now): placing the bubble and the meeting panel again")
+                self.place_bar()
+                self.place_panel()
 
     def _pump(self):
         while not self._quitting:

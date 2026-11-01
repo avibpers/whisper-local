@@ -2049,6 +2049,11 @@ class MeetingMicTests(unittest.TestCase):
                              loopback_available=lambda: True, sessions_fn=lambda: [], report=self.problems.append,
                              mic_stream_factory=mic_factory)
         self.addCleanup(svc.shutdown)
+        # The PC running the tests may itself be in a Remote Desktop session.
+        self.remote = False
+        patcher = mock.patch('koli.services.meetings.desktop_session.is_remote', lambda: self.remote)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         return svc
 
     def test_same_as_dictation_taps_the_recorder(self):
@@ -2094,6 +2099,26 @@ class MeetingMicTests(unittest.TestCase):
         svc.start()
         self.assertEqual(len(self.taps), 1)
         self.assertIn('Invalid device', self.problems[0])
+
+    # Over Remote Desktop the PC's own microphones are silent: the meeting
+    # taps the dictation microphone, which is on Remote Audio there.
+    def test_remote_desktop_taps_the_recorder_instead_of_the_meeting_mic(self):
+        made = []
+
+        class FakeMic:
+            def __init__(self, device, on_block, allow, on_error):
+                made.append(device)
+
+            def start(self):
+                return True
+
+            def stop(self):
+                pass
+        svc = self._service({'meeting.input_device': 24}, mic_factory=FakeMic)
+        self.remote = True
+        svc.start()
+        self.assertEqual(made, [])
+        self.assertEqual(len(self.taps), 1)
 
 
 # A 4-person Meet came out as "You" and "Speaker 1": each 15 s chunk got one

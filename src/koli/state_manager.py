@@ -49,7 +49,7 @@ from .stats import record_transcription
 from .audit_log import record as audit_record
 from .terminal_title import TerminalTitle
 from .transcript_log import record_transcript
-from .platform import foreground
+from .platform import foreground, session as desktop_session
 from .level_overlay import LevelOverlay
 from .fallback_window import FallbackWindow
 from .ui.events import publish
@@ -1958,8 +1958,11 @@ class StateManager:
                 self.logger.warning(f"Could not unload the old engine: {e}")
 
     # Build a new recorder with the same callbacks and any changed parameters,
-    # swap it in, then stop the old one's capture thread.
-    def rebuild_audio_recorder(self, **overrides):
+    # swap it in, then stop the old one's capture thread. `refresh_devices`
+    # stops the old one first and has the audio library reread the device
+    # list, which it otherwise reads once at start (see the remote desktop
+    # watch below).
+    def rebuild_audio_recorder(self, refresh_devices: bool = False, **overrides):
         old = self.audio_recorder
         audio_cfg = self.config_manager.config.get('audio') or {}
         params = dict(
@@ -1971,21 +1974,68 @@ class StateManager:
             vad_manager=old.vad_manager,
             streaming_manager=old.streaming_manager,
             on_streaming_result=old.on_streaming_result,
-            device=old.device,
+            device=old.chosen_device,
             noise_suppression_config=audio_cfg.get('noise_suppression') or {},
             whisper_mode_config=audio_cfg.get('whisper_mode') or {},
         )
         params.update(overrides)
+        if refresh_devices:
+            self._shut_down_recorder(old)
+            sd._terminate()
+            sd._initialize()
         new_recorder = AudioRecorder(**params)
         # A meeting's microphone tap must follow the microphone.
         new_recorder._taps = list(getattr(old, '_taps', []))
         with self._state_lock:
             self.audio_recorder = new_recorder
+        if not refresh_devices:
+            self._shut_down_recorder(old)
+        return new_recorder
+
+    def _shut_down_recorder(self, recorder):
         try:
-            old.shutdown()
+            recorder.shutdown()
         except Exception as e:
             self.logger.debug(f"Old recorder shutdown failed: {e}")
-        return new_recorder
+
+    # ── Remote desktop ───────────────────────────────────────────────────────
+    # Over Remote Desktop the only microphone that hears you is Remote Audio;
+    # the one Koli opened at the desk keeps running but sends silence (and the
+    # other way round when you come back). Every few seconds: when the session
+    # turns remote or local, the device list is reread and the microphone
+    # reopened, Remote Audio over RDP and your Settings microphone at the desk.
+
+    REMOTE_CHECK_SECONDS = 3
+
+    def start_remote_desktop_watch(self):
+        self._remote_desktop = desktop_session.is_remote()
+        threading.Thread(target=self._watch_remote_desktop, daemon=True, name='remote-desktop-watch').start()
+
+    def _watch_remote_desktop(self):
+        while True:
+            time.sleep(self.REMOTE_CHECK_SECONDS)
+            remote = desktop_session.is_remote()
+            if remote != self._remote_desktop:
+                self._remote_desktop = remote
+                self.logger.info(f"Remote desktop {'connected' if remote else 'ended'}: reopening the microphone")
+                self.run_when_idle(lambda: self._reopen_microphone_for_desktop(remote))
+
+    def _reopen_microphone_for_desktop(self, remote: bool):
+        meetings = getattr(self, 'meetings', None)
+        if meetings is not None and meetings.is_running():
+            # A meeting may hold its own microphone stream, which rereading
+            # the device list would cut: try again once it has ended.
+            self._remote_desktop = not remote
+            return
+        try:
+            recorder = self.rebuild_audio_recorder(refresh_devices=True)
+        except Exception as e:
+            self.logger.error(f"Couldn't reopen the microphone after the remote desktop change: {e}")
+            return
+        name = recorder.describe().get('name') or 'the default microphone'
+        publish('devices_changed', {})
+        publish('notify', {'kind': 'info', 'message': f"{'Remote desktop' if remote else 'Back at this PC'}: "
+                                                      f"Koli listens through {name}."})
 
     
     # The engine for a dictation or a command: the online model in online
@@ -2416,7 +2466,7 @@ class StateManager:
     def request_audio_device_change(self, device_id: int, device_name: str):
         current_state = self.get_current_state()
 
-        if device_id == self.audio_recorder.device:
+        if device_id == self.audio_recorder.chosen_device:
             return True
 
         if current_state == "recording":

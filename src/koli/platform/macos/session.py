@@ -23,3 +23,8 @@ def is_locked() -> bool:
             _warned = True
             logger.warning(f"Can't tell whether the Mac is locked ({e}); the wake word won't listen")
         return True
+
+
+# Remote Desktop has no Mac counterpart that swaps the microphone: never remote.
+def is_remote() -> bool:
+    return False

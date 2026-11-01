@@ -182,6 +182,40 @@ def work_area(point=None) -> tuple:
     return rect.left, rect.top, rect.right, rect.bottom
 
 
+# Whether (x, y) is on one of the screens now. A spot saved on a monitor that
+# is gone (another layout: Remote Desktop, a laptop away from its desk) isn't.
+def on_screen(point) -> bool:
+    if not IS_WINDOWS:
+        return True
+    MONITOR_DEFAULTTONULL = 0
+    return bool(user32.MonitorFromPoint(wt.POINT(int(point[0]), int(point[1])), MONITOR_DEFAULTTONULL))
+
+
+# Every screen's work area, so a change of screens (Remote Desktop connecting,
+# a monitor plugged in, a resolution change, the taskbar moving) can be noticed.
+def screen_layout() -> tuple:
+    if not IS_WINDOWS:
+        return ()
+    class MONITORINFO(ctypes.Structure):
+        _fields_ = [('cbSize', ctypes.c_ulong), ('rcMonitor', wt.RECT), ('rcWork', wt.RECT),
+                    ('dwFlags', ctypes.c_ulong)]
+    areas = []
+    MonitorEnumProc = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p,
+                                         ctypes.POINTER(wt.RECT), ctypes.c_void_p)
+
+    def collect(monitor, _dc, _rect, _data):
+        info = MONITORINFO(cbSize=ctypes.sizeof(MONITORINFO))
+        if user32.GetMonitorInfoW(ctypes.c_void_p(monitor), ctypes.byref(info)):
+            r = info.rcWork
+            areas.append((r.left, r.top, r.right, r.bottom))
+        return 1
+    try:
+        user32.EnumDisplayMonitors(None, None, MonitorEnumProc(collect), 0)
+    except Exception:
+        return ()
+    return tuple(sorted(areas))
+
+
 # A window's rectangle on screen (left, top, right, bottom), physical pixels.
 def window_rect(hwnd: int) -> tuple:
     if not IS_WINDOWS or not hwnd:

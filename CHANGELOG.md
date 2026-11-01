@@ -5,6 +5,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 ## [Unreleased]
 
 ### Fixed
+- **Remote Desktop.** Over RDP Koli listens through Remote Audio, the one
+  microphone that hears you there, and goes back to your Settings microphone
+  when you return to the PC; connecting or leaving reopens the microphone by
+  itself (it used to keep the desk microphone and record silence). A meeting
+  uses Remote Audio too.
+- **The bubble on other screens.** When the screens change (Remote Desktop,
+  a monitor plugged in, a resolution change) the bubble and the meeting
+  panel are placed again to fit. A spot you dragged the bubble to on a screen
+  that isn't there now gives bottom center instead of a thin line on the
+  edge; the spot is kept for when that screen is back.
 - **Your wake word on every microphone.** A microphone without its own
   recording is checked against the ones you recorded on your other
   microphones, so a new headset works without teaching it again; **Add

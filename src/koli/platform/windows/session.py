@@ -44,3 +44,16 @@ def is_locked() -> bool:
             _warned = True
             logger.warning(f"Can't tell whether the PC is locked ({e}); the wake word won't listen")
         return True
+
+
+SM_REMOTESESSION = 0x1000
+
+
+# True while you use this PC over Remote Desktop. There the only microphone
+# that hears you is the one your remote client passes through (Remote Audio,
+# the session's default input); the PC's own microphones send silence.
+def is_remote() -> bool:
+    try:
+        return bool(_user32 and _user32.GetSystemMetrics(SM_REMOTESESSION))
+    except Exception:
+        return False

@@ -4687,6 +4687,59 @@ class CustomTitleBarTests(unittest.TestCase):
         self.assertIn('app-region: no-drag', css)
 
 
+# The bubble dragged to a spot at the desk sat 6 pixels wide on the edge of
+# a Remote Desktop screen, where that spot doesn't exist. A spot on no screen
+# now gives bottom center there, and a change of screens places it again.
+class BubbleOnOtherScreensTests(unittest.TestCase):
+    AREA = (0, 0, 1920, 1032)
+
+    def _host(self, on_screen):
+        import unittest.mock as mock
+        from koli.ui import host as host_mod
+        h = object.__new__(host_mod.UiHost)
+        h.settings = mock.Mock(get=lambda path, default=None: {
+            'overlay.position': 'custom', 'overlay.custom_x': 2553, 'overlay.custom_y': 1341}.get(path, default))
+        h.bar_hwnd = 1
+        h._recording_field = h._field_rect = None
+        patches = [mock.patch.object(host_mod.win32, 'on_screen', lambda p: on_screen),
+                   mock.patch.object(host_mod.win32, 'work_area', lambda point=None: self.AREA),
+                   mock.patch.object(host_mod.win32, 'dpi_scale', lambda hwnd=0: 1.0)]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        return h
+
+    def test_a_spot_on_no_screen_gives_bottom_center_and_stays_saved(self):
+        h = self._host(on_screen=False)
+        self.assertIsNone(h._custom_spot())
+        x, y, size, upright = h._bar_geometry(200, 40)
+        self.assertEqual((x + size[0] // 2, upright), (960, False))
+        self.assertEqual(h.settings.get('overlay.custom_x'), 2553)
+
+    def test_a_spot_on_a_screen_is_kept(self):
+        h = self._host(on_screen=True)
+        self.assertEqual(h._custom_spot(), (2553, 1341))
+
+    def test_a_change_of_screens_places_the_bubble_and_panel_again(self):
+        import unittest.mock as mock
+        from koli.ui import host as host_mod
+        checks = {'n': 0}
+
+        class TwoChecks(host_mod.UiHost):   # stops after two checks
+            @property
+            def _quitting(self):
+                checks['n'] += 1
+                return checks['n'] > 2
+        h = object.__new__(TwoChecks)
+        h.panel_hwnd = h.bar_hwnd = 0
+        layouts = iter([((0, 0, 2560, 1400),), ((0, 0, 2560, 1400),), ((0, 0, 1920, 1032),)])
+        h.place_bar, h.place_panel = mock.Mock(), mock.Mock()
+        with mock.patch.object(host_mod.win32, 'screen_layout', lambda: next(layouts)),                 mock.patch.object(host_mod.win32, 'follow_current_desktop', lambda hwnds: []),                 mock.patch.object(host_mod, 'DESKTOP_FOLLOW_INTERVAL', 0):
+            h._follow_desktops()
+        h.place_bar.assert_called_once()
+        h.place_panel.assert_called_once()
+
+
 class HostMethodCallsTests(unittest.TestCase):
     # UiHost.run only runs with a real window, so a call to a method that was
     # renamed away (self._bar_origin once) shows up as the app window failing
@@ -6676,6 +6729,39 @@ class AutoDictationShapeTests(unittest.TestCase):
         report.assert_called_once()
         self.assertIn('EMEET Piko+', report.call_args[0][0])
         self.assertIn('Logitech USB Headset', report.call_args[0][0])
+
+    # Over Remote Desktop the only microphone that hears you is Remote Audio,
+    # the session's default input: the Settings microphone is remembered for
+    # the desk but the default is opened.
+    def test_remote_desktop_records_from_the_default_input(self):
+        import unittest.mock as mock
+        from koli import audio_recorder
+        rec = audio_recorder.AudioRecorder.__new__(audio_recorder.AudioRecorder)
+        rec.logger = __import__('logging').getLogger('test')
+        for remote, opened in ((True, None), (False, 27)):
+            with mock.patch.object(audio_recorder.desktop_session, 'is_remote', lambda: remote),                     mock.patch.object(rec, '_resolve_hostapi'),                     mock.patch.object(audio_recorder.sd, 'query_devices', lambda d: {'max_input_channels': 2}):
+                rec.resolve_device(27)
+            self.assertEqual((rec.chosen_device, rec.device), (27, opened))
+
+    # Connecting over RDP (or coming back) rereads the device list and reopens
+    # the microphone; a running meeting holds its own streams, so it waits.
+    def test_a_remote_desktop_change_reopens_the_microphone_unless_a_meeting_runs(self):
+        import unittest.mock as mock
+        from koli.state_manager import StateManager
+        sm = StateManager.__new__(StateManager)
+        sm.logger = __import__('logging').getLogger('test')
+        sm._remote_desktop = True
+        sm.meetings = mock.Mock(is_running=lambda: True)
+        sm.rebuild_audio_recorder = mock.Mock()
+        sm._reopen_microphone_for_desktop(True)
+        sm.rebuild_audio_recorder.assert_not_called()
+        self.assertFalse(sm._remote_desktop, 'the next check sees the change again')
+        sm.meetings = None
+        sm.rebuild_audio_recorder.return_value = mock.Mock(describe=lambda: {'name': 'Remote Audio'})
+        with mock.patch('koli.state_manager.publish') as publish:
+            sm._reopen_microphone_for_desktop(True)
+        sm.rebuild_audio_recorder.assert_called_once_with(refresh_devices=True)
+        self.assertIn('Remote Audio', publish.call_args_list[-1][0][1]['message'])
 
     # Every thread that opens a stream needs the same per-thread setup on both
     # systems (COM on Windows, nothing on macOS).

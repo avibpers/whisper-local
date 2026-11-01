@@ -25,7 +25,7 @@ from ..meeting.store import MeetingStore, roster
 from ..meeting.summary_templates import TemplateLibrary, layout as template_layout, summary as template_row
 from ..meeting.transcriber import YOU_FIRM, MeetingTranscriber
 from ..meeting.voices import FILE as VOICES_FILE, VoiceBook, is_default_name
-from ..platform import screenshots as platform_shots
+from ..platform import screenshots as platform_shots, session as desktop_session, session as desktop_session
 from ..online_stt import OnlineEngine, mode as online_mode
 from ..usage import ledger as usage_ledger
 from ..usage.ledger import for_meeting
@@ -393,10 +393,12 @@ class MeetingService:
 
     # Your side: the dictation microphone's always-open stream (a tap), or a
     # device of your own for meetings. A device that won't open is reported
-    # and the tap is used, so a meeting never silently loses your side.
+    # and the tap is used, so a meeting never silently loses your side. Over
+    # Remote Desktop the PC's own microphones are silent: always the tap,
+    # which is on Remote Audio there.
     def _open_mic(self, mic_chunker: Chunker):
         device = self._setting('meeting.input_device', '')
-        if device not in ('', None):
+        if device not in ('', None) and not desktop_session.is_remote():
             stream = self._mic_stream_factory(device, mic_chunker.feed, self._mic_allowed, self._mic_failed)
             if stream.start():
                 return stream

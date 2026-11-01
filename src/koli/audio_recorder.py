@@ -27,7 +27,7 @@ import numpy as np
 import sounddevice as sd
 import soxr
 
-from .platform import app
+from .platform import app, session as desktop_session
 from .voice_activity_detection import VadEvent, VAD_CHUNK_SIZE
 
 
@@ -128,7 +128,14 @@ class AudioRecorder:
         if self.on_streaming_result:
             self.on_streaming_result(text, is_final)
 
+    # `chosen_device` is the microphone from Settings; `device` is the one
+    # opened. Over Remote Desktop that is always the default input (Remote
+    # Audio), since the PC's own microphones only send silence there.
     def resolve_device(self, device):
+        self.chosen_device = device
+        if device not in (None, "default") and desktop_session.is_remote():
+            self.logger.info("Remote desktop: recording from the default input (the microphone your remote client passes through)")
+            device = None
         if device == "default" or device is None:
             self.device = None
             self._resolve_hostapi(None)
