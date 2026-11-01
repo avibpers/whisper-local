@@ -704,7 +704,7 @@ class LiveWordsFlowTests(unittest.TestCase):
         sm = self._sm(phrases=['Call Avigail.', 'she knows'])
         self._start(sm)
         prompts = []
-        sm.whisper_engine.transcribe_audio.side_effect = lambda a: (prompts.append(sm.whisper_engine.initial_prompt)
+        sm.whisper_engine.transcribe_audio.side_effect = lambda a, **kw: (prompts.append(sm.whisper_engine.initial_prompt)
                                                                     or ['Call Avigail.', 'she knows'][len(prompts) - 1])
         self._pause(sm)
         self._pause(sm)
@@ -1249,7 +1249,7 @@ class ReviewFixTests(unittest.TestCase):
         self.base._start(sm)
         sm.audio_recorder.continuous_vad.speech_since_phrase = True
 
-        def tail(audio):
+        def tail(audio, **kw):
             sm.bubble_write(True)                # a second press while the tail is transcribed
             sm.bubble_cancel()
             return 'The tail.'
@@ -1267,7 +1267,7 @@ class ReviewFixTests(unittest.TestCase):
         first = np.ones(16000, dtype=np.float32) * 0.1
         second = np.ones(16000, dtype=np.float32) * 0.2
 
-        def transcribe(audio):
+        def transcribe(audio, **kw):
             if float(audio[0]) < 0.15:
                 time.sleep(0.3)
                 return 'First.'

@@ -258,9 +258,13 @@ class WhisperEngine:
     # clip scored English 0.15 and came out as English.
     OTHER_LANGUAGE_MIN_CONFIDENCE = 0.5
 
-    def _route(self, audio: np.ndarray, language: Optional[str] = None) -> tuple:
+    # `chat_language`: the language you've been writing in the chat this
+    # dictation goes to (transcript_log.chat_language), or ''. A weak guess
+    # takes it before your main language.
+    def _route(self, audio: np.ndarray, language: Optional[str] = None, chat_language: str = '') -> tuple:
         self._raw_language_probability = None
         self._raw_top_language = None
+        self._language_from_chat = False
         second = getattr(self, 'language_model', None)
         allowed = getattr(self, 'allowed_languages', None) or []
         forced = self.language if language is None else (None if language == 'auto' else language)
@@ -271,16 +275,28 @@ class WhisperEngine:
         if not language and (allowed or second is not None):
             language, probability = self._detect_language(audio, allowed)
             detected = True
-            # A weak guess of another of your languages loses to your main
-            # one. The main model writes it, told your main language: a weak
-            # guess never goes to the second model (it would translate).
+            # A weak guess loses to the language of the chat you're writing
+            # in, and with no chat to go by, to your main one. The main model
+            # writes it, told that language: a weak guess never goes to the
+            # second model (it would translate). The chat's language fixed
+            # "Commit it" and "As you recommended", English written as Hebrew.
             main = allowed[0] if len(allowed) > 1 else None
+            fallback = chat_language if main and chat_language in allowed else main
             sure = getattr(self, '_raw_language_probability', None)
             top = getattr(self, '_raw_top_language', None)
-            if (main and language and language != main and top in allowed
-                    and sure is not None and sure < self.OTHER_LANGUAGE_MIN_CONFIDENCE):
-                self.logger.info(f"Only {sure:.2f} sure it's {language}: your main language {main} is used")
-                return self.model, self.model_key, main, self.initial_prompt, probability
+            weak = top in allowed and sure is not None and sure < self.OTHER_LANGUAGE_MIN_CONFIDENCE
+            if fallback and language and weak:
+                # Also when the weak guess is the chat's language: without
+                # the chat it would have lost to your main one.
+                self._language_from_chat = fallback != main
+                why = (f"this chat is written in {fallback}" if self._language_from_chat
+                       else f"your main language {main} is used")
+                if language != fallback:
+                    self.logger.info(f"Only {sure:.2f} sure it's {language}: {why}")
+                    return self.model, self.model_key, fallback, self.initial_prompt, probability
+                if self._language_from_chat:
+                    self.logger.info(f"Only {sure:.2f} sure it's {language}, as {why}")
+                    return self.model, self.model_key, fallback, self.initial_prompt, probability
         if second is not None and language == self.language_model_lang:
             sure = getattr(self, '_raw_language_probability', None)
             small = self._main_model_is_small()
@@ -517,7 +533,8 @@ class WhisperEngine:
                          task: Optional[str] = None,
                          quiet: bool = False,
                          hotwords: Optional[str] = None,
-                         pieces: Optional[list] = None) -> Optional[str]:
+                         pieces: Optional[list] = None,
+                         chat_language: str = '') -> Optional[str]:
         if self.model is None:
             return None
         if not quiet:
@@ -550,7 +567,7 @@ class WhisperEngine:
             # with picking the model. Each piece keeps Whisper's own numbers on
             # how sure it was, so auto-dictation can leave out what was noise.
             def decode():
-                model, key, lang, prompt, detected_probability = self._route(audio_data, language)
+                model, key, lang, prompt, detected_probability = self._route(audio_data, language, chat_language)
                 kwargs = dict(beam_size=beam_size or self.beam_size, language=lang, task=task or self.task,
                               condition_on_previous_text=False)
                 # Learned words join yours only on ordinary calls: the wake
@@ -604,6 +621,10 @@ class WhisperEngine:
                 'backend': 'faster_whisper',
                 'segments': pieces,
             }
+            # Whisper was unsure and the chat's language decided (History and
+            # the kept clip show it).
+            if getattr(self, '_language_from_chat', False):
+                self.last_info['language_from'] = 'chat'
             self.logger.info(f"Transcription complete. Language: {detected_language} (confidence: {confidence:.2f}) - Time: {transcription_time:.2f}s")
             # The numbers only, never the text: why a piece was kept or left out.
             self.logger.info("Pieces (no-speech / log-prob / repetition): " + ', '.join(

@@ -39,6 +39,7 @@ class LiveWordsFlow:
         self._next_id = 0
         self._notices_said = set()
         self._base_prompt = None        # Whisper's prompt for this recording, before phrase context
+        self._chat_language = ''        # the language you write in the chat this recording goes to
         self._seconds = 0.0             # audio this session listened to
         self._started_at = None
         self._tokens_in = self._tokens_out = 0
@@ -98,6 +99,9 @@ class LiveWordsFlow:
         self._language = language
         self._next_id += 1
         self.session = DictationSession(self.choice.engine, self._next_id, foreground.get_foreground_app() or {})
+        # Looked up now, while your chat has the focus: clicking into the
+        # bubble later moves the focus to Koli.
+        self._chat_language = self.sm.chat_language() if hasattr(self.sm, 'chat_language') else ''
         self._seconds, self._tokens_in, self._tokens_out = 0.0, 0, 0
         self._base_prompt = None
         self._rule = rule or None
@@ -330,7 +334,7 @@ class LiveWordsFlow:
             except Exception:
                 pass
             try:
-                text = engine.transcribe_audio(audio) or ''
+                text = engine.transcribe_audio(audio, chat_language=self._chat_language) or ''
             finally:
                 try:
                     engine.initial_prompt = self._base_prompt

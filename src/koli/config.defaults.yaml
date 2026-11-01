@@ -54,6 +54,11 @@ whisper: # Whisper AI Model Settings
     # Example: [en, he]
     languages: []
 
+    # With two or more languages: when Whisper can't tell them apart (often a
+    # short clip), the language you've been writing in that chat decides (your
+    # last dictations into the same window title), before your main language.
+    chat_language: true
+
     # Transcription quality settings
     beam_size: 5 # Higher = more accurate but slower (1-10)
 

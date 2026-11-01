@@ -4,6 +4,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 
 ## [Unreleased]
 
+### Added
+- **The chat's language when Whisper is unsure.** A short clip Whisper can't
+  place between your languages goes with the language you've been writing in
+  that chat or window (your last 5 dictations there), instead of always your
+  first language: "Commit it" in an English chat no longer comes out as
+  Hebrew gibberish. A clear guess still wins; Settings › General › "Use the
+  chat's language when unsure" turns it off (`docs/design/chat-language.md`).
+
 ### Fixed
 - **Remote Desktop.** Over RDP Koli listens through Remote Audio, the one
   microphone that hears you there, and goes back to your Settings microphone

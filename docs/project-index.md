@@ -34,7 +34,7 @@ Koli is a fork of `drajb/whisper-local` by Rohit Burani (repo `avibpers/whisper-
 | **Log Bundler** | `bundle_logs.py` | `--bundle-logs` redacted diagnostic zip for bug reports | zipfile, re |
 | **Local API Server** | `local_server.py` | `--serve` OpenAI-compatible Whisper HTTP endpoint | http.server |
 | **Settings GUI (legacy)** | `settings_ui.py` | Tkinter settings editor, used with `--legacy-ui` only | tkinter |
-| **Transcript History** | `transcript_log.py` (+ `history_window.py`, legacy) | Journal of past transcriptions; shown in the app's History screen | json |
+| **Transcript History** | `transcript_log.py` (+ `history_window.py`, legacy) | Journal of past transcriptions; shown in the app's History screen; tells which language you write in a chat, for a weak language guess (design: `docs/design/chat-language.md`) | json |
 | **Hotkey Cheat Sheet (legacy)** | `cheat_sheet.py` | Tk window listing the hotkeys; the app shows them in Diagnostics | tkinter |
 | **Window Launcher** | `window_launcher.py` | Opens Tk windows in a child process where Tk needs the main thread (macOS) | subprocess, json |
 | **First-Run Welcome (legacy)** | `first_run.py` | Tk welcome window; the app window has its own welcome steps | tkinter |

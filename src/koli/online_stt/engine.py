@@ -62,19 +62,24 @@ class OnlineEngine:
     def transcribe_audio(self, audio_data: Optional[np.ndarray], language: Optional[str] = None,
                          use_prompt: bool = True, beam_size: Optional[int] = None, task: Optional[str] = None,
                          quiet: bool = False, hotwords: Optional[str] = None,
-                         pieces: Optional[list] = None) -> Optional[str]:
+                         pieces: Optional[list] = None, chat_language: str = '') -> Optional[str]:
+        # `chat_language` (the chat's language, for a weak guess) goes to local
+        # Whisper only: the online models aren't told a language they didn't
+        # hear (naming one made Gemini write English in Hebrew letters).
         local = self.local_provider()
         # Quick checks (wake word, commands) never go online.
         if quiet or (task or getattr(local, 'task', 'transcribe')) == 'translate':
             return local.transcribe_audio(audio_data, language=language, use_prompt=use_prompt, beam_size=beam_size,
-                                          task=task, quiet=quiet, hotwords=hotwords, pieces=pieces)
+                                          task=task, quiet=quiet, hotwords=hotwords, pieces=pieces,
+                                          chat_language=chat_language)
         if audio_data is None or len(audio_data) == 0:
             return None
         # The month's budget is used up: the local model takes over, or with
         # none set nothing is sent and the caller shows why (last_info).
         if budget.over():
             if budget.fallback_model():
-                return local.transcribe_audio(audio_data, language=language, use_prompt=use_prompt)
+                return local.transcribe_audio(audio_data, language=language, use_prompt=use_prompt,
+                                              chat_language=chat_language)
             message = budget.used_up_message()
             print(f"   ✗ {message}")
             self.last_info = {'backend': 'online', 'model': self.spec, 'budget_stop': message}
@@ -94,7 +99,7 @@ class OnlineEngine:
                 prompt=self._prompt(local) if use_prompt else '', timeout=max(self.timeout, seconds),
                 speaks=tuple(getattr(local, 'allowed_languages', None) or ()))
         except Exception as e:
-            return self._fall_back(local, audio, language, use_prompt, e)
+            return self._fall_back(local, audio, language, use_prompt, e, chat_language)
 
         elapsed = time.monotonic() - started
         rec = ledger.record(self.feature, self.spec, seconds=info.get('billed_seconds') or seconds,
@@ -121,7 +126,7 @@ class OnlineEngine:
         return text or None
 
     # The provider failed: say why (once in a while), and use the local model.
-    def _fall_back(self, local, audio, language, use_prompt, error: Exception) -> Optional[str]:
+    def _fall_back(self, local, audio, language, use_prompt, error: Exception, chat_language: str = '') -> Optional[str]:
         reason = describe_error(self.provider_id, error)
         logger.warning(f"Online {self.feature} with {self.spec} failed, using local Whisper: {reason}")
         now = time.monotonic()
@@ -132,7 +137,7 @@ class OnlineEngine:
                 report_problem(f"{self.spec} didn't answer, so local Whisper transcribed instead: {reason}")
             except Exception:
                 pass
-        text = local.transcribe_audio(audio, language=language, use_prompt=use_prompt)
+        text = local.transcribe_audio(audio, language=language, use_prompt=use_prompt, chat_language=chat_language)
         # The caller records the local call (record_local), as for any local one.
         info = dict(getattr(local, 'last_info', None) or {})
         info['online_error'] = reason

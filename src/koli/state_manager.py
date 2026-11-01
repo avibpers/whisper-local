@@ -48,7 +48,7 @@ from .voice_filter import (LEARN_VOICEPRINT_S, VOICEPRINT_MATCH, VoiceLevels, ke
 from .stats import record_transcription
 from .audit_log import record as audit_record
 from .terminal_title import TerminalTitle
-from .transcript_log import record_transcript
+from .transcript_log import chat_language, record_transcript
 from .platform import foreground, session as desktop_session
 from .level_overlay import LevelOverlay
 from .fallback_window import FallbackWindow
@@ -819,6 +819,25 @@ class StateManager:
                 self.is_processing = False
             self._run_idle_actions()
 
+    # ── The chat's language ──────────────────────────────────────────────────
+
+    # The language you've been writing in the window you're dictating into
+    # (the title names the chat, channel or file), for Whisper when it can't
+    # tell your languages apart from the audio: '' with fewer than two
+    # languages, with whisper.chat_language off, or a chat with no history.
+    def chat_language(self) -> str:
+        try:
+            whisper = self.config_manager.get_whisper_config()
+            languages = whisper.get('languages') if isinstance(whisper, dict) else None
+            allowed = [str(code) for code in languages] if isinstance(languages, (list, tuple)) else []
+            if len(allowed) < 2 or not whisper.get('chat_language', True):
+                return ''
+            window = foreground.get_foreground_app() or {}
+            return chat_language(window.get('exe', ''), window.get('title', ''), allowed)
+        except Exception as e:
+            self.logger.debug(f"Chat language unavailable: {e}")
+            return ''
+
     # ── Only my voice ────────────────────────────────────────────────────────
 
     def _voice_filter_config(self) -> dict:
@@ -1419,7 +1438,8 @@ class StateManager:
                 # In online mode dictation, rephrase and commands go to the
                 # online model (docs/design/online-models.md).
                 engine = self.dictation_engine('command' if mode == 'command' else 'dictation')
-                transcribed_text = engine.transcribe_audio(audio_data)
+                transcribed_text = engine.transcribe_audio(
+                    audio_data, chat_language='' if mode == 'command' else self.chat_language())
                 info = dict(getattr(engine, 'last_info', None) or {})
                 if transcribed_text:
                     record_local('command' if mode == 'command' else 'dictation', info)

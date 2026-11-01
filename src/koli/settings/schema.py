@@ -98,6 +98,9 @@ SCHEMA = [
     _S('whisper.languages', 'Languages I speak', 'general', 'choice_tags', choices=LANGUAGES[1:],
        help='Auto-detect picks only from these, so a short clip never comes back as a language you '
        "don't speak. Empty = any language. Used only while Language is Auto-detect."),
+    _S('whisper.chat_language', "Use the chat's language when unsure", 'general', 'toggle',
+       help="When Whisper can't tell your languages apart, a short clip goes with the language "
+       'you have been writing in that chat or window, instead of always your first language.'),
     _S('whisper.task', 'Output', 'general', 'segmented',
        choices=[['transcribe', 'Transcribe'], ['translate', 'Translate to English']],
        help='Translate turns any spoken language into English.'),
