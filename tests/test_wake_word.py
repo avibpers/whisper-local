@@ -817,16 +817,22 @@ class PersonalWakeWordTests(ListenerTestCase):
         lines = self.printed(lambda: (self.say(3, seconds=0.6), self.quiet(0.8)))
         self.assertTrue(any('undo' in l and 'not' in l for l in lines), lines)
 
-    def test_a_microphone_without_your_word_says_so_once(self):
+    # A microphone without its own recording is checked against your other
+    # microphones' recordings: changing microphone needs no new teaching.
+    def test_a_microphone_without_your_word_uses_your_other_ones(self):
         self.make_personal(self.mine)
         self.sm.mic = 'Laptop mic'
-        for _ in range(3):
-            self.say(4, seconds=0.6)
-            self.quiet(0.8)
+        self.say(4, seconds=0.6)
+        self.quiet(0.8)
+        self.assertTrue(self.transcribed, 'your voice from the Jabra recording is checked, and Whisper hears it')
+        self.assertEqual([p for t, p in self.events if t == 'notify'], [])
+
+    def test_another_voice_on_a_new_microphone_still_isnt_you(self):
+        self.make_personal(self.theirs)
+        self.sm.mic = 'Laptop mic'
+        self.say(4, seconds=0.6)
+        self.quiet(0.8)
         self.assertEqual(self.transcribed, [])
-        notices = [p for t, p in self.events if t == 'notify']
-        self.assertEqual(len(notices), 1)
-        self.assertIn('microphone', notices[0]['message'])
 
     # Meetings › Speaker model changed after the word was recorded: the new
     # model's voiceprints have another size. Said once, never a crash per frame.
@@ -847,9 +853,8 @@ class PersonalWakeWordTests(ListenerTestCase):
         self.assertEqual(self.runs, [])
         self.assertIn('loading', [p for t, p in self.events if t == 'notify'][0]['message'])
 
-    # The loading notice is its own: a microphone without your word still
-    # says so afterwards.
-    def test_the_loading_notice_doesnt_hide_the_microphone_one(self):
+    # While the voice model loads it says so once, whichever microphone.
+    def test_the_loading_notice_is_said_once(self):
         self.make_personal(None)
         self.say(4, seconds=0.6)
         self.quiet(0.8)
@@ -857,8 +862,8 @@ class PersonalWakeWordTests(ListenerTestCase):
         self.say(4, seconds=0.6)
         self.quiet(0.8)
         messages = [p['message'] for t, p in self.events if t == 'notify']
-        self.assertEqual(len(messages), 2)
-        self.assertIn('microphone', messages[1])
+        self.assertEqual(len(messages), 1)
+        self.assertIn('loading', messages[0])
 
     # The voice model starts loading as soon as a personal word is set, so
     # the first try after launch isn't lost to it.
@@ -1250,14 +1255,30 @@ class WakeSetupTests(ListenerTestCase):
         self.assertEqual(status['skipped_spellings'][0]['spelling'], 'ab')
         self.assertEqual(listener.spellings(), ['koli'])
 
-    def test_adding_needs_your_word_on_this_microphone(self):
+    # Adding on a new microphone starts its own recording there (weighed
+    # against your other microphone); the first microphone keeps its own.
+    def test_adding_on_a_new_microphone_starts_its_own(self):
         self.setup([])
         with self.assertRaisesRegex(ValueError, 'first'):
             self.commands.wake_prepare(self.sm, more=True)
-        self.saved_word([])
+        listener = self.saved_word([4])
         self.sm.mic = 'Laptop mic'
-        with self.assertRaisesRegex(ValueError, 'this microphone'):
-            self.commands.wake_prepare(self.sm, more=True)
+        self.commands.wake_prepare(self.sm, more=True)
+        self.commands.wake_record(self.sm)
+        status = self.commands.wake_save(self.sm, self.settings)
+        self.assertEqual((status['recorded_here'], status['samples']), (True, 1))
+        self.assertEqual(listener.wake_voices.count('Jabra'), 3)
+        self.assertEqual(sorted(status['recorded_on']), ['Jabra', 'Laptop mic'])
+
+    # The speaker model changed after the word was recorded: added
+    # recordings can't be averaged with the old ones, so they start over.
+    def test_adding_after_a_speaker_model_change_starts_over(self):
+        listener = self.saved_word([4], voice=np.array([1.0, 0.0, 0.0], dtype=np.float32))
+        self.commands.wake_prepare(self.sm, more=True)
+        self.commands.wake_record(self.sm)
+        status = self.commands.wake_save(self.sm, self.settings)
+        self.assertEqual(status['samples'], 1)
+        self.assertEqual(listener.wake_voices.get('Jabra').shape, (3,))
 
     def test_reset_goes_back_to_hey_koli(self):
         listener = self.setup([4, 4, 4])

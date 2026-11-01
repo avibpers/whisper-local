@@ -313,13 +313,13 @@ function WakeWord() {
       ${enabled && !commandsOn && html`<div class="notice warn"><span class="grow">Voice commands are off, so the wake word has nothing to run. Turn them on below.</span></div>`}
       ${status && html`<div class="row-flex" style="flex-wrap:wrap">
         <span class="chip ok" dir="auto">${status.personal ? `Wakes on “${status.word}” · only your voice` : 'Wakes on “Hey Koli” · any voice'}</span>
-        ${status.can_record && status.personal && status.recorded_here && html`<button type="button" class="btn" onClick=${() => openWakeRecorder(reload, true)}><${Icon} name="mic" />Add recordings</button>`}
+        ${status.can_record && status.personal && (status.recorded_on || []).length > 0 && html`<button type="button" class="btn" onClick=${() => openWakeRecorder(reload, true)}><${Icon} name="mic" />Add recordings</button>`}
         ${status.can_record && html`<button type="button" class="btn" onClick=${() => openWakeRecorder(reload)}>${status.personal ? 'Record again' : html`<${Icon} name="mic" />Record your own word`}</button>`}
         <button type="button" class="btn" disabled=${testing} onClick=${runTest}>${testing ? 'Say it now…' : 'Test'}</button>
         ${status.personal && html`<button type="button" class="btn ghost" onClick=${reset}>Back to “Hey Koli”</button>`}
       </div>`}
       ${testText && html`<span class=${'chip ' + (test.woke ? 'ok' : '')} style="align-self:flex-start" dir="auto" role="status">${testText}</span>`}
-      ${status && status.personal && !status.recorded_here && html`<div class="notice warn"><span class="grow">Your word isn't recorded on this microphone (${status.mic}), so it can't wake Koli here. Record it again with this microphone.</span></div>`}
+      ${status && status.personal && !status.recorded_here && html`<span class="small muted">No recording on this microphone (${status.mic}): it is checked against your recordings on ${(status.recorded_on || []).join(', ')}. If it misses you here, add recordings with this microphone.</span>`}
       ${status && status.personal && status.recorded_here && html`<span class="small muted">${status.samples} recording${status.samples === 1 ? '' : 's'} of your voice on this microphone. If it often misses you, add recordings the way it misses.</span>`}
       ${status && status.personal && status.spellings.length > 1 && html`<div class="row-flex" style="flex-wrap:wrap;gap:4px">
         <span class="small muted">Also matches:</span>

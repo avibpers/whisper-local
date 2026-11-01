@@ -495,7 +495,7 @@ export function createMock(emit) {
       const phrases = getPath(data.settings, 'wake_word.phrases') || [];
       const personal = !!getPath(data.settings, 'wake_word.only_my_voice') && phrases.length > 0;
       return ok({ personal, word: personal ? phrases[0] : 'Hey Koli', spellings: personal ? phrases : [], mic: 'Jabra Evolve2 65',
-        recorded_here: true, samples: personal ? 3 : 0, recordings: [], needed: 3, can_record: true });
+        recorded_here: true, recorded_on: personal ? ['Jabra Evolve2 65'] : [], samples: personal ? 3 : 0, recordings: [], needed: 3, can_record: true });
     },
     wake_word_prepare: (spelling, more) => { mockWakeMore = !!more; return ok({ ready: true, needed: more ? 1 : 3, most: more ? 10 : 3 }); },
     wake_word_record: () => new Promise((resolve) => setTimeout(() => resolve(ok(mockWakeMore
@@ -506,21 +506,21 @@ export function createMock(emit) {
         const phrases = [...(getPath(data.settings, 'wake_word.phrases') || []), 'deus'];
         setPath(data.settings, 'wake_word.phrases', phrases);
         emit('settings', { path: 'wake_word.phrases', new: phrases });
-        return ok({ personal: true, word: phrases[0], spellings: phrases, mic: 'Jabra Evolve2 65', recorded_here: true, samples: 5,
+        return ok({ personal: true, word: phrases[0], spellings: phrases, mic: 'Jabra Evolve2 65', recorded_here: true, recorded_on: ['Jabra Evolve2 65'], samples: 5,
           recordings: [], needed: 3, can_record: true, added_recordings: 2, added_spellings: ['deus'],
           skipped_spellings: [{ spelling: 'the use', why: "didn't sound enough like your other recordings (0.12)" }] });
       }
       setPath(data.settings, 'wake_word.phrases', ['קולי']);
       setPath(data.settings, 'wake_word.only_my_voice', true);
       emit('settings', { path: 'wake_word.phrases', new: ['קולי'] });
-      return ok({ personal: true, word: 'קולי', spellings: ['קולי'], mic: 'Jabra Evolve2 65', recorded_here: true, recordings: [], needed: 3, can_record: true });
+      return ok({ personal: true, word: 'קולי', spellings: ['קולי'], mic: 'Jabra Evolve2 65', recorded_here: true, recorded_on: ['Jabra Evolve2 65'], recordings: [], needed: 3, can_record: true });
     },
     wake_word_test: () => new Promise((resolve) => setTimeout(() => resolve(ok({ heard: 'Hey Koli', word: true, woke: true })), 900)),
     wake_word_reset: () => {
       setPath(data.settings, 'wake_word.phrases', []);
       setPath(data.settings, 'wake_word.only_my_voice', false);
       emit('settings', { path: 'wake_word.phrases', new: [] });
-      return ok({ personal: false, word: 'Hey Koli', spellings: [], mic: 'Jabra Evolve2 65', recorded_here: false, recordings: [], needed: 3, can_record: true });
+      return ok({ personal: false, word: 'Hey Koli', spellings: [], mic: 'Jabra Evolve2 65', recorded_here: false, recorded_on: [], recordings: [], needed: 3, can_record: true });
     },
     command_open_apps: () => ok([{ exe: 'chrome.exe', title: 'Inbox (3) - Gmail - Google Chrome' },
       { exe: 'code.exe', title: 'koli - Visual Studio Code' }, { exe: 'obs64.exe', title: 'OBS 30.2 - Profile: Untitled' }]),

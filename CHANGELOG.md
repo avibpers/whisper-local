@@ -5,6 +5,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 ## [Unreleased]
 
 ### Fixed
+- **Your wake word on every microphone.** A microphone without its own
+  recording is checked against the ones you recorded on your other
+  microphones, so a new headset works without teaching it again; **Add
+  recordings** there gives it its own. Adding recordings after the speaker
+  model changed no longer fails ("operands could not be broadcast").
 - **Wake word after changing the speaker model.** Recordings made with the
   other model can't be compared: the wake word now asks once to record it
   again instead of failing on every sound, and meetings skip saved voices of

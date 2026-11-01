@@ -24,7 +24,8 @@ your voice.
 | Command recognised | Runs it like a hotkey command. Then stays awake `follow_up_seconds` (5) for another command without the wake word ("next", "louder"). With a personal word, follow-ups must sound like you. With "Hey Koli" there is no voice check, so follow-ups only run media commands (play/pause, next, volume). Lyrics from the song you just started can't trigger "undo" or "lock screen". |
 | No command matches | The bar shows "Didn't catch that - say it again" and Koli listens `command_timeout_seconds` (5) more for the command, without the wake word. A second miss shows "Didn't catch that" and sleeps; one retry only, so a TV can't keep Koli awake. Nothing is typed. |
 | Any try that is probably you | The terminal shows what Whisper heard and the voice score: woke, not the word, almost your voice (within 0.10 of "Sounds like you"), or a command too quiet to count. With "Hey Koli" only text at least half like it is shown. Nothing for other voices or the TV. |
-| Personal word, but your voice on this microphone isn't known (new headset, or the voiceprint model isn't loaded) | Doesn't wake. The Commands screen says to record the word on this microphone. See open questions. |
+| Personal word, no recording on this microphone (new headset) | Checked against your recordings on your other microphones, the best of them (2026-10-29). The Commands screen says which; **Add recordings** here gives this microphone its own. |
+| Personal word, recordings made with another speaker model (`meeting.speaker_model` changed), or the voiceprint model isn't loaded | Doesn't wake, and says so once: record again, or set the speaker model back. Added recordings start that microphone over. |
 | Dictation (hotkey or auto-dictation), meeting running, or command mode from the hotkey | Not listening. It resumes when that ends. |
 | PC locked | Not listening. If Koli can’t tell (the check fails), it counts as locked. |
 | "Hey Koli" command that runs a program (`run`, also in then-steps) | Always asks first (the confirm dialog), since anyone could have said it; where no dialog can ask, it doesn’t run. Your own word was checked against your voice, so it runs like a hotkey command. |
@@ -173,7 +174,8 @@ record again: Whisper isn't hearing the word reliably.
 Three quiet recordings can stop fitting: on 2026-10-16 the real "Viush"
 scored 0.24-0.29, the same as the room's noise (up to 0.29), down from
 0.50 right after recording. **Add recordings** (shown once your word is
-recorded on this microphone) teaches the saved word more, up to 10 at a
+recorded on any microphone; on a microphone without its own recording it
+starts one, weighed against your best-recorded other microphone) teaches the saved word more, up to 10 at a
 time, one at least:
 
 - Each recording joins your voiceprint on this microphone: the average

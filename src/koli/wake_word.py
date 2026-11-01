@@ -263,6 +263,8 @@ class WakeVoices:
                 return False
             count = int(entry.get('count') or 1)
             old = np.asarray(entry['centroid'], dtype=np.float32)
+            if old.shape != units[0].shape:
+                count, old = 0, np.zeros_like(units[0])   # made with another speaker model: start over
             centroid = (old * count + np.sum(units, axis=0)) / (count + len(units))
             entry.update(centroid=[round(float(x), 6) for x in centroid], count=count + len(units),
                          saved=time.strftime('%Y-%m-%dT%H:%M:%S'))
@@ -293,6 +295,36 @@ class WakeVoices:
     def mics(self) -> List[str]:
         with self._lock:
             return list(self._read())
+
+    # Your voiceprint on every microphone it is recorded on: {mic: unit vector}.
+    def all(self) -> dict:
+        with self._lock:
+            data = self._read()
+        out = {}
+        for mic, entry in data.items():
+            if isinstance(entry, dict) and entry.get('centroid'):
+                vec = np.asarray(entry['centroid'], dtype=np.float32)
+                norm = float(np.linalg.norm(vec))
+                if norm > 0:
+                    out[mic] = vec / norm
+        return out
+
+    # The saved average (as stored) and count of the microphone with the most
+    # recordings whose voiceprints have `shape` (the same speaker model),
+    # other than `exclude`: what recordings on a new microphone are weighed
+    # against. (None, 0) when there is none.
+    def reference(self, shape, exclude: str = '') -> tuple:
+        with self._lock:
+            data = self._read()
+        best = (None, 0)
+        for mic, entry in data.items():
+            if mic == exclude or not isinstance(entry, dict) or not entry.get('centroid'):
+                continue
+            vec = np.asarray(entry['centroid'], dtype=np.float32)
+            count = int(entry.get('count') or 1)
+            if vec.shape == tuple(shape) and count > best[1]:
+                best = (vec, count)
+        return best
 
     def clear(self) -> None:
         with self._lock:
@@ -549,6 +581,7 @@ class WakeListener:
         self._enrolling = False
         self._noticed_mics = set()
         self._other_model_mics = set()     # wake recordings made with another speaker model
+        self._borrowed_mics = set()        # microphones checked against another one's recording (logged once)
         self._noticed_loading = False
         self._voice_model_ready = False
         self._warm_checked = -1e9
@@ -1059,12 +1092,15 @@ class WakeListener:
         logging_cfg = (getattr(self.cm, 'config', None) or {}).get('logging') or {}
         return bool(logging_cfg.get('log_transcriptions'))
 
-    # How much `audio` sounds like your recorded word on this microphone, or
-    # None when that can't be told (no recording on this mic, no voiceprint
-    # model yet, no meeting service under --legacy-ui).
+    # How much `audio` sounds like your recorded word, or None when that can't
+    # be told (nothing recorded, no voiceprint model yet, no meeting service
+    # under --legacy-ui). This microphone's recording first; a microphone
+    # without its own is checked against your other microphones' (the best
+    # of them), so a new microphone works without teaching it again.
     def similarity(self, audio: np.ndarray) -> Optional[float]:
-        mine = self.wake_voices.get(self._mic())
-        if mine is None:
+        mic = self._mic()
+        recorded = self.wake_voices.all()
+        if not recorded:
             return None
         try:
             vec = self._voiceprint(audio)
@@ -1074,14 +1110,25 @@ class WakeListener:
         if vec is None:
             return None
         vec = np.asarray(vec, dtype=np.float32)
-        if vec.shape != mine.shape:
-            # Recorded with another voiceprint model (meeting.speaker_model
-            # changed): the two can't be compared, so it counts as not recorded.
-            self._other_model_mics.add(self._mic())
-            return None
-        self._other_model_mics.discard(self._mic())
         norm = float(np.linalg.norm(vec))
-        return float(np.dot(vec / norm, mine)) if norm > 0 else None
+        if norm == 0:
+            return None
+        vec = vec / norm
+        # Recordings made with another voiceprint model (meeting.speaker_model
+        # changed) have another size and can't be compared.
+        usable = {m: v for m, v in recorded.items() if v.shape == vec.shape}
+        if not usable:
+            self._other_model_mics.add(mic)
+            return None
+        self._other_model_mics.discard(mic)
+        if mic in usable:
+            return float(np.dot(vec, usable[mic]))
+        best_mic, best = max(((m, float(np.dot(vec, v))) for m, v in usable.items()), key=lambda x: x[1])
+        if mic not in self._borrowed_mics:
+            self._borrowed_mics.add(mic)
+            self.logger.info(f"Wake word: no recording on {mic or 'this microphone'} - checking against your "
+                             f"other microphones' (best: {best_mic})")
+        return best
 
     # A command after your word: is it your voice? `say` puts a skipped one
     # on the console (the first command, which you're waiting on; a
@@ -1102,13 +1149,13 @@ class WakeListener:
     # recorded there, once per session while the voice model loads.
     def _notice_unknown_voice(self) -> None:
         mic = self._mic()
-        if self.wake_voices.get(mic) is None or mic in self._other_model_mics:
+        if not self.wake_voices.mics() or mic in self._other_model_mics:
             if mic in self._noticed_mics:
                 return
             self._noticed_mics.add(mic)
             message = ("Your wake word was recorded with another speaker model. Record it again in Commands, "
                        "or set Meetings › Speaker model back." if mic in self._other_model_mics
-                       else "Your wake word isn't recorded on this microphone yet. Record it in Commands.")
+                       else "Your wake word isn't recorded yet. Record it in Commands.")
         else:
             if self._noticed_loading:
                 return

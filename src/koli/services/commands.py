@@ -9,6 +9,8 @@ import re
 import statistics
 from pathlib import Path
 
+import numpy as np
+
 from .. import defaults_merge as dm
 from .. import transforms as tf
 from .. import voice_commands as vc
@@ -242,6 +244,8 @@ def wake_status(sm) -> dict:
         'spellings': listener.spellings() if personal else [],
         'mic': mic,
         'recorded_here': listener.wake_voices.get(mic) is not None,
+        # Microphones with their own recording; one without is checked against these.
+        'recorded_on': listener.wake_voices.mics(),
         'samples': listener.wake_voices.count(mic),
         'recordings': [r['heard'] for r in listener.recordings],
         'needed': WAKE_RECORDINGS,
@@ -261,8 +265,8 @@ def wake_prepare(sm, spelling: str = '', more: bool = False) -> dict:
     if more:
         if not listener.personal():
             raise ValueError("Record your own word first")
-        if listener.wake_voices.get(_wake_mic(sm)) is None:
-            raise ValueError("Your word isn't recorded on this microphone yet. Record it here first.")
+        if not listener.wake_voices.mics():
+            raise ValueError("Record your word first")
         spelling = listener.spelling_hint()
     listener.recordings = []
     listener.recording_more = bool(more)
@@ -340,7 +344,9 @@ def wake_save(sm, settings) -> dict:
     return wake_status(sm)
 
 
-# Added recordings join your voiceprint on this microphone. What Whisper
+# Added recordings join your voiceprint on this microphone; on a microphone
+# without one (or one made with another speaker model) they start its own,
+# weighed against your best-recorded other microphone. What Whisper
 # wrote a new way becomes a spelling when the recording sounds like your
 # other ones (the saved voice and the rest of this set, itself left out)
 # and is a word or two long; the status says which were added or skipped.
@@ -349,10 +355,13 @@ def _wake_save_more(sm, settings, listener, recordings) -> dict:
     if not recordings:
         raise ValueError("Record your word at least once first")
     mic = _wake_mic(sm)
+    vectors = [r['voiceprint'] for r in recordings]
+    shape = np.shape(vectors[0])
     saved, count = listener.wake_voices.raw(mic)
-    if saved is None:
-        raise ValueError("Your word isn't recorded on this microphone yet. Record it here first.")
-    scores = ww.leave_one_out_scores([r['voiceprint'] for r in recordings], saved, count)
+    own = saved is not None and saved.shape == shape
+    if not own:
+        saved, count = listener.wake_voices.reference(shape, exclude=mic)
+    scores = ww.leave_one_out_scores(vectors, saved, count)
     existing = listener.spellings()
     most_words = len(vc.normalize_spoken(existing[0]).split()) + 1
     needs = max(listener.voice_match(), SPELLING_VOICE_MATCH)
@@ -371,7 +380,10 @@ def _wake_save_more(sm, settings, listener, recordings) -> dict:
             added.append(spelling)
     levels = [r['level'] for r in recordings if r.get('level') is not None]
     level_db = float(statistics.median(levels)) if levels else None
-    listener.wake_voices.add(mic, [r['voiceprint'] for r in recordings], level_db=level_db)
+    if own:
+        listener.wake_voices.add(mic, vectors, level_db=level_db)
+    else:
+        listener.wake_voices.set(mic, vectors, level_db=level_db)
     if added:
         settings.set('wake_word.phrases', existing + added, source='app', record_undo=False)
     listener.recordings = []

@@ -1783,7 +1783,7 @@ class StateManager:
 
         def has_voice():
             wl = listener()
-            return bool(wl and wl.personal() and wl.wake_voices.get(self._mic_key()) is not None)
+            return bool(wl and wl.personal() and wl.wake_voices.mics())   # any microphone's recording counts
 
         # Your recordings of the password are voiceprinted by the same model
         # as the wake word (the meeting voices').
