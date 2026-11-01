@@ -424,6 +424,11 @@ SCHEMA = [
     _S('meeting.detect', 'When a call has sound', 'meetings', 'segmented', mode=SIMPLE,
        choices=[['auto', 'Automatically'], ['ask', 'Ask me first'], ['off', 'Never']],
        help='Each app can override this on the Apps screen.'),
+    _S('meeting.google_meet', 'Google Meet extension', 'meetings', 'segmented',
+       choices=[['captions', 'Names and captions'], ['names', 'Names only'], ['off', 'Off']],
+       help='With the Koli extension in Chrome, a Meet starts and ends with you joining and leaving, and each '
+            'person is named from Meet, which also teaches Koli their voice for other apps. "Names and captions" '
+            "uses Meet's captions as the transcript; \"Names only\" lets Koli transcribe the audio itself."),
     _S('meeting.include_me', 'Include my side', 'meetings', 'toggle',
        help="Your microphone becomes \"You\" in the transcript. The panel's Exclude me button pauses it."),
     _S('meeting.remember_voices', 'Remember voices', 'meetings', 'toggle',

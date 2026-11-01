@@ -3,7 +3,7 @@ Local faster-whisper speech-to-text app with global hotkeys for Windows 10+ and 
 Koli is a fork of `drajb/whisper-local` by Rohit Burani (repo `avibpers/whisper-local`). The Python package is `koli`, the command is `koli`, and settings live in `%APPDATA%\koli` (`~/.koli` on macOS).
 
 - Start here: `state_manager.py` coordinates all components workflow
-- Meeting mode: `services/meetings.py` composes the `meeting/` package (detect, session, capture, diarize, speakers, voices, transcribe, store); the panel is `ui/web/meeting.html`. Design: `docs/design/meeting-mode.md`.
+- Meeting mode: `services/meetings.py` composes the `meeting/` package (detect, session, capture, diarize, speakers, voices, transcribe, store); the panel is `ui/web/meeting.html`. Design: `docs/design/meeting-mode.md`. The Chrome extension for Google Meet is `chrome-extension/` (design: `docs/design/meet-extension.md`).
 - The app window and floating bar: `ui/host.py` runs them, `ui/bridge.py` is everything the pages can call, and `ui/web/` holds the pages. See [App window and floating bar](#app-window-and-floating-bar).
 
 ## Component Architecture
@@ -88,6 +88,7 @@ Koli is a fork of `drajb/whisper-local` by Rohit Burani (repo `avibpers/whisper-
 | **Session Lock** | `platform/*/session.py` | Whether the PC is locked, so the wake word stops listening (Windows; macOS stub) | ctypes |
 | **Screenshots** | `platform/*/screenshots.py` | Opens the Windows snip overlay and reads the Snipping Tool's image off the clipboard for meeting screenshots (Windows; macOS stub) | ctypes, Pillow |
 | **Call People** | `platform/*/call_people.py` | Who is in a Discord call and who is muted, read from Discord's window through UI Automation every 15 s while a Discord meeting runs; names the meeting and the far end of a 1:1 call (Windows; macOS stub) | comtypes |
+| **Google Meet Extension** | `chrome-extension/` + `meeting/meet_feed.py` + `meeting/meet_link.py` | A Chrome extension reads Meet (joined/left, people, captions with names) and posts it to 127.0.0.1:52881; the meeting starts and ends with you, speakers are named from Meet and teach their voiceprints for other apps, and captions can be the transcript (`meeting.google_meet`; design: `docs/design/meet-extension.md`) | MV3, http.server |
 | **Drive Share Window** | `platform/*/drive_share.py` | Opens Drive for desktop's own Share window for a synced Google file, found on the drive letter it mounts for the account (Windows; macOS stub) | pywin32 shell |
 | **Meeting in Google Docs** | `meeting/gdoc.py` + `drive/docs.py` | Saves a meeting to Drive as a Google Doc with Quick summary, Report and Transcript tabs in `Koli/Meetings/<name>/` | Docs API, Pillow |
 | **Console Control** | `platform/windows/console.py` | Show/hide/own the console window (pyapp builds) | ctypes |

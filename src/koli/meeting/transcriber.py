@@ -4,7 +4,10 @@
 # dictation is being recorded or transcribed; the queue just grows and the
 # panel shows how far behind it is. Sentences Whisper made up are dropped.
 # Mic chunks are "You"; a loopback chunk is split by voice (diarize.py) and
-# each voice gets a speaker from the tracker, one turn per voice.
+# each voice gets a speaker from the tracker, one turn per voice. When the
+# meeting app says who was talking (Google Meet, meet_feed.py), that name is
+# the speaker and the audio teaches their voiceprint; while Meet's captions
+# are the transcript, chunks come "voice only" and just teach voiceprints.
 
 import collections
 import logging
@@ -71,6 +74,9 @@ YOU_FIRM = 3              # chunks of your voice before it is trusted
 CALL_VOICE = 0.55         # your voice unknown: sounding this much like a call speaker drops the chunk
 YOU_MARGIN = 0.05         # your voice known: you may sound this much less like you than like the call
 
+# ── Named by the meeting app ─────────────────────────────────────────────────
+TEACH_MIN_S = 1.0         # speech a chunk needs before it teaches a named voiceprint (short ones are noisy)
+
 
 # Whether a microphone chunk's voiceprint `vec` is you: `you` is your
 # voiceprint (None until known), `others` the call speakers' voiceprints.
@@ -128,7 +134,8 @@ class MeetingTranscriber:
                  language_provider: Callable[[], str], on_turn: Callable[[dict], None],
                  on_speaker: Callable[[dict, Optional[str]], None], on_pending: Callable[[Optional[str]], None],
                  on_behind: Callable[[float], None], poll_s: float = 0.1,
-                 keep_audio: Optional[Callable[[dict], None]] = None):
+                 keep_audio: Optional[Callable[[dict], None]] = None,
+                 name_at: Optional[Callable[[Optional[str], float, float], Optional[str]]] = None):
         self.engine_provider = engine_provider
         self.is_busy = is_busy
         self.tracker = tracker
@@ -139,6 +146,9 @@ class MeetingTranscriber:
         self.on_behind = on_behind
         self.poll_s = poll_s
         self.keep_audio = keep_audio      # saves a chunk's audio when meeting.keep_audio is on
+        # (meeting id, t0, t1) -> the one other person the meeting app saw
+        # talking then, or None (Google Meet through the extension).
+        self.name_at = name_at
         # Finds the voices in a chunk: audio -> [(start_s, end_s, voice)];
         # set once its model is loaded, until then a chunk is one voice.
         self.split: Optional[Callable[[np.ndarray], list]] = None
@@ -263,15 +273,17 @@ class MeetingTranscriber:
                 self.working = False
 
     def _transcribe(self, chunk: dict):
+        if chunk.get('voice_only'):
+            # Meet's captions are this meeting's transcript: no Whisper, the
+            # audio only teaches the voice of whoever Meet says was talking.
+            self._keep_audio(chunk)
+            self._learn_voice(chunk)
+            return
         engine = self.engine_provider()
         if engine is None:
             return
         self.on_pending(chunk['stream'])
-        if self.keep_audio is not None:
-            try:
-                self.keep_audio(chunk)
-            except Exception as e:
-                logger.warning(f"Meeting audio not kept: {e}")
+        self._keep_audio(chunk)
         if chunk['stream'] == 'mic' and is_leak(loudness_steps(chunk['audio']), chunk['t0'],
                                                 self._call_around(chunk['t0'], chunk['t1'])):
             logger.info("Left out a microphone chunk that was the call leaking in")
@@ -309,7 +321,8 @@ class MeetingTranscriber:
             return
         voices = self._voices_in(chunk['audio'])
         if len({v for _, _, v in voices}) < 2:
-            speaker = self._label(chunk['audio'], chunk.get('speech_s'), (), chunk.get('meeting_id'))
+            speaker = self._label(chunk['audio'], chunk.get('speech_s'), (), chunk.get('meeting_id'),
+                                  span=(chunk['t0'], chunk['t1']))
             self.on_turn({**base, 't0': chunk['t0'], 't1': chunk['t1'], 'speaker': speaker,
                           'text': ''.join(p['text'] for p in pieces).strip()})
             return
@@ -321,7 +334,8 @@ class MeetingTranscriber:
             if voice not in speakers:
                 speaker = self._label(voice_audio(chunk['audio'], voices, voice), voice_seconds(voices, voice),
                                       [s for s in speakers.values() if s != SpeakerTracker.UNKNOWN],
-                                      chunk.get('meeting_id'))
+                                      chunk.get('meeting_id'),
+                                      span=(chunk['t0'] + part['start'], chunk['t0'] + part['end']))
                 # Too little of this voice for a voiceprint: it stays with the voice before it.
                 if speaker == SpeakerTracker.UNKNOWN and self.tracker.embed is not None and previous:
                     speaker = previous
@@ -340,8 +354,55 @@ class MeetingTranscriber:
             logger.debug(f"Splitting a chunk by voice failed: {e}")
             return []
 
-    def _label(self, audio, speech_s, exclude, meeting_id: Optional[str] = None) -> str:
+    # The speaker of a voice: the person the meeting app saw talking over
+    # `span` (wall-clock t0, t1) when it says so, else the tracker's guess by voice.
+    def _label(self, audio, speech_s, exclude, meeting_id: Optional[str] = None, span: Optional[tuple] = None) -> str:
+        named = self._named_speaker(audio, speech_s, exclude, meeting_id, span)
+        if named is not None:
+            return named
         speaker, entry = self.tracker.label(audio, speech_s=speech_s, exclude=exclude)
         if entry is not None:
             self.on_speaker(entry, meeting_id)
         return speaker
+
+    # The id of the speaker the meeting app names over `span`, created on
+    # first use, with the audio taught to their voiceprint; None when the app
+    # names nobody (or a voice this chunk already gave to someone else).
+    def _named_speaker(self, audio, speech_s, exclude, meeting_id: Optional[str], span: Optional[tuple]) -> Optional[str]:
+        if self.name_at is None or span is None:
+            return None
+        try:
+            name = self.name_at(meeting_id, float(span[0]), float(span[1]))
+        except Exception as e:
+            logger.debug(f"Meeting app names unavailable: {e}")
+            return None
+        if not name:
+            return None
+        speaker, entry = self.tracker.named(name)
+        if speaker in set(exclude):
+            return None
+        if entry is not None:
+            self.on_speaker(entry, meeting_id)
+        if speech_s is None or float(speech_s) >= TEACH_MIN_S:
+            taught = self.tracker.teach(speaker, audio)
+            if taught is not None:
+                self.on_speaker(taught, meeting_id)
+        return speaker
+
+    # A voice-only chunk: one voice heard, one person named by the meeting
+    # app, enough speech. Anything less teaches nothing.
+    def _learn_voice(self, chunk: dict):
+        if chunk['stream'] != 'loopback' or float(chunk.get('speech_s') or 0) < TEACH_MIN_S:
+            return
+        if len({v for _, _, v in self._voices_in(chunk['audio'])}) >= 2:
+            return
+        self._named_speaker(chunk['audio'], chunk.get('speech_s'), (), chunk.get('meeting_id'),
+                            (chunk['t0'], chunk['t1']))
+
+    def _keep_audio(self, chunk: dict):
+        if self.keep_audio is None:
+            return
+        try:
+            self.keep_audio(chunk)
+        except Exception as e:
+            logger.warning(f"Meeting audio not kept: {e}")
