@@ -643,6 +643,13 @@ meeting: # Meetings: calls in Discord, Zoom, Teams and the browser
     # offers one in the panel, off ignores it. Each app rule can override
     # this with its own `meeting:` value (Apps screen).
     detect: auto
+    # The Koli Chrome extension in Google Meet (chrome-extension/ in the
+    # repo; docs/design/meet-extension.md) tells Koli when you join and
+    # leave, who is in the call and who is talking, from Meet's captions:
+    #   captions: names from Meet, and Meet's captions are the transcript
+    #   names: names from Meet; Koli transcribes the audio itself
+    #   off: the extension is ignored
+    google_meet: captions
     # Your own side, from the microphone, as "You". The panel's Exclude me
     # button turns it off for a while.
     include_me: true

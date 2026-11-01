@@ -18,6 +18,8 @@ import numpy as np
 from ..meeting.capture import Chunker, LoopbackStream, MicStream, MicTap, speech_prob_function
 from ..meeting.detector import MeetingDetector
 from ..meeting.diarize import make_splitter
+from ..meeting.meet_feed import CAPTION_LEAD_S, MeetFeed
+from ..meeting.meet_link import MeetLink
 from ..meeting.session import SessionManager, merge_speaker_into, same_name_as
 from ..meeting.speakers import SAME_VOICE, SpeakerTracker, make_embedder
 from ..meeting import chat as meeting_chat, summarize as summary_ai
@@ -145,6 +147,10 @@ class MeetingService:
         self._embedder_task = None
         self._online = None               # the OnlineEngine of meeting.model, made on first use
         self._meeting_local = None        # (key, WhisperEngine or None while loading) for meeting.model "local/<key>"
+        # What the Koli Chrome extension reads off Google Meet, and the local
+        # port it posts to (docs/design/meet-extension.md).
+        self.meet = MeetFeed()
+        self._meet_link = MeetLink(self._meet_events, self._meet_status)
         self.session = SessionManager(self.store, start_capture=self._start_capture, stop_capture=self._stop_capture,
                                       publish=self._publish, settings=self._setting, on_speakers=self.tracker.load,
                                       on_ended=self._meeting_ended)
@@ -154,7 +160,8 @@ class MeetingService:
             tracker=self.tracker,
             language_provider=lambda: str(self._setting('meeting.language', 'auto') or 'auto'),
             on_turn=self.session.add_turn, on_speaker=self.session.ensure_speaker,
-            on_pending=self._on_pending, on_behind=self.session.set_behind, keep_audio=self._keep_audio)
+            on_pending=self._on_pending, on_behind=self.session.set_behind, keep_audio=self._keep_audio,
+            name_at=self._meet_name_at)
         self.transcriber.start()
         if autostart and self._setting('meeting.enabled', True):
             self.start_detector()
@@ -162,9 +169,12 @@ class MeetingService:
     # The app window is up: detection may start. Probing Chrome and opening
     # a loopback while WebView2 initialises once delayed the main window past
     # pywebview's limit, which then never created the bubble and the panel.
+    # The Meet extension's port opens here too (only in the app, never in tests).
     def ui_ready(self):
         if self._setting('meeting.enabled', True):
             self.start_detector()
+        if self._meet_mode() != 'off':
+            self._meet_link.start()
 
     # The engine meetings transcribe with (online_stt/mode.py): meeting.model
     # when set, a local model ("local/<key>") or an online one; else
@@ -261,6 +271,11 @@ class MeetingService:
             self.transcriber.split = None
         elif path == 'meeting.model':
             self._unload_local('another meeting model was chosen')
+        elif path == 'meeting.google_meet':
+            if value == 'off':
+                self._meet_link.stop()
+            else:
+                self._meet_link.start()
         elif path == 'meeting.screenshots':
             if value == 'all' and self.is_running():
                 self._start_watcher()
@@ -309,13 +324,17 @@ class MeetingService:
                 return
             self.detector.stop()
             self.detector = None
-        self._on_sources([])
+        # Straight to the session: detection off means no source, a joined Meet included.
+        self.session.on_sources([])
+        self._sync_idle_listener()
         logger.info("Meeting detection off")
 
     # The detector's view: the session decides, then the idle listener opens
-    # or closes to match whether a source is waiting for speech.
+    # or closes to match whether a source is waiting for speech. Meet calls
+    # the extension says you joined are added on every tick, so a quiet Meet
+    # (no sound, so no browser source) still counts as the running call.
     def _on_sources(self, sources: list):
-        self.session.on_sources(sources)
+        self.session.on_sources(self._with_meet(sources))
         self._sync_idle_listener()
 
     def _sync_idle_listener(self):
@@ -341,6 +360,112 @@ class MeetingService:
         self.session.on_speech(seconds)
         self._sync_idle_listener()
 
+    # ── Google Meet extension (docs/design/meet-extension.md) ────────────────
+    # The Koli Chrome extension reads the Meet page: you joined or left, its
+    # title, who is in it, and Meet's captions with each speaker's name. Joined
+    # starts the meeting without waiting for speech, left ends it; the people
+    # become the meeting's call list; captions name whoever talks, which
+    # teaches their voiceprint so later Zoom or Discord calls recognise them;
+    # and with meeting.google_meet "captions" they are the transcript too.
+
+    # 'captions' (names and the transcript), 'names' (Koli transcribes), or 'off'.
+    def _meet_mode(self) -> str:
+        mode = str(self._setting('meeting.google_meet', 'captions') or 'captions')
+        return mode if mode in ('captions', 'names', 'off') else 'captions'
+
+    def _captions_are_transcript(self, code: str) -> bool:
+        return bool(code) and self._meet_mode() == 'captions' and self.meet.captions_on(code)
+
+    # The detector's sources plus each Meet call you are in. A browser source
+    # of the same call keeps its output device; both go by one key, so a
+    # "Not now" sticks however the call is seen.
+    def _with_meet(self, sources: list) -> list:
+        if self._closed or self._meet_mode() == 'off':
+            return sources
+        calls = self.meet.joined_calls()
+        if not calls:
+            return sources
+        out = list(sources)
+        for call in calls:
+            code = call['code']
+            meet = {'key': f'meet|{code}', 'joined': True, 'mic': True}
+            i = next((n for n, s in enumerate(out) if s.get('code') == code), None)
+            if i is not None:
+                out[i] = {**out[i], **meet}
+            else:
+                out.append({'app': 'chrome.exe', 'kind': 'browser', 'title': f'Meet - {code}', 'code': code,
+                            'mode': str(self._setting('meeting.detect', 'auto') or 'auto'), 'device': '', **meet})
+        return out
+
+    # One batch from the extension (the meet-link thread). Answers with what
+    # Koli is doing, which the extension's popup shows.
+    def _meet_events(self, events: list) -> dict:
+        if self._meet_mode() == 'off':
+            return self._meet_status()
+        result = self.meet.apply(events)
+        for code in result['left']:
+            self.session.call_left(code)
+        m = self.session.meeting
+        code = (m.get('source') or {}).get('code') if m else ''
+        if m and code and self.session.state == 'live':
+            if code in result['changed'] or code in result['joined']:
+                self._meet_people(m['id'], code)
+            if self._meet_mode() == 'captions':
+                for caption in result['finals']:
+                    if caption['code'] == code:
+                        self._caption_turn(m['id'], caption)
+        return self._meet_status()
+
+    def _meet_status(self) -> dict:
+        m = self.session.meeting
+        return {'mode': self._meet_mode(), 'captions_wanted': self._meet_mode() != 'off',
+                'state': self.session.state,
+                'meeting': {'id': m['id'], 'title': m['title'], 'code': (m.get('source') or {}).get('code', ''),
+                            'turns': len(m['turns'])} if m else None}
+
+    # Who is in the Meet becomes the meeting's call list (the summary's
+    # attendees); in a 1:1 call the title names the other person. Meet's own
+    # name for the meeting (a calendar event's) replaces "Google Meet".
+    def _meet_people(self, meeting_id: str, code: str):
+        call = self.meet.call(code)
+        m = self.session.meeting
+        if not call or not m or m['id'] != meeting_id:
+            return
+        title = call.get('title') or ''
+        if title and title.lower() != code and not m.get('title_by_you') and m['title'].startswith('Google Meet'):
+            self.session.set_title(meeting_id, title, by_you=False)
+        remote = [p for p in call['people'] if not p['self']]
+        if call['people']:
+            self.session.set_call({'people': [{'name': p['name'], 'muted': False} for p in call['people']],
+                                   'with': remote[0]['name'] if len(remote) == 1 else '',
+                                   'direct': len(remote) == 1}, meeting_id)
+
+    # A finished Meet caption becomes a turn: yours on the "mic" side, anyone
+    # else's on the call side under their Meet name.
+    def _caption_turn(self, meeting_id: str, caption: dict):
+        if caption['self']:
+            if not self._setting('meeting.include_me', True) or self.session.excluded:
+                return
+            speaker, stream = 'you', 'mic'
+        else:
+            speaker, entry = self.tracker.named(caption['name'])
+            if entry is not None:
+                self.session.ensure_speaker(entry, meeting_id)
+            stream = 'loopback'
+        self.session.add_turn({'t0': caption['t0'] - CAPTION_LEAD_S, 't1': caption['t1'], 'stream': stream,
+                               'speaker': speaker, 'text': caption['text'], 'lang': '', 'meeting_id': meeting_id})
+
+    # The other person Meet saw talking over [t0, t1] of the live meeting
+    # `meeting_id`, for the transcriber; None outside a Meet.
+    def _meet_name_at(self, meeting_id: Optional[str], t0: float, t1: float) -> Optional[str]:
+        if self._meet_mode() == 'off':
+            return None
+        m = self.session.meeting
+        if not m or m['id'] != meeting_id:
+            return None
+        code = (m.get('source') or {}).get('code') or ''
+        return self.meet.name_at(code, t0, t1) if code else None
+
     # ── Capture ──────────────────────────────────────────────────────────────
 
     # The microphone counts when it is wanted, you aren't dictating, and you
@@ -363,11 +488,17 @@ class MeetingService:
         if idle is not None:
             idle.stop()
 
+        code = (meeting.get('source') or {}).get('code') or ''
+
+        # While Meet's captions are this meeting's transcript, the audio only teaches voices.
         def submit(chunk):
-            self.transcriber.submit({**chunk, 'meeting_id': meeting_id})
+            self.transcriber.submit({**chunk, 'meeting_id': meeting_id,
+                                     'voice_only': self._captions_are_transcript(code)})
         if self._screenshot_mode() == 'all':
             self._start_watcher()
         self._start_call_poll(meeting)
+        if code and self.meet.call(code):
+            self._meet_people(meeting_id, code)
         loopbacks, loop_chunkers = [], []
         for device in self._output_devices(meeting):
             chunker = Chunker('loopback', self._speech_prob_factory(), submit)
@@ -1206,6 +1337,9 @@ class MeetingService:
                     sim = float(np.dot(va, vb) / ((np.linalg.norm(va) * np.linalg.norm(vb)) or 1.0))
                     if sim >= SAME_VOICE:
                         keep, drop = (a, b) if a.get('count', 0) >= b.get('count', 0) else (b, a)
+                        # A real name (from Meet, or yours) outranks a "Speaker N" heard more often.
+                        if is_default_name(keep.get('name')) and not is_default_name(drop.get('name')):
+                            keep, drop = drop, keep
                         self._merge_voice_ids(drop.get('voice_id'), keep)
                         merge_speaker_into(meeting, drop['id'], keep['id'])
                         logger.info(f"Merged {drop['name']} into {keep['name']}: one voice ({sim:.2f})")
@@ -1488,6 +1622,7 @@ class MeetingService:
         self._closed = True
         self._watch_stop.set()
         self._call_stop.set()
+        self._meet_link.stop()
         self.stop_detector()
         if self.session.state in ('live', 'paused'):
             self.session.end()

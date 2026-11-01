@@ -90,6 +90,9 @@ def merge_speaker_into(meeting: dict, from_id: str, into_id: str) -> bool:
         merged = a * na + b * nb
         target['centroid'] = [round(float(x), 5) for x in merged / (np.linalg.norm(merged) or 1.0)]
         target['count'] = na + nb
+    elif source.get('centroid'):
+        # A speaker the meeting app named before any of their audio (no voiceprint) takes the voice's.
+        target['centroid'], target['count'] = list(source['centroid']), int(source.get('count', 1))
     for turn in meeting['turns']:
         if turn['speaker'] == from_id:
             turn['speaker'] = into_id
@@ -291,6 +294,10 @@ class SessionManager:
                     self._pending = next(s for s in sources if s['key'] == self._pending['key'])
                 return
             self._pick_pending(sources)
+            # The Meet extension saw you join: no need to wait for speech.
+            if self._pending and self._pending.get('joined') and not self._waiting_for_quiet():
+                self._call_ready(self._pending, joined=True)
+                return
             # The bubble's "Start" for a call you stopped comes and goes with
             # the call, while nothing else about the session changes.
             standby = self._standby_source()
@@ -397,19 +404,38 @@ class SessionManager:
             self._speech_s += float(seconds)
             if self._speech_s < float(self._settings('meeting.start_speech_seconds', 3) or 3):
                 return
-            source = self._pending
-            if source.get('mode') == 'ask':
-                self.state = 'offered'
-                self._emit()
-                return
-            countdown = float(self._settings('meeting.countdown_seconds', 3) or 0)
-            if countdown <= 0:
-                self._begin(source, notice=None)
-                return
+            self._call_ready(self._pending)
+
+    # A pending call is known to be a real call (enough speech, or the Meet
+    # extension saw you join): "ask" offers it, "auto" counts down and starts.
+    # A join is certain, so it skips the countdown. Caller holds the lock.
+    def _call_ready(self, source: dict, joined: bool = False):
+        if source.get('mode') == 'ask':
             self.state = 'offered'
-            self._countdown_until = self._now() + datetime.timedelta(seconds=countdown)
-            self._cancel_countdown = self._schedule(countdown, self._countdown_done)
             self._emit()
+            return
+        countdown = 0.0 if joined else float(self._settings('meeting.countdown_seconds', 3) or 0)
+        if countdown <= 0:
+            self._begin(source, notice=None)
+            return
+        self.state = 'offered'
+        self._countdown_until = self._now() + datetime.timedelta(seconds=countdown)
+        self._cancel_countdown = self._schedule(countdown, self._countdown_done)
+        self._emit()
+
+    # The Meet extension saw you leave call `code`: its meeting ends now
+    # (saved, voices kept), rather than pausing and waiting gap_minutes. Not a
+    # stop by you, so the next call starts by itself as usual.
+    def call_left(self, code: str):
+        with self._transition():
+            if self.state in ('live', 'paused') and self.meeting['source'].get('code') == code:
+                logger.info("You left the Meet: the meeting ends with it")
+                self._end()
+            elif self.state == 'offered' and self._pending and self._pending.get('code') == code:
+                self._clear_countdown()
+                self._pending = None
+                self.state = 'idle'
+                self._emit()
 
     def _countdown_done(self):
         with self._transition():

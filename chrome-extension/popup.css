@@ -1,0 +1,23 @@
+/* popup.css: Koli's colours (src/koli/ui/web/css/tokens.css), light and dark. */
+:root {
+  --bg: #FFFFFF; --sunk: #F4F7F8; --line: #D7DEE1; --ink: #1E252B; --mute: #5C6466;
+  --brand: #15B4D4; --ok: #0F7A33; --warn: #8A5A00; --rec: #C62F2F;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #161B20; --sunk: #1E252B; --line: #2C343A; --ink: #E6EAEC; --mute: #9AA3A7;
+          --ok: #4CC27A; --warn: #E0B04A; --rec: #F06B6B; }
+}
+body { margin: 0; width: 300px; padding: 14px 16px; background: var(--bg); color: var(--ink);
+       font: 13px/1.45 "Segoe UI", system-ui, sans-serif; }
+header { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+h1 { font-size: 14px; font-weight: 600; margin: 0; }
+.row { display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: var(--sunk);
+       border: 1px solid var(--line); border-radius: 8px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--mute); flex: none; }
+.dot.ok { background: var(--ok); }
+.dot.off { background: var(--warn); }
+.dot.rec { background: var(--rec); }
+dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 12px 0 0; }
+dt { color: var(--mute); }
+dd { margin: 0; overflow-wrap: anywhere; }
+.hint { color: var(--mute); margin: 10px 0 0; }

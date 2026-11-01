@@ -1,0 +1,29 @@
+<!doctype html>
+<!-- popup.html: the extension's button. Whether the Koli app answers, what it
+     does with Meet (Settings › Meetings › Google Meet extension), and the
+     meeting it is recording now. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Koli for Google Meet</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <img src="icons/icon32.png" alt="" width="20" height="20">
+    <h1>Koli for Google Meet</h1>
+  </header>
+  <section class="row">
+    <span id="dot" class="dot"></span>
+    <span id="link">Looking for Koli…</span>
+  </section>
+  <section id="details" hidden>
+    <dl>
+      <dt>Uses from Meet</dt><dd id="mode"></dd>
+      <dt>Meeting</dt><dd id="meeting"></dd>
+    </dl>
+  </section>
+  <p id="hint" class="hint" hidden></p>
+  <script src="popup.js"></script>
+</body>
+</html>

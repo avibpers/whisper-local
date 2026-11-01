@@ -50,17 +50,23 @@ class SpeakerTracker:
         self._speakers = []
         self._last = None         # the speaker of the previous loopback chunk
 
-    # Speakers from a meeting file (the "you" entry is ignored).
+    # Speakers from a meeting file (the "you" entry is ignored). A speaker the
+    # meeting app named before any of their audio was heard has no voiceprint
+    # yet (centroid None); it is kept so a resumed meeting reuses its id.
     def load(self, speakers: list):
         with self._lock:
             self._speakers = []
             self._last = None
             for s in speakers:
-                if s.get('id') == 'you' or not s.get('centroid'):
+                if s.get('id') == 'you':
+                    continue
+                centroid = (self._unit(np.asarray(s['centroid'], dtype=np.float32)) if s.get('centroid')
+                            else None)
+                if centroid is None and not s.get('named_by_app'):
                     continue
                 self._speakers.append({'id': s['id'], 'name': s.get('name', s['id']), 'colour': int(s.get('colour', 1)),
-                                       'centroid': self._unit(np.asarray(s['centroid'], dtype=np.float32)),
-                                       'count': int(s.get('count', 1)), 'voice_id': s.get('voice_id')})
+                                       'centroid': centroid, 'count': int(s.get('count', 1 if centroid is not None else 0)),
+                                       'voice_id': s.get('voice_id'), 'named_by_app': bool(s.get('named_by_app'))})
 
     @staticmethod
     def _unit(v: np.ndarray) -> np.ndarray:
@@ -69,10 +75,13 @@ class SpeakerTracker:
 
     # `voice`, when given, tells the session a saved voice's name was matched.
     def _to_dict(self, s: dict, voice: Optional[str] = None) -> dict:
-        entry = {'id': s['id'], 'name': s['name'], 'colour': s['colour'],
-                 'centroid': [round(float(x), 5) for x in s['centroid']], 'count': s['count']}
+        entry = {'id': s['id'], 'name': s['name'], 'colour': s['colour'], 'count': s['count']}
+        if s['centroid'] is not None:
+            entry['centroid'] = [round(float(x), 5) for x in s['centroid']]
         if s.get('voice_id'):
             entry['voice_id'] = s['voice_id']
+        if s.get('named_by_app'):
+            entry['named_by_app'] = True
         if voice:
             entry['voice'] = voice
         return entry
@@ -192,7 +201,13 @@ class SpeakerTracker:
             target = next((s for s in self._speakers if s['id'] == into_id), None)
             if source is None or target is None or source is target:
                 return
-            target['centroid'] = self._unit(target['centroid'] * target['count'] + source['centroid'] * source['count'])
+            if source['centroid'] is None:
+                pass
+            elif target['centroid'] is None or np.shape(target['centroid']) != np.shape(source['centroid']):
+                target['centroid'] = source['centroid']
+            else:
+                target['centroid'] = self._unit(target['centroid'] * target['count']
+                                                + source['centroid'] * source['count'])
             target['count'] += source['count']
             target['voice_id'] = target.get('voice_id') or source.get('voice_id')
             self._speakers.remove(source)
@@ -203,9 +218,55 @@ class SpeakerTracker:
     def voiceprint(self, speaker_id: str) -> Optional[tuple]:
         with self._lock:
             for s in self._speakers:
-                if s['id'] == speaker_id:
+                if s['id'] == speaker_id and s['centroid'] is not None:
                     return [float(x) for x in s['centroid']], s['count']
         return None
+
+    # ── Speakers the meeting app names (Google Meet, docs/design/meet-extension.md)
+
+    # The speaker called `name` in this meeting: found by name (a speaker you
+    # renamed counts too), or added with no voiceprint yet. Returns (id, the
+    # entry to store, or None when it already existed).
+    def named(self, name: str) -> tuple:
+        name = ' '.join(str(name or '').split())
+        with self._lock:
+            found = next((s for s in self._speakers if s['name'] == name), None)
+            if found is not None:
+                return found['id'], None
+            n = self._next_number()
+            s = {'id': f's{n}', 'name': name, 'colour': 1 + (n - 1) % COLOURS, 'centroid': None, 'count': 0,
+                 'voice_id': None, 'named_by_app': True}
+            self._speakers.append(s)
+            return s['id'], self._to_dict(s)
+
+    # Audio the meeting app says is `speaker_id` alone teaches that speaker's
+    # voiceprint, so the voice is saved under their real name and recognised
+    # in calls the app can't name (Zoom, Discord). Returns the entry to store,
+    # or None when no voiceprint could be made.
+    def teach(self, speaker_id: str, audio) -> Optional[dict]:
+        if self.embed is None:
+            return None
+        try:
+            vec = self.embed(audio)
+        except Exception as e:
+            logger.debug(f"Speaker embedding failed: {e}")
+            vec = None
+        if vec is None:
+            return None
+        vec = self._unit(np.asarray(vec, dtype=np.float32))
+        with self._lock:
+            s = next((x for x in self._speakers if x['id'] == speaker_id), None)
+            if s is None:
+                return None
+            if s['centroid'] is None or np.shape(s['centroid']) != vec.shape:
+                s['centroid'], s['count'] = vec, 1
+            else:
+                s['centroid'] = self._unit(s['centroid'] * s['count'] + vec)
+                s['count'] += 1
+            self._last = s
+            if not s.get('voice_id') and s['count'] >= FIRM_COUNT:
+                self._link_saved_voice(s, s['centroid'])
+            return self._to_dict(s)
 
     # A continuity join: the label only, the voiceprint stays as it was.
     def _keep(self, speaker: dict) -> tuple:
