@@ -1169,7 +1169,7 @@ class AppStepsTests(AgentTestCase):
 
     # A click may change the screen: what was planned after it waits for a new look.
     def test_a_click_ends_the_round(self):
-        runner = self.stepper([{'steps': [('click', 'Daily Mix 6', {}), ('switch', 'Shuffle', {})]},
+        runner = self.stepper([{'steps': [('click', 'Daily Mix 6', {'risk': 'read'}), ('switch', 'Shuffle', {'risk': 'setting'})]},
                                {'done': 'Opened it'}])
         runner.handle('open daily mix 6 in spotify')
         self.assertEqual(self.apps.done, [('click', 'Spotify', 'Daily Mix 6')])
@@ -1185,6 +1185,19 @@ class AppStepsTests(AgentTestCase):
                               approval=FakeApproval(answers=[(False, 'wrong'), (False, 'wrong')]))
         self.assertEqual(runner.handle('shuffle spotify'), CANCELLED, "the AI's own danger asks too")
         self.assertEqual(self.apps.done, [])
+
+    # The acting AI's own rating can't wave a change through that Undo can't
+    # put back: a click it calls a change waits for the password; one that
+    # only opens or plays runs.
+    def test_a_click_rated_a_change_waits_for_the_password(self):
+        from koli.agent.policy import ui_reasons
+        click = {'op': 'ui', 'action': 'click', 'app': 'Spotify', 'name': 'Like', 'live': True}
+        self.assertTrue(ui_reasons({**click, 'risk': 'change'}))
+        self.assertTrue(ui_reasons(click), 'no rating counts as unchecked')
+        self.assertEqual(ui_reasons({**click, 'risk': 'read'}), [])
+        write = {'op': 'ui', 'action': 'set_text', 'app': 'Notepad', 'name': 'Text editor', 'live': True,
+                 'risk': 'change', 'old_value': '', 'old_length': 0}
+        self.assertEqual(ui_reasons(write), [], 'a write Undo can put back runs')
 
     def test_writing_in_notepad_is_undone(self):
         from koli.agent.runner import RAN

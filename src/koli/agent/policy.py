@@ -159,8 +159,10 @@ def ui_dangers(words: str) -> List[str]:
 # Why one step in another app needs your password ([] when it may just run).
 # Closing an app always does (unsaved work); a control named like sending,
 # paying or removing does; writing over a long text does; then the
-# reviewer's rating: reading or a setting runs, anything more asks. A loop
-# step (`live`) has the AI's own rating instead: only "danger" asks.
+# reviewer's rating: reading or a setting runs, a change Undo can put back
+# runs, anything more asks. A loop step (`live`) has the AI's own rating
+# instead, under the same rule: the acting AI can't wave through a click it
+# calls a change (a page or a chat may have talked it into one).
 def ui_reasons(op: dict) -> List[str]:
     from .actions import ui_line
     what = op.get('explain') or ui_line(op)
@@ -172,11 +174,8 @@ def ui_reasons(op: dict) -> List[str]:
     if found:
         return [f"{what}: {', '.join(found)}"]
     risk = op.get('risk')
-    if op.get('live'):
-        # A step of the step-by-step loop: no reviewer call per step (it would
-        # double each round). The rules above are the gate; the AI's own
-        # "danger" asks too, everything else runs.
-        return [f"{what}: the AI rated it risky"] if risk == 'danger' else []
+    if op.get('live') and risk == 'danger':
+        return [f"{what}: the AI rated it risky"]
     # A switch, or a field whose old text Koli kept, can be put back: like a
     # move in your folders, it runs with Undo even when it changes something.
     undoable = op.get('action') == 'toggle' \
