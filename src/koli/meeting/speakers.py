@@ -45,6 +45,10 @@ class SpeakerTracker:
         self.embed = embed
         self.similarity = similarity
         self.voices = voices      # the VoiceBook of saved voices, or None
+        # Who the call says is in it (a list of names), or None when it
+        # doesn't say: set by the meeting service; saved voices may only
+        # name these people.
+        self.call_names = lambda: None
         self._lock = threading.Lock()
         # [{'id','name','colour','centroid': np.ndarray,'count','voice_id' (when known)}]
         self._speakers = []
@@ -166,7 +170,7 @@ class SpeakerTracker:
             return None
         try:
             found = self.voices.match(vec, taken=[s['voice_id'] for s in self._speakers if s.get('voice_id')],
-                                      first=first)
+                                      first=first, names=self.call_names())
         except Exception as e:
             logger.debug(f"Saved voices unavailable: {e}")
             return None

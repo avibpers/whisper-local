@@ -44,6 +44,26 @@ def is_default_name(name: str) -> bool:
     return bool(_DEFAULT_NAME.match(str(name or '')))
 
 
+# Whether a saved voice named `saved` can be one of `names` (the people a
+# call says are in it, or a speaker's own name): the same name, or one is
+# the start of the other ("Eran" and "Eran Ronen"; not "Eran Cohen"). An
+# unnamed voice can be anyone, and so can every voice when `names` is None.
+# Without this a close voice put an absent person's name on a speaker
+# ("Ilona" in a call of Eran, Elad and Avi; 2026-11-02).
+def name_fits(saved: Optional[str], names: Optional[Iterable[str]]) -> bool:
+    if names is None or not saved or is_default_name(saved):
+        return True
+    words = str(saved).casefold().split()
+    for name in names:
+        other = str(name or '').casefold().split()
+        if not other:
+            continue
+        shorter, longer = sorted((words, other), key=len)
+        if longer[:len(shorter)] == shorter:
+            return True
+    return False
+
+
 def new_voice_id() -> str:
     return 'v-' + uuid.uuid4().hex[:12]
 
@@ -130,16 +150,21 @@ class VoiceBook:
 
     # The saved voice a voiceprint belongs to, as {'id', 'name'}, or None.
     # `taken` are voice ids already given to other speakers in this meeting;
-    # `first` asks for the stricter bar of a single chunk.
-    def match(self, vec, taken: Iterable[str] = (), first: bool = False) -> Optional[dict]:
+    # `first` asks for the stricter bar of a single chunk; `names`, when
+    # given, are the only people it may be (name_fits).
+    def match(self, vec, taken: Iterable[str] = (), first: bool = False,
+              names: Optional[Iterable[str]] = None) -> Optional[dict]:
         if vec is None:
             return None
         vec = _unit(vec)
         taken = set(taken)
+        names = list(names) if names is not None else None
         with self._lock:
             best, best_sim = None, FIRST_MATCH if first else MATCH
             for v in self._loaded():
                 if v['id'] in taken or v['self'] or not _same_model(v['centroid'], vec):
+                    continue
+                if not name_fits(v.get('name'), names):
                     continue
                 sim = float(np.dot(v['centroid'], vec))
                 if sim >= best_sim:
@@ -151,10 +176,10 @@ class VoiceBook:
     # starts a new one. Weighted by how much audio each side has. Returns
     # the voice id.
     def keep(self, centroid, count: int, meeting_id: str, voice_id: Optional[str] = None,
-             taken: Iterable[str] = ()) -> str:
+             taken: Iterable[str] = (), names: Optional[Iterable[str]] = None) -> str:
         count = max(1, int(count or 1))
         if voice_id is None:
-            found = self.match(centroid, taken=taken)
+            found = self.match(centroid, taken=taken, names=names)
             voice_id = found['id'] if found else None
         now = _now()
         with self._lock:

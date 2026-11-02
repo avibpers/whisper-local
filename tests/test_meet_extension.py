@@ -216,6 +216,29 @@ class ServiceMeetTests(unittest.TestCase):
         self.assertEqual(m['title'], 'Weekly sync')
         self.assertEqual([p['name'] for p in m['call']['people']], ['Dana', 'Avi'])
 
+    # Seen live 2026-11-02: the meeting was started by hand before the
+    # extension spoke, so Meet's people never reached it.
+    def test_a_meeting_started_by_hand_takes_the_meet_call(self):
+        svc = self.make()
+        svc.start()
+        self.assertEqual(svc.session.state, 'live')
+        self.assertEqual(svc.session.meeting['source']['code'], '')
+        svc._meet_events([status(title='Weekly sync')])
+        m = svc.session.meeting
+        self.assertEqual(m['source']['code'], 'abc-defg-hij')
+        self.assertEqual(m['title'], 'Weekly sync')
+        self.assertEqual([p['name'] for p in m['call']['people']], ['Dana', 'Avi'])
+
+    def test_only_a_meeting_without_a_call_takes_one(self):
+        svc = self.make()
+        svc.start()
+        m = svc.session.meeting
+        m['source'] = {**m['source'], 'kind': 'native', 'app': 'discord.exe'}
+        self.assertFalse(svc.session.adopt_meet_code(m['id'], 'abc-defg-hij'))
+        m['source'] = {**m['source'], 'kind': 'manual', 'code': 'xyz-abcd-efg'}
+        self.assertFalse(svc.session.adopt_meet_code(m['id'], 'abc-defg-hij'))
+        self.assertEqual(m['source']['code'], 'xyz-abcd-efg')
+
     def test_a_detector_source_of_the_same_meet_keeps_its_device(self):
         svc = self.make()
         svc._meet_events([status()])

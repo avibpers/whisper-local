@@ -812,6 +812,28 @@ class SessionManager:
             return None
         return m
 
+    # A Google Meet call (the extension's `code`) becomes the live meeting's
+    # call when that meeting has none: started by hand, or detected in the
+    # browser before the extension spoke. Never a Discord, Zoom or Teams
+    # meeting, which is its own call. True when the meeting took the code.
+    ADOPTABLE_KINDS = ('manual', 'browser')
+
+    def adopt_meet_code(self, meeting_id: str, code: str) -> bool:
+        if not code:
+            return False
+        with self._transition():
+            m = self._live_meeting(meeting_id)
+            if m is None:
+                return False
+            source = m.get('source') or {}
+            if source.get('code') or source.get('kind') not in self.ADOPTABLE_KINDS:
+                return False
+            m['source'] = {**source, 'code': code}
+            self.saver.mark(m)
+            self._emit()
+        logger.info(f"Meeting {meeting_id} is the Google Meet call {code}")
+        return True
+
     # Who is in the call, read from the call app's window ({'with', 'direct',
     # 'people'}; {} when nothing could be read, which changes nothing), for
     # the live meeting `meeting_id`. The meeting keeps it, and a title still

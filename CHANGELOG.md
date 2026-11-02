@@ -47,6 +47,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
   chat's language when unsure" turns it off (`docs/design/chat-language.md`).
 
 ### Fixed
+- **Every dictation pasted twice** when a test copy (`--test`) ran next to
+  your Koli: both heard the hotkey. A test copy started while your Koli runs
+  is now hands-off (no hotkeys, auto-dictation, wake word, meetings or local
+  API), and `--test --quit` can no longer end your Koli instead of the copy.
 - **Your clipboard survives a paste.** Dictating right after a screenshot
   deleted the screenshot; now every format comes back (images, files, rich
   text), nothing is restored over something you copied meanwhile, and two

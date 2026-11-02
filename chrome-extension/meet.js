@@ -17,8 +17,15 @@
   const CAPTION_SEND_MS = 1000;    // a growing caption is sent at most this often
   const CAPTION_SETTLE_MS = 3000;  // an older caption unchanged this long is final (Meet fixes recent ones)
   const NEWEST_IDLE_MS = 8000;     // the newest caption is final after this long without a change
+  // One person talking on and on keeps a single caption block changing: its
+  // start goes out as a line once it has stopped changing for
+  // CAPTION_SETTLE_MS and holds this many words (the last few stay, Meet
+  // still rewrites them). Without this a monologue reached Koli only when
+  // it ended (seen live 2026-11-02).
+  const PIECE_MIN_WORDS = 12;
+  const PIECE_KEEP_WORDS = 4;
   const LEAVE_TICKS = 3;           // ticks without the hang-up button before you count as gone
-  const CAPTIONS_KEY_RETRY_MS = 10000;  // pressing "c" again if captions still aren't on
+  const CAPTIONS_KEY_RETRY_MS = 10000;  // trying again if captions still aren't on
   const CAPTIONS_KEY_TRIES = 3;
   const MEETING_CODE = /^[a-z]{3}-[a-z]{4}-[a-z]{3}$/;
 
@@ -28,6 +35,10 @@
   const ICONS_IN_CALL = ['closed_caption', 'closed_caption_off', 'translate_cc', 'chat', 'chat_bubble'];
   const ICONS_CAPTIONS = ['closed_caption', 'closed_caption_off', 'translate_cc'];
   const CAPTIONS_REGION = 'div[role="region"][tabindex="0"]';
+  // Your own tile has controls nobody else's has: Backgrounds and effects,
+  // and Reframe (seen in a live call 2026-11-02, where data-self-name was
+  // gone). Other people's tiles have Pin and Mute instead.
+  const ICONS_SELF_TILE = ['visual_effects', 'frame_person'];
 
   // What Meet calls you in your own captions, in the languages we know of.
   // Your own name (from the self tile) counts too.
@@ -35,8 +46,11 @@
     'Tu', 'Voi', 'Jij', 'Ty', 'Sen', 'أنت', 'あなた', '您', '你']);
   const JUNK_NAME = /^Google Participant \(|spaces\/|devices\//;
 
-  const code = (location.pathname.split('/')[1] || '').toLowerCase();
-  if (!MEETING_CODE.test(code)) return;     // a landing or lookup page, not a call
+  // The code is anywhere in the path: "/abc-defg-hij" and, from a calendar
+  // or another link, "/meet/abc-defg-hij" (seen live 2026-11-02).
+  const code = location.pathname.split('/').map((part) => part.toLowerCase())
+    .find((part) => MEETING_CODE.test(part)) || '';
+  if (!code) return;     // a landing or lookup page, not a call
 
   // ── State ──────────────────────────────────────────────────────────────────
 
@@ -83,12 +97,28 @@
     return icons(name).length > 0;
   }
 
+  // Your own tile: data-self-name where Meet still sets it, else the
+  // controls only your tile has.
+  function isSelfTile(tile) {
+    if (tile.querySelector('[data-self-name]')) return true;
+    return [...tile.querySelectorAll(ICON_SELECTOR)].some((el) => ICONS_SELF_TILE.includes(el.textContent.trim()));
+  }
+
+  // The person's name on a tile: the first non-empty span.notranslate that
+  // isn't an icon. A thumbnail of the same person (same participant id)
+  // has an icon ("devices") there instead of the name (seen live).
+  function tileName(tile) {
+    const iconWords = new Set([...tile.querySelectorAll(ICON_SELECTOR)].map((el) => el.textContent.trim()));
+    for (const el of tile.querySelectorAll('span.notranslate')) {
+      const text = el.textContent.trim();
+      if (text && !iconWords.has(text) && !el.closest(ICON_SELECTOR)) return text;
+    }
+    return '';
+  }
+
   // Someone else's tile with a name: only there once you are let in.
   function remoteTile() {
-    return [...document.querySelectorAll('[data-participant-id]')].some((tile) => {
-      const name = tile.querySelector('span.notranslate');
-      return name && name.textContent.trim() && !tile.querySelector('[data-self-name]');
-    });
+    return [...document.querySelectorAll('[data-participant-id]')].some((tile) => tileName(tile) && !isSelfTile(tile));
   }
 
   // Getting in: the hang-up button AND a captions or chat button (or another
@@ -103,56 +133,92 @@
     return hasIcon(ICON_CALL_END);
   }
 
-  // The captions button's own pressed state, when it says; else, once we
-  // pressed "c", on (nobody may have spoken yet); else whether the captions
-  // area takes space on screen.
-  function captionsOn() {
+  // The captions button says whether captions are on: its pressed state
+  // when it has one; else its icon, which offers the other state (seen live:
+  // closed_caption_off with "Turn on captions" while off, closed_caption
+  // with "Turn off captions" while on); else whether the captions area takes
+  // space on screen.
+  function captionsButton() {
     for (const name of ICONS_CAPTIONS) {
       for (const icon of icons(name)) {
         const button = icon.closest('button');
-        const pressed = button && button.getAttribute('aria-pressed');
-        if (pressed === 'true') return true;
-        if (pressed === 'false') return false;
+        if (button) return { button, icon: name };
       }
     }
-    if (state.keyTries > 0) return true;
+    return null;
+  }
+
+  function captionsOn() {
+    const found = captionsButton();
+    if (found) {
+      const pressed = found.button.getAttribute('aria-pressed');
+      if (pressed === 'true') return true;
+      if (pressed === 'false') return false;
+      if (found.icon === 'closed_caption_off') return false;
+      if (found.icon === 'closed_caption') return true;
+    }
     const region = document.querySelector(CAPTIONS_REGION);
     if (!region) return null;
     return region.offsetHeight > 0;
   }
 
-  // Meet's own shortcut for captions; pressed only when they are known to be off.
+  // A click as a mouse makes it: Meet's buttons answer pointer and mouse
+  // events, and ignore a bare click() and a synthetic "c" key (seen live).
+  function press(button) {
+    const r = button.getBoundingClientRect();
+    const at = { bubbles: true, cancelable: true, composed: true, button: 0, view: window,
+                 clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
+    const pointer = { ...at, pointerId: 1, pointerType: 'mouse', isPrimary: true };
+    button.dispatchEvent(new PointerEvent('pointerdown', pointer));
+    button.dispatchEvent(new MouseEvent('mousedown', at));
+    button.dispatchEvent(new PointerEvent('pointerup', pointer));
+    button.dispatchEvent(new MouseEvent('mouseup', at));
+    button.dispatchEvent(new MouseEvent('click', at));
+  }
+
+  // Turns captions on through their button, only when they are known to be
+  // off; tried again a few times if Meet didn't take it.
   function turnCaptionsOn() {
     if (!state.captionsWanted || state.captionsOn !== false) return;
     const now = Date.now();
     if (state.keyTries >= CAPTIONS_KEY_TRIES || now - state.lastKeyAt < CAPTIONS_KEY_RETRY_MS) return;
     state.keyTries += 1;
     state.lastKeyAt = now;
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', code: 'KeyC', bubbles: true }));
+    const found = captionsButton();
+    if (found) {
+      press(found.button);
+    } else {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', code: 'KeyC', bubbles: true }));
+    }
   }
 
   function readTitle() {
-    let title = document.title.replace(/^(Google\s+)?Meet\s*[-–:]\s*/i, '').replace(/\s*[-–]\s*Google Meet$/i, '').trim();
+    // Leading symbols go first: a notification count or a marker another
+    // tool puts in the tab title ("🐴 Meet – …").
+    // Meet wraps a right-to-left title in invisible direction marks.
+    let title = document.title.replace(/[‎‏‪-‮⁦-⁩]/g, '')
+      .replace(/^\(\d+\)\s*/, '').replace(/^[^\p{L}\p{N}]+/u, '')
+      .replace(/^(Google\s+)?Meet\s*[-–:]\s*/i, '').replace(/\s*[-–]\s*Google Meet$/i, '').trim();
     if (title.toLowerCase() === code || /^google meet$/i.test(title)) title = '';
     return title;
   }
 
-  // The tiles: each has data-participant-id; yours holds data-self-name.
+  // The tiles: each has data-participant-id; yours is told by isSelfTile.
   // Everyone seen stays on the list (marked not present once gone), so a
   // person who left early is still an attendee.
   function readPeople() {
     const selfEl = document.querySelector('[data-self-name]');
     if (selfEl) state.selfName = selfEl.getAttribute('data-self-name') || state.selfName;
-    const selfTile = selfEl ? selfEl.closest('[data-participant-id]') : null;
     const present = new Set();
     for (const tile of document.querySelectorAll('[data-participant-id]')) {
       // Real ids look like "spaces/…/devices/…": only names are checked for junk.
       const id = tile.getAttribute('data-participant-id') || '';
       if (!id) continue;
-      const nameEl = tile.querySelector('span.notranslate');
-      const isSelf = tile === selfTile || !!tile.querySelector('[data-self-name]');
-      const name = ((nameEl && nameEl.textContent) || (isSelf ? state.selfName : '') || '').trim();
+      if (present.has(id)) continue;   // a thumbnail of someone already read from their tile
+      const isSelf = isSelfTile(tile);
+      const name = (tileName(tile) || (isSelf ? state.selfName : '') || '').trim();
       if (!name || JUNK_NAME.test(name)) continue;   // the effects preview tile has no name
+      if (isSelf) state.selfName = name;   // your name in your own captions
       present.add(id);
       state.people.set(id, { id, name, self: isSelf, present: true });
     }
@@ -241,6 +307,16 @@
         block.text = text;
         block.lastMs = now;
       }
+      // A long stretch of one person's talk: its settled start goes out now,
+      // and the rest carries on as a new block (see PIECE_MIN_WORDS).
+      const piece = settledPiece(block, f.text.slice(block.offset), now);
+      if (piece) {
+        block.text = f.text.slice(block.offset, block.offset + piece).trim();
+        block.lastMs = now;
+        finish(block, events);
+        block.full = f.text.slice(0, block.offset + piece);
+        return;
+      }
       const newest = index === found.length - 1;
       if (now - block.lastMs >= (newest ? NEWEST_IDLE_MS : CAPTION_SETTLE_MS)) {
         finish(block, events);
@@ -260,10 +336,37 @@
     return events;
   }
 
+  // How many characters of a block's text (`rel`, from its offset) have
+  // settled: the words it shares with how it read CAPTION_SETTLE_MS ago,
+  // less the last PIECE_KEEP_WORDS, cut at a sentence end when one is far
+  // enough in. 0 while that is fewer than PIECE_MIN_WORDS words. Hebrew
+  // captions come without punctuation, so a word boundary will do.
+  function settledPiece(block, rel, now) {
+    block.history.push({ at: now, rel });
+    while (block.history.length > 1 && now - block.history[1].at >= CAPTION_SETTLE_MS) block.history.shift();
+    const before = block.history[0];
+    if (now - before.at < CAPTION_SETTLE_MS) return 0;
+    let same = 0;
+    while (same < before.rel.length && same < rel.length && before.rel[same] === rel[same]) same += 1;
+    const words = [...rel.slice(0, same).matchAll(/\S+/g)];
+    if (same < rel.length && words.length && words[words.length - 1].index + words[words.length - 1][0].length === same) {
+      words.pop();   // a word still being written
+    }
+    if (words.length < PIECE_MIN_WORDS + PIECE_KEEP_WORDS) return 0;
+    const last = words[words.length - 1 - PIECE_KEEP_WORDS];
+    let cut = last.index + last[0].length;
+    const sentences = [...rel.slice(0, cut).matchAll(/[.?!…](?=\s|$)/g)];
+    if (sentences.length) {
+      const end = sentences[sentences.length - 1].index + 1;
+      if ((rel.slice(0, end).match(/\S+/g) || []).length >= PIECE_MIN_WORDS) cut = end;
+    }
+    return cut;
+  }
+
   // A block of caption element `f`, starting `offset` characters into its text.
   function newBlock(f, offset, now) {
     const block = { id: `${pageId}-${++blockSeq}`, name: f.name, self: isSelfName(f.name), offset, full: '',
-                    text: '', firstMs: now, lastMs: now, sentText: '', sentAt: 0, final: false };
+                    text: '', firstMs: now, lastMs: now, sentText: '', sentAt: 0, final: false, history: [] };
     blocks.set(f.el, block);
     if (!block.self && ![...state.people.values()].some((p) => p.name === f.name)) {
       // Someone talking who has no tile on screen (a big meeting): still an attendee.

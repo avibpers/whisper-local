@@ -143,6 +143,7 @@ class MeetingService:
         self._mic_source = None           # the tap on the dictation microphone, or a stream of its own
         self._mic_chunker = None
         self.tracker = SpeakerTracker(embed=None, voices=self.voices)
+        self.tracker.call_names = lambda: self._call_names(getattr(getattr(self, 'session', None), 'meeting', None))
         self._meeting_mic = ''            # the meeting microphone's name, for your voice on it
         self._embedder_task = None
         self._online = None               # the OnlineEngine of meeting.model, made on first use
@@ -407,8 +408,15 @@ class MeetingService:
             self.session.call_left(code)
         m = self.session.meeting
         code = (m.get('source') or {}).get('code') if m else ''
+        adopted = False
+        # A meeting you started by hand (or before the extension spoke) takes
+        # the one Meet call you are in, so Meet names its people.
+        if m and not code and self.session.state == 'live':
+            joined = self.meet.joined_calls()
+            if len(joined) == 1 and self.session.adopt_meet_code(m['id'], joined[0]['code']):
+                code, adopted = joined[0]['code'], True
         if m and code and self.session.state == 'live':
-            if code in result['changed'] or code in result['joined']:
+            if adopted or code in result['changed'] or code in result['joined']:
                 self._meet_people(m['id'], code)
             if self._meet_mode() == 'captions':
                 for caption in result['finals']:
@@ -432,7 +440,10 @@ class MeetingService:
         if not call or not m or m['id'] != meeting_id:
             return
         title = call.get('title') or ''
-        if title and title.lower() != code and not m.get('title_by_you') and m['title'].startswith('Google Meet'):
+        # Meet's own name replaces an app's name: "Google Meet", or "Meeting"
+        # for a meeting started by hand that took this call.
+        default_title = m['title'].startswith('Google Meet') or m['title'] == 'Meeting'
+        if title and title.lower() != code and not m.get('title_by_you') and default_title:
             self.session.set_title(meeting_id, title, by_you=False)
         remote = [p for p in call['people'] if not p['self']]
         if call['people']:
@@ -490,10 +501,13 @@ class MeetingService:
 
         code = (meeting.get('source') or {}).get('code') or ''
 
-        # While Meet's captions are this meeting's transcript, the audio only teaches voices.
+        # While Meet's captions are this meeting's transcript, the audio only
+        # teaches voices. The code is read per chunk: a meeting started by hand
+        # can take a Meet call later (adopt_meet_code).
         def submit(chunk):
+            live_code = (meeting.get('source') or {}).get('code') or ''
             self.transcriber.submit({**chunk, 'meeting_id': meeting_id,
-                                     'voice_only': self._captions_are_transcript(code)})
+                                     'voice_only': self._captions_are_transcript(live_code)})
         if self._screenshot_mode() == 'all':
             self._start_watcher()
         self._start_call_poll(meeting)
@@ -1285,6 +1299,14 @@ class MeetingService:
     # Labels that are clearly one voice are merged first (the splitter cut
     # one person in two). A speaker heard in fewer than MIN_KEEP_CHUNKS
     # chunks is too thin a sample to save.
+    # The names of the people a meeting's call says are in it (Meet, or the
+    # call app's window), or None when it doesn't say.
+    @staticmethod
+    def _call_names(meeting: Optional[dict]) -> Optional[list]:
+        people = ((meeting or {}).get('call') or {}).get('people') or []
+        names = [p.get('name') for p in people if p.get('name')]
+        return names or None
+
     def _keep_voices(self, meeting: dict):
         if not self._setting('meeting.remember_voices', True):
             return
@@ -1294,8 +1316,11 @@ class MeetingService:
             for s in meeting['speakers']:
                 if s['id'] == 'you' or not s.get('centroid') or int(s.get('count', 0)) < MIN_KEEP_CHUNKS:
                     continue
+                # A named speaker is only filed under a voice of that name;
+                # an unnamed one under someone the call says was there.
+                names = [s['name']] if not is_default_name(s.get('name')) else self._call_names(meeting)
                 voice_id = self.voices.keep(s['centroid'], s['count'], meeting['id'], voice_id=s.get('voice_id'),
-                                            taken=taken)
+                                            taken=taken, names=names)
                 taken.append(voice_id)
                 # A voice saved without a name takes the one it had in this
                 # meeting (from the call, say); a name already saved stays.
@@ -1336,10 +1361,10 @@ class MeetingService:
                         continue      # one is from another speaker model
                     sim = float(np.dot(va, vb) / ((np.linalg.norm(va) * np.linalg.norm(vb)) or 1.0))
                     if sim >= SAME_VOICE:
-                        keep, drop = (a, b) if a.get('count', 0) >= b.get('count', 0) else (b, a)
-                        # A real name (from Meet, or yours) outranks a "Speaker N" heard more often.
-                        if is_default_name(keep.get('name')) and not is_default_name(drop.get('name')):
-                            keep, drop = drop, keep
+                        # The name the call gave (Meet's) outranks a saved
+                        # voice's, which outranks a "Speaker N"; then the one
+                        # heard more often.
+                        keep, drop = sorted((a, b), key=self._name_rank, reverse=True)
                         self._merge_voice_ids(drop.get('voice_id'), keep)
                         merge_speaker_into(meeting, drop['id'], keep['id'])
                         logger.info(f"Merged {drop['name']} into {keep['name']}: one voice ({sim:.2f})")
@@ -1348,6 +1373,14 @@ class MeetingService:
                 if changed:
                     break
         return merged_any
+
+    # How much a speaker's name is worth keeping in a merge: named by the
+    # call app (Meet), then any real name, then "Speaker N"; then how often
+    # the voice was heard.
+    @staticmethod
+    def _name_rank(speaker: dict) -> tuple:
+        named = 0 if is_default_name(speaker.get('name')) else (2 if speaker.get('named_by_app') else 1)
+        return named, speaker.get('count', 0)
 
     # A speaker merged into `keep` brings its saved voice along.
     def _merge_voice_ids(self, from_voice: Optional[str], keep: dict):
