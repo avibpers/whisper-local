@@ -143,6 +143,7 @@ class MeetingService:
         self._mic_source = None           # the tap on the dictation microphone, or a stream of its own
         self._mic_chunker = None
         self.tracker = SpeakerTracker(embed=None, voices=self.voices)
+        self.tracker.call_names = lambda: self._call_names(getattr(getattr(self, 'session', None), 'meeting', None))
         self._meeting_mic = ''            # the meeting microphone's name, for your voice on it
         self._embedder_task = None
         self._online = None               # the OnlineEngine of meeting.model, made on first use
@@ -1298,6 +1299,14 @@ class MeetingService:
     # Labels that are clearly one voice are merged first (the splitter cut
     # one person in two). A speaker heard in fewer than MIN_KEEP_CHUNKS
     # chunks is too thin a sample to save.
+    # The names of the people a meeting's call says are in it (Meet, or the
+    # call app's window), or None when it doesn't say.
+    @staticmethod
+    def _call_names(meeting: Optional[dict]) -> Optional[list]:
+        people = ((meeting or {}).get('call') or {}).get('people') or []
+        names = [p.get('name') for p in people if p.get('name')]
+        return names or None
+
     def _keep_voices(self, meeting: dict):
         if not self._setting('meeting.remember_voices', True):
             return
@@ -1307,8 +1316,11 @@ class MeetingService:
             for s in meeting['speakers']:
                 if s['id'] == 'you' or not s.get('centroid') or int(s.get('count', 0)) < MIN_KEEP_CHUNKS:
                     continue
+                # A named speaker is only filed under a voice of that name;
+                # an unnamed one under someone the call says was there.
+                names = [s['name']] if not is_default_name(s.get('name')) else self._call_names(meeting)
                 voice_id = self.voices.keep(s['centroid'], s['count'], meeting['id'], voice_id=s.get('voice_id'),
-                                            taken=taken)
+                                            taken=taken, names=names)
                 taken.append(voice_id)
                 # A voice saved without a name takes the one it had in this
                 # meeting (from the call, say); a name already saved stays.
@@ -1349,10 +1361,10 @@ class MeetingService:
                         continue      # one is from another speaker model
                     sim = float(np.dot(va, vb) / ((np.linalg.norm(va) * np.linalg.norm(vb)) or 1.0))
                     if sim >= SAME_VOICE:
-                        keep, drop = (a, b) if a.get('count', 0) >= b.get('count', 0) else (b, a)
-                        # A real name (from Meet, or yours) outranks a "Speaker N" heard more often.
-                        if is_default_name(keep.get('name')) and not is_default_name(drop.get('name')):
-                            keep, drop = drop, keep
+                        # The name the call gave (Meet's) outranks a saved
+                        # voice's, which outranks a "Speaker N"; then the one
+                        # heard more often.
+                        keep, drop = sorted((a, b), key=self._name_rank, reverse=True)
                         self._merge_voice_ids(drop.get('voice_id'), keep)
                         merge_speaker_into(meeting, drop['id'], keep['id'])
                         logger.info(f"Merged {drop['name']} into {keep['name']}: one voice ({sim:.2f})")
@@ -1361,6 +1373,14 @@ class MeetingService:
                 if changed:
                     break
         return merged_any
+
+    # How much a speaker's name is worth keeping in a merge: named by the
+    # call app (Meet), then any real name, then "Speaker N"; then how often
+    # the voice was heard.
+    @staticmethod
+    def _name_rank(speaker: dict) -> tuple:
+        named = 0 if is_default_name(speaker.get('name')) else (2 if speaker.get('named_by_app') else 1)
+        return named, speaker.get('count', 0)
 
     # A speaker merged into `keep` brings its saved voice along.
     def _merge_voice_ids(self, from_voice: Optional[str], keep: dict):

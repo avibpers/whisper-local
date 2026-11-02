@@ -2228,6 +2228,28 @@ class VoiceBookTests(unittest.TestCase):
         self.assertEqual(v['count'], 2)
         self.assertEqual(self.book.match([0.0, 0.0, 1.0])['id'], vid)
 
+    # Seen live 2026-11-02: "Ilona" was put on a speaker in a call of Eran,
+    # Elad and Avi. A saved voice only names someone the call lists.
+    def test_a_voice_only_names_someone_in_the_call(self):
+        from koli.meeting.voices import name_fits
+        ilona = self.book.keep([1.0, 0.0, 0.0], 4, 'm1')
+        self.book.set_name(ilona, 'Ilona')
+        call = ['Eran Ronen', 'Elad Ronen', 'Avi Barzilay']
+        self.assertIsNone(self.book.match([0.95, 0.3, 0.0], names=call))
+        self.assertEqual(self.book.match([0.95, 0.3, 0.0])['id'], ilona, 'no list: as before')
+        self.assertTrue(name_fits('Eran', call))
+        self.assertTrue(name_fits('eran ronen', ['Eran Ronen']))
+        self.assertFalse(name_fits('Eran Cohen', ['Eran Ronen']))
+        self.assertTrue(name_fits('', call), 'an unnamed voice can be anyone')
+        self.assertTrue(name_fits('Speaker 3', call))
+
+    def test_a_named_speaker_is_kept_under_a_voice_of_that_name_only(self):
+        ilona = self.book.keep([1.0, 0.0, 0.0], 4, 'm1')
+        self.book.set_name(ilona, 'Ilona')
+        eran = self.book.keep([0.97, 0.24, 0.0], 3, 'm2', names=['Eran Ronen'])
+        self.assertNotEqual(eran, ilona)
+        self.assertEqual(self.book.get(ilona)['count'], 4, "Ilona's voice is not changed by Eran's")
+
     # A meeting resumed and ended again must not count its audio twice.
     def test_the_same_meeting_counts_once(self):
         vid = self.book.keep([1.0, 0.0], 3, 'm1')
@@ -2949,6 +2971,31 @@ class ServiceVoicesTests(unittest.TestCase):
             if entry:
                 svc.session.ensure_speaker(entry)
         return sid
+
+    # One person twice: "Eran" from his saved voice before Meet named
+    # anyone, "Eran Ronen" from Meet after. Meet's name is the one kept.
+    def test_a_merge_keeps_the_name_meet_gave(self):
+        svc = self.make()
+        meeting = {'id': 'm', 'speakers': [
+            {'id': 's1', 'name': 'Eran', 'count': 30, 'centroid': [1.0, 0.0, 0.0]},
+            {'id': 's2', 'name': 'Eran Ronen', 'count': 5, 'centroid': [0.99, 0.1, 0.0], 'named_by_app': True},
+            {'id': 's3', 'name': 'Speaker 3', 'count': 50, 'centroid': [0.0, 1.0, 0.0]},
+        ], 'turns': [{'speaker': 's1', 'text': 'a'}, {'speaker': 's2', 'text': 'b'}]}
+        self.assertTrue(svc._merge_twins(meeting))
+        self.assertEqual([s['name'] for s in meeting['speakers']], ['Eran Ronen', 'Speaker 3'])
+        self.assertEqual({t['speaker'] for t in meeting['turns']}, {'s2'})
+
+    # During a call that lists its people, the tracker only takes saved
+    # voices of those people.
+    def test_the_tracker_asks_for_the_calls_people(self):
+        svc = self.make()
+        ilona = self.book.keep([1.0, 0.0, 0.0], 4, 'm0')
+        self.book.set_name(ilona, 'Ilona')
+        svc.start()
+        svc.session.set_call({'people': [{'name': 'Eran Ronen'}, {'name': 'Avi Barzilay'}]}, svc.session.meeting['id'])
+        sid = self.speak(svc, [0.98, 0.2, 0.0], 3)
+        names = {s['id']: s['name'] for s in svc.session.meeting['speakers']}
+        self.assertNotEqual(names.get(sid), 'Ilona')
 
     # A voice named during the meeting (from the call, say) is saved under
     # that name when the meeting ends, if it had none yet.
