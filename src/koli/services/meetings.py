@@ -407,8 +407,15 @@ class MeetingService:
             self.session.call_left(code)
         m = self.session.meeting
         code = (m.get('source') or {}).get('code') if m else ''
+        adopted = False
+        # A meeting you started by hand (or before the extension spoke) takes
+        # the one Meet call you are in, so Meet names its people.
+        if m and not code and self.session.state == 'live':
+            joined = self.meet.joined_calls()
+            if len(joined) == 1 and self.session.adopt_meet_code(m['id'], joined[0]['code']):
+                code, adopted = joined[0]['code'], True
         if m and code and self.session.state == 'live':
-            if code in result['changed'] or code in result['joined']:
+            if adopted or code in result['changed'] or code in result['joined']:
                 self._meet_people(m['id'], code)
             if self._meet_mode() == 'captions':
                 for caption in result['finals']:
@@ -432,7 +439,10 @@ class MeetingService:
         if not call or not m or m['id'] != meeting_id:
             return
         title = call.get('title') or ''
-        if title and title.lower() != code and not m.get('title_by_you') and m['title'].startswith('Google Meet'):
+        # Meet's own name replaces an app's name: "Google Meet", or "Meeting"
+        # for a meeting started by hand that took this call.
+        default_title = m['title'].startswith('Google Meet') or m['title'] == 'Meeting'
+        if title and title.lower() != code and not m.get('title_by_you') and default_title:
             self.session.set_title(meeting_id, title, by_you=False)
         remote = [p for p in call['people'] if not p['self']]
         if call['people']:
@@ -490,10 +500,13 @@ class MeetingService:
 
         code = (meeting.get('source') or {}).get('code') or ''
 
-        # While Meet's captions are this meeting's transcript, the audio only teaches voices.
+        # While Meet's captions are this meeting's transcript, the audio only
+        # teaches voices. The code is read per chunk: a meeting started by hand
+        # can take a Meet call later (adopt_meet_code).
         def submit(chunk):
+            live_code = (meeting.get('source') or {}).get('code') or ''
             self.transcriber.submit({**chunk, 'meeting_id': meeting_id,
-                                     'voice_only': self._captions_are_transcript(code)})
+                                     'voice_only': self._captions_are_transcript(live_code)})
         if self._screenshot_mode() == 'all':
             self._start_watcher()
         self._start_call_poll(meeting)

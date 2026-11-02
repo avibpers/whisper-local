@@ -28,6 +28,10 @@
   const ICONS_IN_CALL = ['closed_caption', 'closed_caption_off', 'translate_cc', 'chat', 'chat_bubble'];
   const ICONS_CAPTIONS = ['closed_caption', 'closed_caption_off', 'translate_cc'];
   const CAPTIONS_REGION = 'div[role="region"][tabindex="0"]';
+  // Your own tile has controls nobody else's has: Backgrounds and effects,
+  // and Reframe (seen in a live call 2026-11-02, where data-self-name was
+  // gone). Other people's tiles have Pin and Mute instead.
+  const ICONS_SELF_TILE = ['visual_effects', 'frame_person'];
 
   // What Meet calls you in your own captions, in the languages we know of.
   // Your own name (from the self tile) counts too.
@@ -35,8 +39,11 @@
     'Tu', 'Voi', 'Jij', 'Ty', 'Sen', 'أنت', 'あなた', '您', '你']);
   const JUNK_NAME = /^Google Participant \(|spaces\/|devices\//;
 
-  const code = (location.pathname.split('/')[1] || '').toLowerCase();
-  if (!MEETING_CODE.test(code)) return;     // a landing or lookup page, not a call
+  // The code is anywhere in the path: "/abc-defg-hij" and, from a calendar
+  // or another link, "/meet/abc-defg-hij" (seen live 2026-11-02).
+  const code = location.pathname.split('/').map((part) => part.toLowerCase())
+    .find((part) => MEETING_CODE.test(part)) || '';
+  if (!code) return;     // a landing or lookup page, not a call
 
   // ── State ──────────────────────────────────────────────────────────────────
 
@@ -83,11 +90,18 @@
     return icons(name).length > 0;
   }
 
+  // Your own tile: data-self-name where Meet still sets it, else the
+  // controls only your tile has.
+  function isSelfTile(tile) {
+    if (tile.querySelector('[data-self-name]')) return true;
+    return [...tile.querySelectorAll(ICON_SELECTOR)].some((el) => ICONS_SELF_TILE.includes(el.textContent.trim()));
+  }
+
   // Someone else's tile with a name: only there once you are let in.
   function remoteTile() {
     return [...document.querySelectorAll('[data-participant-id]')].some((tile) => {
       const name = tile.querySelector('span.notranslate');
-      return name && name.textContent.trim() && !tile.querySelector('[data-self-name]');
+      return name && name.textContent.trim() && !isSelfTile(tile);
     });
   }
 
@@ -132,27 +146,30 @@
   }
 
   function readTitle() {
-    let title = document.title.replace(/^(Google\s+)?Meet\s*[-–:]\s*/i, '').replace(/\s*[-–]\s*Google Meet$/i, '').trim();
+    // Leading symbols go first: a notification count or a marker another
+    // tool puts in the tab title ("🐴 Meet – …").
+    let title = document.title.replace(/^\(\d+\)\s*/, '').replace(/^[^\p{L}\p{N}]+/u, '')
+      .replace(/^(Google\s+)?Meet\s*[-–:]\s*/i, '').replace(/\s*[-–]\s*Google Meet$/i, '').trim();
     if (title.toLowerCase() === code || /^google meet$/i.test(title)) title = '';
     return title;
   }
 
-  // The tiles: each has data-participant-id; yours holds data-self-name.
+  // The tiles: each has data-participant-id; yours is told by isSelfTile.
   // Everyone seen stays on the list (marked not present once gone), so a
   // person who left early is still an attendee.
   function readPeople() {
     const selfEl = document.querySelector('[data-self-name]');
     if (selfEl) state.selfName = selfEl.getAttribute('data-self-name') || state.selfName;
-    const selfTile = selfEl ? selfEl.closest('[data-participant-id]') : null;
     const present = new Set();
     for (const tile of document.querySelectorAll('[data-participant-id]')) {
       // Real ids look like "spaces/…/devices/…": only names are checked for junk.
       const id = tile.getAttribute('data-participant-id') || '';
       if (!id) continue;
       const nameEl = tile.querySelector('span.notranslate');
-      const isSelf = tile === selfTile || !!tile.querySelector('[data-self-name]');
+      const isSelf = isSelfTile(tile);
       const name = ((nameEl && nameEl.textContent) || (isSelf ? state.selfName : '') || '').trim();
       if (!name || JUNK_NAME.test(name)) continue;   // the effects preview tile has no name
+      if (isSelf) state.selfName = name;   // your name in your own captions
       present.add(id);
       state.people.set(id, { id, name, self: isSelf, present: true });
     }
