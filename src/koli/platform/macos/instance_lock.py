@@ -33,3 +33,17 @@ def release_lock(handle):
         except:
             pass
     _lock_file = None
+
+# Whether another process holds `app_name`'s lock, without taking it: a
+# --test copy asks this to stay hands-off while your Koli runs.
+def is_held(app_name: str) -> bool:
+    lock_path = Path.home() / f".{app_name}.lock"
+    if not lock_path.exists():
+        return False
+    try:
+        with open(lock_path, 'a') as probe:
+            fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(probe.fileno(), fcntl.LOCK_UN)
+        return False
+    except (IOError, OSError):
+        return True

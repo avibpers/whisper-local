@@ -16,3 +16,15 @@ def acquire_lock(app_name: str):
 
 def release_lock(handle):
     pass  # Mutex is released automatically when process exits
+
+# Whether another process holds `app_name`'s lock, without taking it: a
+# --test copy asks this to stay hands-off while your Koli runs.
+def is_held(app_name: str) -> bool:
+    import pywintypes
+    SYNCHRONIZE = 0x00100000
+    try:
+        handle = win32event.OpenMutex(SYNCHRONIZE, False, f"{app_name}_SingleInstance")
+    except pywintypes.error:
+        return False
+    win32api.CloseHandle(handle)
+    return True
