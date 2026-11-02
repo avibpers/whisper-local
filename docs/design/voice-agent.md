@@ -287,15 +287,14 @@ password, whatever the AI says, for: closing an app (unsaved work); a control
 labelled like sending, paying, deleting, confirming, installing, signing in or
 out or starting a call (`policy.UI_DANGERS`, English and Hebrew, whole words);
 writing over a field holding more than 200 letters. The AI rates each step
-too (`read`, `setting`, `change`, `danger`; none counts as `change`), under
-the same rule as a reviewed script step: `read` and `setting` run, a `change`
-runs only when Undo can put it back (a field whose old text was kept, a
-switch), anything else asks. So a click it calls a change, or `danger`, waits
-for your password. Labels, field text and the picture are data: the AI is
-told to ignore instructions in them, and the danger words catch a "Send" it
-was talked into. What's left is a click the AI itself calls `read` on a
-control whose label has no danger word (an arrow icon named "Go" after
-writing a message): the price of not asking a second model every step.
+too (`read`, `setting`, `change`, `danger`), and its `danger` asks as well.
+Everything else runs, clicks included: you asked not to be asked for every
+action, only for critical ones (2026-11-02). Labels, field text and the
+picture are data: the AI is told to ignore instructions in them, and the
+danger words catch a "Send" it was talked into. What's left is a click a page
+talked the AI into on a control whose label has no danger word (an arrow icon
+named "Go" after writing a message); a stricter gate (a click it calls a
+change asks too) was tried and taken back the same day.
 
 **Undo.** A run keeps each step with its result, like file changes. A switch
 is switched again; a checked one goes back to the state it had when the control

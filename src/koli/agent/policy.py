@@ -160,9 +160,10 @@ def ui_dangers(words: str) -> List[str]:
 # Closing an app always does (unsaved work); a control named like sending,
 # paying or removing does; writing over a long text does; then the
 # reviewer's rating: reading or a setting runs, a change Undo can put back
-# runs, anything more asks. A loop step (`live`) has the AI's own rating
-# instead, under the same rule: the acting AI can't wave through a click it
-# calls a change (a page or a chat may have talked it into one).
+# runs, anything more asks. A loop step (`live`) asks only for the critical
+# ones above and the AI's own "danger": you chose not to be asked for every
+# click (2026-11-02), so a step the AI was talked into by a page runs unless
+# it is one of those.
 def ui_reasons(op: dict) -> List[str]:
     from .actions import ui_line
     what = op.get('explain') or ui_line(op)
@@ -174,8 +175,8 @@ def ui_reasons(op: dict) -> List[str]:
     if found:
         return [f"{what}: {', '.join(found)}"]
     risk = op.get('risk')
-    if op.get('live') and risk == 'danger':
-        return [f"{what}: the AI rated it risky"]
+    if op.get('live'):
+        return [f"{what}: the AI rated it risky"] if risk == 'danger' else []
     # A switch, or a field whose old text Koli kept, can be put back: like a
     # move in your folders, it runs with Undo even when it changes something.
     undoable = op.get('action') == 'toggle' \

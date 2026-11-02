@@ -1186,18 +1186,18 @@ class AppStepsTests(AgentTestCase):
         self.assertEqual(runner.handle('shuffle spotify'), CANCELLED, "the AI's own danger asks too")
         self.assertEqual(self.apps.done, [])
 
-    # The acting AI's own rating can't wave a change through that Undo can't
-    # put back: a click it calls a change waits for the password; one that
-    # only opens or plays runs.
-    def test_a_click_rated_a_change_waits_for_the_password(self):
+    # Only critical steps ask: a click runs whatever the AI calls it, short of
+    # danger; danger words, closing an app and writing over long text ask.
+    def test_only_critical_steps_ask_for_the_password(self):
         from koli.agent.policy import ui_reasons
         click = {'op': 'ui', 'action': 'click', 'app': 'Spotify', 'name': 'Like', 'live': True}
-        self.assertTrue(ui_reasons({**click, 'risk': 'change'}))
-        self.assertTrue(ui_reasons(click), 'no rating counts as unchecked')
-        self.assertEqual(ui_reasons({**click, 'risk': 'read'}), [])
-        write = {'op': 'ui', 'action': 'set_text', 'app': 'Notepad', 'name': 'Text editor', 'live': True,
-                 'risk': 'change', 'old_value': '', 'old_length': 0}
-        self.assertEqual(ui_reasons(write), [], 'a write Undo can put back runs')
+        self.assertEqual(ui_reasons({**click, 'risk': 'change'}), [])
+        self.assertEqual(ui_reasons(click), [])
+        self.assertTrue(ui_reasons({**click, 'risk': 'danger'}))
+        self.assertTrue(ui_reasons({**click, 'name': 'Delete playlist', 'risk': 'read'}))
+        self.assertTrue(ui_reasons({**click, 'action': 'close_app', 'risk': 'read'}))
+        self.assertTrue(ui_reasons({'op': 'ui', 'action': 'set_text', 'app': 'Notepad', 'name': 'Text editor',
+                                    'live': True, 'risk': 'change', 'old_value': 'x' * 300, 'old_length': 300}))
 
     def test_writing_in_notepad_is_undone(self):
         from koli.agent.runner import RAN
