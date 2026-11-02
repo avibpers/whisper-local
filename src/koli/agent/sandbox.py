@@ -2,7 +2,7 @@
 # The check that decides whether an AI-written script may run, and running it
 # in rehearsal. The check is an allow-list over the script's syntax tree: plain
 # statements, calls of Koli's actions and a few built-ins by name, and reading
-# the fields of file records. No imports, no other attributes, nothing with
+# the fields of file records and of other apps' controls. No imports, no other attributes, nothing with
 # "__" in it, no lambdas or definitions. The run has no __builtins__, and a
 # line counter stops loops and runaway scripts. This, not a second model, is
 # what keeps a script to Koli's actions.
@@ -13,7 +13,8 @@ import time
 
 from .actions import ActionError, Recorder
 
-ATTRS = {'name', 'path', 'ext', 'size', 'modified', 'age_days', 'folder'}
+# File and folder fields, and a control's in another app (actions.Element).
+ATTRS = {'name', 'path', 'ext', 'size', 'modified', 'age_days', 'folder', 'role', 'value', 'app', 'checked'}
 MAX_LINES = 20000           # line events in one run
 MAX_SECONDS = 10.0
 # Operations in one request: a runaway guard, above what a search can find
@@ -120,7 +121,9 @@ def rehearse(script: str, recorder: Recorder) -> Recorder:
         if frame.f_code is code or frame.f_code.co_filename == '<koli script>':
             if event == 'line':
                 lines[0] += 1
-                if lines[0] > MAX_LINES or time.monotonic() - started > MAX_SECONDS:
+                # Time spent waiting for another app to answer isn't the script's.
+                spent = time.monotonic() - started - getattr(recorder, 'waited', 0.0)
+                if lines[0] > MAX_LINES or spent > MAX_SECONDS:
                     raise ActionError('the script ran too long')
                 if len(recorder.ops) > MAX_OPS:
                     raise ActionError(TOO_MANY.format(n=MAX_OPS))
@@ -137,6 +140,7 @@ def rehearse(script: str, recorder: Recorder) -> Recorder:
         raise ActionError(f"the script failed: {e.__class__.__name__}: {e}")
     finally:
         sys.settrace(previous)
+    recorder.finish()
     if len(recorder.ops) > MAX_OPS:
         raise ActionError(TOO_MANY.format(n=MAX_OPS))
     return recorder

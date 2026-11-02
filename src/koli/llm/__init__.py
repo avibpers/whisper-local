@@ -5,7 +5,8 @@
 # ChatGPT or SuperGrok subscription, or a Gemini / OpenRouter / OpenAI key).
 # complete() never raises: a provider that is down or not set up gives an
 # empty Result with the reason, and the next fallback model is tried while the
-# feature's time allows. Design: docs/design/ai-providers.md.
+# feature's time allows. A message may carry pictures (llm/images.py); a model
+# that refuses them is asked again without. Design: docs/design/ai-providers.md.
 
 import json
 import logging
@@ -13,7 +14,7 @@ import re
 import threading
 import time
 
-from . import http, providers, routing
+from . import http, images, providers, routing
 from .oauth import SUBSCRIPTIONS
 from .types import ConfigError, ProviderError, ReconnectNeeded, Result
 from ..usage import budget, ledger, prices
@@ -21,7 +22,7 @@ from ..usage import budget, ledger, prices
 logger = logging.getLogger(__name__)
 
 __all__ = ['Result', 'configure', 'complete', 'list_models', 'provider_status', 'test', 'kind_of',
-           'start_background', 'strip_reasoning', 'parse_json', 'model_for']
+           'start_background', 'strip_reasoning', 'parse_json', 'model_for', 'takes_pictures']
 
 _config_manager = None
 
@@ -120,7 +121,18 @@ def complete(feature: str, messages: list, json: bool = False, on_text=None,
         started = time.monotonic()
         try:
             provider = providers.get(provider_id)
-            text, tokens_in, tokens_out = provider.complete(model_id, messages, json, on_text, remaining)
+            sent = images.without_images(messages) if spec in _NO_PICTURES else messages
+            try:
+                text, tokens_in, tokens_out = provider.complete(model_id, sent, json, on_text, remaining)
+            except (http.HttpError, ProviderError) as e:
+                if not (images.has_images(sent) and _refuses_pictures(e)):
+                    raise
+                # A model that reads text only: asked again without the
+                # picture, and sent none for the rest of the session.
+                logger.info(f"AI {feature}: {spec} takes no pictures; asking without")
+                _NO_PICTURES.add(spec)
+                text, tokens_in, tokens_out = provider.complete(
+                    model_id, images.without_images(sent), json, on_text, max(deadline - time.monotonic(), 1.0))
             text = strip_reasoning(text)
             if text:
                 # Every answer is counted (Usage screen); a meeting's own calls
@@ -143,6 +155,24 @@ def complete(feature: str, messages: list, json: bool = False, on_text=None,
     if not last.error:
         last.error = f"No answer within {limit:g} seconds"
     return last
+
+
+# Models ("provider/model") that refused a picture this session.
+_NO_PICTURES = set()
+
+
+# Whether a provider's error says it can't read pictures ("image_url is only
+# supported by certain models", "model does not support images").
+def _refuses_pictures(e: Exception) -> bool:
+    words = (e.body if isinstance(e, http.HttpError) else str(e)).lower()
+    status_fits = not isinstance(e, http.HttpError) or e.status in (400, 404, 415, 422)
+    return status_fits and any(w in words for w in ('image', 'vision', 'multimodal', 'multi-modal'))
+
+
+# Whether the model a feature asks first takes pictures, as far as Koli knows:
+# False once it refused one, so the caller needn't take a screenshot.
+def takes_pictures(feature: str) -> bool:
+    return model_for(feature) not in _NO_PICTURES
 
 
 # A sentence the user can act on.

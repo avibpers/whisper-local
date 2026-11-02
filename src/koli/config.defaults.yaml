@@ -993,6 +993,11 @@ ai: # Language models for polish, rewrites and later features (Settings › AI)
     # command shortcut only. Deleting and big changes ask for your password.
     commands:
         enabled: true
+        # Use your open apps' buttons, fields and menus through agent-desktop
+        # (npm install -g agent-desktop); off or not installed = files and system only
+        desktop: true
+        # Each step in another app sends a picture of its window to the AI model
+        screenshots: true
         model: '' # empty = the default model
         timeout: 40
 

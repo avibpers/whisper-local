@@ -9,6 +9,7 @@ import json
 import uuid
 
 from .. import http
+from ..images import data_urls
 from ..sse import iter_events
 from ..types import ProviderError
 from .chat_completions import with_json_instruction
@@ -16,13 +17,18 @@ from .chat_completions import with_json_instruction
 DEFAULT_INSTRUCTIONS = 'You are a helpful assistant.'
 
 
-# Chat messages → (instructions, input) for the Responses API.
+# Chat messages → (instructions, input) for the Responses API. A message with
+# pictures becomes input_text plus one input_image each.
 def to_responses_input(messages: list) -> tuple:
     instructions, items = [], []
     for m in messages:
         content = str(m.get('content') or '')
         if m.get('role') == 'system':
             instructions.append(content)
+        elif m.get('images'):
+            items.append({'role': m.get('role') or 'user', 'content': [
+                {'type': 'input_text', 'text': content},
+                *({'type': 'input_image', 'image_url': url} for url in data_urls(m))]})
         else:
             items.append({'role': m.get('role') or 'user', 'content': content})
     return '\n\n'.join(instructions) or DEFAULT_INSTRUCTIONS, items

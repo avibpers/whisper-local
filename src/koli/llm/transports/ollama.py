@@ -10,6 +10,9 @@ from ..types import ProviderError
 
 
 def complete(base_url: str, model: str, messages: list, json_mode=None, on_text=None, timeout: float = 30):
+    # Pictures go in Ollama's own `images` field: plain base64, no type.
+    messages = [{**m, 'images': [image['data'] for image in m['images'] if image.get('data')]}
+                if m.get('images') else m for m in messages]
     payload = {'model': model, 'messages': messages, 'stream': bool(on_text)}
     if json_mode:
         payload['format'] = 'json'
