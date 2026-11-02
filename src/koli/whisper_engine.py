@@ -48,6 +48,15 @@ def _model_size_hint(model_key: str) -> str:
 # which never ends. So every ctranslate2 call goes through this one daemon
 # thread, which is never joined: it ends only with the process, and no
 # thread-exit callbacks run then.
+#
+# A call that hangs (a GPU driver fault inside a segment) can't be killed, but
+# it needn't block everything after it: run_with_deadline stops waiting, the
+# stuck thread is left behind (never joined, so it still never exits), and a
+# fresh thread takes the calls queued behind it.
+class EngineTimeout(RuntimeError):
+    pass
+
+
 class _EngineThread:
     def __init__(self, name: str = 'whisper-engine'):
         self._name = name
@@ -58,13 +67,20 @@ class _EngineThread:
     # Runs fn on the engine thread and waits for it; re-raises what it raised.
     # Already on the engine thread (a nested call): run it inline.
     def run(self, fn, *args, **kwargs):
+        return self.run_with_deadline(None, fn, *args, **kwargs)
+
+    # The same, giving up after `seconds` (None = wait for ever): the thread
+    # stuck in fn is abandoned and EngineTimeout raised.
+    def run_with_deadline(self, seconds: Optional[float], fn, *args, **kwargs):
         if threading.current_thread() is self._thread:
             return fn(*args, **kwargs)
-        self._ensure_started()
+        work_queue = self._ensure_started()
         done = threading.Event()
         box = {}
-        self._queue.put((fn, args, kwargs, done, box))
-        done.wait()
+        work_queue.put((fn, args, kwargs, done, box))
+        if not done.wait(seconds):
+            self._abandon(work_queue)
+            raise EngineTimeout(f"the speech model didn't answer within {seconds:.0f} seconds")
         if 'error' in box:
             raise box['error']
         return box['result']
@@ -75,12 +91,32 @@ class _EngineThread:
     def _ensure_started(self):
         with self._lock:
             if self._thread is None or not self._thread.is_alive():
-                self._thread = threading.Thread(target=self._loop, name=self._name, daemon=True)
+                self._thread = threading.Thread(target=self._loop, args=(self._queue,), name=self._name, daemon=True)
                 self._thread.start()
+            return self._queue
 
-    def _loop(self):
+    # Leaves the thread serving `stuck_queue` behind: a new queue and thread
+    # take over, with whatever was waiting behind the stuck call.
+    def _abandon(self, stuck_queue):
+        with self._lock:
+            if self._queue is not stuck_queue:
+                return   # another caller already moved on
+            self._queue = queue.SimpleQueue()
+            self._thread = None
+            while True:
+                try:
+                    self._queue.put(stuck_queue.get_nowait())
+                except queue.Empty:
+                    break
+        logging.getLogger(__name__).error("The speech model stopped answering; continuing on a fresh engine thread")
+        self._ensure_started()
+
+    # Each thread serves only its own queue, so an abandoned one that wakes
+    # up later never takes work from its replacement.
+    @staticmethod
+    def _loop(work_queue):
         while True:
-            fn, args, kwargs, done, box = self._queue.get()
+            fn, args, kwargs, done, box = work_queue.get()
             try:
                 box['result'] = fn(*args, **kwargs)
             except BaseException as e:  # noqa: BLE001 - handed back to the caller
@@ -103,6 +139,12 @@ def take_segments(segments, stop: Optional[threading.Event]) -> list:
     return out
 
 
+# Silero's settings for skipping silence in a dictation: a lower speech
+# threshold than faster-whisper's 0.5 so quiet or whispered words stay, and
+# the default 2 s of silence before a cut, padded 0.4 s on each side.
+VAD_PARAMETERS = {'threshold': 0.35, 'min_silence_duration_ms': 2000, 'speech_pad_ms': 400}
+
+
 # A problem you must see (bubble and app). The UI's event module is optional
 # here: the engine also runs headless (--serve, tests).
 def _report_problem(message: str) -> None:
@@ -114,6 +156,12 @@ def _report_problem(message: str) -> None:
 
 
 class WhisperEngine:
+    # Skip silence with Silero voice detection before decoding a dictation
+    # (whisper.vad_filter). One preference for every engine (dictation,
+    # meetings, swaps), so it lives on the class; main.py and the settings
+    # applier set it.
+    vad_filter = True
+
     def __init__(self,
                  model_key: str = "tiny",
                  device: str = "cpu",
@@ -350,7 +398,9 @@ class WhisperEngine:
     # the model isn't loaded.
     def transcribe_words(self, audio_data: np.ndarray, language: Optional[str] = None,
                          prompt: Optional[str] = None, with_vocabulary: bool = True) -> Optional[dict]:
-        if self.model is None or audio_data is None or len(audio_data) == 0:
+        if audio_data is None or len(audio_data) == 0:
+            return None
+        if self.model is None and not self.ensure_loaded():
             return None
         audio = np.asarray(audio_data, dtype=np.float32).reshape(-1)
 
@@ -375,7 +425,7 @@ class WhisperEngine:
             return words_out, info.language, key
 
         try:
-            words, detected, used_key = ENGINE_THREAD.run(decode)
+            words, detected, used_key = self._run_decode(decode, len(audio) / 16000)
         except Exception as e:
             self.logger.error(f"Practice transcription failed: {e}")
             return None
@@ -394,7 +444,7 @@ class WhisperEngine:
         # English-only models (base.en, ...) can't detect; they only do English.
         if not getattr(getattr(self.model, 'model', None), 'is_multilingual', True):
             return 'en', None
-        detected, probability, all_probs = self.model.detect_language(audio)
+        detected, probability, all_probs = self._detect_on_speech(audio)
         self._raw_top_language = detected
         if not allowed:
             self.logger.info(f"Detected {detected} ({probability:.2f})")
@@ -410,6 +460,17 @@ class WhisperEngine:
         self._raw_language_probability = scores[best]
         self.logger.info(f"Detected {detected} ({probability:.2f}); among {', '.join(allowed)}: {best} ({share:.2f})")
         return best, share
+
+    # Language detection listens to the speech only when voice detection is
+    # on: a quiet or noisy start otherwise drags the guess down. A clip where
+    # it finds no speech is detected whole.
+    def _detect_on_speech(self, audio: np.ndarray):
+        if self.vad_filter and len(audio) >= 16000:
+            try:
+                return self.model.detect_language(audio, vad_filter=True)
+            except Exception as e:
+                self.logger.debug(f"Language detection on speech only failed ({e}); using the whole clip")
+        return self.model.detect_language(audio)
 
     # Fail fast when the CUDA runtime is incomplete. The model itself loads
     # without cuBLAS/cuDNN; their absence only shows on the first inference,
@@ -535,7 +596,7 @@ class WhisperEngine:
                          hotwords: Optional[str] = None,
                          pieces: Optional[list] = None,
                          chat_language: str = '') -> Optional[str]:
-        if self.model is None:
+        if self.model is None and not self.ensure_loaded():
             return None
         if not quiet:
             self._stop_flag().clear()     # a Stop belongs to the dictation it was pressed on
@@ -580,6 +641,11 @@ class WhisperEngine:
                     kwargs["initial_prompt"] = prompt
                 if words:
                     kwargs["hotwords"] = words
+                # A wake check is a short burst already cut by VAD; a dictation
+                # loses its silences here, where Whisper invents words.
+                if self.vad_filter and not quiet:
+                    kwargs["vad_filter"] = True
+                    kwargs["vad_parameters"] = dict(VAD_PARAMETERS)
                 segments, info = model.transcribe(audio_data, **kwargs)
                 segments = take_segments(segments, None if quiet else self._stop_flag())
                 pieces = [{'text': s.text, 'start': float(s.start), 'end': float(s.end),
@@ -588,7 +654,8 @@ class WhisperEngine:
                            'compression_ratio': round(float(s.compression_ratio), 2)} for s in segments]
                 return pieces, info, key, detected_probability, getattr(self, '_raw_language_probability', None)
 
-            decoded, info, used_key, detected_probability, raw_probability = ENGINE_THREAD.run(decode)
+            decoded, info, used_key, detected_probability, raw_probability = self._run_decode(
+                decode, len(audio_data) / 16000)
             if pieces is not None:
                 pieces.extend(decoded)
             pieces = decoded
@@ -648,6 +715,108 @@ class WhisperEngine:
             return None
     
     
+    # ── Unloading when idle ──────────────────────────────────────────────────
+    # whisper.unload_after_minutes frees the card's (or RAM's) memory while
+    # Koli sits unused (after Handy). The state manager decides when; the next
+    # use loads the model again, and a hotkey press starts that load while you
+    # speak.
+
+    def _load_lock(self) -> threading.Lock:
+        return self.__dict__.setdefault('_loading_lock', threading.Lock())
+
+    def unload_idle(self) -> bool:
+        with self._load_lock():
+            if self.model is None:
+                return False
+            self.unload()
+            self._idle_unloaded = True
+        return True
+
+    # Loads the model again after unload_idle; True when a model is ready.
+    # A model never loaded or swapped out stays as it is.
+    def ensure_loaded(self) -> bool:
+        if self.model is not None:
+            return True
+        if not self.__dict__.get('_idle_unloaded'):
+            return False
+        with self._load_lock():
+            if self.model is None:
+                try:
+                    self._load_model()
+                    self._idle_unloaded = False
+                except Exception as e:
+                    self.logger.error(f"Could not load the model again: {e}")
+                    _report_problem(f"The speech model couldn't be loaded again: {e}")
+        return self.model is not None
+
+    @property
+    def idle_unloaded(self) -> bool:
+        return bool(self.__dict__.get('_idle_unloaded')) and self.model is None
+
+    # ── When the model hangs or the graphics card fails ──────────────────────
+    # A decode gets a deadline from the clip's length (after Handy's: GPU 10x
+    # the audio, at least a minute; CPU 20x, at least five minutes). A hang or
+    # a CUDA error moves this engine to a fresh model on the CPU for the rest
+    # of the session (the card may stay broken until a restart) and the clip
+    # is decoded once more there; a hang on the CPU reloads the CPU model, as
+    # CTranslate2's single worker would otherwise queue behind the stuck call.
+    LOAD_DEADLINE_S = 300.0
+
+    def _deadline_for(self, audio_seconds: float) -> float:
+        if getattr(self, 'device', 'cpu') == 'cuda':
+            return max(60.0, 10.0 * audio_seconds)
+        return max(300.0, 20.0 * audio_seconds)
+
+    @staticmethod
+    def _is_gpu_error(error) -> bool:
+        text = str(error).lower()
+        return any(s in text for s in ('cuda', 'cublas', 'cudnn', 'out of memory', 'device-side'))
+
+    # Runs `decode` on the engine thread within the deadline; after a hang or
+    # a graphics card error, recovers and runs it once more.
+    def _run_decode(self, decode, audio_seconds: float):
+        generation = self.__dict__.get('_model_generation', 0)
+        try:
+            return ENGINE_THREAD.run_with_deadline(self._deadline_for(audio_seconds), decode)
+        except Exception as e:
+            on_gpu = getattr(self, 'device', 'cpu') == 'cuda'
+            recoverable = isinstance(e, EngineTimeout) or (on_gpu and self._is_gpu_error(e))
+            if not recoverable or not self._recover(e, generation):
+                raise
+        return ENGINE_THREAD.run_with_deadline(self._deadline_for(audio_seconds), decode)
+
+    # A fresh CPU model in place of the one that failed. `generation` is the
+    # model the failing call used: when another call already recovered, its
+    # model is used as it is. True when a model is ready to retry with.
+    def _recover(self, error, generation: int) -> bool:
+        lock = self.__dict__.setdefault('_recover_lock', threading.Lock())
+        with lock:
+            if self.__dict__.get('_model_generation', 0) != generation:
+                return True
+            from_gpu = self.device == 'cuda'
+            self.logger.error(f"Speech model failed on the {'GPU' if from_gpu else 'CPU'} ({error}); "
+                              "loading a fresh model on the CPU")
+            try:
+                fresh = ENGINE_THREAD.run_with_deadline(
+                    self.LOAD_DEADLINE_S, WhisperModel, self._get_model_source(self.model_key),
+                    device='cpu', compute_type='int8')
+            except Exception as load_error:
+                self.logger.error(f"Could not load the model on the CPU: {load_error}")
+                return False
+            self.model = fresh
+            self.device, self.compute_type = 'cpu', 'int8'
+            if from_gpu:
+                # The second model was on the card too; dictation carries on
+                # with the main one.
+                self.language_model = None
+            self._model_generation = generation + 1
+        if from_gpu:
+            _report_problem("The graphics card stopped working for transcription, so Koli switched to the "
+                            "CPU for now (slower). Restart Koli to use the graphics card again.")
+        else:
+            _report_problem("The speech model stopped answering and was restarted.")
+        return True
+
     # Gives the graphics memory back now instead of whenever Python collects
     # the engine: after a few model switches the old weights would otherwise
     # keep a card too full for a second model. Called on a swapped-out engine.

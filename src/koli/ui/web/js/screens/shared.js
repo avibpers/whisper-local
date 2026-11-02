@@ -23,7 +23,8 @@ export function MicSelect({ compact = false, path = 'audio.input_device', same =
   const value = useSetting(path);
   if (!audio) return html`<span class="muted small">Loading…</span>`;
   const options = [...(same ? [['', 'Same as dictation']] : []), ['default', "Computer's default"],
-    ...audio.devices.map((d) => [d.id, d.name])];
+    // Saved by name: device numbers move when devices come and go.
+    ...audio.devices.map((d) => [d.name, d.name])];
   return html`<${Select} label="Microphone" value=${value == null ? '' : value} options=${options}
     style=${compact ? 'height:32px;max-width:100%' : 'flex:1 1 240px;max-width:420px'}
     onChange=${(v) => saveSetting(path, v)} />`;

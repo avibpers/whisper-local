@@ -5,6 +5,24 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 ## [Unreleased]
 
 ### Added
+- **Ideas from Handy** (github.com/cjpais/handy, MIT):
+  - **Near misses of your words** are written your way: "Kubernetis" becomes
+    "Kubernetes", "Charge B" becomes "ChargeBee" (Settings › Writing › "Fix
+    near misses of your words").
+  - **Skip silence:** Silero voice detection cuts silences out before Whisper
+    listens, where it would invent words, and the language is detected on the
+    speech only (Settings › Model › "Skip silence").
+  - **Free memory when idle:** the model leaves the graphics card after 5, 15
+    or 60 minutes without a dictation and loads again while you speak (not
+    while the wake word, auto-dictation or a meeting needs it).
+  - **History:** what Whisper heard before clean-up and AI polish is kept and
+    can be copied back; one dictation can be deleted; "Keep dictation history"
+    (Settings › Privacy) deletes older ones; an empty recording can be tried
+    again; **Transcribe a recording…** writes out an audio or video file.
+  - **Send with** Enter, Ctrl+Enter or Shift+Enter, per app rule too; a space
+    after each dictation; keep listening 0.15 or 0.3 s after you let go.
+  - **"No sound came from <microphone>"** when a muted or blocked microphone
+    sends nothing, instead of "No speech detected".
 - **The chat's language when Whisper is unsure.** A short clip Whisper can't
   place between your languages goes with the language you've been writing in
   that chat or window (your last 5 dictations there), instead of always your
@@ -13,6 +31,26 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
   chat's language when unsure" turns it off (`docs/design/chat-language.md`).
 
 ### Fixed
+- **Your clipboard survives a paste.** Dictating right after a screenshot
+  deleted the screenshot; now every format comes back (images, files, rich
+  text), nothing is restored over something you copied meanwhile, and two
+  pastes close together can't mix. Rephrase keeps your clipboard too.
+- **"Remove filler words" no longer breaks sentences:** "I like it" stayed
+  "I it". Only "uh", "hmm" (any language) and "um" (English) go by default;
+  "Your filler words" now works and replaces them. A sentence keeps its capital.
+- **The microphone is found again.** It is kept by name, not a number that
+  moves; a stream that fails or goes quiet is reopened for as long as Koli
+  runs (it gave up after three tries), a recording in progress keeps what it
+  had, and your microphone is used again once it is plugged back in.
+- **A hung or failed transcription no longer freezes Koli.** It stops waiting
+  at a deadline; after a graphics card error Koli moves to the CPU for the
+  session and tries the dictation again.
+- **AI polish no longer answers a dictated question:** the dictation is sent
+  as its own message.
+- **Dictation never types into a password field** from the hotkey either.
+- **A cancelled model download no longer shows as downloaded**, and a stalled
+  one ends with an error.
+- **Stereo** recordings are mixed to one channel instead of garbled.
 - **Remote Desktop.** Over RDP Koli listens through Remote Audio, the one
   microphone that hears you there, and goes back to your Settings microphone
   when you return to the PC; connecting or leaving reopens the microphone by

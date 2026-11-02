@@ -1,6 +1,8 @@
 # services/history.py
 # The History screen: search and page through transcripts.jsonl, export it,
-# clear it, and turn a misheard word into a permanent replacement. Replacements
+# delete one entry or clear it, read an audio or video file for transcribing
+# (decode_file), and turn a misheard word into a permanent replacement.
+# Replacements
 # go through the settings service so the running app and the file stay in step.
 
 import datetime
@@ -57,6 +59,38 @@ def export(path: str) -> str:
     if code != 0:
         raise RuntimeError("Nothing to export yet" if not transcript_log.load_transcripts() else "Export failed")
     return path
+
+
+# Audio and video files the History screen offers to transcribe.
+FILE_TYPES = ('Audio and video (*.mp3;*.m4a;*.wav;*.ogg;*.opus;*.flac;*.aac;*.wma;*.webm;*.mp4;*.mov;*.mkv)',
+              'All files (*.*)')
+
+
+# A file's sound as Whisper wants it: 16 kHz mono float32, through PyAV
+# (any format FFmpeg reads, the sound track of a video too).
+def decode_file(path: str):
+    import av
+    import numpy as np
+    chunks = []
+    with av.open(str(path)) as container:
+        if not container.streams.audio:
+            raise RuntimeError("That file has no sound")
+        resampler = av.AudioResampler(format='flt', layout='mono', rate=16000)
+        for frame in container.decode(audio=0):
+            for out in resampler.resample(frame):
+                chunks.append(out.to_ndarray().reshape(-1))
+        for out in resampler.resample(None):
+            chunks.append(out.to_ndarray().reshape(-1))
+    if not chunks:
+        raise RuntimeError("No sound could be read from that file")
+    return np.concatenate(chunks).astype(np.float32)
+
+
+# One entry, found by when it was written and its text.
+def delete(timestamp: str, text: str) -> bool:
+    if not transcript_log.delete_entry(str(timestamp or ''), str(text or '')):
+        raise RuntimeError("That dictation isn't in History anymore")
+    return True
 
 
 def clear() -> int:

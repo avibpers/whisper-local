@@ -3,7 +3,8 @@
 # `--history` browser window so users can search their dictation history.
 # Separate from `stats.jsonl` (which only stores metadata) — this file
 # contains the actual transcribed text and is auto-rotated to keep the
-# last ~2000 entries. It also tells which language you write in a chat
+# last ~2000 entries, and only so many days when history.keep_days says so.
+# One entry can be deleted. It also tells which language you write in a chat
 # (chat_language), for Whisper when it can't tell from the audio.
 
 import datetime
@@ -19,6 +20,8 @@ logger = logging.getLogger(__name__)
 # Newline-delimited JSON — one transcript per line.
 _LOG_FILE = 'transcripts.jsonl'
 _MAX_ENTRIES = 2000
+# Days an entry is kept (history.keep_days); 0 = until the entry cap.
+_keep_days = 0
 
 # Serialise append + rotate. Continuous mode and rapid voice commands can fire
 # deliveries back-to-back from different threads; without this an append could
@@ -37,9 +40,11 @@ _write_lock = threading.Lock()
 # History can find its audio.
 # `original`: what the bubble's engine heard, when you changed it before it
 # was written; `cancelled`: a bubble's text you threw away (kept findable).
+# `heard`: what Whisper wrote before clean-up and AI polish, kept when they
+# changed it, so a mangled polish can be undone from History.
 def record_transcript(text: str, window: dict | None = None, duration_s: float = 0.0,
                       language: str = '', clip_id: str | None = None, original: str = '',
-                      cancelled: bool = False):
+                      cancelled: bool = False, heard: str = ''):
     if not text:
         return
     window = window or {}
@@ -58,6 +63,8 @@ def record_transcript(text: str, window: dict | None = None, duration_s: float =
         entry['original'] = original
     if cancelled:
         entry['cancelled'] = True
+    if heard and heard.strip() != text.strip():
+        entry['heard'] = heard
     # Window identity — only what this platform reports (macOS has no window id,
     # and its "title" is the app name until a per-window probe exists).
     if window.get('title'):
@@ -132,12 +139,64 @@ def chat_language(app: str, title: str, allowed, entries: list | None = None, li
 
 # Cap the journal at roughly _MAX_ENTRIES. We allow it to grow to 1.2× before
 # truncating to amortise the cost — counting lines on every write would dominate
-# the actual transcription work.
+# the actual transcription work. Entries older than the kept days go too.
 def _maybe_rotate(path: Path):
     try:
         lines = path.read_text(encoding='utf-8').splitlines()
-        if len(lines) > _MAX_ENTRIES * 1.2:
-            trimmed = lines[-_MAX_ENTRIES:]
-            path.write_text('\n'.join(trimmed) + '\n', encoding='utf-8')
+        kept = _within_kept_days(lines)
+        if len(kept) > _MAX_ENTRIES * 1.2:
+            kept = kept[-_MAX_ENTRIES:]
+        if len(kept) != len(lines):
+            path.write_text('\n'.join(kept) + ('\n' if kept else ''), encoding='utf-8')
     except Exception:
         pass
+
+
+# The lines no older than the kept days (all of them when keep_days is 0).
+# Lines are oldest first, so the cut is at the first one young enough.
+def _within_kept_days(lines: list) -> list:
+    if not _keep_days:
+        return lines
+    cutoff = (datetime.datetime.now() - datetime.timedelta(days=_keep_days)).isoformat(timespec='seconds')
+    for i, line in enumerate(lines):
+        try:
+            if (json.loads(line).get('timestamp') or '') >= cutoff:
+                return lines[i:]
+        except (ValueError, AttributeError):
+            continue
+    return []
+
+
+# history.keep_days: applied now (startup, or when the setting changes) and
+# on every write after.
+def set_retention(days) -> None:
+    global _keep_days
+    try:
+        _keep_days = max(0, int(days or 0))
+    except (TypeError, ValueError):
+        _keep_days = 0
+    path = Path(get_user_app_data_path()) / _LOG_FILE
+    if _keep_days and path.exists():
+        with _write_lock:
+            _maybe_rotate(path)
+
+
+# Deletes the one entry written at `timestamp` with this text. True when it
+# was found.
+def delete_entry(timestamp: str, text: str) -> bool:
+    path = Path(get_user_app_data_path()) / _LOG_FILE
+    with _write_lock:
+        try:
+            lines = path.read_text(encoding='utf-8').splitlines()
+        except FileNotFoundError:
+            return False
+        for i in range(len(lines) - 1, -1, -1):   # newest first: a repeat is the one you see
+            try:
+                entry = json.loads(lines[i])
+            except ValueError:
+                continue
+            if entry.get('timestamp') == timestamp and entry.get('text') == text:
+                del lines[i]
+                path.write_text('\n'.join(lines) + ('\n' if lines else ''), encoding='utf-8')
+                return True
+    return False

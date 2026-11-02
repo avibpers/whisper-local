@@ -584,7 +584,7 @@ class LiveWordsFlowTests(unittest.TestCase):
         self.patches = [mock.patch('builtins.print'),
                         mock.patch('koli.state_manager.publish'),
                         mock.patch('koli.live_session_flow.publish'),
-                        mock.patch('koli.state_manager.postprocess', side_effect=lambda t, cfg, trace=None, polish=None: t),
+                        mock.patch('koli.state_manager.postprocess', side_effect=lambda t, cfg, trace=None, polish=None, language=None: t),
                         mock.patch('koli.state_manager.record_transcription'),
                         mock.patch('koli.state_manager.record_transcript'),
                         mock.patch('koli.state_manager.foreground'),
@@ -652,6 +652,7 @@ class LiveWordsFlowTests(unittest.TestCase):
         sm.clipboard_manager.deliver_transcription.return_value = True
         sm.clipboard_manager.send_is_pending.return_value = False
         sm._foreground_is_textable = lambda: True
+        sm._why_not_type_here = lambda: ''
         sm._pending_model_change = sm._pending_device_change = None
         sm._idle_actions = []
         sm._update_ui_state = mock.Mock()
@@ -812,6 +813,32 @@ class LiveWordsFlowTests(unittest.TestCase):
         sm.stop_recording()
         self.assertEqual(self._delivered(sm), ['The plan. [polished]'])
         sm._ai_polish.assert_called_once()
+
+    def test_a_password_field_is_never_typed_into(self):
+        sm = self._sm(phrases=['my secret'])
+        sm._why_not_type_here = lambda: 'password field'
+        self._start(sm)
+        self._pause(sm)
+        sm.stop_recording()
+        sm.clipboard_manager.deliver_transcription.assert_not_called()
+        reason = sm.fallback_window.show.call_args.kwargs['reason']
+        self.assertIn('password field', reason)
+
+    def test_the_focused_field_check_reads_ui_automation(self):
+        from unittest import mock
+        from koli.state_manager import StateManager
+        from koli.platform import input_watch
+        sm = StateManager.__new__(StateManager)
+        sm.logger = mock.Mock()
+        sm._foreground_is_textable = lambda: True
+        with mock.patch.object(input_watch, 'probe_focused', return_value={'password': True}):
+            self.assertEqual(sm._why_not_type_here(), 'password field')
+        with mock.patch.object(input_watch, 'probe_focused', return_value={'password': False}):
+            self.assertEqual(sm._why_not_type_here(), '')
+        with mock.patch.object(input_watch, 'probe_focused', side_effect=OSError('no COM')):
+            self.assertEqual(sm._why_not_type_here(), '')
+        sm._foreground_is_textable = lambda: False
+        self.assertEqual(sm._why_not_type_here(), 'no text field')
 
     def test_esc_with_the_bubble_focused_cancels_nothing(self):
         sm = self._sm(phrases=['Words.'])

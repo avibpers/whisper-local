@@ -29,6 +29,7 @@ function summary(e) {
   if (e.auto_paste === false) bits.push('Copy only');
   if (e.auto_send === true) bits.push('Auto-send');
   if (e.auto_send_delay != null) bits.push(e.auto_send_delay ? `wait ${waitText(e.auto_send_delay)}` : 'no wait');
+  if (e.send_key) bits.push(`send with ${e.send_key.replace('ctrl', 'Ctrl').replace('shift', 'Shift').replace('enter', 'Enter')}`);
   if (e.auto_dictation === false) bits.push('No auto-listen');
   if (e.auto_dictation === true) bits.push('Auto-listen');
   if (e.keep_audio === false) bits.push('No clips kept');
@@ -80,6 +81,9 @@ function RuleEditor({ item, foreground, onSaved, onDeleted }) {
       options=${[[null, `Main setting (${waitText(mainWait)})`], [0, 'Send at once'], [2, '2 seconds'], [3, '3 seconds'],
         [5, '5 seconds'], [10, '10 seconds'], ['auto_fast', 'Auto · fast'], ['auto_medium', 'Auto · medium'],
         ['auto_slow', 'Auto · slow']]} onChange=${(v) => set('auto_send_delay', v)} /></${Row}>
+    <${Row} label="Send with"><${Segmented} label="Send with" value=${e.send_key ?? null}
+      options=${[[null, 'Main setting'], ['enter', 'Enter'], ['ctrl+enter', 'Ctrl+Enter'], ['shift+enter', 'Shift+Enter']]}
+      onChange=${(v) => set('send_key', v)} /></${Row}>
     <${Row} label="Paste at cursor"><${Segmented} label="Paste" value=${pasteMode} options=${[[null, 'Default'], [true, 'Paste'], [false, 'Copy only']]} onChange=${(v) => set('auto_paste', v)} /></${Row}>
     <${Row} label="Don't deliver at all"><${Toggle} checked=${!!e.suppress} label="Suppress" onChange=${(v) => set('suppress', v || null)} /></${Row}>
     <div class="eyebrow" style="margin-top:10px">Listening</div>

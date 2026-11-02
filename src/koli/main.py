@@ -198,6 +198,7 @@ def setup_audio_recorder(audio_config, state_manager, vad_manager, streaming_man
         device=audio_config['input_device'],
         noise_suppression_config=audio_config.get('noise_suppression') or {},
         whisper_mode_config=audio_config.get('whisper_mode') or {},
+        host=audio_config.get('host'),
     )
 
 def setup_vad(vad_config):
@@ -272,6 +273,7 @@ def setup_whisper_engine(whisper_config, vad_manager, model_registry, log_transc
             log_transcriptions=log_transcriptions
         )
 
+    WhisperEngine.vad_filter = whisper_config.get('vad_filter', True) is not False
     try:
         return WhisperEngine(
             model_key=whisper_config['model'],
@@ -308,6 +310,8 @@ def setup_clipboard_manager(clipboard_config):
         type_auto_enter_delay_per_100_chars=clipboard_config['type_auto_enter_delay_per_100_chars'],
         macos_key_simulation_delay=clipboard_config['macos_key_simulation_delay'],
         auto_send_delay=clipboard_config.get('auto_send_delay', 0),
+        send_key=clipboard_config.get('send_key', 'enter'),
+        trailing_space=clipboard_config.get('trailing_space', False),
     )
     # The countdown presses Enter through the manager, so it is wired after.
     manager.delayed_send = DelayedSend(send_enter=manager.send_enter_key)
@@ -867,6 +871,9 @@ def main():
             state_manager.overlay_factory = UiHost.overlay_factory
         state_manager.attach_components(audio_recorder, system_tray)
         state_manager.start_remote_desktop_watch()
+        state_manager.start_idle_unload_watch()
+        from .transcript_log import set_retention
+        set_retention(config_manager.get_path('history.keep_days') or 0)
         
         repair_unusable_hotkeys(hotkey_config, config_manager)
         try:

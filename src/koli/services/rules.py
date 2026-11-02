@@ -12,7 +12,7 @@ from .. import defaults_merge as dm
 from .. import profiles as pf
 from ..utils import get_user_app_data_path
 
-RULE_KEYS = ('match', 'window_title', 'auto_send', 'auto_send_delay', 'auto_paste', 'suppress', 'initial_prompt',
+RULE_KEYS = ('match', 'window_title', 'auto_send', 'auto_send_delay', 'send_key', 'auto_paste', 'suppress', 'initial_prompt',
              'language', 'task', 'style', 'auto_dictation', 'keep_audio', 'meeting', 'meeting_mic') + ar.FORMATTING_KEYS
 
 

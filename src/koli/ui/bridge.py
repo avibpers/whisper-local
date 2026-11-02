@@ -471,6 +471,34 @@ class Bridge:
         from ..services import history
         return history.clear()
 
+    # Picks an audio or video file and transcribes it in the background into
+    # History (and the clipboard). None when no file was picked.
+    @_api
+    def history_transcribe_file(self):
+        import os
+        from ..services import history
+        from .tasks import get_task_manager
+        path = self._host.pick('open', 'Transcribe a recording', history.FILE_TYPES)
+        if not path:
+            return None
+        task = get_task_manager().run(f"Transcribing {os.path.basename(path)}",
+                                      lambda reporter: self._sm.transcribe_file(path, reporter),
+                                      kind='transcribe_file')
+        return {'task_id': task.id}
+
+    @_api
+    def history_failed_recording(self):
+        return self._sm.last_failed_recording()
+
+    @_api
+    def history_retry_recording(self):
+        return self._sm.retry_last_recording()
+
+    @_api
+    def history_delete(self, timestamp, text):
+        from ..services import history
+        return history.delete(timestamp, text)
+
     @_api
     def history_fix(self, frm, to):
         from ..services import history

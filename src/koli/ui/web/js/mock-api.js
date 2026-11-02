@@ -94,8 +94,9 @@ function history(n) {
   for (let i = 0; i < n; i++) {
     const t = new Date(Date.now() - i * 3.7 * 3600e3);
     const text = RECENT[i % RECENT.length];
-    out.push({ ts: t.toISOString(), text, app: APPS[i % APPS.length], language: /[\u0590-\u05FF]/.test(text) ? 'he' : 'en',
-      chars: text.length, duration_s: 2 + (i % 5), model: 'small' });
+    out.push({ ts: t.toISOString(), timestamp: t.toISOString().slice(0, 19), text, app: APPS[i % APPS.length],
+      language: /[\u0590-\u05FF]/.test(text) ? 'he' : 'en', chars: text.length, duration_s: 2 + (i % 5), model: 'small',
+      ...(i === 0 ? { heard: 'thanks i will send the report by thursday' } : {}) });
   }
   return out;
 }
@@ -463,6 +464,14 @@ export function createMock(emit) {
     },
     history_apps: () => ok(APPS),
     history_suggest: () => ok([{ word: 'Kubernetes', count: 4 }, { word: 'Jabra', count: 2 }]),
+    history_delete(timestamp, text) {
+      const i = HISTORY.findIndex((e) => e.timestamp === timestamp && e.text === text);
+      if (i >= 0) HISTORY.splice(i, 1);
+      return ok(true);
+    },
+    history_failed_recording: () => ok({ seconds: 4.2, at: Date.now() / 1000 }),
+    history_transcribe_file: () => ok(null),
+    history_retry_recording: () => ok('Send the deck to Dana before noon.'),
     insights(days = 14) {
       const per_day = [];
       for (let i = days - 1; i >= 0; i--) per_day.push({ date: new Date(Date.now() - i * 864e5).toISOString().slice(0, 10), words: Math.round(80 + Math.random() * 400), count: Math.round(3 + Math.random() * 20) });

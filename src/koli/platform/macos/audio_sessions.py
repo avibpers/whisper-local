@@ -5,3 +5,9 @@
 
 def active(devices_fn=None, capture_devices_fn=None) -> list:
     return []
+
+
+# The microphones plugged in right now; None = unknown on macOS for now (the
+# recorder then doesn't watch for your microphone coming back).
+def microphones():
+    return None

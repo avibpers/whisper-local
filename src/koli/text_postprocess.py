@@ -2,7 +2,8 @@
 # The text-shaping stage between Whisper and delivery. Runs an ordered pipeline
 # over the raw transcript: spoken editing ("scratch that", "actually 3") →
 # inline voice formatting (say "comma") → deterministic smart formatting
-# (times/emails/URLs) → user corrections → fillers, lists, style → snippets →
+# (times/emails/URLs) → user corrections → near misses of your words →
+# fillers, lists, style → snippets →
 # casing/punctuation tidying → optional AI polish. Every stage is opt-in via
 # the `postprocess` config section and pure; the AI polish is a callable the
 # caller passes in (llm, see state_manager), so this module never touches the
@@ -15,6 +16,7 @@ import re
 from . import dictation_cleanup
 from .snippets import expand_snippets
 from .styles import resolve_style
+from .word_snap import snap_to_words
 
 logger = logging.getLogger(__name__)
 
@@ -53,8 +55,9 @@ def _on(value) -> bool:
 
 
 # `polish`, when given, is the last step: text in, polished text out ('' when
-# the model didn't answer, which keeps the text as it is).
-def postprocess(text: str, config: dict, trace: list = None, polish=None) -> str:
+# the model didn't answer, which keeps the text as it is). `language` is the
+# dictation's language when known ("en"); filler removal needs it.
+def postprocess(text: str, config: dict, trace: list = None, polish=None, language: str = None) -> str:
     if not text or not config:
         return text
 
@@ -127,9 +130,17 @@ def postprocess(text: str, config: dict, trace: list = None, polish=None) -> str
         text = _apply_replacements(text, replacements)
         note('replacements', _before, text)
 
+    # Near misses of your own words snap to them ("Kubernetis" → "Kubernetes").
+    # The caller passes the words in `snap_words` (hotwords, learned words,
+    # correction targets); on unless postprocess.snap_to_words is false.
+    if config.get('snap_words') and config.get('snap_to_words', True) is not False:
+        _before = text
+        text = snap_to_words(text, config['snap_words'])
+        note('snap_to_words', _before, text)
+
     if _on(config.get('strip_filler_words')):
         _before = text
-        text = _strip_fillers(text)
+        text = _strip_fillers(text, config.get('filler_words'), language)
         note('filler_words', _before, text)
 
     became_list = False
@@ -511,19 +522,71 @@ def _apply_replacements(text: str, items: list) -> str:
     return text
 
 
+# Fillers that are no word in any language Whisper writes, so removing them
+# can't break a sentence whatever the language (after Handy's list).
+UNIVERSAL_FILLERS = ('uh', 'uhm', 'umm', 'uhh', 'erm', 'ehm', 'ahm', 'hmm', 'hm', 'mmm')
+# Fillers that are real words elsewhere ("um" is "a" in Portuguese and
+# "around" in German), removed only when the dictation is in that language.
+# "like" and "you know" are real words in English too: never by default,
+# only from your own list.
+LANGUAGE_FILLERS = {
+    'en': ('um', 'ah', 'eh', 'er'),
+    'de': ('äh', 'ähm'),
+    'fr': ('euh',),
+    'he': ('אממ', 'אמממ', 'אהה', 'אההה'),
+}
+
+
+# The fillers to remove: your own list replaces the built-in ones; otherwise
+# the universal ones plus the dictation language's.
+def _filler_words(words, language) -> list:
+    if isinstance(words, str):
+        words = [words]
+    own = [str(w).strip() for w in (words or []) if str(w).strip()]
+    if own:
+        return own
+    base = str(language or '').split('-')[0].split('_')[0].lower()
+    return list(UNIVERSAL_FILLERS) + list(LANGUAGE_FILLERS.get(base, ()))
+
+
+# Whether a word put after `kept` would open a sentence.
+def _opens_sentence(kept: str) -> bool:
+    tail = kept.rstrip()
+    return not tail or tail[-1] in '.!?…\n'
+
+
 # Remove filler words without touching layout. Both the trailing run and the
 # whitespace collapse are restricted to spaces and tabs ([ \t]), never \s:
 # \s matches newlines, so the old version ate the line and paragraph breaks
 # that inline formatting had just inserted — "like\n\nBravo" lost its
 # paragraph, and any surviving \n\n was then collapsed to a single space by
 # the \s{2,} pass (issue #9). Structural whitespace is someone else's output,
-# and this filter has no business rewriting it.
-def _strip_fillers(text: str) -> str:
-    pattern = re.compile(
-        r'\b(um|uh|erm|uhm|like|you know)\b[,]?[ \t]*',
-        flags=re.IGNORECASE,
-    )
-    cleaned = pattern.sub('', text)
+# and this filter has no business rewriting it. A capitalized filler that
+# opened a sentence hands its capital on: "Um, so I think" → "So I think".
+def _strip_fillers(text: str, words=None, language=None) -> str:
+    fillers = sorted(_filler_words(words, language), key=len, reverse=True)
+    if not fillers:
+        return text
+    alternation = '|'.join(re.escape(w) for w in fillers)
+    pattern = re.compile(r'(?<!\w)(?:' + alternation + r')(?!\w)[,]?[ \t]*', flags=re.IGNORECASE)
+    kept, resume, owe = [], 0, [False]
+
+    # Adds a kept piece; a capital owed goes to its first letter or digit.
+    def keep(piece: str):
+        if owe[0]:
+            first = next((i for i, ch in enumerate(piece) if ch.isalnum()), None)
+            if first is not None:
+                piece = piece[:first] + piece[first].upper() + piece[first + 1:]
+                owe[0] = False
+        kept.append(piece)
+
+    for match in pattern.finditer(text):
+        keep(text[resume:match.start()])
+        if match.group(0)[:1].isupper() and _opens_sentence(''.join(kept)):
+            owe[0] = True
+        resume = match.end()
+    keep(text[resume:])
+    cleaned = ''.join(kept)
     cleaned = re.sub(r'[ \t]{2,}', ' ', cleaned)
     # A filler removed at the start of a line leaves the indent behind; drop
     # spaces that now sit against a break, but keep the break itself.
