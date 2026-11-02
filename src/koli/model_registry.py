@@ -74,7 +74,22 @@ class ModelRegistry:
         cache_folder = self.get_cache_folder(key)
         if not cache_folder:
             return False
-        return os.path.exists(os.path.join(self.get_hf_cache_path(), cache_folder))
+        return self._has_finished_snapshot(os.path.join(self.get_hf_cache_path(), cache_folder))
+
+    # On disk means a snapshot holds the model's files. The cache folder alone
+    # isn't enough: Hugging Face creates it when a download starts, so a
+    # cancelled download used to read as downloaded; finished files are only
+    # linked into snapshots/ once complete.
+    @staticmethod
+    def _has_finished_snapshot(model_dir: str) -> bool:
+        snapshots_dir = os.path.join(model_dir, 'snapshots')
+        try:
+            revisions = os.listdir(snapshots_dir)
+        except OSError:
+            return False
+        return any(
+            all(os.path.exists(os.path.join(snapshots_dir, rev, name)) for name in ('model.bin', 'config.json'))
+            for rev in revisions)
 
     def _is_streaming_model_cached(self, key: str) -> bool:
         model = self.streaming_models.get(key)

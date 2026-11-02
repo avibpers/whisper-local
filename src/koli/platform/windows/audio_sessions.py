@@ -90,3 +90,17 @@ def _sessions_of(devices_fn, flow: str) -> list:
     except Exception as e:
         logger.debug(f"Audio session probe ({flow}) failed: {e}")
     return out
+
+
+# The names of the microphones plugged in right now, read live from Windows
+# (PortAudio's own list is only read at start-up). The recorder asks this to
+# notice your microphone coming back after an unplug. None when unreadable.
+def microphones():
+    _init_com()
+    try:
+        from pycaw.pycaw import DEVICE_STATE, AudioUtilities, EDataFlow
+        return [getattr(d, 'FriendlyName', '') or ''
+                for d in AudioUtilities.GetAllDevices(EDataFlow.eCapture.value, DEVICE_STATE.ACTIVE.value)]
+    except Exception as e:
+        logger.debug(f"Microphone list unreadable: {e}")
+        return None

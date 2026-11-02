@@ -62,6 +62,17 @@ whisper: # Whisper AI Model Settings
     # Transcription quality settings
     beam_size: 5 # Higher = more accurate but slower (1-10)
 
+    # Minutes without a dictation before the model is unloaded from the
+    # graphics card (or RAM), freeing it for other apps; 0 = never. The next
+    # hotkey press loads it while you speak. Kept loaded while the wake word,
+    # auto-dictation, continuous mode or a meeting may need it.
+    unload_after_minutes: 0
+
+    # Cut silences out with Silero voice detection before Whisper decodes a
+    # dictation (it invents words in silence), and detect the language on
+    # the speech only. Wake-word checks are not affected.
+    vad_filter: true
+
     # Initial prompt to guide transcription style, language variant, or script
     initial_prompt: ""
 
@@ -378,16 +389,20 @@ audio: # Audio Recording Settings
     # float32 recommended for best quality
     dtype: float32
 
+    # Milliseconds the hotkey recording keeps going after you let go, so a
+    # last word said as you release isn't cut (0 = off, at most 1000).
+    release_tail_ms: 0
+
     # Maximum recording duration (seconds)
     # Set to 0 for unlimited recording
     max_duration: 900
 
     # Audio input device selection
     # "default" = Use system default microphone (default behavior)
-    # <device_id> = Specific device ID number (set automatically when changed via system tray)
-    #
-    # Note: Device IDs are assigned by the operating system and may change if devices
-    # are plugged/unplugged. Use system tray to select device - it will save the ID here.
+    # "<name>"  = A microphone by its name, as Settings › Microphone saves it,
+    #             e.g. "Microphone (EMEET Piko+)". Found again after devices
+    #             move; while it is unplugged the default input records, and
+    #             Koli switches back when it returns. A number still works.
     input_device: "default"
 
     # Noise suppression (requires: pip install 'koli[noise]')
@@ -447,6 +462,12 @@ clipboard: # Clipboard Behavior
     # (hotkey.auto_send_key) and your own Enter always send at once. Profiles
     # can set their own, e.g. a Chat profile with 5.
     auto_send_delay: 0
+    # The keys an auto-send presses: enter, ctrl+enter or shift+enter (an
+    # app rule's send_key chooses its own).
+    send_key: enter
+    # A space after each pasted dictation, so the next one doesn't run into
+    # it (never before an auto-send).
+    trailing_space: false
 
     # Key combination to simulate paste (only used when delivery_method is "paste")
     # Format: modifier+key (use lowercase)
@@ -567,6 +588,10 @@ onboarding: # First-run setup state (managed automatically)
     # nvidia | amd_rdna2+ | amd_rdna1 | null
     gpu_class: null
 
+history: # Your dictation history (History screen, transcripts.jsonl)
+    # Days a dictation stays in History; 0 = keep the last 2,000.
+    keep_days: 0
+
 audit: # Append-only audit log (off by default)
     # When enabled, every successful delivery appends a line to
     # %APPDATA%/koli/audit.log: timestamp + event + app +
@@ -670,7 +695,7 @@ meeting: # Meetings: calls in Discord, Zoom, Teams and the browser
     remember_voices: true
     # Which microphone hears you in meetings: '' for the dictation microphone
     # (audio.input_device), "default" for the computer's default input, or a
-    # device id number. A device that won't open falls back to the dictation
+    # microphone name. A device that won't open falls back to the dictation
     # microphone for that meeting.
     input_device: ''
     # Sound back from the same call within this many minutes resumes the
@@ -902,7 +927,15 @@ postprocess: # Transcription post-processing pipeline
     #     mode: alone
     snippets: []
 
-    # Strip "um", "uh", "like", "you know" filler words
+    # Near misses of your own words are written your way: a word one letter
+    # off from, or sounding like, a name in whisper.hotwords, your corrections
+    # or what practice taught ("Kubernetis" -> "Kubernetes", "Charge B" ->
+    # "ChargeBee"). Only names with a capital or a digit, never common words.
+    snap_to_words: true
+
+    # Strip filler words: "uh", "hmm" in any language, "um" in English
+    # (text_postprocess.LANGUAGE_FILLERS). Real words like "like" only from
+    # your own list, postprocess.filler_words, which replaces the built-ins.
     strip_filler_words: false
 
     # Whisper often appends a period to the final segment even when you
@@ -933,10 +966,10 @@ ai: # Language models for polish, rewrites and later features (Settings › AI)
         enabled: false
         model: '' # empty = the default model
         timeout: 5
+        # The instruction; the dictation is sent as its own message after it,
+        # so a dictated question is polished, not answered.
         prompt: |-
-            Polish this dictation. Fix punctuation and capitalization only. Do not change wording or add anything. Output ONLY the polished text:
-
-            {text}
+            Polish this dictation. Fix punctuation and capitalization only. Do not change wording or add anything.
 
     # Transforms, the Rephrase hotkey and Rephrase voice commands
     rewrite:

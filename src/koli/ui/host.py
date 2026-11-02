@@ -250,8 +250,9 @@ class UiHost:
         sm.request_model_change = lambda key: bool(svc.set('whisper.model', key))
         sm.set_overlay_position = lambda name: bool(svc.set('overlay.position', name))
         sm.set_audio_host = lambda name: bool(svc.set('audio.host', name))
+        # Saved by name: device numbers move when devices come and go.
         sm.request_audio_device_change = lambda device_id, name=None: bool(
-            svc.set('audio.input_device', device_id if device_id != -1 else 'default'))
+            svc.set('audio.input_device', 'default' if device_id == -1 else (name or device_id)))
 
         def activate(name):
             from ..services import rules

@@ -98,7 +98,9 @@ class DelayedSend:
 
     # Starts the countdown for the text that was just pasted. A send already
     # waiting is replaced quietly: only the newest message gets sent.
-    def schedule(self, seconds: float) -> None:
+    # `keys`: the send keys an app rule chose for this message (None = the
+    # main setting); pressed when the countdown fires.
+    def schedule(self, seconds: float, keys: Optional[str] = None) -> None:
         seconds = max(0.0, float(seconds))
         with self._lock:
             if self._pending is not None:
@@ -107,6 +109,7 @@ class DelayedSend:
             self._pending = {
                 'deadline': now + seconds, 'total': seconds, 'shown': None,
                 'target': window_identity(self._foreground()), 'token': self._watch_typing(),
+                'keys': keys,
             }
             self._announce(now)
         print(f"   ⏳ Sending in {math.ceil(seconds)}s — Esc to cancel")
@@ -153,7 +156,8 @@ class DelayedSend:
         pending, self._pending = self._pending, None
         self._release_watch(pending)
         try:
-            ok = bool(self._send_enter())
+            keys = pending.get('keys')
+            ok = bool(self._send_enter(keys) if keys else self._send_enter())
         except Exception as e:
             logger.error(f"Auto-send: Enter failed: {e}")
             ok = False

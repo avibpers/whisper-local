@@ -1,7 +1,8 @@
 // screens/history.js
 // History & insights: totals, words per day, where and in which languages you
 // dictate, and the searchable list of past dictations with copy, fix-a-word,
-// export and clear. Also suggests words to add from what you've said.
+// what Whisper heard before clean-up, delete, export and clear. Offers to try
+// the last empty recording again, and suggests words to add from what you've said.
 
 import { html, useEffect, useState } from '../../vendor/preact-htm.module.js';
 import { call } from '../api.js';
@@ -80,6 +81,27 @@ function LiveWordsUsage({ refresh }) {
   </section>`;
 }
 
+// The last dictation that came back empty, kept in memory: one click
+// transcribes it again with the model as it is now (state_manager
+// retry_last_recording); the text goes to History and the clipboard.
+function FailedRecording({ watch, onDone }) {
+  const [failed, setFailed] = useState(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { call('history_failed_recording').then(setFailed).catch(() => {}); }, [watch]);
+  if (!failed) return null;
+  const retry = () => {
+    setBusy(true);
+    call('history_retry_recording')
+      .then(() => { setFailed(null); onDone(); toast('Transcribed and copied to the clipboard'); })
+      .catch((e) => toast(e.message, { kind: 'err' }))
+      .finally(() => setBusy(false));
+  };
+  return html`<section class="card pad row-flex" style="justify-content:space-between" aria-label="Last recording">
+    <span>Your last recording (${failed.seconds} s) came back with no words.</span>
+    <button type="button" class="btn pri" disabled=${busy} onClick=${retry}>${busy ? 'Transcribing…' : 'Try again'}</button>
+  </section>`;
+}
+
 export function HistoryScreen() {
   const [data, setData] = useState(null);
   const [list, setList] = useState({ items: [], total: 0, all: 0 });
@@ -88,25 +110,47 @@ export function HistoryScreen() {
   const [appFilter, setApp] = useState('');
   const [period, setPeriod] = useState('all');
   const [page, setPage] = useState(0);
+  const [changed, setChanged] = useState(0);   // bumped after a delete, a retry or a file
   const pipeline = app.use((s) => s.pipeline);
   const mode = app.use((s) => s.settings.ui.mode);
+  const tasks = app.use((s) => s.tasks);
   const delivered = pipeline.some((p) => p.stage === 'delivered');
+  // A recording being transcribed (transcribe_file); its end refreshes the list.
+  const fileJobs = Object.values(tasks || {}).filter((t) => t.kind === 'transcribe_file');
+  const fileRunning = fileJobs.find((t) => t.status === 'running');
+  const filesDone = fileJobs.filter((t) => t.status !== 'running').length;
+  useEffect(() => {
+    if (!filesDone) return;
+    setChanged((n) => n + 1);
+    const failed = fileJobs.filter((t) => t.status === 'failed').pop();
+    if (failed && failed.error) toast(failed.error, { kind: 'err' });
+  }, [filesDone]);
+  const transcribeFile = () => call('history_transcribe_file')
+    .then((r) => r && toast('Transcribing. It will be in History and on the clipboard.'))
+    .catch((e) => toast(e.message, { kind: 'err' }));
   useEffect(() => { call('insights', 14).then(setData).catch(() => {}); call('history_apps').then(setApps).catch(() => {}); }, [delivered]);
   useEffect(() => {
     const t = setTimeout(() => call('history_query', q, appFilter, period, page * PAGE, PAGE).then(setList).catch(() => {}), 150);
     return () => clearTimeout(t);
-  }, [q, appFilter, period, page, delivered]);
+  }, [q, appFilter, period, page, delivered, changed]);
+  const remove = (it) => call('history_delete', it.timestamp, it.text)
+    .then(() => { setChanged((n) => n + 1); toast('Deleted'); })
+    .catch((e) => toast(e.message, { kind: 'err' }));
   const exportAs = (fmt) => call('history_export', fmt).then((p) => p && toast(`Exported to ${p}`)).catch((e) => toast(e.message, { kind: 'err' }));
   return html`<div class="page">
     <div class="page-head">
       <div><h1 class="page-title">${mode === 'advanced' ? 'History & insights' : 'History'}</h1>
-        <p class="page-sub">Your last 2,000 dictations, searchable. Stored only on this computer.</p></div>
+        <p class="page-sub">Your recent dictations, searchable. Stored only on this computer, for as long as Settings › Privacy says.</p></div>
       <div class="row-flex">
+        <button type="button" class="btn" disabled=${!!fileRunning} onClick=${transcribeFile}>Transcribe a recording…</button>
         <button type="button" class="btn" onClick=${() => suggest().catch((e) => toast(e.message, { kind: 'err' }))}>Suggest words to add</button>
         <${Select} label="Export" value="" options=${[['', 'Export…'], ['txt', 'As .txt'], ['md', 'As .md'], ['csv', 'As .csv']]}
           onChange=${(v) => v && exportAs(v)} />
       </div>
     </div>
+    ${fileRunning && html`<section class="card pad row-flex" aria-label="Transcribing a recording">
+      <span class="chip"><span class="dot"></span>${fileRunning.label}</span><span class="small muted">${fileRunning.detail || ''}</span></section>`}
+    <${FailedRecording} watch=${pipeline.length} onDone=${() => setChanged((n) => n + 1)} />
     ${data && html`<${Stats} data=${data} />`}
     ${data && mode === 'advanced' && html`<${Charts} data=${data} />`}
     ${mode === 'advanced' && html`<${LiveWordsUsage} refresh=${delivered} />`}
@@ -121,10 +165,19 @@ export function HistoryScreen() {
       ${list.items.length === 0 && html`<div class="empty">${list.all ? 'Nothing matches.' : 'No dictations yet.'}</div>`}
       ${list.items.map((it) => html`<div style="display:grid;grid-template-columns:110px minmax(0,1fr) auto;gap:6px 16px;padding:14px 18px;border-top:1px solid var(--line);align-items:start">
         <div class="small muted"><div>${(it.timestamp || '').replace('T', ' ').slice(0, 16)}</div><div>${it.app || '—'}${it.duration_s ? ` · ${it.duration_s} s` : ''}</div></div>
-        <p dir=${textDir(it.text)} style="margin:0;white-space:pre-wrap">${it.text}</p>
+        <div style="min-width:0">
+          <p dir=${textDir(it.text)} style="margin:0;white-space:pre-wrap">${it.text}</p>
+          ${it.heard && html`<details class="small" style="margin-top:6px">
+            <summary class="muted">What Whisper heard, before clean-up</summary>
+            <div class="row-flex" style="align-items:start;margin-top:4px">
+              <p dir=${textDir(it.heard)} class="muted" style="margin:0;white-space:pre-wrap;flex:1 1 auto">${it.heard}</p>
+              <button type="button" class="btn ghost icon" aria-label="Copy what Whisper heard" onClick=${() => call('copy_text', it.heard).then(() => toast('Copied'))}><${Icon} name="copy" /></button>
+            </div></details>`}
+        </div>
         <div class="row-flex" style="flex-wrap:nowrap">
           <button type="button" class="btn ghost icon" aria-label="Copy" onClick=${() => call('copy_text', it.text).then(() => toast('Copied'))}><${Icon} name="copy" /></button>
-          <button type="button" class="btn ghost sm" onClick=${() => fixAWord(it.text)}>Fix a word…</button></div>
+          <button type="button" class="btn ghost sm" onClick=${() => fixAWord(it.text)}>Fix a word…</button>
+          <button type="button" class="btn ghost icon" aria-label="Delete this dictation" onClick=${() => remove(it)}><${Icon} name="trash" /></button></div>
       </div>`)}
       <div class="row-flex small muted" style="justify-content:space-between;padding:12px 18px;border-top:1px solid var(--line)">
         <span>${list.total ? `Showing ${page * PAGE + 1}–${Math.min(list.total, (page + 1) * PAGE)} of ${list.total.toLocaleString()}` : ''}</span>

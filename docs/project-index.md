@@ -12,12 +12,12 @@ Koli is a fork of `drajb/whisper-local` by Rohit Burani (repo `avibpers/whisper-
 |-----------|------|----------------------|------------------|
 | **Entry Point** | `main.py` | Component initialization, signal handling | logging, threading |
 | **State Coordination** | `state_manager.py` | Component orchestration & workflow | threading, logging |
-| **Audio Capture** | `audio_recorder.py` | Microphone recording & audio buffering | sounddevice, numpy |
+| **Audio Capture** | `audio_recorder.py` | Microphone recording & audio buffering; the microphone is kept by name and reopened after an unplug or a stalled stream, back on yours when it returns; says when a microphone sends no sound | sounddevice, numpy |
 | **Audio Feedback** | `audio_feedback.py` | Recording event sound notifications | playsound3 |
-| **Speech Recognition** | `whisper_engine.py` | Audio transcription using AI | faster-whisper |
+| **Speech Recognition** | `whisper_engine.py` | Audio transcription using AI; Silero skips silence (`whisper.vad_filter`); a hung or GPU-failed decode moves to a fresh CPU model and is retried; unloads when idle (`whisper.unload_after_minutes`) | faster-whisper |
 | **Model Management** | `model_registry.py` | Whisper model registry & cache detection | faster-whisper |
 | **Voice Activity Detection** | `voice_activity_detection.py` | Continuous VAD monitoring & silence detection | ten-vad, threading |
-| **Clipboard Operations** | `clipboard_manager.py` | Text copying & auto-paste functionality | pyperclip, ctypes SendInput (Win), Quartz (Mac) |
+| **Clipboard Operations** | `clipboard_manager.py` + `platform/*/clipboard.py` | Text copying & auto-paste; the whole clipboard (images too) is saved and given back unless you copied meanwhile; reads the selection for Rephrase; send keys per app rule | pyperclip, ctypes SendInput (Win), Quartz (Mac) |
 | **Hotkey Detection** | `hotkey_listener.py` | Global hotkey monitoring | global-hotkeys (Win), NSEvent (Mac) |
 | **Configuration** | `config_manager.py` | YAML settings management & validation | ruamel.yaml |
 | **System Integration** | `system_tray.py` | Tray icon; a short menu (Open, Pause, Profile, Recent, Quit) with the app window, the full menu with `--legacy-ui` | pystray, Pillow |
@@ -34,7 +34,7 @@ Koli is a fork of `drajb/whisper-local` by Rohit Burani (repo `avibpers/whisper-
 | **Log Bundler** | `bundle_logs.py` | `--bundle-logs` redacted diagnostic zip for bug reports | zipfile, re |
 | **Local API Server** | `local_server.py` | `--serve` OpenAI-compatible Whisper HTTP endpoint | http.server |
 | **Settings GUI (legacy)** | `settings_ui.py` | Tkinter settings editor, used with `--legacy-ui` only | tkinter |
-| **Transcript History** | `transcript_log.py` (+ `history_window.py`, legacy) | Journal of past transcriptions; shown in the app's History screen; tells which language you write in a chat, for a weak language guess (design: `docs/design/chat-language.md`) | json |
+| **Transcript History** | `transcript_log.py` (+ `history_window.py`, legacy) | Journal of past transcriptions with what Whisper heard before clean-up; shown in the app's History screen (delete one, keep N days, try an empty recording again, transcribe an audio file); tells which language you write in a chat, for a weak language guess (design: `docs/design/chat-language.md`) | json, PyAV |
 | **Hotkey Cheat Sheet (legacy)** | `cheat_sheet.py` | Tk window listing the hotkeys; the app shows them in Diagnostics | tkinter |
 | **Window Launcher** | `window_launcher.py` | Opens Tk windows in a child process where Tk needs the main thread (macOS) | subprocess, json |
 | **First-Run Welcome (legacy)** | `first_run.py` | Tk welcome window; the app window has its own welcome steps | tkinter |
@@ -55,7 +55,8 @@ Koli is a fork of `drajb/whisper-local` by Rohit Burani (repo `avibpers/whisper-
 | **Profiles** | `profiles.py` | Dictation/Chat/Code/Notes/Translate presets | ruamel.yaml |
 | **Per-App Rules** | `app_rules.py` | Foreground-app-specific behaviour overrides | ruamel.yaml |
 | **Layered Defaults** | `defaults_merge.py` | Loads shipped defaults under the user's app_rules/commands/transforms/profiles, and migrates pre-0.21 full copies | ruamel.yaml |
-| **Text Post-Process** | `text_postprocess.py` | Inline formatting, smart formatting, voice editing, corrections, then the optional AI polish it is handed | re |
+| **Text Post-Process** | `text_postprocess.py` | Inline formatting, smart formatting, voice editing, corrections, near misses of your words, fillers by language, then the optional AI polish it is handed | re |
+| **Word Snap** | `word_snap.py` | Near misses of your own words written your way ("Kubernetis" → "Kubernetes"): edit distance plus Soundex over spans of up to three words, after Handy | re |
 | **Dictation Cleanup** | `dictation_cleanup.py` | Backtrack ("actually 3"), stutter removal, spoken lists, lowercase | re |
 | **Snippets** | `snippets.py` | Spoken shortcuts expanded inline during dictation | re |
 | **Styles** | `styles.py` | Named writing styles (formal/casual/very casual/verbatim), global or per app | - |

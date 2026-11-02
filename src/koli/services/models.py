@@ -18,6 +18,9 @@ logger = logging.getLogger(__name__)
 
 # The files faster-whisper fetches for a model (mirrors faster_whisper.utils).
 ALLOW_PATTERNS = ["config.json", "preprocessor_config.json", "model.bin", "tokenizer.json", "vocabulary.*"]
+# A download whose files stop growing for this long is reported as stalled
+# (Hugging Face's own read timeouts can leave it hanging much longer).
+STALL_SECONDS = 90
 
 GROUP_ORDER = ['multilingual', 'hebrew', 'english', 'yours']
 GROUP_TITLES = {'multilingual': 'Multilingual', 'hebrew': 'Hebrew (ivrit.ai)',
@@ -149,10 +152,18 @@ def ensure_downloaded(registry, key: str, reporter=None) -> Optional[str]:
     th = threading.Thread(target=worker, daemon=True, name=f'download-{key}')
     th.start()
     started = time.time()
+    last_size, last_growth = -1, started
     while th.is_alive():
         th.join(0.5)
+        done = _dir_size(target) if target else 0
+        # A download that stops growing shows an error, not a frozen bar
+        # (only when there is a folder to watch grow).
+        if done != last_size or target is None:
+            last_size, last_growth = done, time.time()
+        elif time.time() - last_growth > STALL_SECONDS:
+            raise RuntimeError(f"Download stalled: nothing arrived for {STALL_SECONDS} seconds. "
+                               "Check the connection and try again; what arrived is kept.")
         if reporter:
-            done = _dir_size(target) if target else 0
             if expected:
                 mb, total_mb = done / 1e6, expected / 1e6
                 reporter.report(min(0.99, done / expected), f"Downloading {mb:,.0f} of {total_mb:,.0f} MB")

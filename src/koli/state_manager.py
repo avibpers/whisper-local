@@ -152,7 +152,6 @@ class StateManager:
         self.recent_transcriptions = collections.deque(maxlen=10)
         self._rephrase_mode = False
         self._rephrase_selection = ''
-        self._rephrase_original_clipboard = ''
         self._continuous_aborted = False
         # True while the running recording was started by auto-dictation (a text
         # field got focus) rather than a hotkey; see auto_dictation.py.
@@ -393,11 +392,26 @@ class StateManager:
 
         if currently_recording:
             self._clear_streaming_display()
+            self._record_release_tail()
             audio_data = self.audio_recorder.stop_recording()
             self._transcription_pipeline(audio_data, use_auto_enter)
             return True
         else:
             return False
+
+    # People often let go of the keys as the last word ends: keep listening
+    # audio.release_tail_ms longer so it isn't cut (after Handy). Hotkey
+    # recordings only; a silence stop already waited.
+    def _record_release_tail(self) -> None:
+        if getattr(self, '_auto_started', False):
+            return
+        cm = getattr(self, 'config_manager', None)
+        try:
+            ms = float(cm.get_path('audio.release_tail_ms') or 0) if cm is not None else 0
+        except (TypeError, ValueError):
+            return
+        if 0 < ms <= 1000:
+            time.sleep(ms / 1000)
     
     # `quiet` skips the cancel sound: auto-dictation cancels often (you typed,
     # or never spoke) and a chime each time would be noise.
@@ -536,27 +550,10 @@ class StateManager:
         self._cancel_pending_send('you started a new dictation')
         if not self.can_start_recording():
             return
-        import time
-        import pyperclip
-        from .platform import keyboard as kb
+        # The selection, read with Ctrl+C; your clipboard comes back whole.
+        selection = self.clipboard_manager.read_selection(0.12)
 
-        try:
-            self._rephrase_original_clipboard = pyperclip.paste()
-        except Exception:
-            self._rephrase_original_clipboard = ''
-
-        kb.send_hotkey('ctrl', 'c')
-        time.sleep(0.12)
-        try:
-            selection = pyperclip.paste()
-        except Exception:
-            selection = ''
-        try:
-            pyperclip.copy(self._rephrase_original_clipboard)
-        except Exception:
-            pass
-
-        if not selection or selection == self._rephrase_original_clipboard:
+        if not selection:
             print("\n   ✗ Nothing selected — rephrase needs selected text. Recording dictation instead.")
             self._rephrase_selection = ''
         else:
@@ -611,6 +608,7 @@ class StateManager:
 
         if success:
             self._recording_started_at = time.monotonic()
+            self._touch_engine()
             self._auto_started = auto_started
             self._hands_free = hands_free and not auto_started
             self._auto_heard = False
@@ -1175,6 +1173,7 @@ class StateManager:
                 rule = None
         cfg = effective_postprocess_config(self.config_manager.get_postprocess_config(), rule)
         cfg = dict(self._with_learned_corrections(cfg) if hasattr(self, '_with_learned_corrections') else cfg)
+        cfg = self._with_snap_words(cfg)
         cfg['strip_trailing_period'] = False
         return postprocess(text, cfg, polish=None) or ''
 
@@ -1189,6 +1188,68 @@ class StateManager:
         self.recent_transcriptions.appendleft(text)
         record_transcript(text, window=foreground.get_foreground_app() or {})
         self._update_ui_state('idle')
+
+    # ── Trying a recording again ─────────────────────────────────────────────
+    # The last dictation that came back empty stays in memory (never on disk)
+    # so History can offer to transcribe it again, with the model as it is
+    # now: after a model switch, or when the empty result was a glitch.
+
+    def _keep_failed_recording(self, audio, seconds: float) -> None:
+        if audio is None or seconds < 0.5:
+            return
+        self._failed_recording = {'audio': audio, 'seconds': round(float(seconds), 1), 'at': time.time()}
+
+    def last_failed_recording(self) -> Optional[dict]:
+        kept = getattr(self, '_failed_recording', None)
+        return {'seconds': kept['seconds'], 'at': kept['at']} if kept else None
+
+    # Transcribes the kept recording again; the text goes to History and the
+    # clipboard (the window it was meant for has likely moved on). Raises when
+    # it is still empty.
+    def retry_last_recording(self) -> str:
+        kept = getattr(self, '_failed_recording', None)
+        if not kept:
+            raise RuntimeError("There's no recording to try again")
+        engine = self.dictation_engine('dictation')
+        text = engine.transcribe_audio(kept['audio'], chat_language='')
+        if not text:
+            raise RuntimeError("Still no words in that recording")
+        info = dict(getattr(engine, 'last_info', None) or {})
+        cfg = self._with_snap_words(self._with_learned_corrections(self.config_manager.get_postprocess_config()))
+        polish = self._ai_polish if self.config_manager.get_path('ai.polish.enabled') is True else None
+        written = postprocess(text, cfg, polish=polish, language=info.get('language')) or text
+        self._failed_recording = None
+        record_transcript(written, window={}, duration_s=kept['seconds'],
+                          language=info.get('language') or '', heard=text)
+        self.clipboard_manager.copy_text(written)
+        self.last_transcription = written
+        self.recent_transcriptions.appendleft(written)
+        return written
+
+    # An audio or video file (a voice note, a recorded call) written out by
+    # the dictation model, cleaned up like a dictation, and kept in History
+    # under the file's name and on the clipboard. Runs as a background task.
+    def transcribe_file(self, path: str, reporter=None) -> str:
+        import os
+        from .services import history
+        name = os.path.basename(path)
+        if reporter:
+            reporter.report(None, f"Reading {name}")
+        audio = history.decode_file(path)
+        seconds = len(audio) / 16000
+        if reporter:
+            reporter.report(None, f"Transcribing {seconds / 60:.1f} minutes")
+        engine = self.dictation_engine('dictation')
+        text = engine.transcribe_audio(audio, chat_language='')
+        if not text:
+            raise RuntimeError(f"No words were heard in {name}")
+        info = dict(getattr(engine, 'last_info', None) or {})
+        cfg = self._with_snap_words(self._with_learned_corrections(self.config_manager.get_postprocess_config()))
+        written = postprocess(text, cfg, language=info.get('language')) or text
+        record_transcript(written, window={'exe': 'file', 'title': name}, duration_s=seconds,
+                          language=info.get('language') or '', heard=text)
+        self.clipboard_manager.copy_text(written)
+        return written
 
     # A cancelled bubble's text stays findable in History.
     def keep_cancelled(self, text: str, window: Optional[dict]) -> None:
@@ -1302,16 +1363,8 @@ class StateManager:
 
     def _grab_selection_text(self) -> str:
         try:
-            import time
-            import pyperclip
-            from .platform import keyboard as kb
-            original = pyperclip.paste()
-            kb.send_hotkey('ctrl', 'c')
-            time.sleep(0.08)
-            selection = pyperclip.paste()
-            try: pyperclip.copy(original)
-            except Exception: pass
-            if selection and selection != original:
+            selection = self.clipboard_manager.read_selection(0.08)
+            if selection:
                 return selection[-200:].replace('\n', ' ')
         except Exception as e:
             self.logger.debug(f"Selection grab failed: {e}")
@@ -1456,9 +1509,17 @@ class StateManager:
                     self._emit_pipeline('empty', mode=mode, info=info, why='Whisper heard no words')
                     if phrase:
                         return  # a pause with nothing in it; keep listening
-                    self.system_tray.notify("Transcription was empty (silence or noise only).")
+                    # A muted or blocked microphone sends digital silence: the
+                    # recorder already said which one; the bar says so too.
+                    silent_mic = bool(getattr(self.audio_recorder, 'last_clip_silent', False))
+                    # A dictation you started that came back empty can be
+                    # transcribed again from History (retry_last_recording).
+                    if mode == 'dictate' and not silent_mic and not (auto_session or hands_free):
+                        self._keep_failed_recording(audio_data, duration)
+                    self.system_tray.notify("No sound came from the microphone." if silent_mic
+                                            else "Transcription was empty (silence or noise only).")
                     if self.level_overlay:
-                        self.level_overlay.flash_failure("No speech detected")
+                        self.level_overlay.flash_failure("No sound from the mic" if silent_mic else "No speech detected")
                     return
 
                 self._emit_pipeline('transcribed', mode=mode, raw=transcribed_text, info=info)
@@ -1551,12 +1612,13 @@ class StateManager:
             if fmt_overrides:
                 self.logger.info(f"App rule {rule.get('match')} → formatting overrides {fmt_overrides}")
             postprocess_cfg = effective_postprocess_config(raw_postprocess_cfg, rule)
-            postprocess_cfg = self._with_learned_corrections(postprocess_cfg)
+            postprocess_cfg = self._with_snap_words(self._with_learned_corrections(postprocess_cfg))
             trace = []
             heard_text = transcribed_text
             polish = self._ai_polish if self.config_manager.get_path('ai.polish.enabled') is True else None
             if written is None:
-                transcribed_text = postprocess(transcribed_text, postprocess_cfg, trace=trace, polish=polish)
+                transcribed_text = postprocess(transcribed_text, postprocess_cfg, trace=trace, polish=polish,
+                                               language=info.get('language'))
             elif polish and not written.get('edited'):
                 transcribed_text = polish(transcribed_text) or transcribed_text
             rule_id = _rule_label(rule)
@@ -1602,19 +1664,23 @@ class StateManager:
                     self.level_overlay.flash_success()
                 return
 
-            if not self._foreground_is_textable():
+            # No text field, or a password field: never typed there. The text
+            # waits in the popup (and on the clipboard when copying is allowed).
+            held_why = self._why_not_type_here()
+            if held_why:
                 self._emit_pipeline('delivered', mode=mode, outcome='fallback', raw=heard_text,
                                     text=transcribed_text, app=fg_now.get('exe', ''))
-                self.logger.info("No textable foreground window; opening fallback window")
+                self.logger.info(f"Not typing here ({held_why}); opening fallback window")
                 may_copy = self.clipboard_manager.silent_copy_allowed
                 if may_copy:
                     self.clipboard_manager.copy_text(transcribed_text)
+                head = ("A password field is focused, so Koli didn't type there — your dictation is safe here. "
+                        if held_why == 'password field' else
+                        "No text field was focused — your dictation is safe here. ")
                 self.fallback_window.show(
                     transcribed_text,
-                    reason=("No text field was focused — your dictation is safe here. "
-                            "Already on your clipboard.") if may_copy else
-                           ("No text field was focused — your dictation is safe here. "
-                            "Clipboard copying is off; use Copy if you want it."),
+                    reason=head + ("Already on your clipboard." if may_copy else
+                                   "Clipboard copying is off; use Copy if you want it."),
                     allow_clipboard=may_copy,
                 )
                 self.last_transcription = transcribed_text
@@ -1656,6 +1722,7 @@ class StateManager:
                 success = self.clipboard_manager.deliver_transcription(
                     transcribed_text + ' ' if phrase else transcribed_text, effective_auto_enter,
                     allow_delay=send_may_wait, send_delay=send_wait,
+                    send_key=(rule or {}).get('send_key') or None,
                 )
             finally:
                 if previous_auto_paste is not None:
@@ -1692,7 +1759,7 @@ class StateManager:
                 )
                 record_transcript(transcribed_text, window=fg, duration_s=duration,
                                   language=(info or {}).get('language') or '', clip_id=clip_id,
-                                  original=(written or {}).get('original') or '')
+                                  original=(written or {}).get('original') or '', heard=heard_text)
                 audit_enabled = (self.config_manager.config.get('audit') or {}).get('enabled', False)
                 audit_record('delivered', transcribed_text, fg.get('exe', ''), audit_enabled)
                 self._maybe_restart_continuous()
@@ -2001,9 +2068,10 @@ class StateManager:
             vad_manager=old.vad_manager,
             streaming_manager=old.streaming_manager,
             on_streaming_result=old.on_streaming_result,
-            device=old.chosen_device,
+            device=getattr(old, 'chosen_name', None) or old.chosen_device,
             noise_suppression_config=audio_cfg.get('noise_suppression') or {},
             whisper_mode_config=audio_cfg.get('whisper_mode') or {},
+            host=getattr(self, '_current_audio_host', None),
         )
         params.update(overrides)
         if refresh_devices:
@@ -2046,6 +2114,77 @@ class StateManager:
                 self._remote_desktop = remote
                 self.logger.info(f"Remote desktop {'connected' if remote else 'ended'}: reopening the microphone")
                 self.run_when_idle(lambda: self._reopen_microphone_for_desktop(remote))
+
+    # ── Unloading the model when idle ────────────────────────────────────────
+    # After whisper.unload_after_minutes without a dictation the model leaves
+    # the graphics card (or RAM) for games and other apps. Not while anything
+    # needs it at any moment: the wake word, auto-dictation, continuous mode
+    # or a meeting. A hotkey press loads it again while you speak.
+
+    IDLE_UNLOAD_CHECK_SECONDS = 30
+
+    def start_idle_unload_watch(self):
+        self._engine_used_at = time.monotonic()
+        threading.Thread(target=self._watch_idle_model, daemon=True, name='idle-model-watch').start()
+
+    def _watch_idle_model(self):
+        while True:
+            time.sleep(self.IDLE_UNLOAD_CHECK_SECONDS)
+            try:
+                self._maybe_unload_idle_model()
+            except Exception as e:
+                self.logger.debug(f"Idle model check failed: {e}")
+
+    def _maybe_unload_idle_model(self, now: float = None) -> bool:
+        try:
+            minutes = float(self.config_manager.get_path('whisper.unload_after_minutes') or 0)
+        except (TypeError, ValueError):
+            return False
+        if minutes <= 0 or not self.is_idle() or self._model_always_needed():
+            return False
+        now = time.monotonic() if now is None else now
+        if now - getattr(self, '_engine_used_at', now) < minutes * 60:
+            return False
+        engine = self.whisper_engine
+        if not hasattr(engine, 'unload_idle') or not engine.unload_idle():
+            return False
+        self.logger.info(f"Unloaded the speech model after {minutes:g} idle minutes; the next dictation loads it")
+        return True
+
+    # Features that may need the model at any moment, without a hotkey press.
+    def _model_always_needed(self) -> bool:
+        get = self.config_manager.get_path
+        if any(get(path) is True for path in ('wake_word.enabled', 'auto_dictation.enabled', 'audio.continuous_mode')):
+            return True
+        meetings = getattr(self, 'meetings', None)
+        return meetings is not None and meetings.is_running()
+
+    # A recording starts: the clock restarts, and an unloaded model starts
+    # loading now so it is ready by the time you stop speaking.
+    def _touch_engine(self):
+        self._engine_used_at = time.monotonic()
+        engine = getattr(self, 'whisper_engine', None)
+        if getattr(engine, 'idle_unloaded', False) is True:
+            self.logger.info("Loading the speech model again while you speak")
+            threading.Thread(target=engine.ensure_loaded, daemon=True, name='model-reload').start()
+
+    # The recorder in use. Each one set here asks before rereading the device
+    # list when it reopens a lost microphone: not while a meeting runs.
+    @property
+    def audio_recorder(self):
+        return self._audio_recorder
+
+    @audio_recorder.setter
+    def audio_recorder(self, recorder):
+        self._audio_recorder = recorder
+        if recorder is not None:
+            recorder.may_refresh_devices = self._devices_may_be_reread
+
+    # A meeting may hold its own microphone stream, which rereading the
+    # device list would cut.
+    def _devices_may_be_reread(self) -> bool:
+        meetings = getattr(self, 'meetings', None)
+        return not (meetings is not None and meetings.is_running())
 
     def _reopen_microphone_for_desktop(self, remote: bool):
         meetings = getattr(self, 'meetings', None)
@@ -2190,22 +2329,38 @@ class StateManager:
             return postprocess_cfg
         return {**postprocess_cfg, 'corrections': merged} if merged else postprocess_cfg
 
+    # The words near misses snap to (word_snap.py): your hotwords, the words
+    # practice taught Koli, and the targets of your corrections.
+    def _with_snap_words(self, postprocess_cfg: dict) -> dict:
+        hotwords = self.config_manager.get_path('whisper.hotwords')
+        words = list(hotwords) if isinstance(hotwords, (list, tuple)) else []
+        try:
+            from . import learned_vocabulary
+            language = (getattr(self.whisper_engine, 'last_info', None) or {}).get('language')
+            learned = learned_vocabulary.get().extras(language).get('hotwords', [])
+            words += list(learned) if isinstance(learned, (list, tuple)) else []
+        except Exception as e:
+            self.logger.debug(f"Learned words skipped for snapping: {e}")
+        corrections = postprocess_cfg.get('corrections')
+        if isinstance(corrections, dict):
+            words += list(corrections.keys())
+        words = [str(w) for w in words if isinstance(w, str) and w.strip()]
+        return {**postprocess_cfg, 'snap_words': words} if words else postprocess_cfg
+
     # The last post-processing step when "Polish every dictation" is on. An
     # empty answer (model down, too slow) keeps the dictation as it was.
     def _ai_polish(self, text: str) -> str:
         from . import llm
         from .llm import prompts
-        result = llm.complete('polish', prompts.polish(self.config_manager.get_path('ai.polish.prompt'), text))
+        result = llm.complete('polish', prompts.polish(self.config_manager.get_path('ai.polish.prompt'), text),
+                              json=True)
         if result.error:
             self.logger.warning(f"AI polish skipped: {result.error}")
-        return result.text
+        return prompts.polish_answer(result.text)
 
     def _handle_rephrase(self, selection: str, instruction: str):
-        import time
-        import pyperclip
         from . import llm
         from .llm import prompts
-        from .platform import keyboard as kb
 
         print(f"\n   🤖 Rephrasing ({len(selection)} chars) with instruction: '{instruction[:60]}'")
 
@@ -2218,17 +2373,8 @@ class StateManager:
                 self.level_overlay.flash_failure()
             return
 
-        try:
-            pyperclip.copy(polished)
-            time.sleep(0.05)
-            kb.send_hotkey('ctrl', 'v')
-            time.sleep(0.2)
-        finally:
-            try:
-                if self._rephrase_original_clipboard:
-                    pyperclip.copy(self._rephrase_original_clipboard)
-            except Exception:
-                pass
+        # Replaces the selection; the paste gives your clipboard back whole.
+        self.clipboard_manager.paste_text(polished)
 
         self.last_transcription = polished
         self.recent_transcriptions.appendleft(polished)
@@ -2252,6 +2398,20 @@ class StateManager:
         if not exe:
             return False
         return exe not in self.NON_TEXT_EXES
+
+    # Why a dictation must not be typed into the focused place, or '' when it
+    # may: no text window, or a password field (UI Automation says so; the
+    # auto-dictation path already skipped those, the hotkey path didn't).
+    def _why_not_type_here(self) -> str:
+        if not self._foreground_is_textable():
+            return 'no text field'
+        try:
+            from .platform import input_watch
+            if (input_watch.probe_focused() or {}).get('password'):
+                return 'password field'
+        except Exception as e:
+            self.logger.debug(f"Focused-field check failed: {e}")
+        return ''
 
 
     def set_overlay_position(self, name: str) -> bool:
@@ -2540,6 +2700,7 @@ class StateManager:
                 device=device_id if device_id != -1 else None,
                 noise_suppression_config=noise_cfg,
                 whisper_mode_config=audio_cfg.get('whisper_mode') or {},
+                host=getattr(self, '_current_audio_host', None),
             )
 
             old_recorder = self.audio_recorder

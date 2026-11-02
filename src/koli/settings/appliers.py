@@ -26,7 +26,8 @@ _LISTENER_KEYS = {
 
 # Settings that are simply read from the config whenever they are used.
 _READ_ON_USE = {
-    'whisper.prompt_from_selection', 'audio.pause_media_on_record',
+    'whisper.prompt_from_selection', 'audio.pause_media_on_record', 'whisper.unload_after_minutes',
+    'audio.release_tail_ms',
     'audio.lower_volume.enabled', 'audio.lower_volume.level',
     'audio.continuous_mode', 'audit.enabled', 'ui.mode', 'ui.theme', 'ui.open_on_start',
     'console.start_hidden', 'overlay.click_through', 'onboarding.gpu', 'onboarding.gpu_class',
@@ -119,6 +120,9 @@ class Appliers:
             engine.beam_size = int(value)
         elif path == 'whisper.initial_prompt':
             engine.initial_prompt = value or None
+        elif path == 'whisper.vad_filter':
+            from ..whisper_engine import WhisperEngine
+            WhisperEngine.vad_filter = value is not False
         elif path == 'whisper.hotwords':
             words = [str(w) for w in (value or [])]
             engine.hotwords = (", ".join(words) or None) if not isinstance(engine.hotwords, list) else words
@@ -240,7 +244,8 @@ class Appliers:
         audio = self.cm.get_audio_config()
         overrides = {}
         if path == 'audio.input_device':
-            overrides['device'] = value if isinstance(value, int) else None
+            # A microphone name (or a device number); the default input otherwise.
+            overrides['device'] = None if value in (None, '', 'default') else value
             label = 'Switching microphone'
         elif path == 'audio.channels':
             overrides['channels'] = int(value)
@@ -420,6 +425,11 @@ class Appliers:
         )
         self.sm.audio_feedback = OptionalComponent(feedback)
 
+    # How long History keeps dictations: older ones go now and on each write.
+    def history_retention(self, path, value, old):
+        from .. import transcript_log
+        transcript_log.set_retention(value)
+
     def logging_cfg(self, path, value, old):
         if path == 'logging.log_transcriptions':
             for target in (self.sm.whisper_engine, self.sm.voice_command_manager):
@@ -552,6 +562,7 @@ _HANDLERS = {
     'whisper.task': Appliers.engine_attr,
     'whisper.beam_size': Appliers.engine_attr,
     'whisper.initial_prompt': Appliers.engine_attr,
+    'whisper.vad_filter': Appliers.engine_attr,
     'whisper.hotwords': Appliers.engine_attr,
     'whisper.models': Appliers.models_map,
     'whisper.model': Appliers.engine_rebuild,
@@ -573,6 +584,7 @@ _HANDLERS = {
     'streaming.streaming_model': Appliers.streaming,
     'voice_commands.enabled': Appliers.voice_commands,
     'update_check.enabled': Appliers.update_check,
+    'history.keep_days': Appliers.history_retention,
 }
 
 _PREFIX_HANDLERS = [

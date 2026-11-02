@@ -5,14 +5,19 @@
 # cancel (delayed_send.py). Cross-platform through the platform.keyboard layer.
 
 import logging
+import threading
 import time
 from typing import Optional
 
 import pyperclip
 
 from .delayed_send import count_words, wait_seconds
-from .platform import keyboard
+from .platform import clipboard, keyboard
 from .utils import parse_hotkey
+
+# One clipboard paste at a time across the whole app (dictation, voice
+# commands, the send key): each saves and restores the user's clipboard.
+_PASTE_LOCK = threading.Lock()
 
 
 def _foreground_exe() -> str:
@@ -28,8 +33,14 @@ class ClipboardManager:
                  paste_clipboard_restore_delay,
                  type_also_copy_to_clipboard, type_auto_enter_delay,
                  type_auto_enter_delay_per_100_chars,
-                 macos_key_simulation_delay, auto_send_delay=0):
+                 macos_key_simulation_delay, auto_send_delay=0, send_key='enter',
+                 trailing_space=False):
         self.logger = logging.getLogger(__name__)
+        # The keys an auto-send presses ("enter", "ctrl+enter", "shift+enter";
+        # an app rule can choose its own), and whether a space follows each
+        # pasted dictation so the next one doesn't run into it.
+        self.send_key = send_key or 'enter'
+        self.trailing_space = bool(trailing_space)
         # Seconds to wait before an auto-send presses Enter (0 = at once), and
         # the countdown that does the waiting (a DelayedSend, set by main.py).
         self.auto_send_delay = auto_send_delay
@@ -140,31 +151,71 @@ class ClipboardManager:
             self.logger.error(f"Failed to inject text: {e}")
             return False
 
+    # Paste through the clipboard and give the user's clipboard back: every
+    # format (a screenshot survives), and only when nobody copied anything
+    # during the wait. One paste at a time, so two deliveries close together
+    # can't leave a transcript on the clipboard in place of the user's.
     def _clipboard_paste(self, text: str) -> bool:
-        try:
-            original_content = None
-            if self.paste_preserve_clipboard:
-                original_content = pyperclip.paste()
+        with _PASTE_LOCK:
+            try:
+                saved = clipboard.snapshot() if self.paste_preserve_clipboard else None
 
-            if not self.copy_text(text):
+                if not self.copy_text(text):
+                    return False
+                ours = clipboard.sequence()
+
+                time.sleep(self.paste_pre_paste_delay)
+                keyboard.send_hotkey(*self.paste_keys)
+
+                print("   ✓ Auto-pasted via key simulation")
+                # Which app got the keys: "pasted" only means they were sent.
+                self.logger.info(f"Pasted at the cursor (in {_foreground_exe() or 'an unknown app'})")
+
+                if saved is not None:
+                    time.sleep(self.paste_clipboard_restore_delay)
+                    self._restore_clipboard(saved, ours)
+
+                return True
+
+            except Exception as e:
+                self.logger.error(f"Failed to simulate paste keypress: {e}")
                 return False
 
-            time.sleep(self.paste_pre_paste_delay)
-            keyboard.send_hotkey(*self.paste_keys)
+    # Pastes `text` at the cursor through the clipboard, whatever the delivery
+    # method (Rephrase replaces a selection this way).
+    def paste_text(self, text: str) -> bool:
+        return self._clipboard_paste(text)
 
-            print("   ✓ Auto-pasted via key simulation")
-            # Which app got the keys: "pasted" only means they were sent.
-            self.logger.info(f"Pasted at the cursor (in {_foreground_exe() or 'an unknown app'})")
+    # The text selected in the focused app (sends Ctrl+C), with the user's
+    # clipboard put back whole afterwards. '' when nothing was selected: the
+    # clipboard didn't change (or, where that can't be told, still holds the
+    # same text).
+    def read_selection(self, wait: float = 0.12) -> str:
+        with _PASTE_LOCK:
+            saved = clipboard.snapshot()
+            before = clipboard.sequence()
+            keyboard.send_hotkey('ctrl', 'c')
+            time.sleep(wait)
+            if before and clipboard.sequence() == before:
+                return ''
+            try:
+                selection = pyperclip.paste() or ''
+            except Exception:
+                selection = ''
+            if saved is not None:
+                clipboard.restore(saved)
+            if not before and saved is not None and saved.items and saved.items[0][1] == selection:
+                return ''
+            return selection
 
-            if original_content is not None:
-                time.sleep(self.paste_clipboard_restore_delay)
-                pyperclip.copy(original_content)
-
-            return True
-
-        except Exception as e:
-            self.logger.error(f"Failed to simulate paste keypress: {e}")
-            return False
+    # Puts the saved clipboard back unless something else was copied since the
+    # transcript went on it (sequence 0 = the platform can't tell; restore).
+    def _restore_clipboard(self, saved, ours: int) -> None:
+        if ours and clipboard.sequence() != ours:
+            self.logger.info("Clipboard changed during the paste; leaving the new content")
+            return
+        if not clipboard.restore(saved):
+            self.logger.warning("Could not fully restore the clipboard after pasting")
 
     def execute_delivery(self, text: str) -> bool:
         if self.delivery_method == "type":
@@ -172,16 +223,22 @@ class ClipboardManager:
         else:
             return self._clipboard_paste(text)
 
-    def send_enter_key(self) -> bool:
+    # Presses the send keys: `keys` when given (an app rule's), else the main
+    # setting.
+    def send_enter_key(self, keys: Optional[str] = None) -> bool:
+        combo = str(keys or getattr(self, 'send_key', 'enter') or 'enter').strip().lower()
         try:
-            self.logger.info("Sending ENTER key to active application")
-            keyboard.send_key('enter')
-            print("   ✓ Text submitted with ENTER!")
+            self.logger.info(f"Sending {combo.upper()} to active application")
+            if combo == 'enter':
+                keyboard.send_key('enter')
+            else:
+                keyboard.send_hotkey(*parse_hotkey(combo))
+            print(f"   ✓ Text submitted with {combo.upper()}!")
 
             return True
 
         except Exception as e:
-            self.logger.error(f"Failed to send ENTER key: {e}")
+            self.logger.error(f"Failed to send {combo}: {e}")
             return False
 
     # The Enter of an auto-send: pressed now, or handed to the countdown when a
@@ -189,14 +246,15 @@ class ClipboardManager:
     # the send key always sends at once). `delay` is an app rule's own wait,
     # which replaces the main one; an "Auto" wait follows `text`'s length.
     # True when Enter was pressed or is on its way.
-    def auto_send(self, allow_delay: bool = False, delay=None, text: str = '') -> bool:
+    # `key` is an app rule's send keys for this send (None = the main setting).
+    def auto_send(self, allow_delay: bool = False, delay=None, text: str = '', key: Optional[str] = None) -> bool:
         if delay is None:
             delay = getattr(self, 'auto_send_delay', 0)
         delay = wait_seconds(delay, count_words(text))
         if allow_delay and delay > 0 and getattr(self, 'delayed_send', None) is not None:
-            self.delayed_send.schedule(delay)
+            self.delayed_send.schedule(delay, keys=key)   # pressed when the countdown fires
             return True
-        return self.send_enter_key()
+        return self.send_enter_key(key)
 
     def send_is_pending(self) -> bool:
         ds = getattr(self, 'delayed_send', None)
@@ -206,9 +264,15 @@ class ClipboardManager:
                               transcribed_text: str,
                               use_auto_enter: bool = False,
                               allow_delay: bool = False,
-                              send_delay=None) -> bool:
+                              send_delay=None,
+                              send_key: Optional[str] = None) -> bool:
 
         try:
+            # A space after the text so the next dictation doesn't run into
+            # it; never before a send, which would send the space too.
+            if (getattr(self, 'trailing_space', False) and not use_auto_enter and transcribed_text
+                    and not transcribed_text[-1].isspace()):
+                transcribed_text += ' '
             if self.auto_paste:
                 success = self.execute_delivery(transcribed_text)
                 if success and use_auto_enter:
@@ -216,7 +280,7 @@ class ClipboardManager:
                         delay = self.type_auto_enter_delay + len(transcribed_text) / 100 * self.type_auto_enter_delay_per_100_chars
                         if delay > 0:
                             time.sleep(delay)
-                    success = self.auto_send(allow_delay, send_delay, text=transcribed_text)
+                    success = self.auto_send(allow_delay, send_delay, text=transcribed_text, key=send_key)
             else:
                 print("📋 Copying to clipboard...")
                 success = self.copy_with_notification(transcribed_text)

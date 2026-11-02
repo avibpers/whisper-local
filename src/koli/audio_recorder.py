@@ -13,9 +13,11 @@
 #     Whisper's 16 kHz only at stop time. This avoids resampling per chunk during
 #     a recording, which would burn CPU.
 #
-#   • Mid-recording USB disconnects trigger a 3-retry recovery loop that falls
-#     back to the system default input. Silent-mic (peak amplitude near zero)
-#     surfaces a console warning on stop.
+#   • The microphone is remembered by name (device numbers move when devices
+#     come and go). A stream that fails or goes quiet is reopened, never given
+#     up on: on your microphone when it is there, else on the default input,
+#     and back on yours once it is plugged in again. A recording in progress
+#     keeps what it had. Silent-mic (peak amplitude near zero) is reported.
 
 import collections
 import logging
@@ -27,7 +29,11 @@ import numpy as np
 import sounddevice as sd
 import soxr
 
-from .platform import app, session as desktop_session
+from .platform import IS_WINDOWS, app, session as desktop_session
+
+
+def app_is_windows() -> bool:
+    return IS_WINDOWS
 from .voice_activity_detection import VadEvent, VAD_CHUNK_SIZE
 
 
@@ -41,8 +47,92 @@ def _report_problem(message: str) -> None:
         pass
 
 
+# ── Microphones by name ──────────────────────────────────────────────────────
+
+# Whether two device names are the same microphone. The MME driver cuts
+# names to 31 characters, so a long name also matches its cut-off start.
+def same_mic(a: str, b: str) -> bool:
+    a, b = (a or '').strip().lower(), (b or '').strip().lower()
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    short, long_ = sorted((a, b), key=len)
+    return len(short) >= 25 and long_.startswith(short)
+
+
+# The input device number for a microphone name: on `host` (the chosen audio
+# driver; Windows lists each microphone once per driver) when it is there,
+# else on any driver. None when it isn't plugged in. Automatic (no host) is
+# WASAPI on Windows, as everywhere else in Koli; MME comes first in the list.
+AUTOMATIC_HOST_WINDOWS = 'Windows WASAPI'
+
+
+def find_input_device(name: str, host: Optional[str] = None) -> Optional[int]:
+    try:
+        devices = sd.query_devices()
+        hostapis = sd.query_hostapis()
+    except Exception:
+        return None
+    if not host and app_is_windows():
+        host = AUTOMATIC_HOST_WINDOWS
+    matches = [i for i, d in enumerate(devices)
+               if d.get('max_input_channels', 0) > 0 and same_mic(d.get('name'), name)]
+    if host:
+        for i in matches:
+            if hostapis[devices[i]['hostapi']]['name'].lower() == host.lower():
+                return i
+    return matches[0] if matches else None
+
+
+# A microphone setting as a device number for sounddevice: None for the
+# default input ("default", "" or None), a number as it is, a name looked up.
+# A name that isn't plugged in raises LookupError.
+def resolve_input(setting, host: Optional[str] = None) -> Optional[int]:
+    if setting in (None, '', 'default'):
+        return None
+    if isinstance(setting, int):
+        return setting
+    text = str(setting).strip()
+    if text.isdigit():
+        return int(text)
+    found = find_input_device(text, host)
+    if found is None:
+        raise LookupError(f"{text} isn't plugged in")
+    return found
+
+
+# Has PortAudio reread its device list, which it reads once at start (a
+# microphone plugged in later is invisible until then). Only safe with no
+# stream of ours open; a meeting's own microphone stream, if one is open,
+# fails and falls back to the dictation microphone (meeting/capture.py).
+def _refresh_device_list():
+    try:
+        sd._terminate()
+        sd._initialize()
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"Could not reread the audio devices: {e}")
+
+
 class AudioRecorder:
     WHISPER_SAMPLE_RATE = 16000
+    # No audio for this long means the stream is gone (an unplugged device on
+    # WASAPI often just stops calling back).
+    STALL_SECONDS = 2.0
+    # The longest wait between two attempts to reopen a failed stream.
+    RETRY_MAX_WAIT_S = 5.0
+    # How often Windows' live list is checked for your microphone coming back.
+    MIC_BACK_CHECK_S = 3.0
+
+    # The chosen audio driver, where a microphone name is looked up first
+    # (set per recorder; None = any driver).
+    preferred_host = None
+
+    # Whether the device list may be reread on a reopen; the state manager
+    # says no while a meeting holds its own streams.
+    @staticmethod
+    def may_refresh_devices() -> bool:
+        return True
     THREAD_JOIN_TIMEOUT = 2.0
     LOOP_SLEEP_MS = 100
     STREAM_DTYPE = np.float32
@@ -63,9 +153,13 @@ class AudioRecorder:
                  on_streaming_result: Callable[[str, bool], None] = None,
                  device=None,
                  noise_suppression_config: Optional[dict] = None,
-                 whisper_mode_config: Optional[dict] = None):
+                 whisper_mode_config: Optional[dict] = None,
+                 host: Optional[str] = None):
 
         self.sample_rate = self.WHISPER_SAMPLE_RATE
+        # The chosen audio driver (Settings › Audio driver): where a microphone
+        # name is looked up first.
+        self.preferred_host = host
         self.channels = channels
         self.dtype = dtype
         self.max_duration = max_duration
@@ -104,6 +198,7 @@ class AudioRecorder:
         self._capture_running = False
         self._capture_thread = None
         self._stream_error = None
+        self._last_audio_at = time.monotonic()
         self._current_level = 0.0
         # Meeting mode listens to the microphone through taps: fn(mono 16 kHz
         # float32, wall clock), called on the audio thread for every chunk.
@@ -128,35 +223,48 @@ class AudioRecorder:
         if self.on_streaming_result:
             self.on_streaming_result(text, is_final)
 
-    # `chosen_device` is the microphone from Settings; `device` is the one
-    # opened. Over Remote Desktop that is always the default input (Remote
-    # Audio), since the PC's own microphones only send silence there.
+    # `chosen_device` is the microphone from Settings (a name, "default", or a
+    # device number from older callers); `chosen_name` its name, which is what
+    # finds it again after devices move; `device` is the one opened. Over
+    # Remote Desktop that is always the default input (Remote Audio), since
+    # the PC's own microphones only send silence there.
     def resolve_device(self, device):
         self.chosen_device = device
-        if device not in (None, "default") and desktop_session.is_remote():
+        self.chosen_name = None
+        if device not in (None, '', 'default') and not isinstance(device, int) and not str(device).isdigit():
+            self.chosen_name = str(device).strip()
+        if device not in (None, '', "default") and desktop_session.is_remote():
             self.logger.info("Remote desktop: recording from the default input (the microphone your remote client passes through)")
             device = None
-        if device == "default" or device is None:
+        try:
+            index = resolve_input(device, self.preferred_host)
+        except LookupError:
+            self.logger.warning(f"{self.chosen_name} isn't plugged in; recording from the default input until it is")
+            _report_problem(f"{self.chosen_name} isn't plugged in, so Koli is recording from "
+                            f"{self._device_name(None)} until it is.")
+            index = None
+        self._open_index(index)
+
+    # Takes device number `index` (None = the default input) when it has input
+    # channels, else the default input.
+    def _open_index(self, index):
+        if index is None:
             self.device = None
             self._resolve_hostapi(None)
-        elif isinstance(device, int):
-            try:
-                device_info = sd.query_devices(device)
-                if device_info.get('max_input_channels', 0) > 0:
-                    self.device = device
-                    self._resolve_hostapi(device_info)
-                else:
-                    self.logger.warning(f"Selected device {device} has no input channels; using default input instead")
-                    self.device = None
-                    self._resolve_hostapi(None)
-            except Exception as e:
-                self.logger.warning(f"Failed to load device {device}: {e}. Falling back to default input")
-                self.device = None
-                self._resolve_hostapi(None)
-        else:
-            self.logger.warning(f"Invalid device parameter: {device}, using default")
-            self.device = None
-            self._resolve_hostapi(None)
+            return
+        try:
+            device_info = sd.query_devices(index)
+            if device_info.get('max_input_channels', 0) > 0:
+                self.device = index
+                if self.chosen_name is None and self.chosen_device not in (None, '', 'default'):
+                    self.chosen_name = device_info.get('name')
+                self._resolve_hostapi(device_info)
+                return
+            self.logger.warning(f"Selected device {index} has no input channels; using default input instead")
+        except Exception as e:
+            self.logger.warning(f"Failed to load device {index}: {e}. Falling back to default input")
+        self.device = None
+        self._resolve_hostapi(None)
 
     # Everything that depends on the device's rate, in one place: the stream
     # rate, whether chunks are resampled, the VAD block size (one 16 ms VAD
@@ -174,20 +282,6 @@ class AudioRecorder:
             self._vad_blocksize = VAD_CHUNK_SIZE
         chunk_seconds = self._vad_blocksize / self._recording_rate
         self._preroll_max_chunks = max(1, int(self.PREROLL_SECONDS / chunk_seconds))
-
-    # The configured microphone could not be opened (unplugged, or its device
-    # index moved): record from the default input instead, at that device's rate.
-    # Said out loud, since the default can be a different microphone altogether.
-    def _fall_back_to_default_device(self):
-        chosen = self._device_name(self.device) if self.device is not None else None
-        self.device = None
-        self._resolve_hostapi(None)
-        self._configure_for_device_rate()
-        self.logger.info(f"Recording from the default input at {self._recording_rate} Hz "
-                         f"(VAD block {self._vad_blocksize} samples)")
-        if chosen:
-            _report_problem(f"{chosen} couldn't be opened, so Koli is recording from "
-                            f"{self._device_name(None)} instead.")
 
     # A device's name for messages; the default input when `device` is None.
     @staticmethod
@@ -292,53 +386,141 @@ class AudioRecorder:
         with app.audio_thread():
             self._run_capture()
 
+    # ── Keeping the stream alive ────────────────────────────────────────────
+    # The stream is reopened whenever it fails or goes quiet, for as long as
+    # Koli runs, waiting a little longer each time (up to RETRY_MAX_WAIT_S).
+    # Each reopen rereads the device list, so a microphone plugged back in is
+    # seen. While on the default input in place of yours, Windows' live list
+    # is checked every few seconds and yours is reopened once it is back.
     def _run_capture(self):
-        retry_count = 0
-        max_retries = 3
-        while self._capture_running and retry_count <= max_retries:
+        failures = 0
+        while self._capture_running:
             try:
-                with sd.InputStream(samplerate=self._recording_rate,
-                                    channels=self.channels,
-                                    callback=self._audio_callback,
-                                    dtype=self.STREAM_DTYPE,
-                                    blocksize=self._vad_blocksize if self.continuous_vad else None,
-                                    device=self.device,
-                                    latency='low'):
-                    retry_count = 0
-                    while self._capture_running:
-                        if self.is_recording:
-                            self._check_max_duration_exceeded()
-                        sd.sleep(self.LOOP_SLEEP_MS)
+                mine_is_back = self._run_stream()
+                failures = 0
+                if not mine_is_back:
                     return
+                self.logger.info(f"{self.chosen_name} is back; switching to it")
+                self._reopen(announce_back=True)
             except Exception as e:
                 if not self._capture_running:
                     return
-                retry_count += 1
+                failures += 1
                 self._stream_error = e
-                msg = str(e).lower()
-                is_disconnect = any(s in msg for s in (
-                    'unanticipated', 'invalid device', 'device unavailable',
-                    'no default input', 'errno -9999', 'errno -9988',
-                ))
-                if is_disconnect and retry_count <= max_retries:
-                    self.logger.warning(f"Audio stream lost ({e}); recovering to default device (attempt {retry_count}/{max_retries})")
-                    print("⚠ Audio device disconnected — falling back to default input")
-                    if self.is_recording:
-                        with self._buffer_lock:
-                            self.is_recording = False
-                            self._buffer.clear()
-                    try:
-                        self._fall_back_to_default_device()
-                    except Exception as resolve_err:
-                        self.logger.error(f"Could not resolve default device: {resolve_err}")
-                    time.sleep(0.5)
-                    continue
-                self.logger.error(f"Audio capture stream error: {e}")
-                print(f"Audio capture failed: {e}")
+                self.logger.warning(f"Audio stream lost ({e}); reopening (attempt {failures})")
+                if failures == 1:
+                    print("⚠ Microphone stream lost — reopening")
+                try:
+                    self._reopen()
+                except Exception as reopen_err:
+                    self.logger.error(f"Could not find a microphone to reopen: {reopen_err}")
+                time.sleep(min(self.RETRY_MAX_WAIT_S, 0.5 * failures))
+
+    # One open stream, until Koli stops (False) or your microphone is back
+    # while recording from the default input (True). Raises when the stream
+    # fails, stops, or sends nothing for STALL_SECONDS (an unplugged device
+    # on WASAPI often just stops calling back rather than raising).
+    def _run_stream(self) -> bool:
+        with sd.InputStream(samplerate=self._recording_rate,
+                            channels=self.channels,
+                            callback=self._audio_callback,
+                            dtype=self.STREAM_DTYPE,
+                            blocksize=self._vad_blocksize if self.continuous_vad else None,
+                            device=self.device,
+                            latency='low') as stream:
+            self._last_audio_at = time.monotonic()
+            if self._stream_error is not None:
+                self.logger.info(f"Microphone stream reopened on {self._device_name(self.device)}")
+                self._stream_error = None
+            next_check = time.monotonic() + self.MIC_BACK_CHECK_S
+            while self._capture_running:
+                if self.is_recording:
+                    self._check_max_duration_exceeded()
+                now = time.monotonic()
+                if not stream.active:
+                    raise RuntimeError('the stream stopped')
+                if now - self._last_audio_at > self.STALL_SECONDS:
+                    raise RuntimeError(f'no audio for {self.STALL_SECONDS:.0f} s')
+                if now >= next_check:
+                    next_check = now + self.MIC_BACK_CHECK_S
+                    if self._mine_is_back():
+                        return True
+                sd.sleep(self.LOOP_SLEEP_MS)
+        return False
+
+    # Recording from the default input in place of your microphone, idle, and
+    # Windows lists yours again.
+    def _mine_is_back(self) -> bool:
+        if self.device is not None or not self.chosen_name or self.is_recording:
+            return False
+        if not self.may_refresh_devices():
+            return False   # it couldn't be reopened yet anyway
+        if desktop_session.is_remote():
+            return False
+        try:
+            from .platform import audio_sessions
+            names = audio_sessions.microphones()
+        except Exception:
+            return False
+        return bool(names) and any(same_mic(n, self.chosen_name) for n in names)
+
+    # Reopens on your microphone when it is plugged in, else the default input
+    # (said out loud: it can be another microphone altogether). The device
+    # list is reread first: PortAudio reads it once at start, so a microphone
+    # plugged back in is otherwise never seen. A recording in progress keeps
+    # what it had, converted to the new device's rate.
+    def _reopen(self, announce_back: bool = False):
+        old_rate = self._recording_rate
+        if self.may_refresh_devices():
+            _refresh_device_list()
+        on_default_before = self.device is None
+        self.resolve_device_quietly()
+        self._configure_for_device_rate()
+        self._carry_buffer(old_rate, self._recording_rate)
+        self.logger.info(f"Recording from {self._device_name(self.device)} at {self._recording_rate} Hz "
+                         f"(VAD block {self._vad_blocksize} samples)")
+        if self.chosen_name and self.device is None and not on_default_before:
+            _report_problem(f"{self.chosen_name} stopped working, so Koli is recording from "
+                            f"{self._device_name(None)} until it is back.")
+        elif announce_back and self.device is not None:
+            _report_problem(f"{self.chosen_name} is back. Koli records from it again.")
+
+    # resolve_device without the "isn't plugged in" message (the reopen says
+    # what happened in its own words).
+    def resolve_device_quietly(self):
+        chosen, name = self.chosen_device, self.chosen_name
+        try:
+            index = None if desktop_session.is_remote() else resolve_input(name or chosen, self.preferred_host)
+        except LookupError:
+            index = None
+        self._open_index(index)
+        self.chosen_device, self.chosen_name = chosen, name
+
+    # Audio already in the buffer was captured at `old_rate`; a new device may
+    # run at another. While recording it is resampled so the dictation keeps
+    # it; idle it is only pre-roll and is dropped.
+    def _carry_buffer(self, old_rate: int, new_rate: int):
+        if old_rate == new_rate:
+            return
+        with self._buffer_lock:
+            if not self._buffer:
                 return
+            if not self.is_recording:
+                self._buffer.clear()
+                return
+            audio = np.concatenate(list(self._buffer), axis=0).reshape(-1).astype(np.float32)
+            carried = soxr.resample(audio, old_rate, new_rate).astype(self.STREAM_DTYPE).reshape(-1, 1)
+            self._buffer.clear()
+            self._buffer.append(carried)
 
     def _audio_callback(self, audio_data, frames, _time, status):
         chunk = audio_data.copy()
+        # A stereo stream is mixed to one channel here, once: everything after
+        # (resampling, VAD, Whisper) treats the samples as mono, and a flattened
+        # two-channel array interleaves left and right into garbled audio.
+        if chunk.ndim > 1 and chunk.shape[1] > 1:
+            chunk = chunk.mean(axis=1, keepdims=True).astype(audio_data.dtype, copy=False)
+        self._last_audio_at = time.monotonic()   # the capture loop's "still alive"
         recording = self.is_recording
 
         # The level is also measured while "Test my microphone" is open, which
@@ -420,6 +602,20 @@ class AudioRecorder:
             self._buffer.clear()
         return self._build_audio_array(snapshot)
 
+    # Says which microphone sent nothing and where to look, at most once a
+    # minute (phrases of one dictation would otherwise repeat it).
+    SILENT_MIC_REPORT_EVERY_S = 60.0
+    last_clip_silent = False
+
+    def _report_silent_mic(self):
+        now = time.monotonic()
+        if now - self.__dict__.get('_silent_reported_at', -1e9) < self.SILENT_MIC_REPORT_EVERY_S:
+            return
+        self._silent_reported_at = now
+        _report_problem(f"No sound came from {self._device_name(getattr(self, 'device', None))}. "
+                        "Check that it isn't muted, or pick another microphone in Settings. "
+                        "Windows can also block microphones: Settings › Privacy & security › Microphone.")
+
     def _build_audio_array(self, chunks) -> Optional[np.ndarray]:
         if not chunks:
             print("   ✗ No audio data recorded!")
@@ -427,9 +623,13 @@ class AudioRecorder:
 
         audio_array = np.concatenate(chunks, axis=0)
         peak = float(np.max(np.abs(audio_array))) if len(audio_array) else 0.0
-        if peak < 1e-5:
+        # Digital silence: even a quiet room leaves a noise floor, so this is
+        # a muted or blocked microphone, not "no speech" (after Handy).
+        self.last_clip_silent = peak < 1e-5
+        if self.last_clip_silent:
             self.logger.warning(f"Recorded audio is silent (peak={peak:.2e}) — mic may be muted or permission denied")
             print("   ⚠ Recording captured pure silence — mic muted, unplugged, or OS permission denied?")
+            self._report_silent_mic()
 
         if self._needs_resampling_cached:
             self.logger.info(f"Resampling from {self._recording_rate} Hz to {self.WHISPER_SAMPLE_RATE} Hz")

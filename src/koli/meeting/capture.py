@@ -271,8 +271,11 @@ class MicStream:
 
     def start(self) -> bool:
         try:
-            self.rate = int(self._device_rate(self.device))
-            self._stream = self._open(self.device, self.rate, self._callback)
+            # A microphone name is looked up now: device numbers move.
+            from ..audio_recorder import resolve_input
+            device = resolve_input(self.device)
+            self.rate = int(self._device_rate(device))
+            self._stream = self._open(device, self.rate, self._callback)
             self._stream.start()
             logger.info(f"Meeting microphone: device {self.device if self.device is not None else 'default'} at {self.rate} Hz")
             return True

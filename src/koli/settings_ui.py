@@ -533,7 +533,7 @@ def _build_postprocess_tab(nb, cm, vars_, row_index):
               'Per-app styles live in app_rules.yaml.')
 
     checks = [
-        ('postprocess.strip_filler_words', 'Strip filler words  (um, uh, like, you know)', 'strip_filler_words'),
+        ('postprocess.strip_filler_words', 'Strip filler words  (uh, hmm, um in English)', 'strip_filler_words'),
         ('postprocess.capitalize_first', 'Capitalize first letter', 'capitalize_first'),
         ('postprocess.ensure_punctuation', 'Ensure sentence ends with punctuation', 'ensure_punctuation'),
         ('postprocess.strip_trailing_period', 'Strip trailing period', 'strip_trailing_period'),

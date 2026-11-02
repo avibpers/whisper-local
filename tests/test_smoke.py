@@ -218,7 +218,29 @@ class TextPostprocessTests(unittest.TestCase):
     def test_strip_filler_words(self):
         from koli.text_postprocess import postprocess
         cfg = {'strip_filler_words': True}
-        self.assertEqual(postprocess("um, hello like world", cfg), "hello world")
+        # "um" goes in English; "like" is a real word and stays.
+        self.assertEqual(postprocess("um, hello like world", cfg, language='en'), "hello like world")
+        self.assertEqual(postprocess("I like it", cfg, language='en'), "I like it")
+
+    def test_language_gated_fillers_stay_when_the_language_is_unknown(self):
+        from koli.text_postprocess import postprocess
+        cfg = {'strip_filler_words': True}
+        # Portuguese "um" is "a": no language, no removal; "uh" always goes.
+        self.assertEqual(postprocess("comprei um livro uh", cfg), "comprei um livro")
+        self.assertEqual(postprocess("comprei um livro", cfg, language='pt'), "comprei um livro")
+        self.assertEqual(postprocess("אממ אני חושב", cfg, language='he'), "אני חושב")
+
+    def test_your_filler_list_replaces_the_built_in_ones(self):
+        from koli.text_postprocess import postprocess
+        cfg = {'strip_filler_words': True, 'filler_words': ['like', 'you know']}
+        self.assertEqual(postprocess("it was like big you know uh", cfg, language='en'), "it was big uh")
+
+    def test_a_sentence_opening_filler_hands_on_its_capital(self):
+        from koli.text_postprocess import postprocess
+        cfg = {'strip_filler_words': True}
+        self.assertEqual(postprocess("Um, so I think. Uh um yes", cfg, language='en'), "So I think. Yes")
+        # Mid-sentence: nothing to capitalize.
+        self.assertEqual(postprocess("and Um so", cfg, language='en'), "and so")
 
     def test_capitalize_first(self):
         from koli.text_postprocess import postprocess
@@ -330,14 +352,24 @@ class TextPostprocessTests(unittest.TestCase):
         }
         self.assertEqual(postprocess("x backref y", cfg), r"x \1\g<0> y")
 
-    def test_polish_prompt_handles_curly_braces(self):
+    def test_polish_sends_the_dictation_as_its_own_message(self):
         from koli.llm import prompts
         msgs = prompts.polish('Polish:\n\n{text}', "config = {a: 1, b: 2}")
-        self.assertEqual(msgs[-1]['content'], "Polish:\n\nconfig = {a: 1, b: 2}")
-        msgs = prompts.polish('Format: {format_var} not a placeholder. {text}', "hi")
-        self.assertEqual(msgs[-1]['content'], "Format: {format_var} not a placeholder. hi")
-        # No {text}: the dictation follows the instruction.
-        self.assertEqual(prompts.polish('Fix it', 'x')[-1]['content'], "Fix it\n\nx")
+        self.assertEqual(msgs[-1], {'role': 'user', 'content': "config = {a: 1, b: 2}"})
+        self.assertTrue(msgs[0]['content'].startswith('Polish:'))
+        self.assertNotIn('{text}', msgs[0]['content'])
+        self.assertIn('never answer it', msgs[0]['content'])
+        msgs = prompts.polish('Format: {format_var} not a placeholder.', "hi")
+        self.assertTrue(msgs[0]['content'].startswith('Format: {format_var} not a placeholder.'))
+
+    def test_polish_answer_reads_json_or_a_plain_answer(self):
+        from koli.llm import prompts
+        self.assertEqual(prompts.polish_answer('{"text": "What time is it?"}'), 'What time is it?')
+        self.assertEqual(prompts.polish_answer('```json\n{"text": "Hi\u200b there."}\n```'), 'Hi there.')
+        self.assertEqual(prompts.polish_answer('Hello, world.'), 'Hello, world.')
+        # Broken JSON or the wrong shape keeps the dictation.
+        self.assertEqual(prompts.polish_answer('{"text": '), '')
+        self.assertEqual(prompts.polish_answer('{"answer": "It is noon."}'), '')
 
     def test_postprocess_polish_runs_last_and_empty_keeps_text(self):
         from koli.text_postprocess import postprocess
@@ -2573,18 +2605,19 @@ class UserReportedSeptemberTests(unittest.TestCase):
 
     def test_filler_stripping_preserves_line_structure(self):
         from koli.text_postprocess import postprocess
-        text = 'alpha like period new paragraph bravo new line charlie'
+        text = 'alpha uh period new paragraph bravo new line charlie'
         without = postprocess(text, self._fmt_cfg(strip_filler_words=False))
         with_strip = postprocess(text, self._fmt_cfg(strip_filler_words=True))
         # The ONLY difference may be the filler word itself.
-        self.assertEqual(without.replace(' like', ''), with_strip)
+        self.assertEqual(without.replace(' uh', ''), with_strip)
         self.assertIn(LF + LF, with_strip, 'paragraph break must survive (issue #9)')
 
     def test_filler_stripping_still_removes_fillers(self):
         from koli.text_postprocess import postprocess
-        got = postprocess('um hello uh there you know friend', {'strip_filler_words': True})
-        for filler in ('um ', 'uh ', 'you know'):
+        got = postprocess('um hello uh there you know friend', {'strip_filler_words': True}, language='en')
+        for filler in ('um ', 'uh '):
             self.assertNotIn(filler, got)
+        self.assertIn('you know', got)
         self.assertIn('hello', got)
 
     def test_filler_stripping_does_not_collapse_paragraphs(self):
@@ -4313,8 +4346,8 @@ class PostprocessTraceTests(unittest.TestCase):
         defaults, _ = _defaults_getter()
         cfg = dict(defaults['postprocess'], strip_filler_words=True)
         trace = []
-        out = postprocess('um I will send it', cfg, trace=trace)
-        self.assertNotIn('um', out.lower().split())
+        out = postprocess('uh I will send it', cfg, trace=trace)
+        self.assertNotIn('uh', out.lower().split())
         self.assertIn('filler_words', trace)
 
     def test_unchanged_text_leaves_an_empty_trace(self):
@@ -6022,18 +6055,19 @@ class AutoDictationStateManagerTests(unittest.TestCase):
         sm.clipboard_manager = mock.Mock(auto_paste=True, delivery_method='paste')
         sm.clipboard_manager.deliver_transcription.return_value = True
         sm._foreground_is_textable = lambda: True
+        sm._why_not_type_here = lambda: ''
         sm._pending_model_change = sm._pending_device_change = None
         sm._idle_actions = []
         sm._update_ui_state = mock.Mock()
         with mock.patch('builtins.print'), mock.patch('koli.state_manager.publish'), \
-             mock.patch('koli.state_manager.postprocess', side_effect=lambda t, cfg, trace=None, polish=None: t), \
+             mock.patch('koli.state_manager.postprocess', side_effect=lambda t, cfg, trace=None, polish=None, language=None: t), \
              mock.patch('koli.state_manager.record_transcription'), mock.patch('koli.state_manager.record_transcript'), \
              mock.patch('koli.state_manager.foreground') as fg:
             fg.get_foreground_app.return_value = {'exe': 'discord.exe'}
             sm._auto_session = sm._live_session = 1
             sm._transcription_pipeline(np.zeros(16000, dtype=np.float32), phrase=True, phrase_session=1)
         sm.clipboard_manager.deliver_transcription.assert_called_once_with('hello there ', False, allow_delay=False,
-                                                                           send_delay=None)
+                                                                           send_delay=None, send_key=None)
         sm.audio_feedback.play_stop_sound.assert_not_called()
         sm.audio_feedback.play_transcription_complete_sound.assert_not_called()
         sm._update_ui_state.assert_not_called()       # still "recording" on the bar
@@ -6066,6 +6100,7 @@ class AutoDictationStateManagerTests(unittest.TestCase):
         sm.clipboard_manager.deliver_transcription.return_value = True
         sm.clipboard_manager.send_is_pending.return_value = False
         sm._foreground_is_textable = lambda: True
+        sm._why_not_type_here = lambda: ''
         sm._pending_model_change = sm._pending_device_change = None
         sm._idle_actions = []
         sm._update_ui_state = mock.Mock()
@@ -6073,7 +6108,7 @@ class AutoDictationStateManagerTests(unittest.TestCase):
             prepare(sm)
         clip = np.zeros(16000, dtype=np.float32) if audio is None else audio
         with mock.patch('builtins.print'), mock.patch('koli.state_manager.publish'), \
-             mock.patch('koli.state_manager.postprocess', side_effect=lambda t, cfg, trace=None, polish=None: t), \
+             mock.patch('koli.state_manager.postprocess', side_effect=lambda t, cfg, trace=None, polish=None, language=None: t), \
              mock.patch('koli.state_manager.record_transcription'), mock.patch('koli.state_manager.record_transcript'), \
              mock.patch('koli.state_manager.foreground') as fg:
             fg.get_foreground_app.return_value = {'exe': 'whatsapp.root.exe'}
@@ -6750,12 +6785,24 @@ class AutoDictationShapeTests(unittest.TestCase):
     # to a 48 kHz default device but kept the 16 kHz block size, and the
     # silence detector never saw a proper frame again. Hotkey recordings hid
     # it; auto-dictation depends on that detector to end a recording.
-    def test_falling_back_to_the_default_device_recomputes_the_vad_block_size(self):
-        import unittest.mock as mock
+    def _lost_mic_recorder(self):
+        import collections
+        import threading
         from koli.audio_recorder import AudioRecorder
         rec = AudioRecorder.__new__(AudioRecorder)
         rec.logger = __import__('logging').getLogger('test')
-        rec.device = 24
+        rec.device, rec.chosen_device, rec.chosen_name = 24, 'Microphone (EMEET Piko+)', 'Microphone (EMEET Piko+)'
+        rec.preferred_host = None
+        rec.is_recording = False
+        rec._buffer, rec._buffer_lock = collections.deque(), threading.Lock()
+        rec.may_refresh_devices = lambda: False
+        return rec
+
+    def test_falling_back_to_the_default_device_recomputes_the_vad_block_size(self):
+        import unittest.mock as mock
+        from koli import audio_recorder
+        from koli.audio_recorder import AudioRecorder
+        rec = self._lost_mic_recorder()
         rec.device_hostapi = 'Windows WDM-KS'
         rec.device_native_rate = 48000
         rec._configure_for_device_rate()
@@ -6764,12 +6811,13 @@ class AutoDictationShapeTests(unittest.TestCase):
         def default_is_wasapi(info):
             rec.device_hostapi = 'Windows WASAPI'
             rec.device_native_rate = 48000
-        with mock.patch.object(rec, '_resolve_hostapi', side_effect=default_is_wasapi):
-            rec._fall_back_to_default_device()
+        with mock.patch.object(rec, '_resolve_hostapi', side_effect=default_is_wasapi),                 mock.patch.object(audio_recorder, 'find_input_device', return_value=None),                 mock.patch.object(audio_recorder.desktop_session, 'is_remote', lambda: False),                 mock.patch.object(AudioRecorder, '_device_name', side_effect=lambda d: 'mic'),                 mock.patch.object(audio_recorder, '_report_problem'):
+            rec._reopen()
         self.assertIsNone(rec.device)
         self.assertEqual((rec._recording_rate, rec._vad_blocksize), (48000, 768))
         self.assertTrue(rec._needs_resampling_cached)
         self.assertEqual(rec._preroll_max_chunks, int(AudioRecorder.PREROLL_SECONDS / (768 / 48000)))
+        self.assertEqual(rec.chosen_name, 'Microphone (EMEET Piko+)', 'your microphone is still the one wanted back')
 
     # Falling back from the microphone you chose is said out loud, naming both:
     # the default can be another microphone altogether (a headset, not the EMEET).
@@ -6777,17 +6825,11 @@ class AutoDictationShapeTests(unittest.TestCase):
     def test_falling_back_from_your_microphone_tells_you_which_one_records(self):
         import unittest.mock as mock
         from koli import audio_recorder
-        rec = audio_recorder.AudioRecorder.__new__(audio_recorder.AudioRecorder)
-        rec.logger = __import__('logging').getLogger('test')
-        rec.device = 24
+        rec = self._lost_mic_recorder()
         names = {24: 'Microphone (EMEET Piko+)', None: 'Microphone (Logitech USB Headset)'}
-        with mock.patch.object(rec, '_resolve_hostapi'), mock.patch.object(rec, '_configure_for_device_rate'), \
-                mock.patch.object(rec, '_recording_rate', 16000, create=True), \
-                mock.patch.object(rec, '_vad_blocksize', 256, create=True), \
-                mock.patch.object(audio_recorder.AudioRecorder, '_device_name', side_effect=lambda d: names[d]), \
-                mock.patch.object(audio_recorder, '_report_problem') as report:
-            rec._fall_back_to_default_device()
-            rec._fall_back_to_default_device()
+        with mock.patch.object(rec, '_resolve_hostapi'), mock.patch.object(rec, '_configure_for_device_rate'),                 mock.patch.object(rec, '_recording_rate', 16000, create=True),                 mock.patch.object(rec, '_vad_blocksize', 256, create=True),                 mock.patch.object(audio_recorder, 'find_input_device', return_value=None),                 mock.patch.object(audio_recorder.desktop_session, 'is_remote', lambda: False),                 mock.patch.object(audio_recorder.AudioRecorder, '_device_name', side_effect=lambda d: names[d]),                 mock.patch.object(audio_recorder, '_report_problem') as report:
+            rec._reopen()
+            rec._reopen()
         report.assert_called_once()
         self.assertIn('EMEET Piko+', report.call_args[0][0])
         self.assertIn('Logitech USB Headset', report.call_args[0][0])
@@ -7213,7 +7255,7 @@ class DelayedSendDeliveryTests(unittest.TestCase):
         cb = self._clipboard(5)
         self.assertTrue(cb.deliver_transcription('hello', use_auto_enter=True, allow_delay=True))
         cb.send_enter_key.assert_not_called()
-        cb.delayed_send.schedule.assert_called_once_with(5)
+        cb.delayed_send.schedule.assert_called_once_with(5, keys=None)
 
     # The send key is a deliberate "send it": no wait, whatever the setting.
     def test_the_send_key_sends_right_away_even_with_a_wait_set(self):
@@ -7232,24 +7274,24 @@ class DelayedSendDeliveryTests(unittest.TestCase):
     def test_an_app_rules_wait_overrides_the_main_setting(self):
         cb = self._clipboard(5)
         cb.deliver_transcription('hello', use_auto_enter=True, allow_delay=True, send_delay=2)
-        cb.delayed_send.schedule.assert_called_once_with(2)
+        cb.delayed_send.schedule.assert_called_once_with(2, keys=None)
         cb = self._clipboard(5)
         cb.deliver_transcription('hello', use_auto_enter=True, allow_delay=True, send_delay=0)
         cb.send_enter_key.assert_called_once()
         cb.delayed_send.schedule.assert_not_called()
         cb = self._clipboard(0)
         cb.deliver_transcription('hello', use_auto_enter=True, allow_delay=True, send_delay=3)
-        cb.delayed_send.schedule.assert_called_once_with(3)
+        cb.delayed_send.schedule.assert_called_once_with(3, keys=None)
 
     # Auto waits follow the length of what was pasted.
     def test_an_auto_wait_follows_the_message_length(self):
         cb = self._clipboard('auto_medium')
         cb.deliver_transcription('ok', use_auto_enter=True, allow_delay=True)
-        cb.delayed_send.schedule.assert_called_once_with(1.0)
+        cb.delayed_send.schedule.assert_called_once_with(1.0, keys=None)
         cb = self._clipboard(0)
         cb.deliver_transcription(' '.join(['word'] * 15), use_auto_enter=True, allow_delay=True,
                                  send_delay='auto_slow')
-        cb.delayed_send.schedule.assert_called_once_with(5.0)
+        cb.delayed_send.schedule.assert_called_once_with(5.0, keys=None)
 
 
 class AutoSendWaitTests(unittest.TestCase):
