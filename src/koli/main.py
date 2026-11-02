@@ -31,7 +31,7 @@ import signal
 import sys
 import threading
 
-from .platform import app, permissions, console
+from .platform import app, permissions, console, instance_lock
 from .config_manager import ConfigManager
 from .audio_recorder import AudioRecorder
 from .hotkey_listener import HotkeyListener
@@ -137,10 +137,13 @@ def _enable_fault_handler():
 _FAULT_LOG = None
 
 
-def _send_quit_to_running_instance() -> int:
+# The PID-file fallback of --quit, for the instance asked for: "Koli_test"
+# with --test. It read "Koli.pid" whatever was asked, so quitting a test copy
+# that didn't answer its channel in time terminated your Koli (2026-11-02).
+def _send_quit_to_running_instance(instance_name: str = "Koli") -> int:
     import signal
     from pathlib import Path
-    pid_file = Path(get_user_app_data_path()) / "Koli.pid"
+    pid_file = Path(get_user_app_data_path()) / f"{instance_name}.pid"
     if not pid_file.exists():
         print("No running Koli instance found.")
         return 0
@@ -409,6 +412,20 @@ def repair_unusable_hotkeys(hotkey_config, config_manager):
                                 f"in Settings → Hotkeys."})
 
 
+# A --test copy started while your Koli runs must not act on the desktop too:
+# both would hear the hotkey, record, transcribe and paste, so every
+# dictation came out twice (2026-11-02, an agent's test copy). It keeps its
+# window and engine for testing, without hotkeys, auto-dictation, the wake
+# word, meeting detection or the local API.
+def test_copy_is_hands_off(test_mode: bool, main_instance: str = "Koli") -> bool:
+    if not test_mode:
+        return False
+    try:
+        return bool(instance_lock.is_held(main_instance))
+    except Exception:
+        return False
+
+
 def setup_hotkey_listener(hotkey_config, state_manager, voice_commands_enabled=True):
     return HotkeyListener(
         state_manager=state_manager,
@@ -664,10 +681,10 @@ def main():
         # The app window version answers on its instance channel and shuts down
         # cleanly; older instances only have the PID file.
         from .ui.instance_ipc import send_quit
-        if send_quit(instance_name):
+        if send_quit(instance_name, timeout=5.0):
             print("Asked Koli to quit.")
             sys.exit(0)
-        sys.exit(_send_quit_to_running_instance())
+        sys.exit(_send_quit_to_running_instance(instance_name))
 
     if args.export_settings:
         from .settings_io import export_settings
@@ -775,6 +792,10 @@ def main():
 
     mode_label = " [TEST]" if args.test else ""
     print(f"Starting Koli [{get_version()}]{mode_label}...")
+    hands_off = test_copy_is_hands_off(args.test)
+    if hands_off:
+        print("   Your Koli is running, so this test copy is hands-off: no hotkeys, auto-dictation,\n"
+              "   wake word, meeting detection or local API (quit your Koli to test those here).")
     
     shutdown_event = threading.Event()
     setup_signal_handlers(shutdown_event)
@@ -875,12 +896,17 @@ def main():
         from .transcript_log import set_retention
         set_retention(config_manager.get_path('history.keep_days') or 0)
         
-        repair_unusable_hotkeys(hotkey_config, config_manager)
+        if hands_off:
+            logger.warning("Test copy alongside your Koli: hotkeys, auto-dictation, wake word, "
+                           "meetings and the local API stay off")
+        else:
+            repair_unusable_hotkeys(hotkey_config, config_manager)
         try:
-            hotkey_listener = setup_hotkey_listener(hotkey_config, state_manager, voice_commands_config['enabled'])
-            state_manager.set_hotkey_listener(hotkey_listener)
-            setup_auto_dictation(state_manager, config_manager, logger)
-            setup_wake_word(state_manager, config_manager, logger)
+            if not hands_off:
+                hotkey_listener = setup_hotkey_listener(hotkey_config, state_manager, voice_commands_config['enabled'])
+                state_manager.set_hotkey_listener(hotkey_listener)
+                setup_auto_dictation(state_manager, config_manager, logger)
+                setup_wake_word(state_manager, config_manager, logger)
             setup_learning(state_manager, config_manager, logger)
         except Exception as hotkey_error:
             logger.error(f"Hotkey registration failed: {hotkey_error}")
@@ -906,14 +932,16 @@ def main():
                              dev=args.ui_dev, instance_name=instance_name, notices=STARTUP_NOTICES)
             ui_host.attach()
             # Meeting mode needs the app window for its panel, so it only runs here.
+            # A hands-off test copy leaves calls to your Koli.
             try:
-                from .services.meetings import MeetingService
-                ctx.meetings = MeetingService(ctx, autostart=False)   # detection starts once the window is up
-                state_manager.meetings = ctx.meetings
+                if not hands_off:
+                    from .services.meetings import MeetingService
+                    ctx.meetings = MeetingService(ctx, autostart=False)   # detection starts once the window is up
+                    state_manager.meetings = ctx.meetings
             except Exception as e:
                 logger.error(f"Meeting mode not started: {e}", exc_info=True)
             server_cfg = config_manager.config.get('server') or {}
-            if server_cfg.get('enabled'):
+            if server_cfg.get('enabled') and not hands_off:
                 try:
                     ctx.server.start(server_cfg.get('host', '127.0.0.1'), server_cfg.get('port', 7777))
                 except Exception as e:
