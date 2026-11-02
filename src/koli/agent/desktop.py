@@ -27,6 +27,15 @@ APPEAR_SECONDS = 6.0          # how long a step waits for a control an earlier s
 APPEAR_POLL_S = 0.5
 FIND_LIMIT = 50
 SEE_LIMIT = 150               # controls the AI sees of an app in one round
+# How deep the controls are read. The program's own default, 10, stops inside
+# a Chromium app's page: Spotify's search results (rows, their Play buttons
+# and links) sit below it and were never seen. 20 reads them all (3.8 s
+# instead of 1.9 s in Spotify; deeper finds nothing more).
+SEE_DEPTH = 20
+# Not listed for the AI: a table's cells repeat the button or link inside them
+# ("cell: Play X" around "button: Play X"), plain text can't be pressed, and the
+# document is the page itself. Spotify's results filled the list with them.
+WRAPPER_ROLES = ('cell', 'gridcell', 'statictext', 'document')
 PICTURE_WIDTH = 1280          # a window's picture is made at most this wide before it is sent
 INSTALL_HINT = 'npm install -g agent-desktop'
 UNCONFIRMED = "the app didn't confirm it"
@@ -237,8 +246,8 @@ def see(call, app: str, words: List[str] = (), picture: bool = True, window: Opt
     painter = threading.Thread(target=take_picture, daemon=True) if picture else None
     if painter:
         painter.start()
-    envelope, window = _observe(call, ['snapshot', '-i', '--compact', '--timeout-ms', str(FIND_TIMEOUT_MS)],
-                                app, window)
+    envelope, window = _observe(call, ['snapshot', '-i', '--compact', '--max-depth', str(SEE_DEPTH),
+                                       '--timeout-ms', str(FIND_TIMEOUT_MS)], app, window)
     controls = _numbered((envelope.get('data') or {}).get('tree'), words)
     image = None
     if painter:
@@ -262,7 +271,7 @@ def _numbered(tree, words) -> List[dict]:
         if not isinstance(node, dict):
             return
         name = ' '.join(str(node.get('name') or '').split())[:100]
-        if node.get('ref_id') and name:
+        if node.get('ref_id') and name and node.get('role') not in WRAPPER_ROLES:
             entry = {'role': node.get('role') or 'control', 'name': name, 'ref': node['ref_id'],
                      'value': node.get('value'), 'states': node.get('states') or []}
             if _usable(node):
