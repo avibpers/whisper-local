@@ -1401,6 +1401,12 @@ class Bridge:
         approval = self._agent.approval
         return {'set': bool(approval.phrase()), 'voice': approval.can_listen(), 'recorded': approval.recorded_here()}
 
+    # Whether agent-desktop, which lets AI actions use other apps, is installed.
+    @_api
+    def agent_desktop_status(self):
+        from ..agent import desktop
+        return {'installed': bool(desktop.program()), 'install': desktop.INSTALL_HINT}
+
     # Recording the password, like the wake word: wait until the voice model
     # is ready (False starts loading it; ask again), begin with the phrase as
     # typed, say it three times (each call blocks until you have), then save.

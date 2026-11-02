@@ -410,5 +410,65 @@ class CredentialTests(unittest.TestCase):
         self.assertEqual(schema.coerce(schema.get('ai.fallbacks'), ['a/b', 'a/b', '']), ['a/b'])
 
 
+# ── Pictures ─────────────────────────────────────────────────────────────────
+
+class PictureTests(unittest.TestCase):
+    PICTURE = {'mime': 'image/jpeg', 'data': 'AAAA'}
+
+    def test_each_wire_format_carries_the_picture(self):
+        from koli.llm.transports import chat_completions, codex, gemini
+        messages = [{'role': 'system', 'content': 'rules'},
+                    {'role': 'user', 'content': 'look', 'images': [self.PICTURE]}]
+        instructions, items = codex.to_responses_input(messages)
+        self.assertEqual(instructions, 'rules')
+        self.assertEqual(items[0]['content'], [{'type': 'input_text', 'text': 'look'},
+                                               {'type': 'input_image', 'image_url': 'data:image/jpeg;base64,AAAA'}])
+        wire = chat_completions._wire(messages[1])
+        self.assertEqual(wire['content'][1], {'type': 'image_url', 'image_url': {'url': 'data:image/jpeg;base64,AAAA'}})
+        self.assertNotIn('images', wire)
+        self.assertIs(chat_completions._wire(messages[0]), messages[0], 'text-only messages are left alone')
+        parts = gemini.to_gemini(messages)['contents'][0]['parts']
+        self.assertEqual(parts[1], {'inline_data': {'mime_type': 'image/jpeg', 'data': 'AAAA'}})
+
+    def test_ollama_sends_plain_base64(self):
+        from koli import llm
+        temp = TempAppData()
+        temp.__enter__()
+        server = FakeServer({'/api/chat': as_json({'message': {'content': 'ok'}})})
+        try:
+            llm.configure(FakeConfig({'ai.model': 'ollama/llava', 'ai.ollama.address': server.url}))
+            llm.complete('commands', [{'role': 'user', 'content': 'x', 'images': [self.PICTURE]}])
+            self.assertEqual(json.loads(server.requests[0]['body'])['messages'][0]['images'], ['AAAA'])
+        finally:
+            server.close()
+            temp.__exit__(None, None, None)
+
+    # A model that reads text only is asked again without the picture, and
+    # gets none for the rest of the session.
+    def test_a_model_that_refuses_pictures_is_asked_without(self):
+        from koli import llm
+        temp = TempAppData()
+        temp.__enter__()
+
+        def answer(handler, body):
+            if b'image_url' in body:
+                return as_json({'error': {'message': 'image_url is only supported by certain models'}}, status=400)
+            return as_json({'choices': [{'message': {'content': 'fine'}}]})
+        server = FakeServer({'/v1/chat/completions': answer})
+        try:
+            llm.configure(FakeConfig({'ai.model': 'lmstudio/textonly', 'ai.lmstudio.address': server.url}))
+            llm._NO_PICTURES.discard('lmstudio/textonly')
+            self.assertTrue(llm.takes_pictures('commands'))
+            result = llm.complete('commands', [{'role': 'user', 'content': 'x', 'images': [self.PICTURE]}])
+            self.assertEqual(result.text, 'fine')
+            self.assertFalse(llm.takes_pictures('commands'))
+            llm.complete('commands', [{'role': 'user', 'content': 'x', 'images': [self.PICTURE]}])
+            self.assertEqual(len(server.requests), 3, 'refused once, then asked without every time')
+        finally:
+            llm._NO_PICTURES.discard('lmstudio/textonly')
+            server.close()
+            temp.__exit__(None, None, None)
+
+
 if __name__ == '__main__':
     unittest.main()

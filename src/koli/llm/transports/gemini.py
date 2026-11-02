@@ -18,7 +18,11 @@ def to_gemini(messages: list) -> dict:
             system.append(text)
         else:
             role = 'model' if m.get('role') == 'assistant' else 'user'
-            contents.append({'role': role, 'parts': [{'text': text}]})
+            # Pictures follow the text as inline_data parts.
+            parts = [{'text': text}] + [{'inline_data': {'mime_type': image.get('mime') or 'image/png',
+                                                        'data': image['data']}}
+                                       for image in m.get('images') or [] if image.get('data')]
+            contents.append({'role': role, 'parts': parts})
     body = {'contents': contents}
     if system:
         body['systemInstruction'] = {'parts': [{'text': '\n\n'.join(system)}]}

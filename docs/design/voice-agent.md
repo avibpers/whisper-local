@@ -80,6 +80,8 @@ Records have `.name`, `.path`, `.ext`, `.size`, `.modified` (ISO date),
 | `system(command, undo="", before="")` | A command the AI writes itself (PowerShell 5.1 on Windows, zsh or AppleScript on a Mac) for everything that isn't files: sound, screen, network, settings pages, questions about the computer. Its output is the answer in the bubble. `undo` reverses it; `before` prints the value it changes, which fills `{before}` in `undo` (a plain value only). At most 5 per request |
 | `run_command(phrase)` | One of your fixed voice commands (not an AI-made one) |
 | `say(text)` | A short answer shown in the bubble |
+| `apps_open()`, `ui(app, name, role=)`, `ui_find(app, text=, role=)` | Other apps' controls (see [Other apps](#other-apps)) |
+| `ui_click`, `ui_set_text`, `ui_toggle`, `ui_select`, `close_app` | Steps in other apps |
 
 Built-ins: `len`, `range` (up to 1000), `str`, `int`, `min`, `max`, `abs`,
 `round`.
@@ -226,6 +228,99 @@ rehearses again with that name (the writer never sees it); any other answer
 goes to the writer with the question. At most two questions per request; no
 answer, or Cancel, does nothing. The history keeps the questions and answers.
 
+## Other apps
+
+*Added 2026-11-02.* With [agent-desktop](https://github.com/vercel-labs/agent-desktop)
+installed (`npm install -g agent-desktop`) and "Use other apps" on
+(`ai.commands.desktop`, Commands › AI actions), Koli works inside your open
+apps: "play Daily Mix 6 on Spotify", "write this in Notepad", "turn on word
+wrap". agent-desktop reads each app through Windows UI Automation (the
+accessibility tree on macOS and Linux), the way a screen reader does, and
+presses controls by their accessibility calls: the mouse never moves, nothing
+takes focus, no keys are typed. Koli never passes `--headed`. Koli runs the
+native program inside the npm package (`agent/desktop.py`), or `agent-desktop`
+from the PATH.
+
+**Step by step, like a person.** A script is written before anything runs,
+blind to what the next screen will hold: it can't know that opening Daily Mix 6
+shows a "Play Daily Mix 6" button. So work inside an app is a loop
+(`agent/app_steps.py`), the way agent-desktop's own guide tells an AI to work
+("the observe, act and verify loop runs in you"):
+
+1. Koli reads the app's controls and takes a picture of its window, side by
+   side (1.5-3 s each in a Chromium app such as Spotify).
+2. The AI gets the request, the picture, the controls numbered ("12 button:
+   Play Daily Mix 6"), the steps done so far with what happened, and what
+   worked before in this app (below). It answers one step, or a few on the same
+   screen (fill two fields, then a button), by number: click, write, choose,
+   switch, turn on, turn off, close the app. Or `done` (with the answer, for a
+   question about what the app shows), `stuck` (why), or `not_here` (not about
+   this app).
+3. Koli does the steps in order. A click may change the screen, so steps
+   planned after a click wait for a new look. The AI may mark its steps
+   `final`: when they all happen, the request ends without another look
+   ("write hello in Notepad" is one round).
+4. Up to 8 looks and 120 s per request.
+
+**Which requests.** One whose words name an open app ("…on Spotify",
+"WhatsApp", "edge" for msedge; the app's whole name or first word, not any
+word of it, so "write a note to Dana" names nothing) goes to the loop first;
+the loop's `not_here` gives it to the script writer. Otherwise the writer may
+answer `"app"`: the rest is done in that app step by step, after its script
+opened it when it wasn't open. Once each way, never back and forth.
+
+**What the AI sees.** Controls on screen, up to 150. One scrolled out of view
+is listed only when its label holds two words of the request ("Daily Mix 5"
+for "play daily mix 5", not every card's hidden "Play"); a greyed-out one never.
+Buttons that show only under the mouse, and rows some apps draw without labels
+(Spotify's search results), aren't in the tree at all: the AI is told to reach
+them another way (the item's own page, Home, Back). The picture is made at most
+1280 px wide, as JPEG. With "Show the AI the app's screen"
+(`ai.commands.screenshots`, on) the picture and the fields' text go to your AI
+model each round, so it sees song names, chats and documents in that window;
+off, it gets the controls' labels only, as before. A model that refuses
+pictures is asked again without, and gets none for the rest of the session
+(`llm.takes_pictures`).
+
+**Danger.** No reviewer call per step: it would double each round. Your
+password, whatever the AI says, for: closing an app (unsaved work); a control
+labelled like sending, paying, deleting, confirming, installing, signing in or
+out or starting a call (`policy.UI_DANGERS`, English and Hebrew, whole words);
+writing over a field holding more than 200 letters. The AI rates each step
+too (`read`, `setting`, `change`, `danger`), and its `danger` asks as well.
+Everything else runs. Labels, field text and the picture are data: the AI is
+told to ignore instructions in them, and the danger words catch a "Send" it was
+talked into.
+
+**Undo.** A run keeps each step with its result, like file changes. A switch
+is switched again; a checked one goes back to the state it had when the control
+said what that was; a field gets its old text back (an empty field reports no
+value, which counts as empty). A click or a choice has no undo.
+
+**Memory.** `%APPDATA%\koli\agent\app_memory.json` (`agent/app_memory.py`)
+keeps, per app, what you said and the steps that worked, by label and role
+(never the program's refs, which die with the screen), or where it got stuck;
+the newest of the same request replaces the old, 200 at most. A new request in
+that app starts with the three most alike (by their words) in front of the AI.
+The very same request again (same words) is first replayed by label without
+asking the AI; a step that doesn't happen hands over to the loop, which knows
+from the steps so far what did.
+
+**Windows.** An app with two windows (two Notepads) makes agent-desktop ask
+which: Koli takes the focused one, else the one on top, and keeps it for the
+request.
+
+**You at the computer.** The loop looks again before each round, so what you
+did meanwhile is what the AI sees; it is told to go on from there.
+
+**Scripts.** The script actions for apps (`ui()`, `ui_click()`, `ui_set_text()`,
+`ui_check()`, `close_app()`…) stay for scripts written by hand in
+`commands.yaml`; the writer isn't shown them.
+
+**Not installed or off.** The writer is told (`other_apps` in its context);
+a script that uses an app anyway gets "install agent-desktop" or "turned off"
+in the bubble.
+
 ## Listening to a sentence
 
 A first command after your own word, with AI actions on, may be a whole
@@ -277,7 +372,8 @@ commands appear among the voice commands as "AI script".
 ## Settings
 
 `ai.commands.enabled` (on), `ai.commands.model` ('' = default),
-`ai.commands.timeout` (40 s).
+`ai.commands.timeout` (40 s), `ai.commands.desktop` (on: use other apps),
+`ai.commands.screenshots` (on: show the AI the app's screen).
 
 ## Code
 
@@ -289,6 +385,11 @@ commands appear among the voice commands as "AI script".
 - `agent/journal.py`: history, undo, signatures, repeat offers.
 - `agent/approval.py`: password setup and check.
 - `agent/runner.py`: the flow above, events to the bubble.
+- `agent/desktop.py`: other apps through agent-desktop (finding the program,
+  matching app names, finding controls, a step for real, seeing an app).
+- `agent/app_steps.py`: the step-by-step loop in an app.
+- `agent/app_memory.py`: what worked in each app, and replaying it.
+- `llm/images.py`: pictures in a request, for every provider.
 - `platform/*/files.py`: Recycle Bin (`SHFileOperationW` on Windows), Start-menu
   apps, opening the Recycle Bin; macOS stubs.
 - Hooks: `state_manager` (sources, hand-off, no retry when the AI takes it),

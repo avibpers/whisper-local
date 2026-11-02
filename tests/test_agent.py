@@ -61,6 +61,114 @@ class FakeBackend:
     def can_recycle(self, path):
         return 'usb' not in str(path).lower()
 
+    # Other apps: '' (usable), 'off' or 'not installed'; the fake program.
+    desktop_state = ''
+
+    def desktop_missing(self):
+        return self.desktop_state
+
+    def desktop(self, args):
+        if not hasattr(self, 'apps_ui'):
+            self.apps_ui = FakeDesktop()
+        return self.apps_ui.run(list(args))
+
+    # "Show the AI the app's screen".
+    pictures = True
+
+    def pictures_enabled(self):
+        return self.pictures
+
+
+# A 2x2 PNG: what the fake program sends as a window's picture.
+TINY_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEklEQVR4nGOUOxHAwMDAxAAGAA6AATrxBzxAAAAAAElFTkSuQmCC'
+
+
+class FakeDesktop:
+    # agent-desktop with a few apps. `controls`: {app: [(role, name, value)]};
+    # `reveals`: clicking (app, name) makes these controls appear (a menu);
+    # `done`: every action that reached an app; `stale`: refs it no longer knows.
+    def __init__(self):
+        self.controls = {
+            'Notepad': [('menuitem', 'File', None), ('button', 'File', None), ('textfield', 'Text editor', 'old text')],
+            'Spotify': [('button', 'Play', None), ('button', 'Send feedback', None), ('checkbox', 'Shuffle', None),
+                        ('button', 'Like', None), ('button', 'Like', None)],
+            'WhatsApp.Root': [('textfield', 'Search', '')],
+        }
+        self.reveals = {('Notepad', 'File'): [('menuitem', 'Save as', None)]}
+        self.done, self.stale, self.snap = [], set(), 0
+        # {app: [(window id, focused)]}: an app with two windows; `windows_used`: the ids looked in.
+        self.split, self.windows_used = {}, []
+        self.on = {('Spotify', 'Shuffle'): False}     # checkboxes' states
+        self.offscreen = set()          # "Spotify0": that app's control 0 is scrolled out of view
+        self.shots = 0                  # pictures taken
+
+    def _refs(self):
+        self.snap += 1
+        return {f"@s{self.snap}:{app}{i}": (app, c) for app, items in self.controls.items()
+                for i, c in enumerate(items)}
+
+    def _states(self, ref, app, name):
+        return (['checked'] if self.on.get((app, name)) else []) +             (['offscreen'] if ref.split(':', 1)[1] in self.offscreen else [])
+
+    def _match(self, m):
+        app, (role, name, value) = m[1]
+        return {'ref_id': m[0], 'role': role, 'name': name, 'value': value, 'interactive': True,
+                'states': self._states(m[0], app, name)}
+
+    def run(self, args):
+        cmd = args[0]
+        if cmd == 'list-apps':
+            return {'ok': True, 'data': {'apps': [{'name': f"{a}.exe"} for a in self.controls]}}
+        opt = lambda flag: args[args.index(flag) + 1] if flag in args else None
+        if cmd in ('find', 'snapshot'):
+            app = opt('--app')
+            window = opt('--window-id')
+            if window:
+                app = next(a for a, ws in self.split.items() if window in [w for w, _ in ws])
+                self.windows_used.append(window)
+            elif app in self.split:
+                return {'ok': False, 'error': {'code': 'AMBIGUOUS_TARGET', 'message': 'More than one window',
+                                               'details': {'candidates': [{'id': w, 'is_focused': f}
+                                                                          for w, f in self.split[app]]},
+                                               'disposition': {'delivery': 'not_delivered', 'retry': 'safe'}}}
+            if app not in self.controls:
+                return {'ok': False, 'error': {'code': 'APP_NOT_FOUND', 'message': f"Application '{app}' was not found",
+                                               'disposition': {'retry': 'safe'}}}
+            self.current = {r: v for r, v in self._refs().items() if v[0] == app}
+            items = list(self.current.items())
+            if cmd == 'snapshot':
+                return {'ok': True, 'data': {'tree': {'role': 'window', 'children': [
+                    {'ref_id': r, 'role': c[0], 'name': c[1], 'value': c[2], 'states': self._states(r, a, c[1])}
+                    for r, (a, c) in items]}}}
+            name, text, role = opt('--name'), opt('--text'), opt('--role')
+            if name:
+                items = [i for i in items if i[1][1][1].lower() == name.lower()]
+            if text:
+                items = [i for i in items if text.lower() in (i[1][1][1] + ' ' + str(i[1][1][2] or '')).lower()]
+            if role:
+                items = [i for i in items if i[1][1][0] == role]
+            return {'ok': True, 'data': {'matches': [self._match(i) for i in items], 'total_matches': len(items)}}
+        if cmd == 'screenshot':
+            self.shots += 1
+            return {'ok': True, 'data': {'data': TINY_PNG}}
+        if cmd == 'close-app':
+            self.done.append(('close-app', args[1]))
+            return {'ok': True, 'data': {}}
+        ref = args[2]          # [command, '--', ref, ...]
+        if ref in self.stale or not ref.startswith(f"@s{self.snap}:"):
+            return {'ok': False, 'error': {'code': 'STALE_REF', 'message': 'stale',
+                                           'disposition': {'delivery': 'not_delivered', 'retry': 'safe'}}}
+        app, (role, name, value) = self.current[ref]
+        self.done.append((cmd, app, name, *args[3:]))
+        if cmd == 'click':
+            self.controls[app] += self.reveals.pop((app, name), [])
+        if cmd in ('check', 'uncheck'):
+            self.on[(app, name)] = cmd == 'check'
+        if cmd == 'set-value':
+            items = self.controls[app]
+            items[items.index((role, name, value))] = (role, name, args[3])
+        return {'ok': True, 'data': {'disposition': {'delivery': 'delivered_verified', 'retry': 'unsafe'}}}
+
 
 class AgentTestCase(unittest.TestCase):
     def setUp(self):
@@ -517,6 +625,7 @@ class RunnerTests(AgentTestCase):
     # `asks`: questions the writer asks first, one per call; `answers`: what
     # you say back to each question Koli asks (None: silence).
     def runner(self, script, review=None, approval=None, understood=True, commands=(), asks=(), answers=()):
+        from koli.agent.app_memory import AppMemory
         from koli.agent.journal import Journal
         from koli.agent.policy import Folders
         from koli.agent.runner import AgentRunner
@@ -534,6 +643,7 @@ class RunnerTests(AgentTestCase):
                                                         'summary': 's', 'command_name': 'photos home', 'script': script}))
         return AgentRunner(complete, self.events.append, approval or FakeApproval(), backend=self.backend,
                            journal=Journal(self.home / 'agent'), folders=Folders(str(self.home), [], None),
+                           memory=AppMemory(self.home / 'agent'),
                            commands=lambda: list(commands), run_fixed=lambda p: self.fixed.append(p) or True,
                            hear=lambda stop: answers.pop(0) if answers else None)
 
@@ -819,6 +929,328 @@ class SavedCommandTests(AgentTestCase):
                                                   'made_by': 'ai'})
         with self.assertRaises(ValueError):
             svc.save_ai_command('bad', 'import os')
+
+
+# ── Other apps (agent-desktop) ───────────────────────────────────────────────
+
+class DesktopTests(AgentTestCase):
+    runner, phases = RunnerTests.runner, RunnerTests.phases
+
+    # Also the setUp of AppStepsTests, hence no super().
+    def setUp(self):
+        AgentTestCase.setUp(self)
+        from koli.agent import desktop
+        patch = unittest.mock.patch.multiple(desktop, APPEAR_SECONDS=0.05, APPEAR_POLL_S=0.01)
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.apps = FakeDesktop()
+        self.backend.apps_ui = self.apps
+
+    # Looking reads for real; pressing waits for the replay.
+    def test_rehearsal_reads_controls_and_presses_nothing(self):
+        recorder = self.rehearse("e = ui('notepad', 'Text editor')\nsay(e.value + ' ' + e.role + ' ' + e.app)\n"
+                                 "ui_set_text(e, 'hello')\nui_click(ui('spotify', 'Play'))")
+        self.assertEqual(recorder.said, ['old text textfield Notepad'])
+        self.assertEqual([(op['action'], op['app'], op['name']) for op in recorder.ops],
+                         [('set_text', 'Notepad', 'Text editor'), ('click', 'Spotify', 'Play')])
+        self.assertEqual(recorder.ops[0]['old_value'], 'old text', 'kept for Undo')
+        self.assertEqual(self.apps.done, [], 'nothing pressed in rehearsal')
+
+    def test_spoken_app_names_and_ambiguous_controls(self):
+        from koli.agent.actions import ActionError
+        recorder = self.rehearse("ui_click(ui('whatsapp', 'Search'))\nui_click(ui('notepad', 'File'))\n"
+                                 "say(str(app_is_open('notepad')) + str(app_is_open('excel')))")
+        self.assertEqual(recorder.ops[0]['app'], 'WhatsApp.Root')
+        self.assertEqual(recorder.said, ['TrueFalse'])
+        self.assertEqual(recorder.ops[1]['role'], 'menuitem', 'same name, other roles: the first')
+        with self.assertRaisesRegex(ActionError, '2 controls'):
+            self.rehearse("ui_click(ui('spotify', 'Like'))")
+        with self.assertRaisesRegex(ActionError, 'no “Nope”'):
+            self.rehearse("ui_click(ui('spotify', 'Nope'))")
+        with self.assertRaisesRegex(ActionError, "isn't open"):
+            self.rehearse("ui_click(ui('calculator', 'Equals'))")
+
+    # A menu item after its menu, and an app after open_app, are named unseen.
+    def test_a_control_an_earlier_step_shows_is_accepted(self):
+        recorder = self.rehearse("ui_click(ui('notepad', 'File'))\nui_click(ui('notepad', 'Save as'))")
+        self.assertEqual([op['seen'] for op in recorder.ops], [True, False])
+        recorder = self.rehearse("open_app('calculator')\nui_click(ui('calculator', 'Equals'))")
+        self.assertTrue(recorder.ops[1].get('pending_app'))
+
+    # Two Notepads: the focused window, the same one when the steps run.
+    def test_of_two_windows_the_focused_one_is_used_throughout(self):
+        from koli.agent import actions
+        self.apps.split['Notepad'] = [('w-1', False), ('w-2', True)]
+        recorder = self.rehearse("ui_click(ui('notepad', 'File'))\nui_click(ui('notepad', 'Save as'))")
+        self.assertEqual([op.get('window') for op in recorder.ops], ['w-2', 'w-2'], 'the menu item: the menu’s window')
+        results = actions.replay(recorder.ops, self.backend)
+        self.assertEqual([r['status'] for r in results], ['done', 'done'])
+        self.assertEqual(set(self.apps.windows_used), {'w-2'})
+
+    # Starting an open app again would open a second window for the steps.
+    def test_open_app_for_an_app_already_open_is_dropped(self):
+        self.apps.controls['Calculator'] = [('button', 'Equals', None)]
+        recorder = self.rehearse("open_app('calculator')\nui_click(ui('calculator', 'Equals'))")
+        self.assertEqual([op['op'] for op in recorder.ops], ['ui'])
+        recorder = self.rehearse("open_app('notepad')")       # a Store app: not in the Start menu
+        self.assertEqual((recorder.ops, recorder.notes), ([], ['Notepad is already open']))
+        self.backend.desktop_state = 'off'
+        with self.assertRaisesRegex(Exception, 'Start menu'):
+            self.rehearse("open_app('notepad')")
+
+    def test_without_agent_desktop_it_says_how_to_get_it(self):
+        from koli.agent.actions import ActionError
+        self.backend.desktop_state = 'not installed'
+        with self.assertRaisesRegex(ActionError, 'npm install -g agent-desktop'):
+            self.rehearse("ui_click(ui('spotify', 'Play'))")
+        self.runner("say('hi')").handle('pause spotify')
+        self.assertIn('"other_apps": "not installed"', self.writer_asked)
+
+    def test_steps_run_in_order_and_stop_when_one_cant(self):
+        from koli.agent import actions
+        recorder = self.rehearse("ui_click(ui('notepad', 'File'))\nui_click(ui('notepad', 'Save as'))")
+        results = actions.replay(recorder.ops, self.backend)
+        self.assertEqual([r['status'] for r in results], ['done', 'done'])
+        self.assertEqual([d[2] for d in self.apps.done], ['File', 'Save as'], 'the menu item found once it appeared')
+        # "Queue" is expected after "Play" but never appears.
+        recorder = self.rehearse("ui_click(ui('spotify', 'Play'))\nui_click(ui('spotify', 'Queue'))\n"
+                                 "ui_toggle(ui('spotify', 'Shuffle'))")
+        results = actions.replay(recorder.ops, self.backend)
+        self.assertEqual([r['status'] for r in results], ['done', 'skipped', 'skipped'])
+        self.assertNotIn('toggle', [d[0] for d in self.apps.done], 'nothing pressed after a step that failed')
+
+    def test_an_action_that_may_have_landed_is_never_repeated(self):
+        from koli.agent import desktop
+        calls = []
+
+        def call(args):
+            calls.append(args[0])
+            return {'ok': False, 'error': {'code': 'TIMEOUT', 'message': 'took too long',
+                                           'disposition': {'delivery': 'unknown', 'retry': 'unsafe'}}}
+        status = desktop.perform({'op': 'ui', 'action': 'click', 'app': 'Spotify', 'name': 'Play', 'ref': '@s1:e1'}, call)
+        self.assertEqual((status, calls), (('failed', 'took too long'), ['click']))
+
+    def test_undo_puts_text_back_and_switches_again(self):
+        from koli.agent import actions
+        recorder = self.rehearse("ui_set_text(ui('notepad', 'Text editor'), 'new')\nui_toggle(ui('spotify', 'Shuffle'))")
+        results = actions.replay(recorder.ops, self.backend)
+        self.assertIn(('textfield', 'Text editor', 'new'), self.apps.controls['Notepad'])
+        self.assertEqual(actions.undo(results, self.backend), (2, []))
+        self.assertIn(('textfield', 'Text editor', 'old text'), self.apps.controls['Notepad'])
+        self.assertEqual([d[0] for d in self.apps.done].count('toggle'), 2)
+
+    # "Turn on shuffle" turns it on, never off; Undo turns it off again.
+    def test_check_sets_a_state_and_undo_restores_it(self):
+        from koli.agent import actions
+        recorder = self.rehearse("s = ui('spotify', 'Shuffle')\nsay(str(s.checked))\nui_check(s)")
+        self.assertEqual((recorder.said, recorder.ops[0]['action'], recorder.ops[0]['was_checked']),
+                         (['False'], 'check', False))
+        results = actions.replay(recorder.ops, self.backend)
+        self.assertTrue(self.apps.on[('Spotify', 'Shuffle')])
+        recorder = self.rehearse("ui_check(ui('spotify', 'Shuffle'))")
+        self.assertEqual((recorder.ops, recorder.notes), ([], ['“Shuffle” is already on in Spotify']))
+        self.assertEqual(actions.undo(results, self.backend)[0], 1)
+        self.assertFalse(self.apps.on[('Spotify', 'Shuffle')])
+        self.assertEqual(actions.describe([{'op': 'ui', 'action': 'check', 'app': 'Spotify', 'name': 'Shuffle'}],
+                                          past=True), ['Turned on “Shuffle” in Spotify'])
+
+    def test_the_danger_words_closing_and_long_text_need_the_password(self):
+        from koli.agent import policy
+        folders = policy.Folders(str(self.home), [], None)
+        level = lambda ops: policy.level(ops, folders)[0]
+        click = lambda name, **kw: {'op': 'ui', 'action': 'click', 'app': 'X', 'name': name, **kw}
+        self.assertEqual(level([click('Play', risk='setting')]), policy.RUN)
+        self.assertEqual(level([click('Play')]), policy.PASSWORD, 'unrated')
+        self.assertEqual(level([click('Send feedback', risk='read')]), policy.PASSWORD, 'the word list wins')
+        self.assertEqual(level([click('שלח', risk='read')]), policy.PASSWORD)
+        self.assertEqual(level([click('תוכן', risk='read')]), policy.RUN, 'not inside another word')
+        self.assertEqual(level([{'op': 'ui', 'action': 'close_app', 'app': 'X', 'name': 'X', 'risk': 'read'}]),
+                         policy.PASSWORD)
+        self.assertEqual(level([{'op': 'ui', 'action': 'set_text', 'app': 'X', 'name': 'Body', 'text': 'hi',
+                                 'old_length': 5000, 'risk': 'setting'}]), policy.PASSWORD)
+        write = lambda **kw: {'op': 'ui', 'action': 'set_text', 'app': 'X', 'name': 'Body', 'text': 'hi', **kw}
+        self.assertEqual(level([write(old_value='', risk='change')]), policy.RUN, 'a change Undo puts back')
+        self.assertEqual(level([write(risk='change')]), policy.PASSWORD, 'no old text kept: no Undo')
+        self.assertEqual(level([write(old_value='', risk='danger')]), policy.PASSWORD)
+
+    # The writer looks at an app, gets its labels (never what fields hold),
+    # then writes; the reviewer rates the step, and a "read" one just runs.
+    # Spotify's cards below the fold have "Play" buttons too: the one on
+    # screen is meant, and looking doesn't list the hidden ones.
+    def test_controls_out_of_view_are_passed_over(self):
+        from koli.agent import desktop
+        self.apps.controls['Spotify'] += [('button', 'Play', None), ('button', 'Hidden card', None)]
+        self.apps.offscreen = {'Spotify0', 'Spotify6'}
+        recorder = self.rehearse("ui_click(ui('spotify', 'Play'))")
+        self.assertTrue(recorder.ops[0]['ref'].endswith(':Spotify5'))
+        seen = desktop.see(self.backend.desktop, 'Spotify', ['hidden', 'card'])
+        labels = [(c['name'], 'offscreen' in c['states']) for c in seen['controls']]
+        self.assertIn(('Play', False), labels)
+        self.assertNotIn(('Play', True), labels, 'one word of the request is not enough out of view')
+        self.assertIn(('Hidden card', True), labels, 'two words are')
+        self.assertEqual(seen['image']['mime'], 'image/jpeg', 'the picture is made small, as JPEG')
+        self.assertEqual([c['n'] for c in seen['controls']], list(range(1, len(labels) + 1)))
+
+
+# ── Step by step in an app ───────────────────────────────────────────────────
+
+class AppStepsTests(AgentTestCase):
+    runner, phases = RunnerTests.runner, RunnerTests.phases
+
+    def setUp(self):
+        DesktopTests.setUp(self)
+        self.apps.controls['Spotify'].append(('link', 'Daily Mix 6', None))
+        self.apps.reveals[('Spotify', 'Daily Mix 6')] = [('button', 'Play Daily Mix 6', None)]
+
+    # `rounds`: what the AI answers each round: {'steps': [(do, label, extra)],
+    # 'final', 'done', 'stuck', 'not_here'}; labels become this round's numbers.
+    # `writer`: the script writer's answer when it is asked.
+    def stepper(self, rounds, writer=None, approval=None):
+        runner = self.runner('', approval=approval)
+        self.rounds_seen, self.writer_calls = [], 0
+        rounds = list(rounds)
+
+        def complete(feature, messages, json=False):
+            dumps = __import__('json').dumps
+            system = messages[0]['content']
+            if 'check an automated plan' in system:
+                return FakeResult(dumps({'matches': True, 'commands': [{'risk': 'read'}]}))
+            if system.startswith('You do a task inside one app'):
+                self.rounds_seen.append(messages[-1])
+                answer = dict(rounds.pop(0))
+                numbers = {}
+                for line in messages[-1]['content'].splitlines():
+                    head, _, label = line.partition(': ')
+                    if head.split(' ')[0].isdigit() and label:
+                        numbers.setdefault(label.split(' (')[0].split(' = ')[0], int(head.split(' ')[0]))
+                answer['steps'] = [{'do': do, 'control': numbers.get(label, 999), **extra}
+                                   for do, label, extra in answer.get('steps', [])]
+                return FakeResult(dumps(answer))
+            self.writer_calls += 1
+            return FakeResult(dumps(writer or {'understood': False, 'reply': 'no'}))
+        runner.complete = complete
+        return runner
+
+    def test_a_playlist_is_played_in_two_rounds_and_remembered(self):
+        from koli.agent.app_memory import AppMemory
+        from koli.agent.runner import RAN
+        runner = self.stepper([{'steps': [('click', 'Daily Mix 6', {'risk': 'read'})]},
+                               {'steps': [('click', 'Play Daily Mix 6', {'risk': 'read'})],
+                                'final': 'Daily Mix 6 is playing'}])
+        self.assertEqual(runner.handle('Play Daily Mix 6 on Spotify.'), RAN)
+        self.assertEqual(self.apps.done, [('click', 'Spotify', 'Daily Mix 6'), ('click', 'Spotify', 'Play Daily Mix 6')])
+        self.assertEqual(self.events[-1]['text'], 'Daily Mix 6 is playing')
+        self.assertEqual(self.writer_calls, 0, 'the app was named: no script writer')
+        self.assertTrue(self.rounds_seen[0].get('images'), 'the AI sees the window')
+        self.assertIn('Click “Daily Mix 6” in Spotify: done', self.rounds_seen[1]['content'])
+        self.assertNotIn('old text', ' '.join(m['content'] for m in self.rounds_seen) + '',
+                         "another app's text isn't sent")
+        entry = AppMemory(self.home / 'agent').recipe('Spotify', 'play daily mix 6 on spotify')
+        self.assertEqual([s['name'] for s in entry['steps']], ['Daily Mix 6', 'Play Daily Mix 6'])
+
+    # The same request again: the remembered steps, no AI call at all.
+    def test_the_same_request_again_comes_from_memory(self):
+        from koli.agent.runner import RAN
+        self.stepper([{'steps': [('click', 'Daily Mix 6', {'risk': 'read'})]},
+                      {'steps': [('click', 'Play Daily Mix 6', {'risk': 'read'})], 'final': 'Playing'}]
+                     ).handle('play daily mix 6 on spotify')
+        self.backend.apps_ui = FakeDesktop()
+        self.apps = self.backend.apps_ui
+        self.setUp_spotify()
+        runner = self.stepper([])
+        self.assertEqual(runner.handle('Play Daily Mix 6 on Spotify'), RAN)
+        self.assertEqual(self.rounds_seen, [])
+        self.assertEqual(self.apps.done, [('click', 'Spotify', 'Daily Mix 6'), ('click', 'Spotify', 'Play Daily Mix 6')])
+        self.assertEqual(self.events[-1]['text'], 'Playing')
+
+    def setUp_spotify(self):
+        self.apps.controls['Spotify'].append(('link', 'Daily Mix 6', None))
+        self.apps.reveals[('Spotify', 'Daily Mix 6')] = [('button', 'Play Daily Mix 6', None)]
+
+    # A click may change the screen: what was planned after it waits for a new look.
+    def test_a_click_ends_the_round(self):
+        runner = self.stepper([{'steps': [('click', 'Daily Mix 6', {}), ('switch', 'Shuffle', {})]},
+                               {'done': 'Opened it'}])
+        runner.handle('open daily mix 6 in spotify')
+        self.assertEqual(self.apps.done, [('click', 'Spotify', 'Daily Mix 6')])
+        self.assertIn('left for after a new look', self.rounds_seen[1]['content'])
+
+    def test_a_risky_step_waits_for_the_password(self):
+        from koli.agent.runner import CANCELLED
+        runner = self.stepper([{'steps': [('click', 'Send feedback', {'risk': 'read'})]}],
+                              approval=FakeApproval(answers=[(False, 'wrong'), (False, 'wrong')]))
+        self.assertEqual(runner.handle('send feedback in spotify'), CANCELLED)
+        self.assertEqual(self.apps.done, [])
+        runner = self.stepper([{'steps': [('switch', 'Shuffle', {'risk': 'danger'})]}],
+                              approval=FakeApproval(answers=[(False, 'wrong'), (False, 'wrong')]))
+        self.assertEqual(runner.handle('shuffle spotify'), CANCELLED, "the AI's own danger asks too")
+        self.assertEqual(self.apps.done, [])
+
+    def test_writing_in_notepad_is_undone(self):
+        from koli.agent.runner import RAN
+        runner = self.stepper([{'steps': [('write', 'Text editor', {'text': 'hello', 'risk': 'change'})],
+                                'final': 'Wrote hello'}])
+        self.assertEqual(runner.handle('write hello in notepad'), RAN)
+        self.assertIn(('textfield', 'Text editor', 'hello'), self.apps.controls['Notepad'])
+        self.assertIn('= "old text"', self.rounds_seen[0]['content'], 'with the picture on, field text is shown')
+        runner.undo()
+        self.assertIn(('textfield', 'Text editor', 'old text'), self.apps.controls['Notepad'])
+
+    def test_without_pictures_only_labels_go(self):
+        self.backend.pictures = False
+        self.stepper([{'done': 'It says old text'}]).handle('what is written in notepad')
+        self.assertNotIn('images', self.rounds_seen[0])
+        self.assertNotIn('old text', self.rounds_seen[0]['content'])
+        self.assertEqual(self.apps.shots, 0)
+
+    # Named, but not about the app: the script writer takes it.
+    def test_a_request_not_about_the_app_goes_to_the_writer(self):
+        from koli.agent.runner import RAN
+        runner = self.stepper([{'not_here': True}], writer={'understood': True, 'summary': 's', 'script': "say('ok')"})
+        self.assertEqual(runner.handle('how big is my spotify folder'), RAN)
+        self.assertEqual(self.writer_calls, 1)
+        self.assertEqual(self.events[-1]['text'], 'ok')
+
+    # No app named: the writer hands the task to one.
+    def test_the_writer_hands_a_task_to_an_app(self):
+        from koli.agent.runner import RAN
+        runner = self.stepper([{'steps': [('click', 'Play', {'risk': 'read'})], 'final': 'Playing'}],
+                              writer={'understood': True, 'app': 'spotify', 'script': '', 'summary': 's'})
+        self.assertEqual(runner.handle('put some music on'), RAN)
+        self.assertEqual(self.apps.done, [('click', 'Spotify', 'Play')])
+
+    def test_stuck_says_why(self):
+        from koli.agent.runner import FAILED
+        runner = self.stepper([{'stuck': "There's no Daily Mix 9"}])
+        self.assertEqual(runner.handle('play daily mix 9 on spotify'), FAILED)
+        self.assertEqual(self.events[-1]['text'], "There's no Daily Mix 9")
+
+    # A broken answer from the AI is no lesson about the app: the recipe that
+    # worked stays.
+    def test_an_ai_error_does_not_replace_what_worked(self):
+        from koli.agent.app_memory import AppMemory
+        memory = AppMemory(self.home / 'agent')
+        memory.add('Spotify', 'play daily mix 6 on spotify', [{'action': 'click', 'name': 'Gone link'}], worked=True)
+        runner = self.stepper([])
+        runner.complete = lambda feature, messages, json=False: FakeResult(error='HTTP 429')
+        runner.handle('play daily mix 6 on spotify')
+        self.assertTrue(memory.recipe('Spotify', 'play daily mix 6 on spotify'))
+
+    def test_two_empty_rounds_stop_the_loop(self):
+        from koli.agent.runner import FAILED
+        runner = self.stepper([{'steps': [('click', 'Nothing like it', {})]}] * 2)
+        self.assertEqual(runner.handle('press nothing in spotify'), FAILED)
+        self.assertEqual(len(self.rounds_seen), 2)
+
+    def test_which_open_app_a_sentence_names(self):
+        from koli.agent.desktop import named_app
+        apps = ['Spotify', 'Notepad', 'WhatsApp.Root', 'msedge', 'Docker Desktop']
+        self.assertEqual(named_app('Play Daily Mix 6 on Spotify.', apps), 'Spotify')
+        self.assertEqual(named_app('send hi on whatsapp', apps), 'WhatsApp.Root')
+        self.assertEqual(named_app('open a new tab in edge', apps), 'msedge')
+        self.assertEqual(named_app('restart docker', apps), 'Docker Desktop')
+        self.assertIsNone(named_app('write a note to Dana', apps))
+        self.assertIsNone(named_app('move the root folder', apps))
 
 
 if __name__ == '__main__':

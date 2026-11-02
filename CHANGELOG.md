@@ -5,6 +5,22 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 ## [Unreleased]
 
 ### Added
+- **AI actions use your other apps, step by step.** "Play Daily Mix 6 on
+  Spotify", "write this in Notepad", "turn on word wrap": the AI works in your
+  open apps the way you would. It looks at the app (a picture of its window and
+  its buttons), does a step, looks again, until it's done. It presses
+  buttons, fills fields, flips switches and picks from lists through
+  [agent-desktop](https://github.com/vercel-labs/agent-desktop)
+  (`npm install -g agent-desktop`), so the mouse never moves and nothing takes
+  focus. Koli remembers what worked in each app: the next similar request
+  starts from that, and the very same request again runs straight away without
+  asking the AI. A field's old text and a switch can be undone. Buttons that
+  send, pay, delete or confirm, writing over a long text, and closing an app
+  wait for your password (Commands › AI actions › "Use other apps"). "Show the
+  AI the app's screen" (on) sends the picture to your AI model; off, it gets
+  the buttons' names only. Pictures work with ChatGPT, OpenAI, Gemini,
+  OpenRouter and Ollama models that read images; a model that can't is asked
+  without.
 - **Ideas from Handy** (github.com/cjpais/handy, MIT):
   - **Near misses of your words** are written your way: "Kubernetis" becomes
     "Kubernetes", "Charge B" becomes "ChargeBee" (Settings › Writing › "Fix

@@ -1854,6 +1854,7 @@ class StateManager:
     def _build_agent(self):
         from . import llm
         from .agent.approval import Approval
+        from .agent import actions
         from .agent.runner import AgentRunner
 
         def listener():
@@ -1908,9 +1909,16 @@ class StateManager:
                                                         beam_size=1, task='transcribe', quiet=True)
 
         vcm = self.voice_command_manager
+        # "Use other apps" (agent-desktop) and "Show the AI the app's screen",
+        # read on every request so the settings apply at once. No picture
+        # either once the model refused one.
+        backend = actions.Backend(
+            desktop_enabled=lambda: self.config_manager.get_path('ai.commands.desktop', True) is not False,
+            pictures_enabled=lambda: self.config_manager.get_path('ai.commands.screenshots', True) is not False
+            and llm.takes_pictures('commands'))
         runner = AgentRunner(
             complete=lambda feature, messages, json=False: llm.complete(feature, messages, json=json),
-            publish=lambda payload: publish('agent', payload), approval=approval,
+            publish=lambda payload: publish('agent', payload), approval=approval, backend=backend,
             commands=lambda: vcm.plain_phrases() if vcm is not None and vcm.enabled else [],
             run_fixed=lambda phrase: bool(vcm and vcm.run_plain(phrase)),
             has_fixed=lambda phrase: bool(vcm and vcm.enabled and vcm.plain_command(phrase)), hear=hear)

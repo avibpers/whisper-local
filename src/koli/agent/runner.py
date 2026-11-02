@@ -1,7 +1,10 @@
 # agent/runner.py
 # One AI action, start to finish: the writer's script, the code check and
 # rehearsal, the reviewer, the danger level, your approval when needed, the
-# real run, the log, and the offer to keep a repeated plan as a command. Every
+# real run, the log, and the offer to keep a repeated plan as a command. Work
+# inside another app goes to the step-by-step loop (agent/app_steps.py):
+# straight away when what you said names an open app, or when the writer hands
+# it over (after its script opened the app). Every
 # step tells the bubble what is happening (the 'agent' event). Runs in the
 # caller's thread: the wake word's worker or the command pipeline, which keeps
 # Koli from listening to anything else meanwhile.
@@ -12,8 +15,10 @@ import threading
 import time
 from typing import Callable, List, Optional
 
-from . import actions, planner, policy, sandbox
+from . import actions, app_steps, planner, policy, sandbox
+from .app_memory import AppMemory
 from .approval import Approval
+from .desktop import UNCONFIRMED
 from .journal import REPEATS_TO_OFFER, Journal, signature
 
 logger = logging.getLogger(__name__)
@@ -53,7 +58,8 @@ class AgentRunner:
                  backend: actions.Backend = None, journal: Journal = None, folders: policy.Folders = None,
                  commands: Callable[[], List[str]] = lambda: [], run_fixed: Callable[[str], bool] = lambda p: False,
                  has_fixed: Optional[Callable[[str], bool]] = None,
-                 enabled: Callable[[], bool] = lambda: True, hear: Callable = None):
+                 enabled: Callable[[], bool] = lambda: True, hear: Callable = None,
+                 memory: AppMemory = None):
         self.hear = hear
         self.has_fixed = has_fixed or (lambda phrase: phrase in self.commands())
         self._questions = 0
@@ -62,6 +68,7 @@ class AgentRunner:
         self.approval = approval
         self.backend = backend or actions.Backend()
         self.journal = journal or Journal()
+        self.memory = memory or AppMemory()
         self.folders = folders or policy.Folders.from_platform()
         self.commands = commands
         self.run_fixed = run_fixed
@@ -95,17 +102,29 @@ class AgentRunner:
     # The writer may ask you something first ("Only today's pictures, or
     # all of them?"); your answer goes back to it with the request. The
     # rehearsal may ask too, about a folder name it didn't find. At most
-    # MAX_QUESTIONS in one request.
+    # MAX_QUESTIONS in one request. A request naming an open app goes to the
+    # step-by-step loop first; the loop may give it back (not about the app)
+    # and the writer may hand one over, once each way.
     def _handle(self, sentence: str) -> str:
+        from . import desktop
         self._questions = 0
         self._say('thinking', 'Thinking…', heard=sentence)
         previous = self._previous()
         conversation: List[tuple] = []
+        other_apps = self.backend.desktop_missing() or 'available'
+        open_apps = self._open_apps() if other_apps == 'available' else []
+        in_app = desktop.named_app(sentence, open_apps) if open_apps else None
+        if in_app:
+            outcome = self._in_app(sentence, in_app)
+            if outcome != app_steps.NOT_HERE:
+                return outcome
+            other_apps = 'not for this request'
         while True:
             started = time.monotonic()
             result = self.complete('commands', planner.writer_messages(
                 sentence, self._folder_names(), self.commands(), self._recent(),
-                previous=self._brief(*previous) if previous else None, conversation=conversation), json=True)
+                previous=self._brief(*previous) if previous else None, conversation=conversation,
+                other_apps=other_apps, open_apps=open_apps), json=True)
             if self._cancel.is_set():
                 return self._cancelled()
             if not result.ok:
@@ -122,7 +141,8 @@ class AgentRunner:
                         return CANCELLED
                     conversation.append((plan['question'], answer))
                     continue
-            if not plan or not plan['understood']:
+            handed = plan['app'] if plan and other_apps == 'available' else ''
+            if not plan or not plan['understood'] or not (plan['script'].strip() or handed):
                 # The model's own words when it gave any ("I can turn the volume
                 # up, but not by exactly 20%"): Koli talking to you. "Sorry, I
                 # didn't understand" only when it said nothing.
@@ -133,14 +153,22 @@ class AgentRunner:
                 self.journal.add({'sentence': sentence, 'summary': reply, 'lines': [], 'results': [],
                                   'outcome': NOT_UNDERSTOOD})
                 return NOT_UNDERSTOOD
-            outcome = self._run_script(plan['script'], sentence, plan.get('summary') or '',
-                                       plan.get('command_name') or '', review=True, previous=previous,
-                                       conversation=conversation)
-            if isinstance(outcome, tuple):
-                # A folder question answered with something other than yes
-                # ("no, the Pictures one"): the writer hears it and tries again.
-                conversation.append(outcome)
-                continue
+            if plan['script'].strip():
+                outcome = self._run_script(plan['script'], sentence, plan.get('summary') or '',
+                                           plan.get('command_name') or '', review=True, previous=previous,
+                                           conversation=conversation)
+                if isinstance(outcome, tuple):
+                    # A folder question answered with something other than yes
+                    # ("no, the Pictures one"): the writer hears it and tries again.
+                    conversation.append(outcome)
+                    continue
+                if not handed or outcome != RAN:
+                    return outcome
+            # Its script opened the app (or it was open): the rest step by step.
+            outcome = self._in_app(sentence, handed, opened=bool(plan['script'].strip()))
+            if outcome == app_steps.NOT_HERE:
+                self._say('not_understood', f"I couldn't tell what to do in {handed}", heard=sentence)
+                return NOT_UNDERSTOOD
             return outcome
 
     # A saved AI command: the same checks, no writer.
@@ -213,7 +241,9 @@ class AgentRunner:
                 self._say('nothing', f"Nothing to do: {notes[0]}", lines=notes)
                 return NOTHING
             if said:
-                self._say('done', said[-1], lines=[])
+                # An answer may come a line at a time ("which apps are open?").
+                text = said[-1] if len(said) == 1 else ', '.join(said[:20]) + (' …' if len(said) > 20 else '')
+                self._say('done', text, lines=[])
                 return RAN
             self._say('nothing', 'Nothing to do: nothing matched')
             return NOTHING
@@ -221,9 +251,10 @@ class AgentRunner:
         # It used last(): one action with the previous one, for Undo.
         follows = previous[0]['id'] if previous and any(t[0] == 'last' for t in recorder.trace) else None
         mismatch = ''
-        commands = [op for op in ops if op['op'] == 'system']
+        # System commands and steps in other apps: the reviewer rates each.
+        commands = [op for op in ops if op['op'] in ('system', 'ui')]
         # A saved command skips the writer, not the reviewer's rating of its
-        # system commands: what they do is judged every time they run.
+        # system commands and app steps: what they do is judged every time they run.
         if (review and policy.changes_anything(ops)) or commands:
             self._say('checking', 'Checking…', lines=lines)
             answer = self.complete('commands', planner.reviewer_messages(
@@ -247,7 +278,8 @@ class AgentRunner:
         if level == policy.PASSWORD:
             logger.info(f"AI action needs approval: {'; '.join(reasons)}")
             # The exact commands are on the bubble (on hover) for you to read.
-            if not self._approved(lines, reasons, detail='\n'.join(op['command'] for op in commands)):
+            detail = '\n'.join(op['command'] if op['op'] == 'system' else actions.ui_line(op) for op in commands)
+            if not self._approved(lines, reasons, detail=detail):
                 return CANCELLED
         self._say('working', 'Working…', lines=lines)
         results = actions.replay(ops, self.backend, run_command=self.run_fixed)
@@ -278,6 +310,8 @@ class AgentRunner:
             text = f"{text} · {len(failed)} failed: {failed[0]}"
         elif skipped:
             text = f"{text} · {len(skipped)} skipped ({skipped[0]})"
+        elif any(r['status'] == 'done' and r['detail'] == UNCONFIRMED for r in results):
+            text = f"{text} · {UNCONFIRMED}"
         # A follow-up means nothing without the action before it: never a command.
         offer = None if saved or follows else self.journal.offer_for(sig)
         if offer is not None:
@@ -321,6 +355,51 @@ class AgentRunner:
             last = wrong
         self._say('failed', f"Not approved: {last}. Nothing was done.", lines=lines)
         return False
+
+    # ── Looking at an app ──
+
+    # The names of the apps open now, for the writer (names only, no windows'
+    # titles: those can hold a document's or a chat's name).
+    def _open_apps(self) -> list:
+        from . import desktop
+        try:
+            return desktop.running_apps(self.backend.desktop)
+        except desktop.DesktopError as e:
+            logger.info(f"AI action: couldn't list the open apps ({e})")
+            return []
+
+    # A request done step by step in an app (agent/app_steps.py), `spoken` as
+    # said or as the writer named it; `opened`: a script just started it, so
+    # Koli waits for its window. The outcome, or app_steps.NOT_HERE when the
+    # AI says the request isn't about this app.
+    def _in_app(self, sentence: str, spoken: str, opened: bool = False) -> str:
+        from . import desktop
+        app = desktop.wait_for_app(self.backend.desktop, spoken, seconds=10.0 if opened else 0.0)
+        if app is None:
+            self._say('failed', f"{spoken} isn't open", heard=sentence)
+            return FAILED
+        loop = app_steps.AppSteps(self.complete, self.backend, self.memory, self._say, self._approved, self._cancel,
+                                  pictures=self.backend.pictures_enabled)
+        ended = loop.run(sentence, app)
+        outcome = ended['outcome']
+        if outcome == app_steps.NOT_HERE:
+            return outcome
+        if outcome == app_steps.CANCELLED:
+            return CANCELLED if ended['told'] else self._cancelled()
+        ops, results = ended['ops'], ended['results']
+        done = [op for op, r in zip(ops, results) if r['status'] == 'done']
+        done_lines = actions.describe(done, limit=100, past=True)
+        text = ended['text'] or (done_lines[0] if len(done_lines) == 1 else
+                                 f"{done_lines[0]} + {len(done_lines) - 1} more" if done_lines else 'Nothing was done')
+        if outcome == FAILED and done_lines and ended['text']:
+            text = f"{done_lines[-1]} · then: {ended['text']}"
+        run = self.journal.add({
+            'sentence': sentence, 'summary': ended['text'] or '; '.join(done_lines), 'lines': done_lines,
+            'app': app, 'ops': ops, 'results': results, 'signature': '',
+            'outcome': 'done' if outcome == RAN else 'partial' if done else 'failed'})
+        undoable = any(r.get('undo') and r['status'] == 'done' for r in results)
+        self._say('done' if outcome == RAN else 'failed', text, lines=done_lines, run_id=run['id'], undo=undoable)
+        return RAN if outcome == RAN else FAILED
 
     # ── Questions ──
 

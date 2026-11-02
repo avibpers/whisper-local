@@ -403,6 +403,13 @@ SCHEMA = [
     _S('ai.commands.enabled', 'Do what I ask when no command matches', 'ai', 'toggle', group='AI actions',
        help='Your own wake word or the command shortcut, then any request ("move today\'s photos to Pictures"). '
             'Deleting and big changes ask for your password; the rest can be undone.'),
+    _S('ai.commands.desktop', 'Use other apps', 'ai', 'toggle', group='AI actions',
+       help='Press buttons, fill fields and switch settings in your open apps ("pause Spotify", "write this in '
+            'Notepad"), without moving the mouse. Needs agent-desktop: npm install -g agent-desktop. Sending, '
+            'paying, deleting and closing an app ask for your password.'),
+    _S('ai.commands.screenshots', "Show the AI the app's screen", 'ai', 'toggle', group='AI actions',
+       help='Each step in another app sends a picture of its window to your AI model, so it sees what you see '
+            '(song names, chats, documents). Off: button names only.'),
     _S('ai.commands.model', 'Actions with', 'ai', 'ai_model', group='AI actions',
        help='Writes and checks each action. Empty uses the default model.'),
     _S('ai.commands.timeout', 'Give up after', 'ai', 'number', group='AI actions', min=5, max=300, step=5,

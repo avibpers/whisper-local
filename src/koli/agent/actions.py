@@ -23,6 +23,11 @@ MAX_SYSTEM = 5            # system commands in one request
 PLAIN_VALUE = re.compile(r'[\w .,:+\-]{1,200}')   # what may fill {before} in an undo
 MISSING_LIKE = 0.5        # how alike a real folder's name must be to offer it ("API" → "avi")
 MAX_WEIGHT_COUNT = 1000
+# Calls into agent-desktop while rehearsing one request (each can take 2-3 s in
+# a Chromium app; a ui() whose exact label misses makes two).
+MAX_UI_READS = 24
+MAX_UI_STEPS = 20         # steps in other apps in one request
+MAX_UNDO_TEXT = 2000      # a field's old text kept so Undo can put it back
 
 KINDS = {
     'image': {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.heic', '.tif', '.tiff', '.svg', '.raw', '.cr2', '.nef'},
@@ -39,6 +44,11 @@ EXECUTABLE = {'.exe', '.bat', '.cmd', '.ps1', '.vbs', '.vbe', '.js', '.jse', '.w
 OPENABLE = set().union(*KINDS.values()) | {'.html', '.htm', '.json', '.log', '.xml', '.epub'}
 OPEN_REFUSED = "Koli opens documents, pictures, music, videos, web pages and folders, not {name}"
 KNOWN_FOLDERS = ('downloads', 'desktop', 'documents', 'pictures', 'music', 'videos', 'home')
+# Why other apps can't be used, by Backend.desktop_missing().
+DESKTOP_MISSING = {
+    'off': "Using other apps is turned off (Settings › AI › AI actions › Use other apps)",
+    'not installed': "Koli can't use other apps yet: install agent-desktop (npm install -g agent-desktop)",
+}
 
 
 class ActionError(Exception):
@@ -67,6 +77,32 @@ class Item:
         return f"{'Folder' if self.is_dir else 'File'}({self.path!r})"
 
 
+# Roles whose on/off state agent-desktop reports ('checked' among the states).
+TOGGLE_ROLES = ('checkbox', 'switch', 'togglebutton', 'radiobutton')
+
+
+class Element:
+    # A button, field, menu item... in another app. Scripts may read only
+    # .name, .role, .value and .app (sandbox.ATTRS). `ref` is the program's
+    # handle on it now; `found` is False for one a step before it makes
+    # appear (a menu item after "File"), looked up when the steps really run.
+    # `window`: which of the app's windows, when it has several. `.checked`:
+    # True or False for a checkbox or switch, None when the control doesn't
+    # say (Notepad's menu items don't).
+    __slots__ = ('app', 'name', 'role', 'value', 'ref', 'found', 'window', 'checked')
+
+    def __init__(self, app: str, name: str, role: str = '', value=None, ref: str = '', found: bool = True,
+                 window: Optional[str] = None, states=None):
+        self.app, self.name, self.role, self.ref, self.found = app, name, role or '', ref or '', found
+        self.value = value if isinstance(value, str) else None
+        self.window = window
+        states = [str(s).lower() for s in states or []]
+        self.checked = True if 'checked' in states else False if self.role in TOGGLE_ROLES else None
+
+    def __repr__(self):
+        return f"Element({self.app!r}, {self.role or 'control'} {self.name!r})"
+
+
 def can_open(path: str) -> bool:
     return os.path.isdir(path) or (Path(path).suffix.lower() in OPENABLE and Path(path).suffix.lower() not in EXECUTABLE)
 
@@ -86,6 +122,13 @@ def _items(value) -> list:
 
 class Backend:
     # What the actions need from the system; tests pass a fake.
+    # `desktop_enabled()`: the setting "Use other apps"; `pictures_enabled()`:
+    # "Show the AI the app's screen" (and the model takes pictures).
+    def __init__(self, desktop_enabled: Callable[[], bool] = lambda: True,
+                 pictures_enabled: Callable[[], bool] = lambda: True):
+        self.desktop_enabled = desktop_enabled
+        self.pictures_enabled = pictures_enabled
+
     def known_folder(self, name: str) -> Optional[str]:
         from ..platform import files
         return files.known_folder(name)
@@ -123,6 +166,18 @@ class Backend:
         from . import system
         return system.run(command)
 
+    # Other apps (agent/desktop.py): '' when Koli may use them, else why not.
+    def desktop_missing(self) -> str:
+        from . import desktop
+        if not self.desktop_enabled():
+            return 'off'
+        return '' if desktop.program() else 'not installed'
+
+    # One agent-desktop command → its JSON envelope.
+    def desktop(self, args: List[str]) -> dict:
+        from . import desktop
+        return desktop.run(args)
+
 
 # ── Rehearsal ────────────────────────────────────────────────────────────────
 
@@ -149,10 +204,17 @@ class Recorder:
         self._planned_dirs = set()
         self._taken = {}          # folder → names the plan will create there
         self._apps = None
+        self._running = None      # apps open now, from agent-desktop
+        self._ui_reads = 0
+        # Seconds spent waiting for agent-desktop: not the script's own time
+        # (sandbox.MAX_SECONDS), since one look into Chrome takes 2-3 s.
+        self.waited = 0.0
 
     def functions(self) -> dict:
         names = ('folder', 'find_files', 'find_folders', 'newest', 'oldest', 'largest', 'last', 'open', 'open_app',
-                 'copy', 'move', 'rename', 'make_folder', 'delete', 'system', 'run_command', 'say')
+                 'copy', 'move', 'rename', 'make_folder', 'delete', 'system', 'run_command', 'say',
+                 'apps_open', 'app_is_open', 'ui', 'ui_find', 'ui_click', 'ui_set_text', 'ui_toggle', 'ui_check', 'ui_select',
+                 'close_app')
         return {n: self._traced(n, getattr(self, n)) for n in names}
 
     # say() isn't traced: its text carries counts ("Moved 12 photos") that
@@ -346,6 +408,12 @@ class Recorder:
             close = difflib.get_close_matches(wanted, list(self._apps), n=1, cutoff=0.8)
             match = (sorted(words, key=len) or sorted(starts, key=len) or close or [None])[0]
             if match is None:
+                # Not a Start-menu shortcut (Notepad is a Store app), but open
+                # already: nothing to start.
+                running = self._running_as(name)
+                if running:
+                    self.notes.append(f"{running} is already open")
+                    return
                 raise ActionError(f"No app called “{name}” in the Start menu")
             wanted, shortcut = match, self._apps[match]
         self.ops.append({'op': 'open_app', 'name': Path(shortcut).stem, 'shortcut': shortcut})
@@ -391,6 +459,189 @@ class Recorder:
         text = str(text or '').strip()
         if text:
             self.said.append(text[:300])
+
+    # ── Other apps (agent/desktop.py) ──
+    # Looking runs for real and only reads: which apps are open, which
+    # controls they have. Clicking, writing, switching, choosing and closing
+    # are written down like file changes and done only in replay, where each
+    # control is found again. An app or control that an earlier step makes
+    # appear ("open Notepad, then write in it"; a menu item after "File") is
+    # accepted unseen, and looked for when the steps really run.
+
+    def _desktop_call(self, args: List[str]) -> dict:
+        missing = self.backend.desktop_missing()
+        if missing:
+            raise ActionError(DESKTOP_MISSING.get(missing, missing))
+        self._ui_reads += 1
+        if self._ui_reads > MAX_UI_READS:
+            raise ActionError(f"Koli looks into other apps at most {MAX_UI_READS} times in one request")
+        started = time.monotonic()
+        try:
+            return self.backend.desktop(args)
+        finally:
+            self.waited += time.monotonic() - started
+
+    def _apps_running(self) -> List[str]:
+        if self._running is None:
+            from .desktop import DesktopError, running_apps
+            try:
+                self._running = running_apps(self._desktop_call)
+            except DesktopError as e:
+                raise ActionError(str(e))
+        return self._running
+
+    # (the app's name as agent-desktop knows it, whether it opens only later):
+    # "whatsapp" is "WhatsApp.Root". An app that isn't open is accepted only
+    # after an open_app() in the same plan.
+    def _app(self, name) -> tuple:
+        from .desktop import match_app
+        spoken = str(name or '').strip()
+        if not spoken:
+            raise ActionError('Which app?')
+        app = match_app(spoken, self._apps_running())
+        if app:
+            return app, False
+        if any(op['op'] == 'open_app' for op in self.ops):
+            return spoken, True
+        raise ActionError(f"{spoken} isn't open")
+
+    # The running app a name means, or None (also when other apps can't be used).
+    def _running_as(self, name: str) -> Optional[str]:
+        from .desktop import match_app
+        if self.backend.desktop_missing():
+            return None
+        try:
+            return match_app(name, self._apps_running())
+        except ActionError:
+            return None
+
+    # After the script: open_app() for an app that is already open and that
+    # later steps use is dropped. Starting Notepad again would open a second
+    # window, and the steps would have two to choose from.
+    def finish(self) -> None:
+        if self._running is None:
+            return
+        used = {op['app'] for op in self.ops if op['op'] == 'ui'}
+        self.ops = [op for op in self.ops
+                    if not (op['op'] == 'open_app' and self._running_as(op['name']) in used)]
+
+    def _changed_app_before(self, app: str) -> bool:
+        return any(op['op'] == 'open_app' or (op['op'] == 'ui' and op['app'] == app) for op in self.ops)
+
+    def apps_open(self) -> List[str]:
+        return list(self._apps_running())
+
+    # Whether an app is open, by name as you say it ("notepad" is "Notepad").
+    def app_is_open(self, name) -> bool:
+        from .desktop import match_app
+        return match_app(str(name or ''), self._apps_running()) is not None
+
+    # One control by its name (and role): "Play" in Spotify, "File" in
+    # Notepad. The exact name first, then a name containing it. Two with the
+    # same name but different roles (Notepad's "File" menu item and the
+    # button inside it): the first. Two of the same role: the script must say
+    # which, since pressing the wrong "Delete" isn't something to guess.
+    def ui(self, app, name, role=None) -> Element:
+        from .desktop import DesktopError, find_control
+        app, pending = self._app(app)
+        name = str(name or '').strip()
+        role = str(role or '').strip().lower() or None
+        if not name:
+            raise ActionError('Which button or field?')
+        if pending:
+            return Element(app, name, role, found=False)
+        try:
+            found = find_control(self._desktop_call, app, name, role)
+        except DesktopError as e:
+            raise ActionError(str(e))
+        if len(found) > 1 and len({m.get('role') for m in found}) == len(found):
+            found = found[:1]
+        if len(found) == 1:
+            match = found[0]
+            return Element(app, match.get('name') or name, match.get('role') or role, match.get('value'),
+                           match['ref_id'], window=match.get('window'), states=match.get('states'))
+        if found:
+            raise ActionError(f"{len(found)} controls in {app} are called “{name}”")
+        if self._changed_app_before(app):
+            # In the window the step before it worked in (the menu's).
+            window = next((op.get('window') for op in reversed(self.ops)
+                           if op['op'] == 'ui' and op['app'] == app and op.get('window')), None)
+            return Element(app, name, role, found=False, window=window)
+        raise ActionError(f"There's no “{name}” in {app}")
+
+    # Controls whose name or value contains `text` (all of them without it),
+    # to read (.value: what a field shows) or to pick from. At most 50.
+    def ui_find(self, app, text=None, role=None) -> List[Element]:
+        from .desktop import DesktopError, find
+        app, pending = self._app(app)
+        if pending:
+            return []
+        try:
+            found = find(self._desktop_call, app, text=str(text) if text else None,
+                         role=str(role).lower() if role else None)
+        except DesktopError as e:
+            raise ActionError(str(e))
+        return [Element(app, m.get('name') or '', m.get('role') or '', m.get('value'), m['ref_id'],
+                        window=m.get('window'), states=m.get('states')) for m in found]
+
+    def _step(self, action: str, element, **extra) -> None:
+        if not isinstance(element, Element):
+            raise ActionError(f"ui_{action}() takes a control from ui() or ui_find()")
+        if sum(1 for op in self.ops if op['op'] == 'ui') >= MAX_UI_STEPS:
+            raise ActionError(f"At most {MAX_UI_STEPS} steps in other apps in one request")
+        op = {'op': 'ui', 'action': action, 'app': element.app, 'name': element.name, 'role': element.role,
+              'ref': element.ref, 'seen': element.found}
+        if element.window:
+            op['window'] = element.window
+        if element.app not in (self._running or []):
+            op['pending_app'] = True
+        op.update(extra)
+        self.ops.append(op)
+
+    def ui_click(self, element) -> None:
+        self._step('click', element)
+
+    # Replaces what the field holds. Its old text is kept for Undo when it
+    # isn't long. An empty field reports no value at all (Notepad), so none
+    # counts as empty: Undo then only takes away what Koli wrote.
+    def ui_set_text(self, element, text) -> None:
+        text = str(text if text is not None else '')
+        if len(text) > 5000:
+            raise ActionError('That text is too long to write in one go')
+        extra = {'text': text}
+        if isinstance(element, Element) and element.found:
+            old = element.value or ''
+            extra['old_value'] = old if len(old) <= MAX_UNDO_TEXT else None
+            extra['old_length'] = len(old)
+        self._step('set_text', element, **extra)
+
+    def ui_toggle(self, element) -> None:
+        self._step('toggle', element)
+
+    # Turns a checkbox or switch on (or off with on=False), whatever it is
+    # now: "turn on word wrap" must not turn it off when it already was. One
+    # already so is noted, not pressed. Undo puts back the state it had, when
+    # the control said what that was.
+    def ui_check(self, element, on=True) -> None:
+        on = bool(on)
+        if isinstance(element, Element) and element.found and element.checked is on:
+            self.notes.append(f"“{element.name}” is already {'on' if on else 'off'} in {element.app}")
+            return
+        was = element.checked if isinstance(element, Element) and element.found else None
+        self._step('check' if on else 'uncheck', element, **({'was_checked': was} if was is not None else {}))
+
+    def ui_select(self, element, option) -> None:
+        option = str(option or '').strip()
+        if not option:
+            raise ActionError('Which option?')
+        self._step('select', element, option=option)
+
+    # Asks the app to close, as its own close button would (it may ask about
+    # unsaved work). Always waits for your password.
+    def close_app(self, app) -> None:
+        app, pending = self._app(app)
+        self.ops.append({'op': 'ui', 'action': 'close_app', 'app': app, 'name': app, 'role': '', 'ref': '',
+                         'seen': not pending, **({'pending_app': True} if pending else {})})
 
     # ── Changes (written down, not done) ──
 
@@ -502,6 +753,8 @@ def describe(ops: List[dict], limit: int = 4, past: bool = False) -> List[str]:
             key = (kind, op.get('target') or op.get('url'), '')
         elif kind == 'system':
             key = (kind, op['command'], '')
+        elif kind == 'ui':
+            key = (kind, str(len(groups)), '')      # every step its own line, in order
         else:
             key = (kind, op.get('name') or op.get('phrase') or '', '')
         groups.setdefault(key, []).append(op)
@@ -522,6 +775,8 @@ def describe(ops: List[dict], limit: int = 4, past: bool = False) -> List[str]:
             # before it runs, "Turned Wi-Fi off" after.
             lines.extend((op.get('done') if past else None) or op.get('explain') or f"Run: {op['command'][:80]}"
                          for op in group)
+        elif kind == 'ui':
+            lines.extend((op.get('done') if past else None) or op.get('explain') or ui_line(op) for op in group)
         elif kind == 'open':
             lines.append(f"Open {a if str(a).startswith('http') else os.path.basename(str(a)) or a}")
         elif kind == 'open_app':
@@ -536,7 +791,27 @@ def describe(ops: List[dict], limit: int = 4, past: bool = False) -> List[str]:
 
 
 PAST = {'Move ': 'Moved ', 'Copy ': 'Copied ', 'Rename ': 'Renamed ', 'Delete ': 'Deleted ',
-        'New folder ': 'Created folder ', 'Open ': 'Opened ', 'Run ': 'Ran '}
+        'New folder ': 'Created folder ', 'Open ': 'Opened ', 'Run ': 'Ran ', 'Click ': 'Clicked ',
+        'Write ': 'Wrote ', 'Switch ': 'Switched ', 'Choose ': 'Chose ', 'Close ': 'Closed ', 'Turn ': 'Turned ',
+        'Clear ': 'Cleared '}
+
+
+# One step in another app in plain words: "Click “Play” in Spotify".
+def ui_line(op: dict) -> str:
+    action, app, name = op.get('action'), op.get('app', ''), op.get('name', '')
+    if action == 'close_app':
+        return f"Close {app}"
+    if action == 'set_text':
+        text = op.get('text', '')
+        shown = text if len(text) <= 40 else text[:39] + '…'
+        return f"Write “{shown}” in “{name}” in {app}" if text else f"Clear “{name}” in {app}"
+    if action == 'toggle':
+        return f"Switch “{name}” in {app}"
+    if action in ('check', 'uncheck'):
+        return f"Turn {'on' if action == 'check' else 'off'} “{name}” in {app}"
+    if action == 'select':
+        return f"Choose “{op.get('option', '')}” in “{name}” in {app}"
+    return f"Click “{name}” in {app}"
 
 
 def _past(line: str) -> str:
@@ -572,11 +847,26 @@ def _short(path: str) -> str:
 # 'place': where the result is, for the bubble's Show}].
 def replay(ops: List[dict], backend: Backend, run_command: Callable[[str], bool] = lambda p: False) -> List[dict]:
     results = []
+    # Steps in other apps build on each other (the menu, then its item): once
+    # one didn't happen, the rest aren't pressed in a screen that isn't the
+    # one they were planned for.
+    ui_stopped = False
     for op in ops:
         kind = op['op']
         entry = {'op': kind, 'status': 'done', 'detail': '', 'undo': None}
         try:
-            if kind == 'open':
+            if kind == 'ui':
+                if ui_stopped:
+                    entry.update(status='skipped', detail="an earlier step in an app didn't happen")
+                else:
+                    from . import desktop
+                    status, detail = desktop.perform(op, backend.desktop)
+                    entry.update(status=status, detail=detail)
+                    if status == 'done':
+                        entry['undo'] = _ui_undo(op)
+                    else:
+                        ui_stopped = True
+            elif kind == 'open':
                 target = op.get('url') or op.get('target')
                 if op.get('target') and (not os.path.exists(target) or not can_open(target)):
                     raise ActionError('it is gone or not something Koli opens')
@@ -653,6 +943,21 @@ def replay(ops: List[dict], backend: Backend, run_command: Callable[[str], bool]
     return results
 
 
+# What puts a step in another app back: a switch is switched again, a field
+# gets its old text. A click or a choice can't be known to reverse.
+def _ui_undo(op: dict) -> Optional[dict]:
+    where = {'op': 'ui', 'app': op['app'], 'name': op['name'], 'role': op.get('role') or '', 'ref': ''}
+    if op.get('window'):
+        where['window'] = op['window']
+    if op['action'] == 'toggle':
+        return {**where, 'action': 'toggle'}
+    if op['action'] in ('check', 'uncheck') and isinstance(op.get('was_checked'), bool):
+        return {**where, 'action': 'check' if op['was_checked'] else 'uncheck'}
+    if op['action'] == 'set_text' and isinstance(op.get('old_value'), str):
+        return {**where, 'action': 'set_text', 'text': op['old_value']}
+    return None
+
+
 def _free_path(folder: str, name: str) -> str:
     stem, suffix = os.path.splitext(name)
     candidate, n = os.path.join(folder, name), 2
@@ -691,6 +996,10 @@ def undo(results: List[dict], backend: Backend) -> tuple:
                 # and is checked against the danger list once more as stored.
                 from .system import dangers
                 if not dangers(step['command']) and backend.run_system(step['command'])[0]:
+                    undone += 1
+            elif step['op'] == 'ui':
+                from . import desktop
+                if desktop.perform(step, backend.desktop)[0] == 'done':
                     undone += 1
         except Exception:
             continue

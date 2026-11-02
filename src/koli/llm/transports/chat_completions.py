@@ -7,6 +7,7 @@
 import json
 
 from .. import http
+from ..images import data_urls
 from ..sse import iter_events
 from ..types import ProviderError
 
@@ -19,7 +20,7 @@ def complete(base_url: str, headers: dict, model: str, messages: list, json_mode
              on_text=None, timeout: float = 30, stream: bool = False, extra: dict = None):
     if json_mode == 'instruction':
         messages = with_json_instruction(messages)
-    payload = {'model': model, 'messages': messages, 'stream': bool(stream or on_text)}
+    payload = {'model': model, 'messages': [_wire(m) for m in messages], 'stream': bool(stream or on_text)}
     if json_mode == 'native':
         payload['response_format'] = {'type': 'json_object'}
     if extra:
@@ -34,6 +35,16 @@ def complete(base_url: str, headers: dict, model: str, messages: list, json_mode
                 on_text(text)
             return text, t_in, t_out
         return _read_stream(resp, on_text)
+
+
+# A message with pictures becomes a list of parts: its text, then each
+# picture as an image_url.
+def _wire(message: dict) -> dict:
+    if not message.get('images'):
+        return message
+    parts = [{'type': 'text', 'text': str(message.get('content') or '')}]
+    parts += [{'type': 'image_url', 'image_url': {'url': url}} for url in data_urls(message)]
+    return {'role': message.get('role') or 'user', 'content': parts}
 
 
 def _parse_answer(data) -> tuple:

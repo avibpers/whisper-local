@@ -595,6 +595,7 @@ export function createMock(emit) {
     practice_apply: (ids) => { learnedItems.push(...ids.map((id, n) => ({ id, kind: n ? 'favored' : 'correction', language: 'he', term: n ? 'כריכה' : 'תמונת כריכה', heard: n ? [] : ['תמונת בריכה'], profile: '', mic: 'Jabra Evolve2 65', session: 'r1', reason: 'From practice', source: 'ai' }))); practiceRound = null; return ok(ids.length); },
     practice_close: () => { practiceRound = null; return ok(null); },
     agent_password_status: () => ok({ set: agentPassword, voice: true, recorded: agentPassword }),
+    agent_desktop_status: () => ok({ installed: false, install: 'npm install -g agent-desktop' }),
     agent_password_ready: () => ok(true),
     agent_password_begin: () => ok(true),
     agent_password_record: () => delay(900).then(() => ({ ok: true, data: { heard: 'Koli approve blue', count: 1, needed: 3 } })),

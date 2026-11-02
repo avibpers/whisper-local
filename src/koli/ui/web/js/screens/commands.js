@@ -396,6 +396,9 @@ function openPasswordRecorder(onSaved) {
 
 function AiActions() {
   const enabled = useSetting('ai.commands.enabled');
+  const useApps = useSetting('ai.commands.desktop');
+  const screens = useSetting('ai.commands.screenshots');
+  const [desktop, setDesktop] = useState(null);
   const own = useSetting('ai.commands.model');
   const fallback = useSetting('ai.model');
   const model = own || fallback;
@@ -406,7 +409,7 @@ function AiActions() {
   const [testing, setTesting] = useState(false);
   const reloadPw = () => call('agent_password_status').then(setPw).catch(() => setPw(null));
   const reloadHistory = () => call('agent_history', 20).then(setHistory).catch(() => setHistory([]));
-  useEffect(() => { reloadPw(); reloadHistory(); }, []);
+  useEffect(() => { reloadPw(); reloadHistory(); call('agent_desktop_status').then(setDesktop).catch(() => setDesktop(null)); }, []);
   const setPassword = () => openPasswordRecorder(reloadPw);
   const test = () => {
     setTesting(true);
@@ -434,6 +437,14 @@ function AiActions() {
       <div class="sctl"><button type="button" class="btn" onClick=${setPassword}><${Icon} name="mic" />${!pw || !pw.set ? 'Set' : pw.recorded ? 'Record again' : 'Record'}</button>
         ${pw && pw.set && pw.voice && html`<button type="button" class="btn" disabled=${testing} onClick=${test}>${testing ? 'Say it now…' : 'Test'}</button>`}
         ${pw && pw.set && html`<button type="button" class="btn ghost" onClick=${remove}>Remove</button>`}</div></div>
+    <div class="srow"><div class="slabel"><b>Use other apps</b>
+      <small>${!desktop ? 'Press buttons, fill fields and switch settings in your open apps: “pause Spotify”, “write this in Notepad”. No mouse moves.'
+        : desktop.installed ? 'Press buttons, fill fields and switch settings in your open apps: “pause Spotify”, “write this in Notepad”. No mouse moves. Sending, paying, deleting and closing an app wait for your password.'
+        : html`Needs agent-desktop. Install it once in a terminal: <span class="mono">${desktop.install}</span>`}</small></div>
+      <div class="sctl"><${Toggle} checked=${useApps !== false} label="Use other apps" onChange=${(v) => saveSetting('ai.commands.desktop', v)} /></div></div>
+    ${useApps !== false && html`<div class="srow"><div class="slabel"><b>Show the AI the app’s screen</b>
+      <small>A picture of the app you named goes to your AI model each step, so it sees what you see. It may show song names, chats or documents. Off: button names only.</small></div>
+      <div class="sctl"><${Toggle} checked=${screens !== false} label="Show the AI the app’s screen" onChange=${(v) => saveSetting('ai.commands.screenshots', v)} /></div></div>`}
     <div class="subhead"><div class="eyebrow">Activity</div></div>
     ${history.length === 0 ? html`<div class="empty">Nothing yet. Say your wake word and a request.</div>`
       : html`<div class="tbl-wrap"><table class="tbl"><thead><tr><th scope="col">When</th><th scope="col">You said</th><th scope="col">Did</th><th scope="col"><span class="sr-only">Undo</span></th></tr></thead>
