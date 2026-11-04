@@ -54,6 +54,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
   chat's language when unsure" turns it off (`docs/design/chat-language.md`).
 
 ### Fixed
+- **The bubble no longer disappears for the whole session.** Switching virtual
+  desktops in the seconds while Koli started left the bubble hidden on every
+  desktop until the next restart, though dictation kept working. It now shows
+  only when it is ready, so Windows can't leave it behind.
 - **Koli hardly listened after the wake word.** A command said after "Viush"
   was compared with your recording of that one word, so most of your own
   commands were dropped as "not your voice", said only in the terminal. A command, or
