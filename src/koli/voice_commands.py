@@ -350,6 +350,21 @@ class VoiceCommandManager:
                 phrases.append(cmd['trigger'])
         return phrases
 
+    # The word each of your commands starts with, every phrase and language,
+    # normalised like speech. "Desk{n}" starts with "desk". So the wake word
+    # isn't taken from the start of a command that merely sounds near it.
+    def first_words(self) -> set:
+        if not getattr(self, 'commands', None):
+            return set()
+        self._reload_if_changed()
+        words = set()
+        for command in self.commands:
+            for phrase in command_phrases(command):
+                spoken = normalize_spoken(phrase.replace(NUMBER_PLACEHOLDER, ' ')).split()
+                if spoken:
+                    words.add(spoken[0])
+        return words
+
     # The plain command `phrase` is the whole of (an AI script's run_command),
     # or None. Matched like speech, so "Desk2" and "desk two" are "Desk{n}"
     # with the number filled in.

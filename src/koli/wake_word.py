@@ -20,6 +20,7 @@ import numpy as np
 
 from .dictation_cleanup import MAX_NO_SPEECH
 from .utils import get_user_app_data_path, normalize_spoken
+from .voice_filter import VOICEPRINT_MATCH
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,10 @@ PERSONAL_SLACK = 0.15
 # Your recordings count as one word when they are this close: "Koli" and
 # "Coli" are, "Koli" and "Hello" aren't.
 RECORDINGS_AGREE_RATIO = 0.6
+# A near match under this that starts one of your commands is that command:
+# "desk" is 0.67 like the spelling "adeus", and "Desk 2" woke Koli and asked
+# the AI about "two" (2026-11-04). "Viush" for "viush" is 1.0, one letter off 0.89.
+CLEAR_WAKE_RATIO = 0.85
 
 
 def ratio_for(sensitivity: str, personal: bool = False) -> float:
@@ -60,11 +65,15 @@ def ratio_for(sensitivity: str, personal: bool = False) -> float:
 # "Hey Koli" as "heykoli" or "hey ko li" too.
 # `fragment_letters`: the word more is taken only when it is this short, a
 # piece of the split word ("ko li", "via uš"), never a command's first word.
+# `command_words`: the words your fixed commands start with (lower case), which
+# only a clear match may take for the wake word.
 def match_wake(text: str, spellings: Iterable[str], min_ratio: float,
-               fragment_letters: Optional[int] = None) -> Optional[str]:
+               fragment_letters: Optional[int] = None, command_words: Iterable[str] = ()) -> Optional[str]:
     words = normalize_spoken(text).split()
     ratio, take, _ = _closest(words, spellings, fragment_letters)
     if take is None or ratio < min_ratio:
+        return None
+    if ratio < CLEAR_WAKE_RATIO and words[0] in command_words:
         return None
     return ' '.join(words[take:])
 
@@ -543,6 +552,7 @@ class WakeListener:
                  learned_level: Optional[Callable[[str], Optional[float]]] = None,
                  ai_listens: Optional[Callable[[], bool]] = None,
                  quick_command: Optional[Callable] = None,
+                 my_voice: Optional[Callable] = None,
                  clock: Callable[[], float] = time.monotonic):
         self.sm = state_manager
         self.cm = config_manager
@@ -558,6 +568,7 @@ class WakeListener:
         self._learned_level = learned_level or self._state_manager_level
         self._ai_listens = ai_listens or self._state_manager_ai
         self._quick_command = quick_command or self._state_manager_quick
+        self._my_voice = my_voice or self._meeting_my_voice
         self._sentence = False       # this command may be a sentence for the AI
         self._last_pieces = None     # Whisper's pieces with its numbers, from the last wake check
         self._wake_heard = ''        # the wake word as the last wake check wrote it ("dios")
@@ -582,6 +593,7 @@ class WakeListener:
         self._noticed_mics = set()
         self._other_model_mics = set()     # wake recordings made with another speaker model
         self._borrowed_mics = set()        # microphones checked against another one's recording (logged once)
+        self._stale_mics = set()           # their own recording is from another speaker model
         self._noticed_loading = False
         self._voice_model_ready = False
         self._warm_checked = -1e9
@@ -1021,7 +1033,7 @@ class WakeListener:
             self.logger.info(f"{said}: Whisper failed ({e})")
             return None
         took_ms = (time.monotonic() - started) * 1000
-        rest = match_wake(text, self.spellings(), self.match_ratio())
+        rest = match_wake(text, self.spellings(), self.match_ratio(), command_words=self._command_words())
         ratio, spelling = closest_wake(text, self.spellings())
         heard = f" “{text}”" if self._log_text() else f" {len(text.split())} word(s)"
         said += (f", heard{heard} in {took_ms:.0f} ms, {ratio:.2f} like “{spelling}” "
@@ -1039,7 +1051,8 @@ class WakeListener:
             return None
         if rest is None:
             self.budget.missed()
-            self.logger.info(f"{said}: no")
+            near_command = ratio >= self.match_ratio()   # near enough, but a command starts this way
+            self.logger.info(f"{said}: no{' - one of your commands starts this way' if near_command else ''}")
             # Your voice, or close to the wake word: show what Whisper wrote.
             if self.personal() or ratio >= self.CONSOLE_NEAR_WORD:
                 _console(f"👂 Heard “{text or '…'}”{voice}: not “{spelling}” ({ratio:.2f} alike, "
@@ -1059,11 +1072,12 @@ class WakeListener:
         # wake word only if you said it again, so only a word that clearly is
         # it goes ("desk" is 0.67 like "adeus", and "Desk 6" lost its "Desk").
         ratio = self.match_ratio() if self._wake_in_command else max(self.match_ratio(), self.STRIP_AFTER_PAUSE_RATIO)
-        rest = match_wake(text, self.spellings(), ratio)
+        command_words = self._command_words()
+        rest = match_wake(text, self.spellings(), ratio, command_words=command_words)
         if rest is None and self._wake_in_command:
             heard = [self._wake_heard] if self._wake_heard else []
             rest = match_wake(text, self.spellings() + heard, self.WAKE_IN_COMMAND_RATIO,
-                              fragment_letters=self.WAKE_FRAGMENT_LETTERS)
+                              fragment_letters=self.WAKE_FRAGMENT_LETTERS, command_words=command_words)
             if rest is not None:
                 self.logger.info("Wake word: dropped from the start of the command (read another way)")
         if rest is None:
@@ -1087,6 +1101,14 @@ class WakeListener:
         sure = any(p.get('no_speech_prob', 0) <= MAX_NO_SPEECH and p.get('avg_logprob', 0) >= self.WAKE_MIN_LOGPROB
                    for p in pieces)
         return sure, f"no-speech {no_speech:.2f} / log-prob {log_prob:.2f}"
+
+    # The words your fixed commands start with, or nothing when they can't be told.
+    def _command_words(self) -> set:
+        commands = getattr(self.sm, 'voice_command_manager', None)
+        try:
+            return set(commands.first_words()) if commands is not None else set()
+        except Exception:
+            return set()
 
     def _log_text(self) -> bool:
         logging_cfg = (getattr(self.cm, 'config', None) or {}).get('logging') or {}
@@ -1125,29 +1147,75 @@ class WakeListener:
             return None
         self._other_model_mics.discard(mic)
         if mic in usable:
+            self._stale_mics.discard(mic)
             return float(np.dot(vec, usable[mic]))
+        if mic in recorded:
+            self._stale_mics.add(mic)
         if not borrow:
             return None
         best_mic, best = max(((m, float(np.dot(vec, v))) for m, v in usable.items()), key=lambda x: x[1])
         if mic not in self._borrowed_mics:
             self._borrowed_mics.add(mic)
-            self.logger.info(f"Wake word: no recording on {mic or 'this microphone'} - checking against your "
-                             f"other microphones' (best: {best_mic})")
+            if mic in self._stale_mics:
+                self._notice_stale_recording(mic, best_mic)
+            else:
+                self.logger.info(f"Wake word: no recording on {mic or 'this microphone'} - checking against your "
+                                 f"other microphones' (best: {best_mic})")
         return best
+
+    # Your recording on `mic` can't be compared since the speaker model changed.
+    def recording_is_stale(self, mic: str) -> bool:
+        return mic in self._stale_mics
+
+    # Said once a session: other microphones' recordings of your word miss you
+    # far more often, and nothing else would tell you why.
+    def _notice_stale_recording(self, mic: str, best_mic: str) -> None:
+        self.logger.info(f"Wake word: the recording on {mic or 'this microphone'} is from another speaker model - "
+                         f"checking against your other microphones' (best: {best_mic})")
+        self._publish('notify', {'kind': 'wake', 'message':
+                                 f"Your wake word on {mic or 'this microphone'} was recorded with another speaker "
+                                 f"model, so it can miss you. Record it again in Commands."})
+
+    # Is this command or answer (other words than your wake word) you?
+    # (True, False or None when it can't be told, and the scores for the log.)
+    # Your recording holds one word, so other words in your voice score low
+    # against it: on real dictations (BY-V20, 2026-11-04) 25% passed 0.40, while
+    # 98% passed against the voice your dictations taught this microphone and
+    # 17 other people stayed under 0.30. Either one is enough. Your word itself
+    # and the spoken password still go by the recording alone (`similarity`).
+    def judge_speech(self, audio: np.ndarray) -> tuple:
+        word = self.similarity(audio)
+        said = '' if word is None else f"voice {word:.2f} (needs {self.voice_match():.2f})"
+        if word is not None and word >= self.voice_match():
+            return True, said
+        dictated = self._dictated_voice(audio)
+        if dictated is not None:
+            said = f"{said}, " if said else ''
+            said += f"as you dictate {dictated:.2f} (needs {VOICEPRINT_MATCH:.2f})"
+            if dictated >= VOICEPRINT_MATCH:
+                return True, said
+        return (None if word is None and dictated is None else False), said
+
+    # How much `audio` sounds like the voice your dictations taught this
+    # microphone, or None when it can't be told.
+    def _dictated_voice(self, audio: np.ndarray) -> Optional[float]:
+        try:
+            return self._my_voice(audio, self._mic())
+        except Exception as e:
+            self.logger.debug(f"Wake word: dictated voice not checked ({e})")
+            return None
 
     # A command after your word: is it your voice? `say` puts a skipped one
     # on the console (the first command, which you're waiting on; a
     # follow-up window hears the room and stays quiet).
     def _sounds_like_you(self, audio: np.ndarray, say: bool = False) -> bool:
-        score = self.similarity(audio)
-        if score is None:
+        mine, said = self.judge_speech(audio)
+        if mine is None:
             self._notice_unknown_voice()
             return False
-        mine = score >= self.voice_match()
-        self.logger.info(f"Wake word: command voice {score:.2f} (needs {self.voice_match():.2f})"
-                         f"{'' if mine else ' - not you, skipped'}")
+        self.logger.info(f"Wake word: command {said}{'' if mine else ' - not you, skipped'}")
         if not mine and say:
-            _console(f"✗ Not your voice ({score:.2f}, needs {self.voice_match():.2f}): command skipped")
+            _console(f"✗ Not your voice ({said}): command skipped")
         return mine
 
     # Your word can't be checked: said once per microphone when it isn't
@@ -1348,6 +1416,10 @@ class WakeListener:
     def _meeting_voiceprint(self, audio: np.ndarray):
         meetings = getattr(self.sm, 'meetings', None)
         return meetings.voiceprint_of(audio) if meetings is not None else None
+
+    def _meeting_my_voice(self, audio: np.ndarray, mic: str) -> Optional[float]:
+        meetings = getattr(self.sm, 'meetings', None)
+        return meetings.my_voice_similarity(audio, mic) if meetings is not None else None
 
     def _state_manager_run(self, **kwargs) -> str:
         return self.sm.run_wake_command(**kwargs)

@@ -5,6 +5,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 ## [Unreleased]
 
 ### Added
+- **Command language** (Commands › Voice commands). Pick one language and every
+  command, AI request and answer to the AI is read in it, with no language
+  detection. "Viush desk 2" was sometimes written in Hebrew, matched nothing and
+  went to the AI. Auto-detect stays the default, and dictation isn't affected.
 - **AI actions use your other apps, step by step.** "Play Daily Mix 6 on
   Spotify", "write this in Notepad", "turn on word wrap": the AI works in your
   open apps the way you would. It looks at the app (a picture of its window and
@@ -47,6 +51,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
   chat's language when unsure" turns it off (`docs/design/chat-language.md`).
 
 ### Fixed
+- **Koli hardly listened after the wake word.** A command said after "Viush"
+  was compared with your recording of that one word, so most of your own
+  commands were dropped as "not your voice", said only in the terminal. A command, or
+  an answer to the AI, now also counts as you when it sounds like your
+  dictations on this microphone. The wake word and the spoken password still
+  go by your recording.
+- **"Desk 2" went to the AI as "2".** The word "desk" sounds near the spelling
+  "adeus", so it woke Koli and the command lost its first word. A near match on
+  the word a command starts with is now that command.
+- **Changing the speaker model silently cost you your wake word** on the
+  microphone you use. Koli now says so once, and the Commands screen shows that
+  microphone as not recorded, so you can record it again.
 - **Every dictation pasted twice** when a test copy (`--test`) ran next to
   your Koli: both heard the hotkey. A test copy started while your Koli runs
   is now hands-off (no hotkeys, auto-dictation, wake word, meetings or local

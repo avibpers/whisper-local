@@ -570,6 +570,9 @@ SCHEMA = [
     _S('postprocess.replacements', 'Replacements', 'vocabulary', 'table'),
     _S('postprocess.snippets', 'Snippets', 'vocabulary', 'table'),
     _S('voice_commands.enabled', 'Voice commands', 'commands', 'toggle'),
+    _S('voice_commands.language', 'Command language', 'commands', 'select', choices=LANGUAGES, apply=NEXT_RECORDING,
+       help='Pick one language and Koli stops guessing: every command and AI request is read in it. '
+       'Commands in other languages then won’t work.'),
     _S('wake_word.enabled', 'Wake word', 'commands', 'toggle',
        help='Say “Hey Koli” (or your own word) and a command, no shortcut.'),
     _S('wake_word.sensitivity', 'How easily it wakes', 'commands', 'segmented',

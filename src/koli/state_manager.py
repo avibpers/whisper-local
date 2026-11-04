@@ -708,10 +708,22 @@ class StateManager:
     def set_wake_listener(self, listener):
         self._wake_listener = listener
 
-    # The language a wake check or command is heard in: the one in Settings,
-    # not the last dictation's app rule ("auto" detects within your list).
+    # The one language you chose for commands (Commands › Command language),
+    # or '' for detecting it. Detection is a poor guess on a command: "Viush
+    # desk 2" came out 0.30 sure of English, went to your main language, was
+    # written in Hebrew, matched nothing and reached the AI (2026-11-04).
+    def command_language(self) -> str:
+        chosen = self.config_manager.get_path('voice_commands.language', 'auto')
+        return chosen if isinstance(chosen, str) and chosen != 'auto' else ''
+
+    # The language a wake check or command is heard in: the one you chose for
+    # commands, else the one in Settings, not the last dictation's app rule
+    # ("auto" detects within your list).
     def wake_language(self) -> str:
         try:
+            chosen = self.command_language()
+            if chosen:
+                return chosen
             return (self.config_manager.get_whisper_config() or {}).get('language') or 'auto'
         except Exception:
             return 'auto'
@@ -1492,7 +1504,8 @@ class StateManager:
                 # online model (docs/design/online-models.md).
                 engine = self.dictation_engine('command' if mode == 'command' else 'dictation')
                 transcribed_text = engine.transcribe_audio(
-                    audio_data, chat_language='' if mode == 'command' else self.chat_language())
+                    audio_data, language=(self.command_language() or None) if mode == 'command' else None,
+                    chat_language='' if mode == 'command' else self.chat_language())
                 info = dict(getattr(engine, 'last_info', None) or {})
                 if transcribed_text:
                     record_local('command' if mode == 'command' else 'dictation', info)
@@ -1892,7 +1905,8 @@ class StateManager:
         # its own recording it is checked against your other microphones',
         # like the wake word: an answer is only text for the AI, and anything
         # dangerous it then plans still needs the password, which never
-        # borrows. Unchecked only while no voiceprint can be made at all.
+        # borrows. The voice your dictations taught counts too (judge_speech).
+        # Unchecked only while no voiceprint can be made at all.
         def hear(stop):
             wl = listener()
             if wl is None:
@@ -1900,10 +1914,10 @@ class StateManager:
             audio = wl.capture_word(timeout=8.0, max_seconds=10.0, end_silence_s=1.2, stop=stop)
             if audio is None:
                 return None
-            if wl.personal() and wl.wake_voices.mics():
-                score = wl.similarity(audio)
-                if score is not None and score < wl.voice_match():
-                    self.logger.info(f"AI action: an answer in another voice ({score:.2f}) was ignored")
+            if wl.personal():
+                mine, said = wl.judge_speech(audio)
+                if mine is False:
+                    self.logger.info(f"AI action: an answer in another voice ({said}) was ignored")
                     return None
             return self.whisper_engine.transcribe_audio(audio, language=self.wake_language(), use_prompt=False,
                                                         beam_size=1, task='transcribe', quiet=True)
