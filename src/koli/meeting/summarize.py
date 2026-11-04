@@ -263,6 +263,11 @@ def tidy(answer, m: dict, template: dict, generator: str, language: str) -> dict
 
 
 # Enough of a meeting to summarize: a few turns of real talk.
+# Minutes the meeting lasted.
+def length_minutes(m: dict) -> float:
+    return _length(m) / 60.0
+
+
 def worth_summarizing(m: dict, min_minutes: float) -> bool:
     turns = m.get('turns', [])
     return len(turns) >= MIN_TURNS and _length(m) >= float(min_minutes or 0) * 60

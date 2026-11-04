@@ -492,6 +492,10 @@ SCHEMA = [
        min=0, max=180, step=1, unit='min',
        help='Shorter meetings are not summarized by themselves, so a quick 5-minute call stays a transcript. '
             'Summarize by hand works for any length.'),
+    _S('meeting.summary.countdown_s', 'Wait before starting', 'meetings', 'number', group='Summary',
+       min=0, max=300, step=5, unit='seconds',
+       help='The meeting panel counts down this long before the AI starts, so you can cancel and save the tokens. '
+            '0 starts at once.'),
     _S('ai.meetings.model', 'Summarize with', 'meetings', 'ai_model', group='Summary',
        help='The AI model that writes the summaries and drafts new templates. Long meetings need a model with a '
             'large context. Empty uses the default model (Settings › AI).'),

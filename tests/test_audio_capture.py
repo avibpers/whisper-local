@@ -7,6 +7,7 @@ import collections
 import logging
 import sys
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -163,6 +164,82 @@ class RecoveryTests(unittest.TestCase):
             rec._run_capture()
         self.assertEqual(reopen.call_count, 6)
         self.assertEqual(outcomes, [])
+
+    # Python held up (a model call holding its lock) isn't a dead microphone.
+    def test_a_stall_while_python_was_held_up_is_not_a_lost_stream(self):
+        rec = bare_recorder(recording=False)
+        rec._capture_running, rec._stream_error = True, None
+        rec._recording_rate, rec.channels, rec.device = 16000, 1, None
+        rec.chosen_name = None
+        turns = []
+
+        def sleep(ms):
+            turns.append(ms)
+            if len(turns) == 1:
+                time.sleep(0.2)        # the held-up turn: longer than the stall limit
+            elif len(turns) == 2:
+                rec._capture_running = False
+        with mock.patch.object(audio_recorder.sd, 'InputStream', SilentStream), \
+             mock.patch.object(audio_recorder.sd, 'sleep', sleep), \
+             mock.patch.object(AudioRecorder, 'STALL_SECONDS', 0.1), \
+             mock.patch.object(AudioRecorder, 'LOOP_STARVED_S', 0.05):
+            self.assertFalse(rec._run_stream())
+
+    # A stream that ran fine for a long time starts the count over, so its
+    # reopen doesn't wait as if it had been failing all along.
+    def test_a_healthy_stream_starts_the_failure_count_over(self):
+        rec = bare_recorder(recording=False)
+        rec._capture_running, rec._stream_error = True, None
+        waits = []
+        runs = iter([60.0, 60.0, 60.0, None])
+
+        def run_stream():
+            ran = next(runs)
+            if ran is None:
+                return False
+            rec._stream_opened_at = time.monotonic() - ran
+            raise RuntimeError('no audio for 2 s')
+        with mock.patch.object(rec, '_run_stream', side_effect=run_stream), \
+             mock.patch.object(rec, '_reopen'), \
+             mock.patch.object(rec, '_wait_before_retry', side_effect=waits.append):
+            rec._run_capture()
+        self.assertEqual(waits, [1, 1, 1])
+
+    def test_failing_to_open_keeps_counting(self):
+        rec = bare_recorder(recording=False)
+        rec._capture_running, rec._stream_error = True, None
+        waits = []
+        outcomes = [OSError('no device')] * 3 + [False]
+
+        def run_stream():
+            outcome = outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+        with mock.patch.object(rec, '_run_stream', side_effect=run_stream), \
+             mock.patch.object(rec, '_reopen'), \
+             mock.patch.object(rec, '_wait_before_retry', side_effect=waits.append):
+            rec._run_capture()
+        self.assertEqual(waits, [1, 2, 3])
+
+    # A long absence waits long, until something could have changed.
+    def test_a_long_absence_waits_until_the_microphone_list_changes(self):
+        rec = bare_recorder(recording=False)
+        rec._capture_running = True
+        lists = iter([['A'], ['A'], ['A', 'B']])
+        started = time.monotonic()
+        with mock.patch.object(rec, '_live_microphones', side_effect=lambda: next(lists)), \
+             mock.patch.object(AudioRecorder, 'RETRY_LIST_CHECK_S', 0.01), \
+             mock.patch.object(AudioRecorder, 'RETRY_SLOW_WAIT_S', 30.0):
+            rec._wait_before_retry(AudioRecorder.RETRY_QUICK_TRIES + 1)
+        self.assertLess(time.monotonic() - started, 5.0)
+
+    def test_a_recording_never_sits_out_the_long_wait(self):
+        rec = bare_recorder(recording=True)
+        rec._capture_running = True
+        with mock.patch.object(audio_recorder.time, 'sleep') as sleep:
+            rec._wait_before_retry(AudioRecorder.RETRY_QUICK_TRIES + 50)
+        sleep.assert_called_once_with(AudioRecorder.RETRY_MAX_WAIT_S)
 
     def test_a_recording_keeps_its_audio_across_a_rate_change(self):
         rec = bare_recorder(recording=True)

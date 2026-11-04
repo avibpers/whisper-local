@@ -26,6 +26,8 @@ def complete(base_url: str, headers: dict, model: str, messages: list, json_mode
     if extra:
         payload.update(extra)
     url = f"{base_url.rstrip('/')}/chat/completions"
+    if payload['stream']:
+        payload['stream_options'] = {'include_usage': True}   # else a streamed answer doesn't say what it cost
     if not payload['stream']:
         return _parse_answer(http.post_json(url, payload, headers, timeout))
     with http.post_stream(url, payload, headers, timeout) as resp:

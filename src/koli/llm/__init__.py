@@ -16,7 +16,7 @@ import time
 
 from . import http, images, providers, routing
 from .oauth import SUBSCRIPTIONS
-from .types import ConfigError, ProviderError, ReconnectNeeded, Result
+from .types import AnswerStopped, ConfigError, ProviderError, ReconnectNeeded, Result
 from ..usage import budget, ledger, prices
 
 logger = logging.getLogger(__name__)
@@ -147,6 +147,8 @@ def complete(feature: str, messages: list, json: bool = False, on_text=None,
                 return Result(text=text, provider=provider_id, model=model_id,
                               tokens_in=tokens_in, tokens_out=tokens_out, cost=cost)
             last = Result(error=f"{provider.label} gave an empty answer", provider=provider_id, model=model_id)
+        except AnswerStopped:
+            raise
         except Exception as e:
             last = Result(error=describe_error(provider_id, e), provider=provider_id, model=model_id)
             if not isinstance(e, (ConfigError, ReconnectNeeded, http.NetworkError, http.HttpError, ProviderError)):

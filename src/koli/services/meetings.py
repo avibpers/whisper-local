@@ -105,6 +105,8 @@ class MeetingService:
         # summary job running per meeting.
         self._complete = complete
         self._summarizing = {}            # meeting id -> 'auto' | 'hand' while its job runs
+        self._summary_tasks = {}          # meeting id -> its running job's task id, for Stop
+        self._auto_answers = {}           # meeting id -> 'stop' | 'now', from the panel while the auto summary waits
         self._auto_waiting = set()        # meeting ids waiting for the transcript to settle
         # Meetings saved to Google Drive follow their changes there (_drive_follow).
         self._drive_due = {}              # meeting id -> when its doc is updated
@@ -374,8 +376,11 @@ class MeetingService:
         mode = str(self._setting('meeting.google_meet', 'captions') or 'captions')
         return mode if mode in ('captions', 'names', 'off') else 'captions'
 
-    def _captions_are_transcript(self, code: str) -> bool:
-        return bool(code) and self._meet_mode() == 'captions' and self.meet.captions_on(code)
+    # Whether audio starting at `t0` is already in Meet's captions. When it
+    # isn't (the Meet tab was hidden and the captions can only be read off the
+    # page), Whisper transcribes it.
+    def _captions_are_transcript(self, code: str, t0: float) -> bool:
+        return bool(code) and self._meet_mode() == 'captions' and self.meet.captions_cover(code, t0)
 
     # The detector's sources plus each Meet call you are in. A browser source
     # of the same call keeps its output device; both go by one key, so a
@@ -404,6 +409,8 @@ class MeetingService:
         if self._meet_mode() == 'off':
             return self._meet_status()
         result = self.meet.apply(events)
+        for note in result['notes']:
+            logger.info(note)
         for code in result['left']:
             self.session.call_left(code)
         m = self.session.meeting
@@ -507,7 +514,7 @@ class MeetingService:
         def submit(chunk):
             live_code = (meeting.get('source') or {}).get('code') or ''
             self.transcriber.submit({**chunk, 'meeting_id': meeting_id,
-                                     'voice_only': self._captions_are_transcript(live_code)})
+                                     'voice_only': self._captions_are_transcript(live_code, chunk['t0'])})
         if self._screenshot_mode() == 'all':
             self._start_watcher()
         self._start_call_poll(meeting)
@@ -827,12 +834,27 @@ class MeetingService:
             self._summarizing[meeting_id] = how
 
         def job(reporter):
+            from ..llm.types import AnswerStopped
             m = self.store.load(meeting_id)
             reporter.report(None, f"Writing it with the {chosen.get('name')} template")
-            with for_meeting(meeting_id, 'summary'):
-                brief = summary_ai.summarize(m, self.templates, chosen['id'], self._ai(), language=language,
-                                             language_setting=str(self._setting('meeting.summary.language', 'meeting')),
-                                             parse=self._parse, instructions=instructions)
+
+            # Each piece of the answer as it comes: Stop ends it there, so the
+            # model stops writing and costing.
+            def stop_if_asked(_text):
+                if reporter.cancelled:
+                    raise AnswerStopped()
+
+            def complete(feature, messages, **options):
+                return self._ai()(feature, messages, on_text=stop_if_asked, **options)
+            try:
+                with for_meeting(meeting_id, 'summary'):
+                    brief = summary_ai.summarize(m, self.templates, chosen['id'], complete, language=language,
+                                                 language_setting=str(self._setting('meeting.summary.language', 'meeting')),
+                                                 parse=self._parse, instructions=instructions)
+            except AnswerStopped:
+                reporter.check_cancelled()
+                raise
+            reporter.check_cancelled()     # a model that can't be cut off (Gemini): its answer isn't kept
             brief['written'] = how
             spec = chosen.get('title') or {}
             fixed = isinstance(spec, dict) and spec.get('mode') == 'fixed'
@@ -850,13 +872,14 @@ class MeetingService:
         def done(task):
             with self._lock:
                 self._summarizing.pop(meeting_id, None)
+                self._summary_tasks.pop(meeting_id, None)
             if task.status == 'done':
                 self._publish('meeting_brief', {'id': meeting_id})
                 self._drive_follow(meeting_id)
             if how == 'auto':
                 if task.status == 'done':
                     self._summary_status(meeting_id, 'ready', title=self._meeting_title(meeting_id))
-                else:
+                elif task.status != 'cancelled':       # Stop already told the panel
                     self._summary_status(meeting_id, 'failed')
         if how == 'auto':
             self._summary_status(meeting_id, 'writing')
@@ -867,12 +890,42 @@ class MeetingService:
             with self._lock:
                 self._summarizing.pop(meeting_id, None)
             raise
+        with self._lock:
+            if meeting_id in self._summarizing:      # still running
+                self._summary_tasks[meeting_id] = task.id
         return task.id
+
+    # The panel's Cancel and Stop: no summary this time, whether it is waiting
+    # for the transcript, counting down, or being written.
+    def stop_summary(self, meeting_id: str):
+        with self._lock:
+            if meeting_id in self._auto_waiting:
+                self._auto_answers[meeting_id] = 'stop'
+            task_id = self._summary_tasks.get(meeting_id)
+        if task_id is not None:
+            get_task_manager().cancel(task_id)
+        logger.info(f"Meeting summary: {meeting_id} stopped by you")
+        self._summary_status(meeting_id, 'none')
+
+    # The panel's Start now (skip the countdown) and Summarize anyway (a
+    # meeting too short to be summarized by itself).
+    def summary_now(self, meeting_id: str):
+        with self._lock:
+            waiting = meeting_id in self._auto_waiting
+            if waiting:
+                self._auto_answers[meeting_id] = 'now'
+        if not waiting:
+            self.summarize(meeting_id, how='auto')
+
+    # The panel's button: this meeting gets a summary by itself when it ends, or not.
+    def set_auto_summary(self, on: bool):
+        self.session.set_auto_summary(bool(on))
 
     # A meeting ended: keep its voices, then summarize it once the transcript
     # has caught up, unless it resumes first.
-    # The panel shows "Summarizing the meeting…" while one is on its way,
-    # then "Summary ready" with Open; 'none' lets it close.
+    # The panel shows "Summarizing the meeting…" while one is on its way, a
+    # countdown to cancel it, then "Summary ready" with Open; 'skipped' says
+    # why a meeting too short got none; 'none' lets it close.
     def _meeting_ended(self, meeting: dict):
         self._keep_voices(meeting)
         if self._meeting_local is not None:
@@ -880,14 +933,19 @@ class MeetingService:
         why_not = self._no_auto_summary(meeting)
         if why_not:
             logger.info(f"Meeting summary: {why_not}")
-            self._summary_status(meeting['id'], 'none')
+            note = self._too_short_note(meeting)
+            if note and self._auto_summary_wanted(meeting) and self.ai_ready():
+                self._summary_status(meeting['id'], 'skipped', reason=note)
+            else:
+                self._summary_status(meeting['id'], 'none')
             return
         self._summary_status(meeting['id'], 'waiting')
         self._schedule_auto_summary(meeting['id'])
 
     # Where an ended meeting's automatic summary stands, for the panel:
-    # waiting (the transcript catching up), writing, ready (with the new
-    # title), failed, or none (no summary is coming).
+    # waiting (the transcript catching up), countdown (with starts_at, to
+    # cancel), writing, ready (with the new title), failed, skipped (with the
+    # reason), or none (no summary is coming).
     def _summary_status(self, meeting_id: str, phase: str, **extra):
         self._publish('meeting_summary', {'id': meeting_id, 'phase': phase, **extra})
 
@@ -897,10 +955,24 @@ class MeetingService:
         except (OSError, ValueError):
             return ''
 
+    # Your answer for this meeting in the panel, else the setting.
+    def _auto_summary_wanted(self, meeting: dict) -> bool:
+        chosen = meeting.get('auto_summary')
+        return bool(self._setting('meeting.summary.auto', True)) if chosen is None else bool(chosen)
+
+    # A real conversation under the length limit gets a word in the panel:
+    # from the outside, no summary looks like a fault. An empty call gets none.
+    def _too_short_note(self, meeting: dict) -> str:
+        limit = float(self._setting('meeting.summary.min_minutes', 10) or 0)
+        minutes = summary_ai.length_minutes(meeting)
+        if len(meeting.get('turns', [])) < summary_ai.MIN_TURNS or minutes >= limit:
+            return ''
+        return f"It lasted {max(1, round(minutes))} min, and your limit for summarizing by itself is {limit:g} min."
+
     # Why no automatic summary is written for this meeting, or '' when one is.
     def _no_auto_summary(self, meeting: dict) -> str:
-        if not self._setting('meeting.summary.auto', True):
-            return "automatic summaries are off"
+        if not self._auto_summary_wanted(meeting):
+            return "automatic summaries are off for this meeting"
         if not self.ai_ready():
             return "no AI model chosen, so no automatic summary"
         if not summary_ai.worth_summarizing(meeting, self._setting('meeting.summary.min_minutes', 10)):
@@ -921,6 +993,8 @@ class MeetingService:
             try:
                 quiet_since, started = None, time.monotonic()
                 while not self._closed and time.monotonic() - started < max_wait_s:
+                    if self._auto_answers.get(meeting_id) == 'stop':
+                        return
                     live = self.session.meeting
                     if live is not None and live['id'] == meeting_id and self.is_running():
                         return  # it resumed; it is scheduled again when it ends
@@ -929,7 +1003,8 @@ class MeetingService:
                     elif quiet_since is None:
                         quiet_since = time.monotonic()
                     elif time.monotonic() - quiet_since >= settle_s:
-                        self._auto_summary(meeting_id)
+                        if self._count_down(meeting_id, poll_s):
+                            self._auto_summary(meeting_id)
                         return
                     time.sleep(poll_s)
                 if not self._closed:
@@ -938,7 +1013,26 @@ class MeetingService:
             finally:
                 with self._lock:
                     self._auto_waiting.discard(meeting_id)
+                    self._auto_answers.pop(meeting_id, None)
         threading.Thread(target=wait_then_run, name='meeting-auto-summary', daemon=True).start()
+
+    # The last moment before tokens are spent: the panel counts down
+    # (meeting.summary.countdown_s) with Cancel and Start now. True to go ahead.
+    def _count_down(self, meeting_id: str, poll_s: float) -> bool:
+        seconds = float(self._setting('meeting.summary.countdown_s', 30) or 0)
+        if seconds <= 0 or self._auto_answers.get(meeting_id) == 'now':
+            return True
+        starts_at = time.time() + seconds
+        self._summary_status(meeting_id, 'countdown', starts_at=starts_at)
+        while not self._closed and time.time() < starts_at:
+            answer = self._auto_answers.get(meeting_id)
+            if answer:
+                return answer == 'now'
+            live = self.session.meeting
+            if live is not None and live['id'] == meeting_id and self.is_running():
+                return False     # it resumed; it is scheduled again when it ends
+            time.sleep(min(poll_s, 0.2))
+        return not self._closed
 
     def _auto_summary(self, meeting_id: str):
         try:

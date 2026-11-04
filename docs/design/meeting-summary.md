@@ -106,6 +106,16 @@ summary; the template's `language` when it is a code; the setting
   with at least a few turns. A meeting that resumes and ends again is
   summarized again. An existing hand-run summary with another template is
   replaced only by a later hand run.
+- The meeting panel keeps you in charge of the tokens. A button says whether this
+  meeting gets a summary by itself (`auto_summary` on the meeting, over the
+  setting), while the call is offered or runs. When it ends, Cancel works while
+  the transcript catches up; then the panel counts down
+  `meeting.summary.countdown_s` (30; 0 = no wait) with Cancel and Start now;
+  while the AI writes there is Stop, which closes the connection (so a streaming
+  model stops writing) and keeps nothing. A model that only answers whole
+  (Gemini) finishes on its side and its answer is dropped.
+- A real conversation under the limit gets "Too short for a summary" with the
+  reason and Summarize anyway, for a while. An empty call gets nothing.
 - One summary job per meeting at a time, as a background task (kind
   `meeting_summary`, ref = the meeting id), so the page shows progress and a
   failure shows as a problem.
