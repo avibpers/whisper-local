@@ -982,6 +982,48 @@ class VirtualDesktopTests(unittest.TestCase):
         self.assertEqual(manager.moves, [])
 
 
+# Windows hides a normal window left on a desktop you switched away from, and
+# never gives it back once it is a tool window. So the bubble starts hidden and
+# shows only after it became one.
+class BubbleStartTests(unittest.TestCase):
+    def host(self, enabled=True):
+        from koli.ui.host import UiHost
+        host = UiHost.__new__(UiHost)
+        host.bar_enabled = enabled
+        host.bar, host.panel, host.main = mock.Mock(), mock.Mock(), mock.Mock()
+        host.main_visible = False
+        host._previous_foreground = 0
+        host.place_bar = host._apply_bar_opacity = host._apply_follow_focus = mock.Mock()
+        return host
+
+    def load_bar(self, host):
+        with mock.patch('koli.ui.host.win32') as win32:
+            win32.find_window.return_value = 7
+            host._on_loaded(host.bar)
+        return [call[0] for call in win32.method_calls]
+
+    def test_the_window_is_created_hidden_even_when_the_bubble_is_on(self):
+        host = self.host(enabled=True)
+        host._is_dark = lambda: True
+        host._bar_size = (44, 6)
+        host._bar_geometry = lambda w, h: (0, 0, w, h)
+        host._panel_size = lambda: (380, 420)
+        host._panel_geometry = lambda: (0, 0)
+        host.bridge = None
+        webview = mock.MagicMock()
+        with mock.patch.dict(sys.modules, {'webview': webview}):
+            host._create_child_windows()
+        for call in webview.create_window.call_args_list:
+            self.assertIs(call.kwargs['hidden'], True)
+
+    def test_it_shows_only_after_becoming_a_tool_window(self):
+        calls = self.load_bar(self.host(enabled=True))
+        self.assertLess(calls.index('make_tool_window'), calls.index('show_no_activate'))
+
+    def test_turned_off_it_stays_hidden(self):
+        self.assertNotIn('show_no_activate', self.load_bar(self.host(enabled=False)))
+
+
 # Who is in a Discord call, read from the rows Discord's window exposes
 # (class name, accessible name), as recorded in a live call on 2026-10-20.
 class CallPeopleTests(unittest.TestCase):

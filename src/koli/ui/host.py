@@ -324,12 +324,15 @@ class UiHost:
         import webview
         theme_dark = self._is_dark()
         bx, by = self._bar_geometry(*self._bar_size)[:2]
+        # Hidden until it is a tool window (_on_loaded). A normal window left on
+        # a desktop you switched away from is hidden by Windows, and once it
+        # becomes a tool window Windows never gives it back, on any desktop.
         self.bar.window = webview.create_window(
             BAR_TITLE, url=str(WEB_DIR / 'bar.html'), js_api=self.bridge,
             width=self._bar_size[0], height=self._bar_size[1], x=bx, y=by,
             frameless=True, easy_drag=False, resizable=False, on_top=True, focus=False,
             min_size=(4, 4), shadow=False, background_color='#1E252B' if theme_dark else '#FFFFFF',
-            hidden=not self.bar_enabled)
+            hidden=True)
         self.bar.window.events.loaded += lambda: self._on_loaded(self.bar)
 
         pw, ph = self._panel_size()
@@ -380,8 +383,8 @@ class UiHost:
             self.place_bar()
             self._apply_bar_opacity()
             self._apply_follow_focus()
-            if not self.bar_enabled:
-                win32.hide(self.bar_hwnd)
+            if self.bar_enabled:
+                win32.show_no_activate(self.bar_hwnd)
             # WebView2 takes focus when a page loads; give it back to whatever
             # the user was typing into (Phase 0, spike B).
             if not self.main_visible and self._previous_foreground:
