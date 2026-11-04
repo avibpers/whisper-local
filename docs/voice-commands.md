@@ -40,6 +40,16 @@ commands:
 | **send_to** | Where a `hotkey` goes: left out for the active window, `windows` for no app, or an app's `.exe` |
 | **type** | Pre-written text to deliver to the active window |
 
+## Language
+
+Commands are read in the language Koli detects, like dictation. A short command
+with your wake word in it can fool the detector: "Viush desk 2" may come out in
+Hebrew, match nothing and go to the AI. **Commands › Command language**
+(`voice_commands.language`) picks the one language every command, AI request
+and answer to the AI is read in, and the detector doesn't run. Phrases in other
+languages (`other_triggers`) then don't match, and neither does asking the AI in
+another language. Dictation keeps detecting as before.
+
 ## Matching
 
 - Triggers are matched as substrings — saying "please open notepad" matches `"open notepad"`

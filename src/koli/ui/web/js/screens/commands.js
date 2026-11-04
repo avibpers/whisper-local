@@ -149,6 +149,8 @@ function openCommandEditor(item, reload) {
 
 function VoiceCommands() {
   const enabled = useSetting('voice_commands.enabled');
+  const schema = app.use((s) => s.schema);
+  const languageRow = schema && schema.settings.find((x) => x.path === 'voice_commands.language');
   const cmdKey = useSetting('hotkey.command_hotkey');
   const [items, setItems] = useState([]);
   const [phrase, setPhrase] = useState('');
@@ -169,6 +171,7 @@ function VoiceCommands() {
     <div class="card-head"><div><h2 id="h-cmd">Voice commands</h2><p>Hold <${Keys} hotkey=${cmdKey} empty="(no shortcut)" />, say a trigger, and it runs. Triggers match anywhere in what you say, longest first.</p></div>
       <div class="row-flex"><label class="row-flex" style="font-weight:500">On<${Toggle} checked=${enabled} label="Voice commands" onChange=${(v) => saveSetting('voice_commands.enabled', v)} /></label>
         <button type="button" class="btn" onClick=${() => openCommandEditor(null, reload)}><${Icon} name="plus" />New command</button></div></div>
+    ${languageRow && html`<${SettingRow} s=${languageRow} />`}
     <div class="row-flex" style="padding:0 18px 14px"><input class="inp" style="width:260px" dir="auto" aria-label="Try a phrase" placeholder="Try a phrase…" value=${phrase} onInput=${(e) => setPhrase(e.currentTarget.value)} />
       ${test && html`<span class=${'chip ' + (test.matched ? 'ok' : '')}>${test.matched ? `Runs “${test.trigger}”${test.phrase && test.phrase !== test.trigger ? ` (said as “${test.phrase}”)` : ''} (${ACTION[test.action] ? ACTION[test.action].label.toLowerCase() : test.action})` : test.reason || 'No command matches'}</span>`}</div>
     <div class="tbl-wrap"><table class="tbl"><thead><tr><th scope="col">Say</th><th scope="col">Does</th><th scope="col">Details</th><th scope="col">On</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>

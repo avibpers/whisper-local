@@ -605,6 +605,11 @@ voice_commands: # Voice Command Settings
     # false = disable voice commands entirely
     # Define commands in commands.yaml (same folder as user_settings.yaml)
     enabled: true
+    # The one language commands are read in, from the hotkey or the wake word.
+    # auto = detect it each time, as dictation does. A language (en, he...)
+    # skips the detector: a short command with your wake word in it fools it.
+    # Phrases in another language, and asking the AI in one, then won't work.
+    language: auto
 
 wake_word: # Say a word to run a voice command, no hotkey
     # "Hey Koli, next song", or "Hey Koli" then the command after a pause.

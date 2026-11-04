@@ -24,8 +24,10 @@ your voice.
 | Command recognised | Runs it like a hotkey command. Then stays awake `follow_up_seconds` (5) for another command without the wake word ("next", "louder"). With a personal word, follow-ups must sound like you. With "Hey Koli" there is no voice check, so follow-ups only run media commands (play/pause, next, volume). Lyrics from the song you just started can't trigger "undo" or "lock screen". |
 | No command matches | The bar shows "Didn't catch that - say it again" and Koli listens `command_timeout_seconds` (5) more for the command, without the wake word. A second miss shows "Didn't catch that" and sleeps; one retry only, so a TV can't keep Koli awake. Nothing is typed. |
 | Any try that is probably you | The terminal shows what Whisper heard and the voice score: woke, not the word, almost your voice (within 0.10 of "Sounds like you"), or a command too quiet to count. With "Hey Koli" only text at least half like it is shown. Nothing for other voices or the TV. |
-| Personal word, no recording on this microphone (new headset) | Checked against your recordings on your other microphones, the best of them (2026-10-29). The Commands screen says which; **Add recordings** here gives this microphone its own. The spoken password for AI actions and your answers to the AI never borrow: on this microphone they need its own recording (2026-11-01). |
-| Personal word, recordings made with another speaker model (`meeting.speaker_model` changed), or the voiceprint model isn't loaded | Doesn't wake, and says so once: record again, or set the speaker model back. Added recordings start that microphone over. |
+| Personal word, no recording on this microphone (new headset) | Checked against your recordings on your other microphones, the best of them (2026-10-29). The Commands screen says which; **Add recordings** here gives this microphone its own. The spoken password for AI actions never borrows: on this microphone it needs its own recording (2026-11-01). |
+| Personal word, this microphone's recording made with another speaker model (`meeting.speaker_model` changed), others still usable | Checked against your other microphones, says so once, and the Commands screen shows no recording here. Added recordings start this microphone over (2026-11-04). |
+| Personal word, every recording made with another speaker model, or the voiceprint model isn't loaded | Doesn't wake, and says so once: record again, or set the speaker model back. Added recordings start that microphone over. |
+| A fixed command said alone that sounds near a spelling ("Desk 2" against "adeus") | Not the wake word: a match under 0.85 on the word a command starts with is that command (2026-11-04). |
 | Dictation (hotkey or auto-dictation), meeting running, or command mode from the hotkey | Not listening. It resumes when that ends. |
 | PC locked | Not listening. If Koli can’t tell (the check fails), it counts as locked. |
 | "Hey Koli" command that runs a program (`run`, also in then-steps) | Always asks first (the confirm dialog), since anyone could have said it; where no dialog can ask, it doesn’t run. Your own word was checked against your voice, so it runs like a hotkey command. |
@@ -126,11 +128,22 @@ mic ──► TEN VAD ──► speech burst ──► [personal word: is it you
    in English letters), with beam 1, strips the wake word from the start,
    and sends the rest through `VoiceCommandManager`, the same path as hotkey
    commands. If only the wake word was said, Koli waits for the command
-   (pause case) without reading the burst again. With your own word, a
+   (pause case) without reading the burst again. It is read in
+   `voice_commands.language` when you chose one, with no detection: a command
+   starting with a made-up word is a poor clip to guess from (2026-11-04).
+   With your own word, a
    command said after the pause must sound like you, as follow-ups must:
    one that doesn't is skipped ("✗ Not your voice" on the console) and Koli
    keeps waiting. A command in the same breath as the word was checked
-   with it.
+   with it. It is you when it passes against your recorded word or against
+   the voice your dictations taught this microphone (`judge_speech`, at
+   "Only my voice"'s 0.43). A recording holds one word, so other words in
+   your voice score low against it: on 59 real dictations (BY-V20,
+   2026-11-04, one second each) 25% passed 0.40 against the recordings and
+   98% against the dictations, and 17 other people's saved voices stayed
+   under 0.30. The same goes for an answer to the AI. The wake word itself
+   and the spoken password still go by the recording alone: your own talk
+   would otherwise reach Whisper with every sentence.
 7. **The chime.** For 0.6 s after the wake sound (0.45 s long) no new burst starts, so
    the chime through the speakers can't become the command. A burst already
    going (one breath) carries on.

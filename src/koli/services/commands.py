@@ -243,9 +243,9 @@ def wake_status(sm) -> dict:
         'word': (listener.spelling_hint() or listener.spellings()[0]) if personal else 'Hey Koli',
         'spellings': listener.spellings() if personal else [],
         'mic': mic,
-        'recorded_here': listener.wake_voices.get(mic) is not None,
+        'recorded_here': listener.wake_voices.get(mic) is not None and not listener.recording_is_stale(mic),
         # Microphones with their own recording; one without is checked against these.
-        'recorded_on': listener.wake_voices.mics(),
+        'recorded_on': [m for m in listener.wake_voices.mics() if not listener.recording_is_stale(m)],
         'samples': listener.wake_voices.count(mic),
         'recordings': [r['heard'] for r in listener.recordings],
         'needed': WAKE_RECORDINGS,

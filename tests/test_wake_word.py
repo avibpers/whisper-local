@@ -4,6 +4,7 @@
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
@@ -64,6 +65,19 @@ class MatchWakeTests(unittest.TestCase):
 
     def test_unknown_sensitivity_means_medium(self):
         self.assertEqual(self.ww.ratio_for('loud'), self.medium)
+
+
+class MatchWakeCommandWordTests(unittest.TestCase):
+    def test_a_near_match_on_a_commands_first_word_isnt_the_wake_word(self):
+        from koli.wake_word import match_wake
+        self.assertIsNone(match_wake('Desk two', ['adeus'], 0.65, command_words={'desk'}))
+        self.assertEqual(match_wake('Desk two', ['adeus'], 0.65), 'two', "without your commands it can't tell")
+
+    def test_your_word_clearly_said_is_still_your_word(self):
+        from koli.wake_word import match_wake
+        self.assertEqual(match_wake('Viush desk two', ['viush', 'adeus'], 0.65, command_words={'desk'}), 'desk two')
+        self.assertEqual(match_wake('desk two', ['desk'], 0.65, command_words={'desk'}), 'two',
+                         'a word you chose yourself still wakes')
 
 
 class SpellingsFromRecordingsTests(unittest.TestCase):
@@ -132,7 +146,7 @@ import numpy as np  # noqa: E402
 # nothing for it, but TEN VAD hears it as speech. 9 is loud talk (a TV).
 # 11 is how Whisper wrote your word one time ("Deus" for "Viush"); 10 a scrap.
 WORDS = {1: 'hey koli', 2: 'next song', 3: 'undo', 4: 'koli', 5: 'ding', 7: 'hey', 8: '', 9: 'blah blah',
-         10: 'ab', 11: 'deus'}
+         10: 'ab', 11: 'deus', 12: 'desk two'}
 COMMANDS = {'next song': 'media', 'undo': 'other'}
 # How loud each token is at the microphone (dBFS); you speak at -18.
 LEVELS = {0: -90.0, 8: -45.0}
@@ -788,6 +802,102 @@ class PersonalWakeWordTests(ListenerTestCase):
         self.quiet(0.8)
         self.assertEqual(self.runs[-1]['text'], 'next song')
 
+    # Your recording holds one word, so another word in your voice scores low
+    # against it (BY-V20, 2026-11-04: 25% of your own speech passed, every other
+    # saved voice stayed under 0.30 against your dictations). A command is
+    # also judged by the voice your dictations taught on this microphone.
+    def test_a_command_in_the_voice_you_dictate_with_runs(self):
+        voice = {'now': self.mine}
+        listener = self.make(voiceprint=lambda audio: voice['now'], phrases=['koli'], only_my_voice=True)
+        self.voices.set('Jabra', [self.mine])
+        listener._my_voice = lambda audio, mic: 0.62
+        self.say(4)
+        self.quiet(1.0)
+        voice['now'] = self.theirs           # far from the recorded word
+        self.say(2)
+        self.quiet(0.8)
+        self.assertEqual(self.runs[-1]['text'], 'next song')
+
+    def test_a_command_unlike_both_your_word_and_your_dictations_is_skipped(self):
+        voice = {'now': self.mine}
+        listener = self.make(voiceprint=lambda audio: voice['now'], phrases=['koli'], only_my_voice=True)
+        self.voices.set('Jabra', [self.mine])
+        listener._my_voice = lambda audio, mic: 0.30
+        self.say(4)
+        self.quiet(1.0)
+        voice['now'] = self.theirs
+        self.say(2)
+        self.quiet(0.8)
+        self.assertEqual(self.runs, [])
+        self.assertEqual(listener.state, self.ww.WAITING)
+
+    # Your own talk mostly stays out of Whisper because the wake check asks for
+    # the recorded word: your dictations must not open it to every sentence.
+    def test_your_dictated_voice_doesnt_open_the_wake_check(self):
+        listener = self.make_personal(self.theirs)
+        listener._my_voice = lambda audio, mic: 0.9
+        self.say(4, seconds=0.6)
+        self.quiet(0.8)
+        self.assertEqual(self.transcribed, [])
+        self.assertEqual(listener.state, self.ww.SLEEPING)
+
+    # What guards something asks about the recorded word only.
+    def test_the_password_check_ignores_your_dictated_voice(self):
+        listener = self.make_personal(self.theirs)
+        listener._my_voice = lambda audio, mic: 0.9
+        self.assertLess(listener.similarity(np.zeros(16000, dtype=np.float32), borrow=False), 0.1)
+
+    # An answer to the AI is judged like a command; nothing to judge it by
+    # leaves it unchecked, as before.
+    def test_an_answer_counts_as_you_by_your_dictated_voice(self):
+        listener = self.make_personal(self.theirs)
+        audio = np.zeros(16000, dtype=np.float32)
+        listener._my_voice = lambda audio, mic: 0.62
+        self.assertIs(listener.judge_speech(audio)[0], True)
+        listener._my_voice = lambda audio, mic: 0.2
+        self.assertIs(listener.judge_speech(audio)[0], False)
+        listener._my_voice = lambda audio, mic: None
+        self.assertIs(listener.judge_speech(audio)[0], False, 'your recorded word still says it is not you')
+        self.voices.clear()
+        self.assertIsNone(listener.judge_speech(audio)[0], 'nothing to compare with')
+
+    # The speaker model changed on 2026-11-01: your recording on this microphone
+    # stopped counting and Koli said "no recording" in the log, nothing to you.
+    def test_a_recording_from_another_speaker_model_is_told_once(self):
+        listener = self.make_personal(self.mine)
+        self.sm.mic = 'BY-V20'
+        self.voices.set('BY-V20', [np.ones(5, dtype=np.float32)])
+        audio = np.zeros(16000, dtype=np.float32)
+        self.assertIsNotNone(listener.similarity(audio), 'still checked against your other microphones')
+        listener.similarity(audio)
+        notes = [p['message'] for t, p in self.events if t == 'notify']
+        self.assertEqual(len(notes), 1, notes)
+        self.assertIn('another speaker model', notes[0])
+        self.assertTrue(listener.recording_is_stale('BY-V20'))
+        self.assertFalse(listener.recording_is_stale('Jabra'))
+
+    # "desk" is 0.67 like the spelling "adeus": "Desk 2" woke Koli and the AI
+    # was asked about "two" (2026-11-04).
+    def test_a_command_said_alone_isnt_taken_for_your_word(self):
+        listener = self.make(voiceprint=lambda audio: self.mine, phrases=['adeus'], only_my_voice=True,
+                             sensitivity='high')
+        self.voices.set('Jabra', [self.mine])
+        self.sm.voice_command_manager = mock.Mock(enabled=True)
+        self.sm.voice_command_manager.first_words.return_value = {'desk'}
+        self.say(12, seconds=0.6)
+        self.quiet(0.8)
+        self.assertEqual(self.sounds, 0)
+        self.assertEqual(listener.state, self.ww.SLEEPING)
+
+    def test_a_command_keeps_its_first_word_when_whisper_dropped_your_word(self):
+        listener = self.make(voiceprint=lambda audio: self.mine, phrases=['viush', 'adeus'], only_my_voice=True,
+                             sensitivity='high')
+        self.sm.voice_command_manager = mock.Mock(enabled=True)
+        self.sm.voice_command_manager.first_words.return_value = {'desk'}
+        listener._wake_in_command, listener._wake_heard = True, 'viush'
+        self.assertEqual(listener.strip_wake('Desk two.'), 'Desk two.')
+        self.assertEqual(listener.strip_wake('Viush, desk two'), 'desk two')
+
     # The console says when Koli heard a try at the wake word and what Whisper
     # made of it, so you know whether it was heard at all. Other voices and
     # the TV (far from your voice) stay out of it.
@@ -996,6 +1106,7 @@ class WakeCommandStateManagerTests(unittest.TestCase):
         listener.WAKE_IN_COMMAND_RATIO = WakeListener.WAKE_IN_COMMAND_RATIO
         listener.STRIP_AFTER_PAUSE_RATIO = WakeListener.STRIP_AFTER_PAUSE_RATIO
         listener.WAKE_FRAGMENT_LETTERS = WakeListener.WAKE_FRAGMENT_LETTERS
+        listener._command_words.return_value = set()
         listener.strip_wake.side_effect = lambda text: WakeListener.strip_wake(listener, text)
         sm._wake_listener = listener
         return sm
@@ -1106,6 +1217,41 @@ class WakeCommandStateManagerTests(unittest.TestCase):
 
 
 # ── Recording your word (services/commands) ──────────────────────────────────
+
+class CommandLanguageTests(unittest.TestCase):
+    def _sm(self, chosen):
+        from koli.state_manager import StateManager
+        sm = StateManager.__new__(StateManager)
+        sm.config_manager = mock.Mock()
+        sm.config_manager.get_whisper_config.return_value = {'language': 'auto'}
+        sm.config_manager.get_path.side_effect = lambda path, default=None: (
+            chosen if path == 'voice_commands.language' else default)
+        return sm
+
+    def test_a_chosen_language_is_what_commands_are_heard_in(self):
+        sm = self._sm('en')
+        self.assertEqual(sm.command_language(), 'en')
+        self.assertEqual(sm.wake_language(), 'en', 'no detection: the engine is told the language')
+
+    def test_auto_detects_as_before(self):
+        sm = self._sm('auto')
+        self.assertEqual(sm.command_language(), '')
+        self.assertEqual(sm.wake_language(), 'auto')
+
+    # The real path of the 2026-11-04 miss: the engine's detector never runs.
+    def test_a_told_language_skips_the_detector(self):
+        from koli.whisper_engine import WhisperEngine
+        engine = WhisperEngine.__new__(WhisperEngine)
+        engine.language = None
+        engine.allowed_languages = ['he', 'en']
+        engine.language_model = None
+        engine.language_model_lang = None
+        engine.model, engine.model_key, engine.initial_prompt = object(), 'turbo', ''
+        engine._detect_language = mock.Mock(side_effect=AssertionError('detected anyway'))
+        routed = engine._route(np.zeros(16000, dtype=np.float32), language='en')
+        self.assertEqual(routed[2], 'en')
+        engine._detect_language.assert_not_called()
+
 
 class FakeSettings:
     def __init__(self, cm):
@@ -1303,6 +1449,16 @@ class WakeSetupTests(ListenerTestCase):
 
 
 # ── Running programs from a wake word, and the locked check ──────────────────
+
+class CommandFirstWordsTests(unittest.TestCase):
+    def test_first_words_cover_every_phrase_and_numbers(self):
+        from koli.voice_commands import VoiceCommandManager
+        manager = VoiceCommandManager.__new__(VoiceCommandManager)
+        manager._reload_if_changed = lambda: None
+        manager.commands = [{'trigger': 'Desk{n}', 'other_triggers': ['\u05d3\u05e1\u05e7 {n}'], 'hotkey': 'x'},
+                            {'trigger': 'next song', 'hotkey': 'y'}, {'match_regex': 'x+', 'hotkey': 'z'}]
+        self.assertEqual(manager.first_words(), {'desk', '\u05d3\u05e1\u05e7', 'next'})
+
 
 class WakeSafetyTests(unittest.TestCase):
     def _manager(self):
