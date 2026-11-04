@@ -5,6 +5,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 ## [Unreleased]
 
 ### Added
+- **Open apps by name** (Commands › Voice commands). Say "app Soul" or "app
+  Cursor" and Koli brings up the last window you used with that app or main
+  window name, on any virtual desktop, with no AI. Say it again for the next one.
 - **Command language** (Commands › Voice commands). Pick one language and every
   command, AI request and answer to the AI is read in it, with no language
   detection. "Viush desk 2" was sometimes written in Hebrew, matched nothing and

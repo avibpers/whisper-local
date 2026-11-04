@@ -84,6 +84,8 @@ RISKY_PATTERNS = re.compile(
 
 # ── Spoken numbers: "d {n}" ──────────────────────────────────────────────────
 
+# "app Soul": the whole of what was said, with a name after it.
+OPEN_APP_PHRASE = re.compile(r'apps?\s+(.+)')
 NUMBER_PLACEHOLDER = '{n}'
 NUMBER_WORDS = ('zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine')
 # Other ways a digit gets written: how Whisper hears an English number in a
@@ -183,8 +185,9 @@ def _with_number(command: dict, digit: str) -> dict:
 
 
 class VoiceCommandManager:
-    def __init__(self, enabled=True, clipboard_manager=None, log_transcriptions=False):
+    def __init__(self, enabled=True, clipboard_manager=None, log_transcriptions=False, open_apps_by_name=True):
         self.enabled = enabled
+        self.open_apps_by_name = open_apps_by_name   # "app Soul" brings up that window
         self.clipboard_manager = clipboard_manager
         self.log_transcriptions = log_transcriptions
         self.logger = logging.getLogger(__name__)
@@ -244,6 +247,13 @@ class VoiceCommandManager:
         self._reload_if_changed()
         normalized = normalize_spoken(text)
 
+        # Before the loop, which finds phrases inside the text: "app copy" must
+        # not run "copy". `only` means a narrower question than this one.
+        if only is None:
+            open_app = self._match_open_app(text, normalized, exact)
+            if open_app:
+                return open_app
+
         for phrase, command, is_main in _phrases_longest_first(self.commands):
             if only is not None and not only(command):
                 continue
@@ -277,6 +287,18 @@ class VoiceCommandManager:
                 return command
 
         return None
+
+    # "app <name>" as a command, or None. A command of yours named "app store"
+    # stays yours. `exact` is the check at a short pause, while you may still be
+    # talking: a name with no window yet isn't a miss, so it keeps listening.
+    def _match_open_app(self, text: str, normalized: str, exact: bool) -> Optional[dict]:
+        found = OPEN_APP_PHRASE.fullmatch(normalized) if getattr(self, 'open_apps_by_name', False) else None
+        if not found or self.match_command(text, only=lambda _: True, exact=True):
+            return None
+        name = found.group(1)
+        if exact and not window_focus.find_window(name):
+            return None
+        return {'trigger': f"app {name}", 'open_app': name}
 
     # Expand ${clipboard} / ${selection} template vars. When shell_safe is True
     # (i.e. the result is headed for a shell `run:` command), each substituted
@@ -406,6 +428,8 @@ class VoiceCommandManager:
                                  require_confirm=command.get('confirm', None),
                                  force_confirm=had_untrusted or confirm_runs,
                                  fail_closed=confirm_runs)
+        elif command.get('open_app') is not None:
+            self._open_app(command['open_app'], trigger)
         elif command.get('hotkey') is not None:
             self._send_hotkey(command['hotkey'], trigger, command.get('send_to'))
         elif command.get('type') is not None:
@@ -533,6 +557,16 @@ class VoiceCommandManager:
     # window: "windows" (an invisible Koli window, so only Windows and other
     # programs' global shortcuts react) or an app's .exe. Focus returns to
     # where the user was. A closed target app presses nothing and says so.
+    def _open_app(self, name: str, trigger: str):
+        try:
+            window_focus.open_window(name)
+            self.logger.info(f"Opened by name: {name}")
+            print(f"   ✓ Opened: {name}")
+        except LookupError as e:
+            self.logger.info(f"Not opened: {e}")
+            publish('notify', {'kind': 'command', 'message': f"“{trigger}” didn't run: {e}"})
+            print(f"   ✗ Not opened: {e}")
+
     def _send_hotkey(self, hotkey_str: str, trigger: str, send_to: Optional[str] = None):
         keys = [k.strip() for k in hotkey_str.lower().split('+')]
         try:

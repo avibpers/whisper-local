@@ -84,7 +84,7 @@ Koli is a fork of `drajb/whisper-local` by Rohit Burani (repo `avibpers/whisper-
 | **Console Welcome (legacy)** | `onboarding_tutorial.py` | First-launch console banner, skipped when the app window runs | - |
 | **Whisper.cpp Backend** | `whisper_engine_cpp.py` | Opt-in `whisper_cpp` backend mirroring WhisperEngine's API | pywhispercpp |
 | **Foreground App** | `platform/*/foreground.py` | Detects the active window/app for per-app rules | pywin32 / pyobjc |
-| **Window Focus** | `platform/*/window_focus.py` | Presses a voice command's keys in a chosen app or an invisible "no app" window, then returns focus; lists open apps (Windows; macOS stub) | ctypes |
+| **Window Focus** | `platform/*/window_focus.py` | Presses a voice command's keys in a chosen app or an invisible "no app" window, then returns focus; lists open apps; "app Soul" brings up a window by its app or main name (Windows; macOS stub) | ctypes |
 | **Input Watch** | `platform/*/input_watch.py` | Focus-change and typing hooks plus the UI Automation "is this a text field" probe for auto-dictation (Windows; macOS stub) | ctypes, comtypes |
 | **Session Lock** | `platform/*/session.py` | Whether the PC is locked, so the wake word stops listening (Windows; macOS stub) | ctypes |
 | **Screenshots** | `platform/*/screenshots.py` | Opens the Windows snip overlay and reads the Snipping Tool's image off the clipboard for meeting screenshots (Windows; macOS stub) | ctypes, Pillow |

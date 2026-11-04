@@ -40,6 +40,18 @@ commands:
 | **send_to** | Where a `hotkey` goes: left out for the active window, `windows` for no app, or an app's `.exe` |
 | **type** | Pre-written text to deliver to the active window |
 
+## Open an app by name
+
+Say **app** and a name to bring up the last window you used with that name, on
+any virtual desktop: "Viush, app Soul" or "Viush, app Cursor". The name is the
+app, or the window's main name. A title reads `<document> - <main name> - <app>`,
+so `Notes - Soul - Cursor` answers to "Soul" and "Cursor" but not "Notes". The
+start of a word is enough ("app sou"). Say it again to move to the next window
+with that name. No AI is involved, and a name with no window just says so.
+
+A command of your own named "app store" stays yours. Turn this off with
+**Commands › Open apps by name** (`voice_commands.open_apps_by_name`).
+
 ## Language
 
 Commands are read in the language Koli detects, like dictation. A short command

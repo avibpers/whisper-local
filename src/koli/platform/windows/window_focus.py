@@ -3,7 +3,8 @@
 # chosen app's window, or to "windows", an invisible Koli window that ignores
 # keys, so only Windows' own shortcuts and other programs' global shortcuts
 # react. Focus goes back to where the user was. Also lists the open apps for
-# the command editor's picker. macOS mirror: platform/macos/window_focus.py.
+# the command editor's picker, and brings up a window by name ("app Soul").
+# macOS mirror: platform/macos/window_focus.py.
 #
 # The desktop is not used as the "no app" target on purpose: it acts on
 # Ctrl+Shift+1..4 (icon size) and Delete, F2, Ctrl+Shift+N...
@@ -12,8 +13,11 @@ import ctypes
 import ctypes.wintypes as wt
 import logging
 import os
+import re
 import threading
 import time
+
+from ...utils import normalize_spoken
 
 logger = logging.getLogger(__name__)
 
@@ -107,22 +111,23 @@ def _exe_of(hwnd) -> str:
 
 # A window the user would call an app: visible, titled, not a tool or owned
 # popup, and not one of the hidden "cloaked" windows modern apps keep around.
-def _is_app_window(hwnd) -> bool:
+# Windows on another virtual desktop are cloaked too: `every_desktop` keeps them.
+def _is_app_window(hwnd, every_desktop: bool = False) -> bool:
     if not _user32.IsWindowVisible(hwnd) or not _user32.GetWindowTextLengthW(hwnd):
         return False
     if _user32.GetWindow(hwnd, GW_OWNER) or _user32.GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOOLWINDOW:
         return False
     cloaked = wt.DWORD()
     _dwmapi.DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, ctypes.byref(cloaked), ctypes.sizeof(cloaked))
-    return not cloaked.value
+    return not cloaked.value or (every_desktop and not _on_current_desktop(hwnd))
 
 
 # Every app window as (hwnd, exe, title), the most recently used first.
-def _app_windows() -> list:
+def _app_windows(every_desktop: bool = False) -> list:
     found = []
 
     def visit(hwnd, _):
-        if _is_app_window(hwnd):
+        if _is_app_window(hwnd, every_desktop):
             exe = _exe_of(hwnd)
             if exe:
                 length = _user32.GetWindowTextLengthW(hwnd)
@@ -146,6 +151,50 @@ def open_apps() -> list:
 def _find_app(exe: str):
     wanted = exe if exe.endswith('.exe') else exe + '.exe'
     return next((hwnd for hwnd, name, _ in _app_windows() if name == wanted), None)
+
+
+# ── Opening a window by name ─────────────────────────────────────────────────
+# "app Soul" or "app Cursor". A title reads "<document> - <main name> - <app>",
+# and only the main name and the app count: a document or chat that happens to
+# mention the name is not the window you meant.
+
+_TITLE_SEPARATOR = re.compile(r'\s+[-–—]\s+')
+
+
+# The names a window answers to: its .exe, the app in its title, its main name.
+def _names_of(exe: str, title: str) -> list:
+    parts = _TITLE_SEPARATOR.split(title)
+    main = parts[-2] if len(parts) >= 3 else parts[0]
+    return [exe[:-4] if exe.endswith('.exe') else exe, parts[-1], main]
+
+
+# The window `name` opens, or None: the most recently used one with that name,
+# from any desktop. The one already in front only when it's the only one, so
+# saying it again moves on to the next. A name may be the start of a word.
+def find_window(name: str):
+    wanted = re.compile(r'(?<!\w)' + re.escape(normalize_spoken(name)))
+    matches = [hwnd for hwnd, exe, title in _app_windows(every_desktop=True)
+               if any(wanted.search(normalize_spoken(part)) for part in _names_of(exe, title))]
+    if not matches:
+        return None
+    front = _user32.GetForegroundWindow()
+    return next((hwnd for hwnd in matches if hwnd != front), matches[0])
+
+
+# Brings up the window `name` opens. Raises LookupError, with a message for the
+# user, when there is none or Windows refuses.
+def open_window(name: str) -> None:
+    hwnd = find_window(name)
+    if not hwnd:
+        raise LookupError(f"no open app is called “{name}”")
+    if hwnd == _user32.GetForegroundWindow():
+        return
+    _begin_move()
+    try:
+        if not _bring_to_front(hwnd):
+            raise LookupError(f"Windows didn't let Koli switch to “{name}”")
+    finally:
+        _end_move()
 
 
 # ── The "no app" window ──────────────────────────────────────────────────────

@@ -15,5 +15,13 @@ def koli_moving_focus() -> bool:
     return False
 
 
+def find_window(name: str):
+    return None
+
+
+def open_window(name: str) -> None:
+    raise LookupError("opening an app by name works on Windows only for now")
+
+
 def run_focused(target: str, press):
     raise LookupError("sending keys to another app works on Windows only for now")

@@ -469,6 +469,11 @@ class Appliers:
                 tray.stop()
         return self._background('Showing the tray icon' if value else 'Hiding the tray icon', 'tray', path, old, job)
 
+    def open_apps_by_name(self, path, value, old):
+        vcm = self.sm.voice_command_manager
+        if vcm is not None:
+            vcm.open_apps_by_name = bool(value)
+
     def voice_commands(self, path, value, old):
         vcm = self.sm.voice_command_manager
         if vcm is None:
@@ -583,6 +588,7 @@ _HANDLERS = {
     'live_words.engine': Appliers.streaming,
     'streaming.streaming_model': Appliers.streaming,
     'voice_commands.enabled': Appliers.voice_commands,
+    'voice_commands.open_apps_by_name': Appliers.open_apps_by_name,
     'update_check.enabled': Appliers.update_check,
     'history.keep_days': Appliers.history_retention,
 }
