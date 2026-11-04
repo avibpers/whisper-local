@@ -337,6 +337,7 @@ def setup_voice_commands(voice_commands_config, clipboard_manager, log_transcrip
         enabled=voice_commands_config['enabled'],
         clipboard_manager=clipboard_manager,
         log_transcriptions=log_transcriptions,
+        open_apps_by_name=voice_commands_config.get('open_apps_by_name', True),
     )
 
 def setup_system_tray(tray_config, config_manager, state_manager, model_registry, console_config=None):
