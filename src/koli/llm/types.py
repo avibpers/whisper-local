@@ -22,6 +22,12 @@ class Result:
         return bool(self.text) and not self.error
 
 
+# The caller's on_text raises this to end an answer part way: the connection
+# closes, so the model stops writing (and costing), and no other model is tried.
+class AnswerStopped(Exception):
+    pass
+
+
 # Something the user has to set up: no model chosen, no key, not connected.
 # Not worth retrying or falling back silently; the message says what to do.
 class ConfigError(Exception):

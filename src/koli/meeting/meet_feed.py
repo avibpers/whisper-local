@@ -3,8 +3,10 @@
 # joined, the meeting's title, who is in it, Meet's live captions with the
 # speaker's name, and (when Meet shows it) who is talking. Pure state with
 # times in epoch seconds, so the meeting service can ask "who spoke between
-# t0 and t1" of the same clock its audio chunks use. The HTTP side is
-# meet_link.py; the design is docs/design/meet-extension.md.
+# t0 and t1" of the same clock its audio chunks use. It also knows whether the
+# captions can be read right now: Meet's page stops showing them while its tab
+# is hidden, unless the extension reads Meet's own caption channel. The HTTP side
+# is meet_link.py; the design is docs/design/meet-extension.md.
 
 import threading
 import time
@@ -34,6 +36,10 @@ class MeetCall:
         self.title = ''
         self.joined = False
         self.captions_on = False
+        self.captions_live = False # the extension can read captions right now (see MeetFeed.captions_cover)
+        self.captions_back_at = 0.0  # when captions became readable again after a blind stretch
+        self.seen_view = None      # (visible, source, live) last reported, to log its changes
+        self.channel = {}          # what the extension counted on Meet's caption channel
         self.self_name = ''
         self.people = []           # [{'id', 'name', 'self'}], the latest list the page showed
         self.seen = 0.0            # time.time() of the last message from the tab
@@ -58,9 +64,10 @@ class MeetFeed:
 
     # Applies a batch from the extension. Returns what the meeting service
     # acts on: captions that just finished (each once), the codes of calls
-    # you just joined or left, and whether the people or title changed.
+    # you just joined or left, whether the people or title changed, and notes
+    # worth a line in the log.
     def apply(self, events: list) -> dict:
-        out = {'finals': [], 'joined': [], 'left': [], 'changed': []}
+        out = {'finals': [], 'joined': [], 'left': [], 'changed': [], 'notes': []}
         now = self._now()
         with self._lock:
             for e in events or []:
@@ -83,8 +90,10 @@ class MeetFeed:
                 elif kind == 'left':
                     if call.joined:
                         out['left'].append(code)
+                        out['notes'].append(f"Meet {code} ended; caption channel: {call.channel or 'not seen'}")
                     call.joined = False
                     call.captions_on = False
+                    call.captions_live = False
                     for block_id in list(call.captions):
                         self._finish(call, block_id, out)
             self._forget_old(now)
@@ -97,8 +106,24 @@ class MeetFeed:
             out['joined'].append(call.code)
         elif not joined and call.joined:
             out['left'].append(call.code)
+        at = float(e.get('at_ms') or now * 1000) / 1000.0
+        captions = bool(e.get('captions')) and joined
+        live = bool(e.get('captions_live', captions)) and captions
+        # Captions on but unreadable until now: what was said meanwhile isn't
+        # in them. (Captions only now turned on doesn't count: they take over
+        # from there and the start isn't transcribed twice.)
+        if live and call.captions_on and not call.captions_live:
+            call.captions_back_at = at
         call.joined = joined
-        call.captions_on = bool(e.get('captions')) and joined
+        call.captions_on = captions
+        call.captions_live = live
+        call.channel = e.get('channel') or call.channel
+        view = (bool(e.get('visible', True)), str(e.get('source') or ''), live)
+        if joined and view != call.seen_view:
+            call.seen_view = view
+            out['notes'].append(f"Meet {call.code}: tab {'on screen' if view[0] else 'hidden'}, captions "
+                                f"from {view[1] or 'page'}, {'readable' if live else 'not readable'}; "
+                                f"channel: {call.channel or 'not seen'}")
         call.self_name = str(e.get('self_name') or call.self_name or '')
         title = str(e.get('title') or '').strip()
         people = [{'id': str(p.get('id') or ''), 'name': str(p.get('name') or '').strip(), 'self': bool(p.get('self'))}
@@ -172,16 +197,19 @@ class MeetFeed:
         now = self._now()
         with self._lock:
             return [{'code': c.code, 'title': c.title, 'people': [dict(p) for p in c.people],
-                     'captions_on': c.captions_on, 'joined_at': c.joined_at, 'self_name': c.self_name}
+                     'captions_on': c.captions_on, 'captions_live': c.captions_live,
+                     'captions_back_at': c.captions_back_at, 'joined_at': c.joined_at, 'self_name': c.self_name}
                     for c in self._calls.values() if c.joined and now - c.seen <= HEARTBEAT_TIMEOUT_S]
 
     def call(self, code: str) -> Optional[dict]:
         return next((c for c in self.joined_calls() if c['code'] == (code or '').lower()), None)
 
-    # Whether Meet's captions are on in this call right now (the extension says so).
-    def captions_on(self, code: str) -> bool:
+    # Whether Meet's captions hold what was said in a stretch of audio starting
+    # at `t0`: they can be read now, and they could already when it began. A
+    # chunk that began while the tab was hidden isn't in them.
+    def captions_cover(self, code: str, t0: float) -> bool:
         c = self.call(code)
-        return bool(c and c['captions_on'])
+        return bool(c and c['captions_live'] and t0 >= c['captions_back_at'])
 
     # The one other person who was talking between t0 and t1 (epoch seconds),
     # by Meet's captions and speaking highlight; None when nobody, more than

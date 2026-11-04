@@ -121,6 +121,18 @@ class AudioRecorder:
     STALL_SECONDS = 2.0
     # The longest wait between two attempts to reopen a failed stream.
     RETRY_MAX_WAIT_S = 5.0
+    # After this many attempts in a row the microphone isn't coming back soon:
+    # retry once a minute, or at once when Windows' list changes or a recording
+    # starts. Rereading the devices every 5 s all night is real work (seen
+    # 2026-11-02: 5846 retries in 8 hours).
+    RETRY_QUICK_TRIES = 12
+    RETRY_SLOW_WAIT_S = 60.0
+    RETRY_LIST_CHECK_S = 2.0
+    # A stream that ran this long was fine: its failure is a first failure.
+    STREAM_HEALTHY_S = 30.0
+    # The capture loop itself didn't run for this long: all of Python was held
+    # up, so the silence says nothing about the microphone.
+    LOOP_STARVED_S = 1.0
     # How often Windows' live list is checked for your microphone coming back.
     MIC_BACK_CHECK_S = 3.0
 
@@ -395,6 +407,7 @@ class AudioRecorder:
     def _run_capture(self):
         failures = 0
         while self._capture_running:
+            self._stream_opened_at = None
             try:
                 mine_is_back = self._run_stream()
                 failures = 0
@@ -405,6 +418,9 @@ class AudioRecorder:
             except Exception as e:
                 if not self._capture_running:
                     return
+                opened_at = self._stream_opened_at
+                if opened_at is not None and time.monotonic() - opened_at >= self.STREAM_HEALTHY_S:
+                    failures = 0
                 failures += 1
                 self._stream_error = e
                 self.logger.warning(f"Audio stream lost ({e}); reopening (attempt {failures})")
@@ -414,7 +430,30 @@ class AudioRecorder:
                     self._reopen()
                 except Exception as reopen_err:
                     self.logger.error(f"Could not find a microphone to reopen: {reopen_err}")
-                time.sleep(min(self.RETRY_MAX_WAIT_S, 0.5 * failures))
+                self._wait_before_retry(failures)
+
+    # A short wait at first (a blip, a driver restart). Once it looks like a
+    # long absence (no microphone, the PC asleep), a long wait that ends early
+    # the moment something could have changed.
+    def _wait_before_retry(self, failures: int):
+        if failures <= self.RETRY_QUICK_TRIES or self.is_recording:
+            time.sleep(min(self.RETRY_MAX_WAIT_S, 0.5 * failures))
+            return
+        known = self._live_microphones()
+        deadline = time.monotonic() + self.RETRY_SLOW_WAIT_S
+        while self._capture_running and not self.is_recording and time.monotonic() < deadline:
+            time.sleep(min(self.RETRY_LIST_CHECK_S, max(0.0, deadline - time.monotonic())))
+            if self._live_microphones() != known:
+                return
+
+    # Windows' live list of microphones (cheap, unlike rereading PortAudio's);
+    # None where there is no such list.
+    def _live_microphones(self):
+        try:
+            from .platform import audio_sessions
+            return audio_sessions.microphones()
+        except Exception:
+            return None
 
     # One open stream, until Koli stops (False) or your microphone is back
     # while recording from the default input (True). Raises when the stream
@@ -428,7 +467,7 @@ class AudioRecorder:
                             blocksize=self._vad_blocksize if self.continuous_vad else None,
                             device=self.device,
                             latency='low') as stream:
-            self._last_audio_at = time.monotonic()
+            self._stream_opened_at = self._last_audio_at = last_turn = time.monotonic()
             if self._stream_error is not None:
                 self.logger.info(f"Microphone stream reopened on {self._device_name(self.device)}")
                 self._stream_error = None
@@ -437,6 +476,10 @@ class AudioRecorder:
                 if self.is_recording:
                     self._check_max_duration_exceeded()
                 now = time.monotonic()
+                if now - last_turn > self.LOOP_STARVED_S:
+                    self.logger.warning(f"Koli was held up for {now - last_turn:.1f} s (not the microphone's doing)")
+                    self._last_audio_at = now
+                last_turn = now
                 if not stream.active:
                     raise RuntimeError('the stream stopped')
                 if now - self._last_audio_at > self.STALL_SECONDS:

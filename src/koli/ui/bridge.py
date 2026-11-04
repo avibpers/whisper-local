@@ -799,6 +799,22 @@ class Bridge:
         return self._meetings.summarize(str(meeting_id), str(template or ''), str(language or ''),
                                         instructions=str(instructions or ''))
 
+    # The meeting panel's Cancel and Stop: no automatic summary this time.
+    @_api
+    def meeting_summary_stop(self, meeting_id):
+        self._meetings.stop_summary(str(meeting_id))
+
+    # The meeting panel's Start now and Summarize anyway.
+    @_api
+    def meeting_summary_now(self, meeting_id):
+        self._meetings.summary_now(str(meeting_id))
+
+    # Whether the meeting running now (or the call offered) gets a summary by
+    # itself when it ends.
+    @_api
+    def meeting_auto_summary(self, on):
+        self._meetings.set_auto_summary(bool(on))
+
     # The summary template for the meeting running now (or the call offered),
     # picked in the meeting panel; '' is the default.
     @_api

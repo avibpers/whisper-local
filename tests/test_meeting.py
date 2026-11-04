@@ -5,6 +5,7 @@ import datetime
 import logging
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -930,6 +931,8 @@ class SummaryPanelTests(unittest.TestCase):
         from koli.ui.host import summary_panel_action, PANEL_HIDE_DELAY, SUMMARY_READY_SECONDS, SUMMARY_FAILED_SECONDS
         self.assertEqual(summary_panel_action('waiting'), (True, None))
         self.assertEqual(summary_panel_action('writing'), (True, None))
+        self.assertEqual(summary_panel_action('countdown'), (True, None))
+        self.assertEqual(summary_panel_action('skipped')[0], True)
         self.assertEqual(summary_panel_action('ready'), (True, SUMMARY_READY_SECONDS))
         self.assertEqual(summary_panel_action('failed'), (True, SUMMARY_FAILED_SECONDS))
         self.assertEqual(summary_panel_action('none'), (False, PANEL_HIDE_DELAY))
@@ -2124,6 +2127,71 @@ class MeetingMicTests(unittest.TestCase):
 # A 4-person Meet came out as "You" and "Speaker 1": each 15 s chunk got one
 # voiceprint, an average of everyone in it. The splitter finds the voices
 # inside a chunk; these are its pure parts, without the model.
+class SplitterProcessTests(unittest.TestCase):
+    # A real worker process, with a stand-in for the model: it says one voice
+    # as long as the audio, and fails or dies on request (audio of 1 or 2 samples).
+    WORKER = '''
+import os, sys
+from koli.meeting.diarize import serve
+def load():
+    def diarize(samples):
+        if samples.size == 1:
+            raise ValueError('no model')
+        if samples.size == 2:
+            os._exit(3)
+        return [(0.0, samples.size / 16000.0, 0)]
+    return diarize
+serve(load, sys.stdin.buffer, sys.stdout.buffer)
+'''
+
+    def setUp(self):
+        from koli.meeting.diarize import VoiceSplitter
+        self.split = VoiceSplitter([sys.executable, '-c', self.WORKER])
+        self.addCleanup(self.split._stop)
+
+    def test_voices_come_back_from_the_worker(self):
+        voices = self.split(np.zeros(16000, dtype=np.float32))
+        self.assertEqual(voices, [(0.0, 1.0, 0)])
+        self.assertEqual(self.split(np.zeros(8000, dtype=np.float32)), [(0.0, 0.5, 0)])
+
+    def test_the_worker_is_only_started_by_the_first_chunk(self):
+        self.assertIsNone(self.split._process)
+        self.split(np.zeros(160, dtype=np.float32))
+        self.assertIsNotNone(self.split._process)
+
+    def test_a_model_failure_is_that_chunks_error_and_the_worker_goes_on(self):
+        with self.assertRaisesRegex(RuntimeError, 'no model'):
+            self.split(np.zeros(1, dtype=np.float32))
+        self.assertEqual(self.split(np.zeros(16000, dtype=np.float32)), [(0.0, 1.0, 0)])
+
+    # A worker that left (idle, or killed) is replaced by the next chunk.
+    def test_a_worker_gone_between_chunks_is_started_again(self):
+        self.split(np.zeros(160, dtype=np.float32))
+        gone = self.split._process
+        gone.kill()
+        gone.wait(timeout=5)
+        self.assertEqual(self.split(np.zeros(16000, dtype=np.float32)), [(0.0, 1.0, 0)])
+        self.assertIsNot(self.split._process, gone)
+
+    def test_a_worker_that_keeps_dying_is_left_alone(self):
+        from koli.meeting.diarize import MAX_WORKER_FAILURES
+        for _ in range(MAX_WORKER_FAILURES):
+            with self.assertRaises(EOFError):
+                self.split(np.zeros(2, dtype=np.float32))
+        self.assertIsNone(self.split._process)
+        with self.assertRaisesRegex(RuntimeError, 'keeps failing'):
+            self.split(np.zeros(16000, dtype=np.float32))
+        self.assertIsNone(self.split._process)
+
+    def test_the_transcriber_treats_a_failed_splitter_as_one_voice(self):
+        from koli.meeting.speakers import SpeakerTracker
+        from koli.meeting.transcriber import MeetingTranscriber
+        t = MeetingTranscriber(lambda: None, lambda: False, SpeakerTracker(), lambda: 'en',
+                               lambda turn: None, lambda entry, mid: None, lambda stream: None, lambda s: None)
+        t.split = self.split
+        self.assertEqual(t._voices_in(np.zeros(1, dtype=np.float32)), [])
+
+
 class SplitByVoiceTests(unittest.TestCase):
     VOICES = [(0.0, 4.7, 1), (5.7, 10.8, 0), (11.9, 16.6, 1)]
 
@@ -3115,9 +3183,11 @@ class FakeAI:
         self.answers = list(answers)
         self.calls = []
 
-    def __call__(self, feature, messages, json=False):
+    def __call__(self, feature, messages, json=False, on_text=None):
         self.calls.append((feature, messages, json))
         a = self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
+        if callable(a):        # a model taking its time: gets to write, and to be stopped
+            a = a(on_text)
         return a if isinstance(a, FakeResult) else FakeResult(a)
 
 
@@ -3284,6 +3354,7 @@ class MeetingSummaryServiceTests(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         settings = {'meeting.enabled': False, 'meeting.summary.auto': True, 'meeting.summary.template': 'standard',
                     'meeting.summary.language': 'meeting', 'meeting.summary.min_minutes': 2}
+        settings['meeting.summary.countdown_s'] = 0
         settings.update(values or {})
         ctx = type('Ctx', (), {})()
         ctx.state_manager = FakeStateManager()
@@ -3369,12 +3440,134 @@ class MeetingSummaryServiceTests(unittest.TestCase):
         svc._meeting_ended(m)
         self.assertEqual(self.summary_events(), [{'id': m['id'], 'phase': 'waiting'}])
 
-    def test_ending_a_short_meeting_says_no_summary(self):
+    # A real conversation under the limit: the panel says so, or it looks like a fault.
+    def test_ending_a_short_meeting_says_why_there_is_no_summary(self):
         short = dict(summary_meeting(), ended_at='2026-10-20T10:01:00+03:00')
         svc = self.service(ai=FakeAI('{"tldr": ["auto"]}'))
         self.store.save(short)
         svc._meeting_ended(short)
-        self.assertEqual(self.summary_events(), [{'id': short['id'], 'phase': 'none'}])
+        event = self.summary_events()[0]
+        self.assertEqual(event['phase'], 'skipped')
+        self.assertIn('1 min', event['reason'])
+        self.assertIn('2 min', event['reason'])
+
+    def test_a_call_with_nothing_said_gets_no_word_about_it(self):
+        empty = dict(summary_meeting(), ended_at='2026-10-20T10:01:00+03:00', turns=[])
+        svc = self.service(ai=FakeAI('{"tldr": ["auto"]}'))
+        self.store.save(empty)
+        svc._meeting_ended(empty)
+        self.assertEqual(self.summary_events(), [{'id': empty['id'], 'phase': 'none'}])
+
+    def test_summarize_anyway_writes_a_short_meetings_summary(self):
+        short = dict(summary_meeting(), ended_at='2026-10-20T10:01:00+03:00')
+        svc = self.service(ai=FakeAI('{"title": "Quick one", "tldr": ["auto"]}'))
+        self.store.save(short)
+        svc.summary_now(short['id'])
+        self.wait(svc, short['id'])
+        self.assertEqual(self.store.load_brief(short['id'])['written'], 'auto')
+
+    # The button in the panel: this meeting gets no summary, whatever the setting.
+    def test_a_meeting_can_refuse_its_automatic_summary(self):
+        m = dict(summary_meeting(), auto_summary=False)
+        svc = self.service(ai=FakeAI('{"tldr": ["auto"]}'))
+        self.store.save(m)
+        svc._meeting_ended(m)
+        self.assertEqual(self.summary_events(), [{'id': m['id'], 'phase': 'none'}])
+
+    def test_a_meeting_can_ask_for_a_summary_with_the_setting_off(self):
+        m = dict(summary_meeting(), auto_summary=True)
+        svc = self.service(values={'meeting.summary.auto': False}, ai=FakeAI('{"tldr": ["auto"]}'))
+        svc._schedule_auto_summary = lambda *a, **k: None
+        self.store.save(m)
+        svc._meeting_ended(m)
+        self.assertEqual(self.summary_events(), [{'id': m['id'], 'phase': 'waiting'}])
+
+    # The answer survives the save and reload the summary goes through.
+    def test_the_answer_is_kept_with_the_meeting(self):
+        m = dict(summary_meeting(), auto_summary=False)
+        svc = self.service(ai=FakeAI('{"tldr": ["auto"]}'))
+        self.store.save(m)
+        svc._auto_summary(m['id'])
+        self.assertEqual(self.summary_events(), [{'id': m['id'], 'phase': 'none'}])
+
+    def countdown_service(self, ai, seconds=30):
+        svc = self.service(values={'meeting.summary.countdown_s': seconds}, ai=ai)
+        self.store.save(summary_meeting())
+        svc._schedule_auto_summary(summary_meeting()['id'], settle_s=0.01, poll_s=0.01)
+        self.until(lambda: any(e['phase'] == 'countdown' for e in self.summary_events()))
+        return svc, summary_meeting()['id']
+
+    def until(self, condition, timeout=5.0):
+        end = time.monotonic() + timeout
+        while not condition() and time.monotonic() < end:
+            time.sleep(0.01)
+        self.assertTrue(condition())
+
+    def test_the_countdown_says_when_it_starts_and_cancel_saves_the_call(self):
+        ai = FakeAI('{"tldr": ["auto"]}')
+        svc, meeting_id = self.countdown_service(ai)
+        event = next(e for e in self.summary_events() if e['phase'] == 'countdown')
+        self.assertAlmostEqual(event['starts_at'], time.time() + 30, delta=5)
+        svc.stop_summary(meeting_id)
+        self.until(lambda: meeting_id not in svc._auto_waiting)
+        self.assertEqual(ai.calls, [])
+        self.assertIsNone(self.store.load_brief(meeting_id))
+        self.assertEqual(self.summary_events()[-1]['phase'], 'none')
+
+    def test_start_now_skips_the_rest_of_the_countdown(self):
+        svc, meeting_id = self.countdown_service(FakeAI('{"tldr": ["auto"]}'))
+        svc.summary_now(meeting_id)
+        self.until(lambda: self.store.load_brief(meeting_id))
+        self.wait(svc, meeting_id)
+
+    def test_the_countdown_runs_out_by_itself(self):
+        svc, meeting_id = self.countdown_service(FakeAI('{"tldr": ["auto"]}'), seconds=0.05)
+        self.until(lambda: self.store.load_brief(meeting_id))
+        self.wait(svc, meeting_id)
+
+    # Stop while the model writes: the answer is cut off and nothing is saved.
+    def test_stop_while_writing_cuts_the_answer_off(self):
+        started, stopped = threading.Event(), threading.Event()
+
+        def slow_answer(on_text):
+            started.set()
+            for _ in range(500):
+                try:
+                    on_text('some words ')
+                except Exception:
+                    stopped.set()
+                    raise
+                time.sleep(0.01)
+            return '{"tldr": ["should never finish"]}'
+        m = summary_meeting()
+        svc = self.service(ai=FakeAI(slow_answer))
+        self.store.save(m)
+        svc._auto_summary(m['id'])
+        self.assertTrue(started.wait(5))
+        svc.stop_summary(m['id'])
+        self.assertTrue(stopped.wait(5))
+        self.wait(svc, m['id'])
+        self.assertIsNone(self.store.load_brief(m['id']))
+        phases = [e['phase'] for e in self.summary_events()]
+        self.assertEqual(phases, ['writing', 'none'], 'no "failed" after you stopped it')
+
+    # A model that only answers whole can't be cut off: its answer isn't kept.
+    def test_stop_with_a_model_that_cannot_be_cut_off_keeps_nothing(self):
+        started, release = threading.Event(), threading.Event()
+
+        def whole_answer(_on_text):
+            started.set()
+            release.wait(5)
+            return '{"tldr": ["too late"]}'
+        m = summary_meeting()
+        svc = self.service(ai=FakeAI(whole_answer))
+        self.store.save(m)
+        svc._auto_summary(m['id'])
+        self.assertTrue(started.wait(5))
+        svc.stop_summary(m['id'])
+        release.set()
+        self.wait(svc, m['id'])
+        self.assertIsNone(self.store.load_brief(m['id']))
 
     def test_no_summary_when_auto_summary_is_off(self):
         m = summary_meeting()

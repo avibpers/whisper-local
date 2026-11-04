@@ -38,13 +38,16 @@ DESKTOP_FOLLOW_INTERVAL = 0.5   # seconds between checks that the panel and bubb
 PANEL_HIDE_DELAY = 2.5
 SUMMARY_READY_SECONDS = 30    # "Summary ready" with Open stays this long
 SUMMARY_FAILED_SECONDS = 8    # "Summary didn't work" stays this long
+SUMMARY_SKIPPED_SECONDS = 20  # "No summary" (too short, with Summarize anyway) stays this long
 
 
 # After a meeting, the panel follows its automatic summary: (keep it shown,
 # seconds until it hides or None to stay) for each phase the service sends.
 def summary_panel_action(phase: str) -> tuple:
-    if phase in ('waiting', 'writing'):
+    if phase in ('waiting', 'countdown', 'writing'):
         return True, None
+    if phase == 'skipped':
+        return True, SUMMARY_SKIPPED_SECONDS
     if phase == 'ready':
         return True, SUMMARY_READY_SECONDS
     if phase == 'failed':

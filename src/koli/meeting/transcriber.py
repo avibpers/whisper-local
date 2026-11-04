@@ -76,6 +76,7 @@ YOU_MARGIN = 0.05         # your voice known: you may sound this much less like 
 
 # ── Named by the meeting app ─────────────────────────────────────────────────
 TEACH_MIN_S = 1.0         # speech a chunk needs before it teaches a named voiceprint (short ones are noisy)
+TEACH_CLIP_S = 6.0        # a voice-only chunk teaches from this much of its middle: enough for a voiceprint, and cheap
 
 
 # Whether a microphone chunk's voiceprint `vec` is you: `you` is your
@@ -127,6 +128,14 @@ def is_leak(mic: np.ndarray, t0: float, call: list) -> bool:
     if best < LEAK_FOLLOW:
         return False
     return call_level - float(np.percentile(mic, 75)) >= LEAK_GAP_DB
+
+
+# The middle `seconds` of a chunk (all of it when shorter): a chunk's edges are
+# where another person's words are most likely to have slipped in.
+def middle_of(audio, seconds: float):
+    keep = int(seconds * RATE)
+    extra = len(audio) - keep
+    return audio[extra // 2:extra // 2 + keep] if extra > 0 else audio
 
 
 class MeetingTranscriber:
@@ -389,15 +398,15 @@ class MeetingTranscriber:
                 self.on_speaker(taught, meeting_id)
         return speaker
 
-    # A voice-only chunk: one voice heard, one person named by the meeting
-    # app, enough speech. Anything less teaches nothing.
+    # A voice-only chunk teaches whoever the meeting app names over it, with
+    # enough speech. The app's answer already means one person and no one else
+    # (name_at), so the voice splitter isn't asked: with captions as the
+    # transcript this is all the audio is used for, and it should cost little.
     def _learn_voice(self, chunk: dict):
         if chunk['stream'] != 'loopback' or float(chunk.get('speech_s') or 0) < TEACH_MIN_S:
             return
-        if len({v for _, _, v in self._voices_in(chunk['audio'])}) >= 2:
-            return
-        self._named_speaker(chunk['audio'], chunk.get('speech_s'), (), chunk.get('meeting_id'),
-                            (chunk['t0'], chunk['t1']))
+        self._named_speaker(middle_of(chunk['audio'], TEACH_CLIP_S), chunk.get('speech_s'), (),
+                            chunk.get('meeting_id'), (chunk['t0'], chunk['t1']))
 
     def _keep_audio(self, chunk: dict):
         if self.keep_audio is None:

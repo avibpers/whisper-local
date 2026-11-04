@@ -26,8 +26,9 @@ Settings › Meetings › Google Meet extension is not Off.
 
 | File | What it does |
 |---|---|
-| `manifest.json` | Manifest V3: the Meet content script, the worker, `127.0.0.1:52881` access |
+| `manifest.json` | Manifest V3: the Meet content scripts, the worker, `127.0.0.1:52881` access |
 | `meet.js` | Reads the Meet page: in the call or not, title, tiles, captions |
+| `meet_channel.js` | Runs in the page's own world and listens to Meet's caption channel, which keeps going while the tab is hidden; changes nothing |
 | `background.js` | Posts batches to Koli, notices a Meet tab closing |
 | `popup.html` / `popup.js` / `popup.css` | Shows whether Koli answers and what it records |
 | `icons/` | The Koli icon at 16, 32, 48 and 128 px |

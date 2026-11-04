@@ -124,8 +124,52 @@ else's become `loopback` turns under their Meet name. Whisper is skipped for
 that meeting's chunks from the moment captions are on, so the start isn't
 transcribed twice. If captions go off, Whisper takes over again.
 
+### Where captions are read: the channel, then the page
+
+Meet stops writing captions into its page while the tab is hidden (minimized,
+covered, on another desktop) and writes them all at once on return. On
+2026-11-03 that left 34 minutes with no lines, then 5164 words in one burst
+under one timestamp. So there are two readers, and one rule for Koli:
+
+- **The caption channel** (`meet_channel.js`, in the page's own world from
+  document start). Meet receives captions on WebRTC data channels labelled
+  `captions` and `captions_v2`, as undocumented protobuf: device, caption id,
+  revision, a final mark, text. The script adds a listener and changes nothing.
+  People come from the `collections` channel (found by shape, under wrappers
+  Meet changes) and from the tiles, matched on the device id. It should keep
+  flowing while hidden, since it isn't drawn; the log of the next real call
+  tells (`hidden` counts captions that arrived with the tab hidden).
+- **The page** (`meet.js`), as before, whenever the channel gives nothing that
+  decodes. While hidden, what it holds is final and nothing more is read. For
+  `BACKLOG_ABSORB_MS` after the return its text counts as already handed out.
+
+The channel is given up for that tab when it speaks of someone nobody can name
+while the tab is on screen, or goes silent for `CHANNEL_SILENT_MS` while the
+page keeps writing. Until it has carried your own captions, those still come
+from the page.
+
+The status says `captions_live`: captions are on and can be read right now.
+`MeetFeed.captions_cover(code, t0)` is the rule: a chunk is voice-only only if
+captions are readable and were already when it began. So with the page reader,
+Whisper transcribes the hidden stretch (names from voiceprints, a few seconds
+of overlap possible at each end); with the channel it never needs to.
+
+`MeetFeed` notes every change of tab, source and readability for the log, and
+the channel's counts when the call ends.
+
+### What the audio costs while captions are the transcript
+
+Only the voiceprint model on `TEACH_CLIP_S` of a chunk Meet names (about 0.25 s
+of CPU). The voice splitter isn't run: `name_at` already means one person and
+nobody else. Elsewhere the splitter runs in its own low-priority process
+(`meeting/diarize.py`), because sherpa-onnx's diarizer holds Python's lock for
+its whole run: 5-8 s per 15 s chunk in the app froze every thread, including
+the low-level keyboard and mouse hooks the whole PC's input waits on.
+
 ## Known limits
 
+- The caption channel is undocumented and Meet may change it. What is expected
+  to happen then is the page reader taking over, with the hidden-tab gap back.
 - Your own voice isn't learned on the meeting microphone while captions are
   the transcript (`_check_you` doesn't run for voice-only chunks); it still is
   in dictation and in other meetings.
@@ -147,3 +191,6 @@ transcribed twice. If captions go off, Whisper takes over again.
 - Vexa (github.com/Vexa-ai/vexa, `core/meetings/modules/join/src/googlemeet/`):
   `[data-participant-id]` tiles, `span.notranslate` names, `[data-self-name]`,
   and junk participant names.
+- Attendee (github.com/attendee-labs/attendee,
+  `bots/google_meet_bot_adapter/google_meet_chromedriver_payload.js`): the
+  labels and protobuf layouts of the caption and people messages.

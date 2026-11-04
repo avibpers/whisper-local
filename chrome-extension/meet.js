@@ -3,6 +3,9 @@
 // voice recognition: whether you are in the call (not the lobby), its title,
 // who is in it, and Meet's live captions with each speaker's name. Sends it
 // all to background.js, which passes it to the Koli app on this computer.
+// Captions come from Meet's own caption channel when meet_channel.js can decode
+// it (it keeps flowing while the tab is hidden), else from the page, which
+// shows nothing new while the tab is hidden and all of it on return.
 // Meet's class names are obfuscated and change, and its words follow your
 // language, so only icon names, data-* attributes and the captions' layout
 // are relied on. Design: docs/design/meet-extension.md in the Koli repo.
@@ -27,6 +30,18 @@
   const LEAVE_TICKS = 3;           // ticks without the hang-up button before you count as gone
   const CAPTIONS_KEY_RETRY_MS = 10000;  // trying again if captions still aren't on
   const CAPTIONS_KEY_TRIES = 3;
+  // The caption channel. The page changing while the channel has said nothing
+  // for this long means the channel is no use: back to reading the page.
+  const CHANNEL_SILENT_MS = 20000;
+  const CHANNEL_KEEP_MS = 120000;   // a caption not updated for this long is over
+  // A speaker the tiles and Meet's people list don't name after this long: on
+  // screen, the page's captions (which do name them) are better; hidden, they
+  // go out under UNNAMED_SPEAKER, since the page can't be asked.
+  const CHANNEL_NAME_WAIT_MS = 10000;
+  const UNNAMED_SPEAKER = 'Participant';
+  // On return from hidden Meet writes all it held back at once. What appears
+  // in this window is that backlog: Whisper covered that time, so it isn't sent.
+  const BACKLOG_ABSORB_MS = 5000;
   const MEETING_CODE = /^[a-z]{3}-[a-z]{4}-[a-z]{3}$/;
 
   // Meet's icons are ligatures: the icon's text is its name, in any language.
@@ -66,6 +81,20 @@
     lastStatus: '',
     lastStatusAt: 0,
     missing: 0,                // ticks in a row the hang-up button was gone
+    visible: document.visibilityState === 'visible',
+    absorbUntil: 0,            // until then the page's captions are backlog (see BACKLOG_ABSORB_MS)
+    pageChangedAt: 0,          // when the page last wrote caption text it wasn't holding back
+  };
+  // Meet's caption channel, as told by meet_channel.js.
+  const channel = {
+    live: false,               // captions are read from here (else from the page)
+    givenUp: false,            // it failed us in this tab: the page for good
+    lastAt: 0,                 // when it last delivered a caption
+    captions: new Map(),       // "device:id" -> {device, version, text, final, firstMs, lastMs}
+    users: new Map(),          // device -> {name, self}, from Meet's people messages
+    selfSeen: false,           // it has carried your own captions
+    labels: new Set(),
+    counts: { captions: 0, hidden: 0, undecoded: 0 },
   };
   const blocks = new Map();    // caption element -> {id, name, self, text, firstMs, lastMs, sentText, sentAt, final}
   let blockSeq = 0;
@@ -253,6 +282,7 @@
         if (block && block.parentElement) {
           textElements.add(textEl);
           captionList = block.parentElement;
+          notePageChange();
         }
       }
     }
@@ -281,12 +311,136 @@
     return found;
   }
 
+  // ── The caption channel ────────────────────────────────────────────────────
+  // meet_channel.js runs in the page's world and speaks through a DOM event.
+
+  document.addEventListener('koli-meet-channel', (event) => {
+    let message;
+    try {
+      message = JSON.parse(event.detail);
+    } catch (e) {
+      return;
+    }
+    if (message.kind === 'channel') channel.labels.add(message.label);
+    else if (message.kind === 'undecoded') channel.counts.undecoded += 1;
+    else if (message.kind === 'users') message.users.forEach((u) => channel.users.set(u.device, u));
+    else if (message.kind === 'caption') channelCaption(message.caption);
+  });
+
+  // One revision of a caption: Meet resends its whole text, numbered. Messages
+  // can arrive late (the channel doesn't retransmit forever): an older one is dropped.
+  function channelCaption(c) {
+    const now = Date.now();
+    channel.counts.captions += 1;
+    if (document.visibilityState !== 'visible') channel.counts.hidden += 1;
+    channel.lastAt = now;
+    if (!channel.givenUp) channel.live = true;
+    const key = `${c.device}:${c.id}`;
+    const known = channel.captions.get(key);
+    if (known && BigInt(c.version || 0) < BigInt(known.version || 0)) return;
+    channel.captions.set(key, { device: c.device, version: c.version, text: c.text || (known ? known.text : ''),
+                                final: c.final || (known ? known.final : false),
+                                firstMs: known ? known.firstMs : now, lastMs: now });
+  }
+
+  // The last part of a device id: tiles and captions may not agree on the rest.
+  function sameDevice(a, b) {
+    return a === b || (a.includes('/devices/') && b.includes('/devices/') && a.split('/devices/')[1] === b.split('/devices/')[1]);
+  }
+
+  // Who a device is: a tile's name first (what the page shows), else Meet's people list.
+  function channelPerson(device) {
+    const tile = [...state.people.values()].find((p) => sameDevice(p.id, device));
+    if (tile) return { name: tile.name, self: tile.self };
+    const user = [...channel.users.values()].find((u) => sameDevice(u.device, device));
+    return user ? { name: user.name, self: user.self } : null;
+  }
+
+  // Stop trusting the channel in this tab. The page's captions on show are
+  // absorbed first: the channel already delivered them.
+  function giveUpChannel(now) {
+    channel.live = false;
+    channel.givenUp = true;
+    state.absorbUntil = now + BACKLOG_ABSORB_MS;
+  }
+
+  // The channel's captions, in the same shape as captionBlocks() and oldest
+  // first. A block's key is a string here, a page element there.
+  function channelBlocks(now) {
+    const found = [];
+    for (const [key, c] of channel.captions) {
+      if (now - c.lastMs > CHANNEL_KEEP_MS) {
+        channel.captions.delete(key);
+        continue;
+      }
+      if (!c.text) continue;
+      let person = channelPerson(c.device);
+      if (!person) {
+        if (now - c.firstMs < CHANNEL_NAME_WAIT_MS) continue;    // the next look at the tiles may name them
+        if (state.visible) {
+          giveUpChannel(now);
+          return [];
+        }
+        person = { name: UNNAMED_SPEAKER, self: false };
+      }
+      if (person.self) channel.selfSeen = true;
+      found.push({ el: key, name: person.self ? (state.selfName || person.name) : person.name, self: person.self,
+                   text: c.text, final: c.final, firstMs: c.firstMs });
+    }
+    return found;
+  }
+
+  // ── Which captions are read ────────────────────────────────────────────────
+
+  // The page's captions while the page can be believed: the tab on screen and
+  // its backlog gone.
+  function pageReadable(now) {
+    return state.visible && now >= state.absorbUntil;
+  }
+
+  // What Meet writes while we're on screen counts as new; the return's burst doesn't.
+  function notePageChange() {
+    const now = Date.now();
+    if (pageReadable(now)) state.pageChangedAt = now;
+  }
+
+  // The page's captions on return from hidden: Whisper covered that time, so
+  // they are taken as already handed out. Text that grows later is a new block.
+  function absorbBacklog(now) {
+    for (const f of captionBlocks()) {
+      const block = blocks.get(f.el) || newBlock(f, 0, now);
+      block.full = f.text;
+      block.final = true;
+    }
+  }
+
+  // What to read this tick. With the channel, the page is read only for your
+  // own captions, until the channel has shown it carries them too.
+  function captionsToRead(now) {
+    if (channel.live && pageReadable(now) && state.pageChangedAt - channel.lastAt > CHANNEL_SILENT_MS) {
+      giveUpChannel(now);
+    }
+    const fromChannel = channel.live ? channelBlocks(now) : [];
+    if (!pageReadable(now)) return fromChannel;
+    if (!channel.live) return captionBlocks();
+    if (channel.selfSeen) return fromChannel;
+    return [...fromChannel, ...captionBlocks().filter((f) => isSelfName(f.name))];
+  }
+
   function readCaptions() {
     watchCaptions();
     const now = Date.now();
     const events = [];
     const seen = new Set();
-    const found = captionBlocks();
+    if (!state.visible) {
+      // Nothing new shows on the page now: what it has so far is final.
+      for (const [key, block] of blocks) {
+        if (typeof key !== 'string') finish(block, events);
+      }
+    } else if (now < state.absorbUntil) {
+      absorbBacklog(now);
+    }
+    const found = captionsToRead(now);
     found.forEach((f, index) => {
       seen.add(f.el);
       let block = blocks.get(f.el);
@@ -318,7 +472,7 @@
         return;
       }
       const newest = index === found.length - 1;
-      if (now - block.lastMs >= (newest ? NEWEST_IDLE_MS : CAPTION_SETTLE_MS)) {
+      if (f.final || now - block.lastMs >= (newest ? NEWEST_IDLE_MS : CAPTION_SETTLE_MS)) {
         finish(block, events);
       } else if (block.text !== block.sentText && now - block.sentAt >= CAPTION_SEND_MS) {
         events.push(captionEvent(block, false));
@@ -326,9 +480,11 @@
         block.sentAt = now;
       }
     });
-    // Blocks that scrolled away are final as they were last seen.
+    // Blocks that scrolled away are final as they were last seen. A page block
+    // not seen while the page can't be believed may well still be there.
     for (const [el, block] of blocks) {
-      if (!seen.has(el)) {
+      const onPage = typeof el !== 'string';
+      if (!seen.has(el) && !(onPage && !pageReadable(now))) {
         finish(block, events);
         blocks.delete(el);
       }
@@ -365,8 +521,9 @@
 
   // A block of caption element `f`, starting `offset` characters into its text.
   function newBlock(f, offset, now) {
-    const block = { id: `${pageId}-${++blockSeq}`, name: f.name, self: isSelfName(f.name), offset, full: '',
-                    text: '', firstMs: now, lastMs: now, sentText: '', sentAt: 0, final: false, history: [] };
+    const self = f.self === undefined ? isSelfName(f.name) : f.self;
+    const block = { id: `${pageId}-${++blockSeq}`, name: f.name, self, offset, full: '',
+                    text: '', firstMs: f.firstMs || now, lastMs: now, sentText: '', sentAt: 0, final: false, history: [] };
     blocks.set(f.el, block);
     if (!block.self && ![...state.people.values()].some((p) => p.name === f.name)) {
       // Someone talking who has no tile on screen (a big meeting): still an attendee.
@@ -395,9 +552,18 @@
 
   // ── Status ─────────────────────────────────────────────────────────────────
 
+  // `captions_live`: captions are on and can be read right now. Without that,
+  // Koli transcribes the audio itself. `channel` is there to show in Koli's log
+  // whether Meet's caption channel worked in this call.
   function statusEvent() {
-    return { type: 'status', code, joined: state.joined, captions: state.captionsOn === true, title: state.title,
-             self_name: state.selfName, at_ms: Date.now(), people: [...state.people.values()] };
+    const now = Date.now();
+    const captions = state.captionsOn === true;
+    return { type: 'status', code, joined: state.joined, captions, title: state.title,
+             captions_live: captions && (channel.live || pageReadable(now)),
+             source: channel.live ? 'channel' : 'page', visible: state.visible,
+             channel: { labels: [...channel.labels], users: channel.users.size, gave_up: channel.givenUp,
+                        self_seen: channel.selfSeen, ...channel.counts },
+             self_name: state.selfName, at_ms: now, people: [...state.people.values()] };
   }
 
   function leave() {
@@ -408,7 +574,15 @@
 
   // ── The loop ───────────────────────────────────────────────────────────────
 
+  // Coming back from hidden starts the backlog window.
+  function noteVisibility() {
+    const visible = document.visibilityState === 'visible';
+    if (visible && !state.visible) state.absorbUntil = Date.now() + BACKLOG_ABSORB_MS;
+    state.visible = visible;
+  }
+
   function tick() {
+    noteVisibility();
     if (state.joined) {
       // Gone only after LEAVE_TICKS ticks in a row without the hang-up button.
       state.missing = stillInCall() ? 0 : (state.missing || 0) + 1;
@@ -428,7 +602,8 @@
     turnCaptionsOn();
     const events = readCaptions();
     const status = statusEvent();
-    const summary = JSON.stringify([status.captions, status.title, status.people]);
+    const summary = JSON.stringify([status.captions, status.captions_live, status.source, status.visible,
+                                    status.title, status.people]);
     const now = Date.now();
     if (justJoined || summary !== state.lastStatus || now - state.lastStatusAt >= HEARTBEAT_MS) {
       events.unshift(status);

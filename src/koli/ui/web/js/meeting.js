@@ -4,7 +4,7 @@
 // Start), the live transcript with speaker colours and a Stop button, the
 // paused and excluded states, the resumed/new notices with their undo, and
 // "Saved" at the end, then the automatic summary's progress ("Summarizing
-// the meeting…", "Summary ready" with Open). Screenshots taken during the meeting sit among the
+// the meeting…" with a countdown to cancel and Stop, "Summary ready" with Open). Screenshots taken during the meeting sit among the
 // turns at their moment, with a camera button to snip one. The header drags
 // the window; the corner handle resizes it; collapse shrinks it to a pill
 // and reports the pill's size. While a call is offered and while the meeting
@@ -130,7 +130,7 @@ function Offer({ m, drag }) {
       <div>${auto ? html`Transcribing in <${Countdown} until=${offer.starts_at} /> s` : 'Transcribe it?'}</div>
       <div class="row"><button type="button" class="btn" onClick=${() => call('meeting_offer', false)}>${auto ? 'Cancel' : 'Not now'}</button>
         <button type="button" class="btn pri" onClick=${() => call('meeting_offer', true)}>${auto ? 'Start now' : 'Start'}</button></div>
-      <div class="tpl-row"><span class="sub">Summary</span><${TemplatePick} m=${m} inline=${true} /></div></div></div>`;
+      <div class="tpl-row"><span class="sub">Summary</span><${TemplatePick} m=${m} inline=${true} /><${AutoSummaryButton} m=${m} /></div></div></div>`;
 }
 
 // The summary template for this meeting, picked while the call is offered
@@ -201,24 +201,51 @@ function Menu({ close }) {
   </div>`;
 }
 
-// After the meeting: its summary being written, then ready to open (the
-// Meetings screen opens it on its Summary tab), or a failure.
+// Whether this meeting gets a summary by itself when it ends. Lit when it
+// won't, like "Exclude me": something out of the ordinary is on.
+function AutoSummaryButton({ m }) {
+  const on = m.auto_summary !== false;
+  return html`<button type="button" class=${'btn' + (on ? '' : ' on')} aria-pressed=${!on}
+    title=${on ? 'The AI summarizes this meeting when it ends. Click to skip it and save the tokens.'
+      : "This meeting won't be summarized by itself. Click to summarize it when it ends."}
+    onClick=${() => call('meeting_auto_summary', !on)}>${on ? 'Auto summary' : 'No summary'}</button>`;
+}
+
+// After the meeting: its summary on the way (with Cancel, and a countdown
+// before the AI starts), being written (with Stop), then ready to open (the
+// Meetings screen opens it on its Summary tab), a failure, or why a meeting
+// too short got none.
 function SummaryStatus({ summary, drag, collapsed, pillRef }) {
   const open = () => call('window_open', `meetings/${summary.id}`);
-  const busy = summary.phase === 'waiting' || summary.phase === 'writing';
-  const head = busy ? 'Summarizing the meeting…' : summary.phase === 'ready' ? 'Summary ready' : "The summary didn't work";
-  const dot = 'dot ' + (busy ? 'busy' : summary.phase === 'ready' ? 'ended' : 'paused');
+  const stop = () => call('meeting_summary_stop', summary.id);
+  const now = () => call('meeting_summary_now', summary.id);
+  const phase = summary.phase;
+  const busy = phase === 'waiting' || phase === 'writing' || phase === 'countdown';
+  const head = phase === 'countdown' ? html`Summarizing in <${Countdown} until=${summary.starts_at} /> s`
+    : busy ? 'Summarizing the meeting…' : phase === 'ready' ? 'Summary ready'
+    : phase === 'skipped' ? 'Too short for a summary' : "The summary didn't work";
+  const dot = 'dot ' + (busy ? 'busy' : phase === 'ready' ? 'ended' : 'paused');
   if (collapsed) {
     return html`<div ref=${pillRef} class="pill" ...${drag} onClick=${open} title="Open the meeting"><span class=${dot}></span>${head}</div>`;
   }
-  const sub = busy ? 'The AI writes it from the transcript; this takes a minute.'
-    : summary.phase === 'ready' ? (summary.title || '') : 'Open the meeting to try again.';
+  const sub = phase === 'countdown' ? 'Cancel if this meeting needs no summary, to save the tokens.'
+    : busy ? 'The AI writes it from the transcript; this takes a minute.'
+    : phase === 'skipped' ? (summary.reason || '')
+    : phase === 'ready' ? (summary.title || '') : 'Open the meeting to try again.';
   return html`<div class="panel">
     <div class="head" ...${drag}><span class=${dot}></span>
       <span class="title" role="status">${head}</span></div>
     <div class="offer">
       ${sub && html`<span class="sub" style="white-space:normal">${sub}</span>`}
-      <div class="row"><button type="button" class=${'btn' + (summary.phase === 'ready' ? ' pri' : '')} onClick=${open}>Open</button></div>
+      <div class="row">
+        ${phase === 'countdown' && html`<button type="button" class="btn" onClick=${stop}>Cancel</button>
+          <button type="button" class="btn pri" onClick=${now}>Start now</button>`}
+        ${phase === 'waiting' && html`<button type="button" class="btn" onClick=${stop}>Cancel</button>`}
+        ${phase === 'writing' && html`<button type="button" class="btn" onClick=${stop}>Stop</button>`}
+        ${phase === 'skipped' && html`<button type="button" class="btn" onClick=${stop}>Close</button>
+          <button type="button" class="btn pri" onClick=${now}>Summarize anyway</button>`}
+        ${(phase === 'ready' || phase === 'failed') && html`<button type="button" class=${'btn' + (phase === 'ready' ? ' pri' : '')} onClick=${open}>Open</button>`}
+      </div>
     </div>
   </div>`;
 }
@@ -264,10 +291,10 @@ function Panel() {
     ${m.notice === 'new' && html`<div class="notice"><span class="grow">New meeting</span>${m.can_continue && html`<button type="button" class="btn" onClick=${() => call('meeting_continue_previous')}>Continue previous instead</button>`}</div>`}
     ${m.excluded && html`<div class="notice"><span class="grow">You're excluded · your microphone isn't in the transcript</span></div>`}
     <${Turns} />
+    <div class="foot"><span class="sub">Summary</span><${TemplatePick} m=${m} /><${AutoSummaryButton} m=${m} /></div>
     <div class="foot">
       <button type="button" class=${'btn' + (m.excluded ? ' on' : '')} onClick=${() => call('meeting_exclude', !m.excluded)}><${Icon} name="mic" />${m.excluded ? 'Include me' : 'Exclude me'}</button>
       <button type="button" class="btn" onClick=${() => call(paused ? 'meeting_resume' : 'meeting_pause')}><${Icon} name=${paused ? 'play' : 'pause'} />${paused ? 'Resume' : 'Pause'}</button>
-      <${TemplatePick} m=${m} />
       <span class="grow"></span>
       ${m.screenshots !== 'off' && html`<button type="button" class="btn icon" aria-label="Screenshot" title="Snip a screenshot into the meeting"
         onClick=${() => call('meeting_screenshot')}><${Icon} name="camera" /></button>`}

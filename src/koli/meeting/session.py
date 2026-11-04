@@ -178,6 +178,7 @@ class SessionManager:
         self._cancel_gap_timer = None
         self._previous = None            # the meeting ended while a new one started inside its gap
         self._next_template = ''         # the summary template picked while a call is offered
+        self._next_auto_summary = None   # the panel's summary button pressed while a call is offered
         self._previous_until = None
         self._previous_paused_s = 0.0
         self._resumed_turn_index = None  # turns from here came after the last resume
@@ -239,6 +240,7 @@ class SessionManager:
                 'standby': self._standby_payload(),
                 'auto_paused': self._stopped_at is not None,
                 'summary_template': (m.get('summary_template', '') if m else self._next_template) or '',
+                'auto_summary': self._auto_summary_on(),
                 'attendees': list(m.get('attendees') or []) if m else [],
             }
 
@@ -500,6 +502,7 @@ class SessionManager:
         self._clear_countdown()
         self.state = 'idle'
         self._next_template = ''
+        self._next_auto_summary = None
         self._speech_s = 0.0
 
     # ── Commands ─────────────────────────────────────────────────────────────
@@ -664,6 +667,25 @@ class SessionManager:
                 self.store.save(target)
             self._publish('meeting_shot', {'id': target['id'], 'shot': entry, 'caption': True})
             return True
+
+    # Whether this meeting gets a summary by itself when it ends: your answer
+    # in the panel, else the setting.
+    def _auto_summary_on(self) -> bool:
+        chosen = self.meeting.get('auto_summary') if self.meeting else self._next_auto_summary
+        return bool(self._settings('meeting.summary.auto', True)) if chosen is None else bool(chosen)
+
+    # The panel's button, while the call is offered or the meeting runs.
+    def set_auto_summary(self, on: bool):
+        with self._transition():
+            m = self.meeting
+            if m and self.state in ('live', 'paused'):
+                m['auto_summary'] = bool(on)
+                self.saver.mark(m)
+            elif self.state == 'offered':
+                self._next_auto_summary = bool(on)
+            else:
+                return
+            self._emit()
 
     # The template this meeting's summary is written with ('' = the default),
     # picked in the panel while the call is offered or the meeting runs.
@@ -994,6 +1016,8 @@ class SessionManager:
         meeting = new_meeting(self._unique_id(now), title_for(source), source, now, language)
         if self._next_template:
             meeting['summary_template'], self._next_template = self._next_template, ''
+        if self._next_auto_summary is not None:
+            meeting['auto_summary'], self._next_auto_summary = self._next_auto_summary, None
         self.meeting = meeting
         self.state = 'live'
         self.excluded = False

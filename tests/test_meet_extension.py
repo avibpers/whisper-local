@@ -7,6 +7,8 @@ import json
 import sys
 import tempfile
 import time
+import shutil
+import subprocess
 import unittest
 import urllib.request
 from pathlib import Path
@@ -263,7 +265,7 @@ class ServiceMeetTests(unittest.TestCase):
         now = self.join(svc)
         svc._meet_events([caption('b1', 'Dana', 'Hi', now, now + 2, final=True)])
         self.assertEqual(svc.session.meeting['turns'], [])
-        self.assertFalse(svc._captions_are_transcript('abc-defg-hij'))
+        self.assertFalse(svc._captions_are_transcript('abc-defg-hij', now))
 
     def test_voice_only_chunk_teaches_the_named_voice(self):
         svc = self.make()
@@ -278,6 +280,65 @@ class ServiceMeetTests(unittest.TestCase):
         self.assertEqual(len(dana['centroid']), 3)
         self.assertEqual(svc.session.meeting['turns'], [])
 
+    # The chunk that teaches a voice costs little: no splitter, and only the
+    # middle of the chunk goes to the voiceprint model.
+    def test_voice_only_chunk_skips_the_splitter_and_teaches_a_short_clip(self):
+        svc = self.make()
+        now = self.join(svc)
+        heard = []
+        svc.tracker.embed = lambda audio: heard.append(len(audio)) or np.array([0.6, 0.8, 0.0])
+
+        def splitter_must_not_run(audio):
+            raise AssertionError('the splitter ran on a voice-only chunk')
+        svc.transcriber.split = splitter_must_not_run
+        svc._meet_events([caption('b1', 'Dana', 'A long point', now, now + 16)])
+        svc.transcriber._transcribe({'audio': np.zeros(16000 * 15, dtype=np.float32), 'stream': 'loopback',
+                                     't0': now + 1, 't1': now + 16, 'speech_s': 12.0,
+                                     'meeting_id': svc.session.meeting['id'], 'voice_only': True})
+        self.assertEqual(heard, [16000 * 6])
+
+    # Captions read off the page stop while the tab is hidden: Whisper covers
+    # that stretch, up to and including the chunk under way when they came back.
+    def test_a_hidden_tab_hands_the_audio_to_whisper_until_it_is_back(self):
+        svc = self.make()
+        now = self.join(svc)
+        code = 'abc-defg-hij'
+        self.assertTrue(svc._captions_are_transcript(code, now))
+        svc._meet_events([{**status(), 'captions_live': False, 'visible': False, 'source': 'page',
+                           'at_ms': (now + 100) * 1000}])
+        self.assertFalse(svc._captions_are_transcript(code, now + 110))
+        svc._meet_events([{**status(), 'captions_live': True, 'visible': True, 'source': 'page',
+                           'at_ms': (now + 200) * 1000}])
+        self.assertFalse(svc._captions_are_transcript(code, now + 195))
+        self.assertTrue(svc._captions_are_transcript(code, now + 201))
+
+    # Meet's caption channel keeps going while the tab is hidden: no Whisper.
+    def test_captions_from_the_channel_cover_a_hidden_tab(self):
+        svc = self.make()
+        now = self.join(svc)
+        svc._meet_events([{**status(), 'captions_live': True, 'visible': False, 'source': 'channel'}])
+        self.assertTrue(svc._captions_are_transcript('abc-defg-hij', now + 5))
+
+    # Captions turned on for the first time are no "return": the chunk under
+    # way stays with them, so the start isn't transcribed twice.
+    def test_captions_turned_on_are_not_a_return_from_hidden(self):
+        from koli.meeting.meet_feed import MeetFeed
+        feed = MeetFeed()
+        feed.apply([{**status(captions=False), 'at_ms': 1000 * 1000}])
+        feed.apply([{**status(), 'captions_live': True, 'at_ms': 2000 * 1000}])
+        self.assertTrue(feed.captions_cover('abc-defg-hij', 1500.0))
+
+    def test_tab_and_caption_changes_are_noted_for_the_log(self):
+        from koli.meeting.meet_feed import MeetFeed
+        feed = MeetFeed()
+        first = feed.apply([{**status(), 'captions_live': True, 'visible': True, 'source': 'channel',
+                             'channel': {'captions': 3}}])
+        self.assertEqual(len(first['notes']), 1)
+        self.assertIn('channel', first['notes'][0])
+        self.assertEqual(feed.apply([{**status(), 'captions_live': True, 'visible': True, 'source': 'channel'}])['notes'], [])
+        hidden = feed.apply([{**status(), 'captions_live': True, 'visible': False, 'source': 'channel'}])
+        self.assertIn('hidden', hidden['notes'][0])
+
     def test_leaving_ends_the_meeting(self):
         svc = self.make()
         self.join(svc)
@@ -289,6 +350,59 @@ class ServiceMeetTests(unittest.TestCase):
         svc._meet_events([status()])
         svc._on_sources([])
         self.assertEqual(svc.session.state, 'idle')
+
+
+# ── Meet's caption channel (chrome-extension/meet_channel.js, run by node) ───
+
+NODE_CHECK = r"""
+const { parseCaption, findUsers } = require(process.argv[1]);
+const varint = (n) => { const out = []; while (n > 127) { out.push((n & 127) | 128); n = Math.floor(n / 128); } out.push(n); return out; };
+const num = (no, n) => [...varint(no * 8), ...varint(n)];
+const bytes = (no, b) => [...varint(no * 8 + 2), ...varint(b.length), ...b];
+const str = (no, s) => bytes(no, [...Buffer.from(s, 'utf8')]);
+const device = 'spaces/abc/devices/42';
+const v1 = bytes(1, [...str(1, device), ...num(2, 7), ...num(3, 2), ...str(6, 'שלום')]);
+const v2 = [...bytes(1, [...num(1, 7), ...num(2, 3), ...bytes(3, [...num(2, 1), ...str(3, 'hello'), ...str(4, 'en-US'), ...str(6, device)])]), ...bytes(6, num(1, 99))];
+const people = bytes(1, bytes(2, bytes(2, bytes(2, [...str(1, device), ...str(2, 'Dana Levi'), ...str(7, 'me'), ...str(29, 'Dana')]))));
+console.log(JSON.stringify({
+  v1: parseCaption('captions', Uint8Array.from(v1)),
+  v2: parseCaption('captions_v2', Uint8Array.from(v2)),
+  new_label: parseCaption('captions_v9', Uint8Array.from(v1)),
+  junk: parseCaption('captions', Uint8Array.from([1, 2, 3, 200, 200])),
+  text_only: parseCaption('captions', Uint8Array.from(str(1, 'hello there'))),
+  users: findUsers(Uint8Array.from(people)),
+  no_users: findUsers(Uint8Array.from(str(1, 'not a person'))),
+}));
+"""
+
+
+@unittest.skipUnless(shutil.which('node'), 'needs node')
+class CaptionChannelDecoderTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        script = Path(__file__).resolve().parents[1] / 'chrome-extension' / 'meet_channel.js'
+        out = subprocess.run(['node', '-e', NODE_CHECK, str(script)], capture_output=True, encoding='utf-8', check=True)
+        cls.result = json.loads(out.stdout)
+
+    def test_the_first_layout(self):
+        self.assertEqual(self.result['v1'], {'device': 'spaces/abc/devices/42', 'id': '7', 'version': '2',
+                                             'final': False, 'text': 'שלום'})
+
+    def test_the_second_layout_with_its_final_mark(self):
+        self.assertEqual(self.result['v2'], {'device': 'spaces/abc/devices/42', 'id': '7', 'version': '3',
+                                             'final': True, 'text': 'hello'})
+
+    def test_a_new_channel_label_may_carry_either_layout(self):
+        self.assertEqual(self.result['new_label']['text'], 'שלום')
+
+    # Anything else is no caption, which leaves meet.js reading the page.
+    def test_other_bytes_are_no_caption(self):
+        self.assertIsNone(self.result['junk'])
+        self.assertIsNone(self.result['text_only'])
+
+    def test_people_are_found_under_any_wrappers(self):
+        self.assertEqual(self.result['users'], [{'device': 'spaces/abc/devices/42', 'name': 'Dana', 'self': True}])
+        self.assertEqual(self.result['no_users'], [])
 
 
 if __name__ == '__main__':
