@@ -264,10 +264,12 @@ def provider_status(provider_id: str = None) -> list:
 
 # One short question to a model, with a long timeout (LM Studio may have to
 # load the model first): what the Test buttons call.
-def test(spec: str) -> dict:
+# `options`: what a feature sends this model with, so the test neither reloads
+# it nor shows a load time that feature never pays.
+def test(spec: str, options: dict = None) -> dict:
     started = time.monotonic()
     result = complete('test', [{'role': 'user', 'content': 'Reply with the single word: pong'}],
-                      model=spec, timeout=120, fallbacks=False)
+                      model=spec, timeout=120, fallbacks=False, options=options)
     return {'ok': result.ok, 'text': result.text[:200], 'error': result.error,
             'seconds': round(time.monotonic() - started, 1), 'model': spec}
 

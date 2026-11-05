@@ -59,6 +59,15 @@ class LogStreamHandler(logging.Handler):
 _handler = None
 
 
+# Puts lines on the Live console only, not in the log file: for your own words,
+# which app.log leaves out unless you turned logging.log_transcriptions on.
+def show(message: str, module: str = 'koli'):
+    if _handler is None:
+        return
+    for line in str(message).splitlines() or ['']:
+        _handler.emit(logging.LogRecord(module, logging.INFO, '', 0, line, None, None))
+
+
 # Attach the stream handler to the root logger exactly once. setup_logging()
 # clears root handlers, so main.py calls this again after any logging reset.
 def install(level=logging.DEBUG) -> LogStreamHandler:

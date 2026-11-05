@@ -152,6 +152,55 @@ class CorrectTests(unittest.TestCase):
         self.assertIs(sc.OLLAMA_OPTIONS['think'], False)
 
 
+class ConsoleTests(unittest.TestCase):
+    def _run(self, llm, text='check the roll', warmer=None):
+        shown = []
+        warmer = warmer or ready_warmer()
+        sc.correct(text, MODEL, llm, lambda spec: 'local', warmer, 'English', ['Viaset'], 'code.exe', 'Koli', ['one', 'two'], show=shown.append)
+        return shown
+
+    def test_it_shows_what_the_model_gets_and_what_came_back(self):
+        shown = self._run(FakeLlm())
+        for part in ('Language of this dictation: English', 'Viaset', 'code.exe - Koli', 'one\ntwo', 'Dictation: check the roll'):
+            self.assertIn(part, shown[0])
+        self.assertNotIn('Never rephrase', shown[0])     # not the fixed instruction every time
+        self.assertEqual(shown[1], 'AI correction changed it to: check the role')
+
+    def test_it_says_when_nothing_changed_or_an_answer_was_thrown_away(self):
+        self.assertEqual(self._run(FakeLlm(text='{"text": "check the roll"}'))[1], 'AI correction: no change')
+        rewrite = '{"text": "please verify this user account permission setting now"}'
+        self.assertEqual(self._run(FakeLlm(text=rewrite))[1], 'AI correction thrown away: please verify this user account permission setting now')
+
+    def test_it_says_why_the_model_was_not_used(self):
+        self.assertIn('still loading', self._run(FakeLlm(), warmer=sc.Warmer(lambda spec, options: None))[0])
+        self.assertIn('over the 400 limit', self._run(FakeLlm(), text='word ' * 100)[0])
+
+    def test_the_live_console_gets_it_and_the_log_file_does_not(self):
+        import logging
+        from unittest import mock
+        from koli.ui import log_stream
+        handler = log_stream.LogStreamHandler()
+        seen = []
+        root = logging.getLogger()
+        spy = logging.Handler()
+        spy.emit = seen.append
+        root.addHandler(spy)
+        self.addCleanup(root.removeHandler, spy)
+        with mock.patch.object(log_stream, '_handler', handler), mock.patch.object(log_stream, 'publish'):
+            log_stream.show('first\nsecond', 'smart_correction')
+        self.assertEqual([r['msg'] for r in handler.tail()], ['first', 'second'])
+        self.assertEqual(seen, [])
+
+
+class TestButtonTests(unittest.TestCase):
+    def test_testing_the_correction_model_does_not_reload_it(self):
+        from unittest import mock
+        from koli import llm
+        with mock.patch.object(llm, 'complete', return_value=SimpleNamespace(ok=True, text='pong', error='')) as run:
+            llm.test(MODEL, sc.OLLAMA_OPTIONS)
+            self.assertIs(run.call_args.kwargs['options'], sc.OLLAMA_OPTIONS)
+
+
 class WarmerTests(unittest.TestCase):
     def _join(self):
         for thread in threading.enumerate():
