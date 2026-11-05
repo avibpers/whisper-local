@@ -30,8 +30,11 @@
 #                                 call has sound, ask offers one, off ignores
 #                                 it. A rule without `meeting` is never a
 #                                 meeting source.
-#   initial_prompt: <string>    - prime Whisper with context for this app
-#                                 (concatenated after your global initial_prompt)
+#   initial_prompt: <string>    - text Whisper reads as if it was said just before
+#                                 the recording (after your global initial_prompt).
+#                                 Write the names you use, or a sample of the
+#                                 writing you want. Whisper can't follow
+#                                 instructions like "Friendly tone."
 #   language:    "en"|"es"|...  - force a transcription language for this app
 #   task:        "transcribe"   - or "translate" (Whisper outputs English)
 #   capitalize_first:     true | false  - override global postprocess for this app
@@ -86,27 +89,24 @@ rules:
     style: verbatim
 
   # Code editors: never auto-send, never paste — copy only so the user
-  # decides where it lands; identifier/path bias. Keep it verbatim: no forced
+  # decides where it lands. Keep it verbatim: no forced
   # capitalization or trailing period (code isn't prose).
   - id: code-editors
     match: ["code.exe", "cursor.exe", "windsurf.exe", "rider64.exe", "pycharm64.exe", "idea64.exe"]
     auto_paste: false
-    initial_prompt: "Programming context. Identifiers, snake_case, camelCase, file paths, regex."
     style: verbatim
 
-  # Chat apps: send the message immediately, casual tone bias
+  # Chat apps: send the message immediately, casual style
   - id: chat-apps
     match: ["slack.exe", "discord.exe", "telegram.exe", "whatsapp.exe", "Slack", "Discord"]
     auto_send: true
     style: casual
     list_formatting: false   # a new line would send the message early
-    initial_prompt: "Casual chat message. Conversational tone."
 
-  # Email clients: professional bias, no auto-send
+  # Email clients: formal style, no auto-send
   - id: email-clients
     match: ["outlook.exe", "thunderbird.exe", "Mail"]
     style: formal
-    initial_prompt: "Professional email body. Polite, clear sentences."
 
   # ── Meetings ─────────────────────────────────────────────────────────────
   # Calls Koli can transcribe (Settings → Meetings). These rules only say

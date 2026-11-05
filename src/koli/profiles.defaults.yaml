@@ -36,7 +36,7 @@ profiles:
         delivery_method: paste
       whisper:
         task: transcribe
-        initial_prompt: "Casual chat message. Friendly tone."
+        initial_prompt: ""
 
   code:
     description: Copy-only mode for editors; never auto-send
@@ -46,7 +46,7 @@ profiles:
         delivery_method: paste
       whisper:
         task: transcribe
-        initial_prompt: "Programming context. Identifiers, snake_case, camelCase, file paths, regex. Keep verbatim."
+        initial_prompt: ""
       voice_commands:
         enabled: true
 
@@ -58,7 +58,7 @@ profiles:
       whisper:
         model: base
         task: transcribe
-        initial_prompt: "Note-taking. Markdown formatting. Bullet points."
+        initial_prompt: ""
       voice_commands:
         enabled: false
 
