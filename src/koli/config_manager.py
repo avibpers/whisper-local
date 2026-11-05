@@ -109,7 +109,9 @@ class ConfigManager:
         
         self.default_config_path = config_path
         self.use_user_settings = use_user_settings
-        self.config = {}
+        self._base = {}
+        self._overlay = {}
+        self._effective = None
         self.logger = logging.getLogger(__name__)
         import threading
         self._write_lock = threading.RLock()
@@ -282,6 +284,64 @@ class ConfigManager:
     # ── Path access (used by the settings service / app window) ───────────────
 
     # Value at a dotted path like "audio.noise_suppression.enabled", or `default`.
+    # ── Global settings and the profile layer ───────────────────────────────
+    # `config` is what Koli acts on: your global settings with the active layer
+    # on top. The layer (profiles.py) lives in memory for as long as it applies
+    # and is never saved, so a profile can't overwrite a global setting. Every
+    # change you make goes to the global settings.
+
+    @property
+    def config(self) -> Dict[str, Any]:
+        return self._effective if self._effective is not None else self._base
+
+    @config.setter
+    def config(self, value: Dict[str, Any]):
+        self._base = value
+        self._rebuild_effective()
+
+    @property
+    def global_config(self) -> Dict[str, Any]:
+        return self._base
+
+    # A global setting, whatever layer is on top: what the Settings screen shows.
+    def get_global(self, path: str, default: Any = None) -> Any:
+        node = self._base
+        for key in path.split('.'):
+            if not isinstance(node, dict) or key not in node:
+                return default
+            node = node[key]
+        return node
+
+    def overlay_has(self, path: str) -> bool:
+        return path in self._overlay
+
+    @property
+    def overlay(self) -> Dict[str, Any]:
+        return dict(self._overlay)
+
+    # Replaces the layer: {'ai.translate': 'he_en'}. Empty removes it.
+    def set_overlay(self, values: Dict[str, Any]):
+        with self._write_lock:
+            self._overlay = dict(values or {})
+            self._rebuild_effective()
+
+    # Only the dictionaries along the layer's paths are copied: the rest is
+    # shared with the global settings, which keeps this fast enough for a key press.
+    def _rebuild_effective(self):
+        if not self._overlay:
+            self._effective = None
+            return
+        merged = dict(self._base)
+        for path, value in self._overlay.items():
+            node = merged
+            keys = path.split('.')
+            for key in keys[:-1]:
+                child = node.get(key)
+                node[key] = dict(child) if isinstance(child, dict) else {}
+                node = node[key]
+            node[keys[-1]] = value
+        self._effective = merged
+
     def get_path(self, path: str, default: Any = None) -> Any:
         node = self.config
         for key in path.split('.'):
@@ -295,12 +355,13 @@ class ConfigManager:
     def set_path(self, path: str, value: Any, save: bool = True):
         keys = path.split('.')
         with self._write_lock:
-            node = self.config
+            node = self._base
             for key in keys[:-1]:
                 if not isinstance(node.get(key), dict):
                     node[key] = {}
                 node = node[key]
             node[keys[-1]] = value
+            self._rebuild_effective()
         if save:
             self.schedule_save()
 
@@ -325,7 +386,7 @@ class ConfigManager:
     # The user's overrides as they would be written, e.g. to tell a brand-new
     # install from an upgrade.
     def user_overrides(self) -> Dict[str, Any]:
-        return _compute_overrides(self.config, self._defaults_baseline)
+        return _compute_overrides(self._base, self._defaults_baseline)
 
     # Re-read user_settings.yaml if something other than this app changed it
     # (the CLI, a hand edit). Returns the dotted paths whose values changed, so
@@ -350,7 +411,7 @@ class ConfigManager:
             self.logger.warning(f"user_settings.yaml was edited but can't be read, so the change is ignored: {e}")
             return []
         self.reload_error = ''
-        old = copy.deepcopy(_to_plain(self.config))
+        old = copy.deepcopy(_to_plain(self._base))
         try:
             fresh = self._load_config()
         except Exception as e:
@@ -500,7 +561,9 @@ class ConfigManager:
             resolved = _resolve_platform_values(merged)
             new_pp = resolved.get('postprocess')
             if new_pp is not None:
-                self.config['postprocess'] = new_pp
+                with self._write_lock:
+                    self._base['postprocess'] = new_pp
+                    self._rebuild_effective()
                 self.logger.debug("Reloaded postprocess config from disk")
         except Exception as e:
             self.logger.debug(f"postprocess hot-reload failed: {e}")
@@ -520,7 +583,7 @@ class ConfigManager:
     
     def _save_user_overrides(self):
         try:
-            overrides = _compute_overrides(self.config, self._defaults_baseline)
+            overrides = _compute_overrides(self._base, self._defaults_baseline)
             self._write_user_config(overrides)
             self.logger.info(f"User overrides saved to {self.user_settings_path}")
         except Exception as e:
@@ -533,11 +596,13 @@ class ConfigManager:
     def update_user_setting(self, section: str, key: str, value: Any):
         try:
             old_value = None
-            if section in self.config and key in self.config[section]:
-                old_value = self.config[section][key]
+            if section in self._base and key in self._base[section]:
+                old_value = self._base[section][key]
 
                 if old_value != value:
-                    self.config[section][key] = value
+                    with self._write_lock:
+                        self._base[section][key] = value
+                        self._rebuild_effective()
                     self._save_user_overrides()
 
                     self.logger.debug(f"Updated setting {section}.{key}: {old_value} -> {value}")

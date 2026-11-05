@@ -5,10 +5,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 ## [Unreleased]
 
 ### Added
-- **Speak Hebrew, write English.** Hold the new Translate key (Settings › Hotkeys,
-  Ctrl+Win+Y) anywhere, or set an app to always do it (Apps, "When I speak Hebrew");
-  there the key writes as you said it. Uses the small local model, usually 0.35 s. If
-  it can't translate, your words are typed and not sent. English stays English.
+- **Profiles you can really set** (Apps). Each setting says "use global" until you
+  give it a value, and a profile never overwrites your global settings. Hold a
+  profile's own key to dictate with it, set a profile on an app so your main key uses
+  it there, or make one the default for the whole system.
+- **Speak Hebrew, write English.** The new Translate profile: hold Ctrl+Win+Y anywhere,
+  set it on an app, or make it the default. Uses the small local model, usually 0.35 s.
+  If it can't translate, your words are typed and not sent. English stays English.
 - **Your English corrected** (Settings › AI › Polish, What it fixes). The small local
   model also fixes grammar like "is" for "are". What you really said and every word it
   changed stay with the clip, so Koli never learns from the AI's words.

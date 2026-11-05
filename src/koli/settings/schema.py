@@ -42,8 +42,25 @@ class Setting:
     warn: str = ''                # shown under the control when relevant
 
     def to_dict(self) -> dict:
-        return {k: v for k, v in asdict(self).items() if v not in (None, '', False) or k in ('nullable', 'optional')}
+        out = {k: v for k, v in asdict(self).items() if v not in (None, '', False) or k in ('nullable', 'optional')}
+        if self.path in PROFILE_PATHS:
+            out['profile'] = True
+        return out
 
+
+# What a profile can set: only what can change from one dictation to the next.
+# Not the speech model, microphone or anything else that rebuilds a component (a
+# hold-to-talk key would miss your first words), nor what starts a recording.
+PROFILE_PATHS = frozenset({
+    'whisper.language', 'whisper.languages', 'whisper.chat_language', 'whisper.initial_prompt', 'whisper.hotwords',
+    'clipboard.auto_paste', 'clipboard.delivery_method', 'clipboard.send_key', 'clipboard.trailing_space',
+    'clipboard.auto_send_delay', 'live_words.engine',
+    'ai.translate', 'ai.polish.enabled', 'ai.polish.mode', 'ai.polish.model', 'ai.polish.timeout',
+    'postprocess.style', 'postprocess.capitalize_first', 'postprocess.ensure_punctuation', 'postprocess.strip_trailing_period',
+    'postprocess.lowercase', 'postprocess.snap_to_words', 'postprocess.strip_filler_words', 'postprocess.remove_repeated_words',
+    'postprocess.list_formatting', 'postprocess.inline_formatting', 'postprocess.voice_editing', 'postprocess.backtrack.enabled',
+    'postprocess.smart_formatting.times', 'postprocess.smart_formatting.emails', 'postprocess.smart_formatting.urls',
+})
 
 SECTIONS = [
     {'id': 'general', 'title': 'General', 'desc': 'How you dictate, day to day.'},
@@ -284,9 +301,6 @@ SCHEMA = [
     _S('hotkey.command_hotkey', 'Voice command', 'hotkeys', 'hotkey', nullable=True),
     _S('hotkey.rephrase_hotkey', 'AI rephrase selection', 'hotkeys', 'hotkey', nullable=True,
        help='Needs a model in Settings › AI.'),
-    _S('hotkey.translate_hotkey', 'Translate', 'hotkeys', 'hotkey', nullable=True,
-       help='Hold it to speak Hebrew and write English. In an app that always translates, it writes as you said it. '
-       'Uses the Polish model (Settings > AI).'),
     _S('hotkey.pause_hotkey', 'Pause all hotkeys', 'hotkeys', 'hotkey', nullable=True),
     _S('hotkey.paste_last_hotkey', 'Paste last dictation', 'hotkeys', 'hotkey', nullable=True),
     _S('hotkey.meeting_hotkey', 'Start or end a meeting', 'hotkeys', 'hotkey', nullable=True),
@@ -391,6 +405,10 @@ SCHEMA = [
        help='In this order, while the feature still has time.'),
     _S('ai.timeout', 'Give up after', 'ai', 'number', group='Models', min=1, max=600, step=1, unit='seconds',
        help='For features without their own limit.'),
+    _S('ai.translate', 'Translate my speech', 'ai', 'select', group='Translate',
+       choices=[['off', 'Off: write what I said'], ['he_en', 'Hebrew to English']],
+       help='Uses the Polish model. Usually set in a profile, so a key or an app turns it on. English stays English. '
+       'If it can\'t translate, your words are typed and not sent.'),
     _S('ai.polish.enabled', 'Polish every dictation', 'ai', 'toggle', group='Polish',
        help='Runs after the offline rules, on dictation only. Meetings are never sent.'),
     _S('ai.polish.mode', 'What it fixes', 'ai', 'select', group='Polish',

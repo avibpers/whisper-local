@@ -1,12 +1,16 @@
 // screens/apps.js
 // Apps & profiles: per-app rules (checked top to bottom, first match wins;
 // your own rules come before the shipped ones) with a full editor for every
-// override, and profiles — named sets of settings switched in one click.
+// override, and profiles: named sets of settings on top of your global ones. One
+// applies per dictation: its key held, else the app's, else the default one.
 
 import { html, useEffect, useState } from '../../vendor/preact-htm.module.js';
 import { call } from '../api.js';
 import { app, closeModal, confirmModal, openModal, toast } from '../store.js';
-import { Icon, Segmented, Select, TagInput, Toggle } from '../ui.js';
+import { HotkeyCapture, Icon, Segmented, Select, TagInput, Toggle } from '../ui.js';
+import { SettingControl } from './shared.js';
+
+const pathOf = (node, path) => path.split('.').reduce((n, key) => (n == null ? n : n[key]), node);
 
 const TRI = [[null, 'Default'], [true, 'Always'], [false, 'Never']];
 const FORMATTING = [['capitalize_first', 'Capitalize first letter'], ['ensure_punctuation', 'End with punctuation'],
@@ -35,7 +39,7 @@ function summary(e) {
   if (e.keep_audio === false) bits.push('No clips kept');
   if (e.meeting) bits.push({ off: 'Calls ignored', ask: 'Calls: ask', auto: 'Calls: auto' }[e.meeting] || 'Calls');
   if (e.style) bits.push(e.style.replace('_', ' '));
-  if (e.translate === 'he_en') bits.push('Hebrew to English');
+  if (e.profile) bits.push(`profile ${e.profile}`);
   if (e.language) bits.push(`language ${e.language}`);
   if (e.initial_prompt) bits.push('prompt');
   return bits.join(' · ') || 'No changes';
@@ -51,6 +55,8 @@ function titleParts(title) {
 function RuleEditor({ item, foreground, onSaved, onDeleted }) {
   const [e, setE] = useState({ ...item.entry });
   useEffect(() => setE({ ...item.entry }), [item]);
+  const [profiles, setProfiles] = useState([]);
+  useEffect(() => { call('profiles_list').then((d) => setProfiles(d.profiles.filter((p) => !p.disabled))).catch(() => {}); }, []);
   const set = (k, v) => setE((cur) => { const n = { ...cur }; if (v === null || v === undefined || v === '') delete n[k]; else n[k] = v; return n; });
   const save = () => call('rule_save', e, item.isNew ? null : item.id).then((id) => { toast('Rule saved'); onSaved(id); }).catch((err) => toast(err.message, { kind: 'err' }));
   const pasteMode = e.auto_paste === false ? false : e.auto_paste === true ? true : null;
@@ -76,6 +82,9 @@ function RuleEditor({ item, foreground, onSaved, onDeleted }) {
           style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
           disabled=${titles.some((t) => t.toLowerCase() === part.toLowerCase())}
           onClick=${() => setTitles([...titles, part])}><${Icon} name="plus" size="sm" />${part}</button>`)}</div>`}</div>
+    <${Row} label="Profile in this app"><${Select} label="Profile in this app" value=${e.profile ?? null}
+      options=${[[null, 'The default profile'], ...profiles.map((p) => [p.id, p.id.charAt(0).toUpperCase() + p.id.slice(1)])]}
+      onChange=${(v) => set('profile', v)} /></${Row}>
     <div class="eyebrow" style="margin-top:10px">Delivery</div>
     <${Row} label="Press Enter after pasting"><${Segmented} label="Auto-send" value=${e.auto_send ?? null} options=${TRI} onChange=${(v) => set('auto_send', v)} /></${Row}>
     <${Row} label="Wait before sending"><${Select} label="Wait before sending" value=${e.auto_send_delay ?? null}
@@ -93,7 +102,6 @@ function RuleEditor({ item, foreground, onSaved, onDeleted }) {
     <${Row} label="Calls in this app (Meetings)"><${Segmented} label="Meetings" value=${e.meeting ?? null}
       options=${[[null, 'Not a meeting app'], ['default', 'Default'], ['auto', 'Auto'], ['ask', 'Ask'], ['off', 'Off']]} onChange=${(v) => set('meeting', v)} /></${Row}>
     <${Row} label="Language"><${Select} label="Language" value=${e.language ?? null} options=${LANGS} onChange=${(v) => set('language', v)} /></${Row}>
-    <${Row} label="When I speak Hebrew"><${Segmented} label="When I speak Hebrew" value=${e.translate ?? null} options=${[[null, 'Write Hebrew'], ['he_en', 'Translate to English']]} onChange=${(v) => set('translate', v)} /></${Row}>
     <div style="padding:10px 0;border-top:1px solid var(--line)"><div style="margin-bottom:6px">Extra context prompt</div>
       <textarea class="inp" rows="2" aria-label="Rule prompt" value=${e.initial_prompt || ''} onInput=${(ev) => set('initial_prompt', ev.currentTarget.value)}></textarea></div>
     <div class="eyebrow" style="margin-top:10px">Formatting</div>
@@ -158,59 +166,112 @@ function Rules() {
   </section>`;
 }
 
-function chips(o) {
-  const out = [];
-  const w = o.whisper || {};
-  if (w.language) out.push(w.language);
-  if (w.model) out.push(w.model);
-  if (w.task === 'translate') out.push('translate');
-  if (w.initial_prompt) out.push('prompt');
-  if (o.clipboard && o.clipboard.auto_paste === false) out.push('copy only');
-  if (o.hotkey && o.hotkey.recording_mode) out.push(o.hotkey.recording_mode.replace(/_/g, ' '));
-  if (o.voice_commands && o.voice_commands.enabled === false) out.push('commands off');
-  if (o.streaming && o.streaming.streaming_enabled === false) out.push('preview off');
+// A profile's overrides as dotted paths, the way the settings are named.
+function flatOverrides(node, known, prefix = '', out = {}) {
+  for (const [key, value] of Object.entries(node || {})) {
+    const path = prefix ? `${prefix}.${key}` : key;
+    if (known.has(path)) out[path] = value;
+    else if (value && typeof value === 'object' && !Array.isArray(value)) flatOverrides(value, known, path, out);
+  }
   return out;
 }
 
-function openProfileEditor(item, reload) {
-  const entry = item ? JSON.parse(JSON.stringify(item.entry)) : { description: '', overrides: { whisper: {} } };
-  let name = item ? item.id : '';
-  let text = JSON.stringify(entry.overrides || {}, null, 2);
-  let desc = entry.description || '';
-  openModal(() => html`<div class="modal wide"><div class="modal-head"><h2>${item ? `Edit profile “${item.id}”` : 'New profile'}</h2></div>
+function nestedOverrides(flat) {
+  const out = {};
+  for (const [path, value] of Object.entries(flat)) {
+    const keys = path.split('.');
+    let node = out;
+    keys.slice(0, -1).forEach((key) => { node[key] = node[key] || {}; node = node[key]; });
+    node[keys[keys.length - 1]] = value;
+  }
+  return out;
+}
+
+// A setting's value in a few words, to show what "use global" means right now.
+function valueText(s, value) {
+  if (value === true) return 'On';
+  if (value === false) return 'Off';
+  if (value === null || value === undefined || value === '') return 'Not set';
+  if (Array.isArray(value)) return value.length ? `${value.length} set` : 'None';
+  const choice = (s.choices || []).find((c) => c[0] === value);
+  return String(choice ? choice[1] : value);
+}
+
+function ProfileSettingRow({ s, value, isSet, onSet, onClear }) {
+  const globalValue = app.use((st) => pathOf(st.settings, s.path));
+  return html`<div class="srow top" id=${'p-' + s.path}>
+    <div class="slabel"><b>${s.label}</b>${s.help && html`<small>${s.help}</small>`}</div>
+    <div class="sctl wide"><div class="stack" style="gap:8px">
+      <${Segmented} label=${`${s.label}: use global or set here`} value=${isSet ? 'set' : 'global'}
+        options=${[['global', `Use global (${valueText(s, globalValue)})`], ['set', 'Set for this profile']]}
+        onChange=${(v) => (v === 'set' ? onSet(globalValue) : onClear())} />
+      ${isSet && html`<${SettingControl} s=${s} given=${value} onChange=${onSet} />`}
+    </div></div>
+  </div>`;
+}
+
+// Every setting a profile can hold starts as "use global": a profile says only
+// what it changes, on top of your global settings, which it never overwrites.
+function ProfileEditor({ item, reload }) {
+  const schema = app.use((s) => s.schema);
+  const rows = schema ? schema.settings.filter((s) => s.profile) : [];
+  const known = new Set(rows.map((s) => s.path));
+  const entry = item ? item.entry : { description: '', overrides: {} };
+  const [name, setName] = useState(item ? item.id : '');
+  const [desc, setDesc] = useState(entry.description || '');
+  const [hotkey, setHotkey] = useState(entry.hotkey || null);
+  const [values, setValues] = useState(() => flatOverrides(entry.overrides, known));
+  const change = (path, value) => setValues((cur) => ({ ...cur, [path]: value }));
+  const clear = (path) => setValues((cur) => { const next = { ...cur }; delete next[path]; return next; });
+  const save = () => call('profile_save', { description: desc, hotkey, overrides: nestedOverrides(values) }, name, item ? item.id : null)
+    .then(() => { closeModal(); toast('Profile saved'); reload(); }).catch((err) => toast(err.message, { kind: 'err' }));
+  const sections = schema ? schema.sections.filter((sec) => rows.some((s) => s.section === sec.id)) : [];
+  return html`<div class="modal wide"><div class="modal-head"><h2>${item ? `Edit profile “${item.id}”` : 'New profile'}</h2></div>
     <div class="modal-body">
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
-        <label class="stack" style="gap:6px"><span class="eyebrow">Name</span><input class="inp" value=${name} disabled=${item && item.origin !== 'yours'} onInput=${(e) => { name = e.currentTarget.value; }} /></label>
-        <label class="stack" style="gap:6px"><span class="eyebrow">Description</span><input class="inp" value=${desc} onInput=${(e) => { desc = e.currentTarget.value; }} /></label>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
+        <label class="stack" style="gap:6px"><span class="eyebrow">Name</span><input class="inp" value=${name} disabled=${item && item.origin !== 'yours'} onInput=${(e) => setName(e.currentTarget.value)} /></label>
+        <label class="stack" style="gap:6px"><span class="eyebrow">Description</span><input class="inp" value=${desc} onInput=${(e) => setDesc(e.currentTarget.value)} /></label>
+        <div class="stack" style="gap:6px"><span class="eyebrow">Hold this key to dictate with it</span>
+          <${HotkeyCapture} value=${hotkey} label="Profile key" nullable=${true} onCommit=${setHotkey} /></div>
       </div>
-      <label class="stack" style="gap:6px"><span class="eyebrow">Settings it changes</span>
-        <textarea class="inp mono" rows="12" value=${text} onInput=${(e) => { text = e.currentTarget.value; }}></textarea></label>
-      <p class="small muted" style="margin:0">Sections and keys as in Settings, for example {"whisper": {"language": "he", "model": "small"}, "clipboard": {"auto_paste": true, "auto_send_delay": 5}, "auto_dictation": {"enabled": true}}.</p>
+      <p class="small muted" style="margin:0">Only what you set here changes. The speech model and microphone stay as they are in Settings.</p>
+      ${sections.map((sec) => html`<div><div class="eyebrow" style="margin-top:10px">${sec.title}</div>
+        ${rows.filter((s) => s.section === sec.id).map((s) => html`<${ProfileSettingRow} key=${s.path} s=${s} value=${values[s.path]}
+          isSet=${s.path in values} onSet=${(v) => change(s.path, v)} onClear=${() => clear(s.path)} />`)}</div>`)}
     </div>
     <div class="modal-foot"><button type="button" class="btn" onClick=${closeModal}>Cancel</button>
-      <button type="button" class="btn pri" onClick=${() => {
-        let overrides;
-        try { overrides = JSON.parse(text || '{}'); } catch (err) { toast(`That isn't valid JSON: ${err.message}`, { kind: 'err' }); return; }
-        call('profile_save', { description: desc, overrides }, name, item ? item.id : null)
-          .then(() => { closeModal(); toast('Profile saved'); reload(); }).catch((err) => toast(err.message, { kind: 'err' }));
-      }}>Save</button></div></div>`);
+      <button type="button" class="btn pri" onClick=${save}>Save</button></div></div>`;
+}
+
+function openProfileEditor(item, reload) {
+  openModal(() => html`<${ProfileEditor} item=${item} reload=${reload} />`);
+}
+
+// What a profile changes, by the settings' own names; the rest uses global.
+function chips(entry, schema) {
+  const rows = schema ? schema.settings.filter((s) => s.profile) : [];
+  const flat = flatOverrides(entry.overrides, new Set(rows.map((s) => s.path)));
+  const out = rows.filter((s) => s.path in flat).map((s) => `${s.label}: ${valueText(s, flat[s.path])}`);
+  return out.length ? out : ['All global settings'];
 }
 
 function Profiles() {
   const active = app.use((s) => s.profile);
+  const schema = app.use((s) => s.schema);
   const [items, setItems] = useState([]);
   const reload = () => call('profiles_list').then((d) => { setItems(d.profiles); app.set({ profile: d.active }); }).catch(() => {});
   useEffect(() => { reload(); }, []);
   const use = (id) => call('profile_activate', id).then(() => { app.set({ profile: id }); toast(`Profile: ${id}`); }).catch((e) => toast(e.message, { kind: 'err' }));
   return html`<section class="card" aria-labelledby="h-prof">
-    <div class="card-head"><div><h2 id="h-prof">Profiles</h2><p>One click swaps model, language, prompt and delivery. Also in the bubble's quick actions.</p></div>
+    <div class="card-head"><div><h2 id="h-prof">Profiles</h2><p>Named sets of settings, on top of your global ones. One applies per dictation: the one whose key you hold, else the one set on the app, else the default.</p></div>
       <button type="button" class="btn" onClick=${() => openProfileEditor(null, reload)}><${Icon} name="plus" />New profile</button></div>
     <div style="padding:0 18px 18px;display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px">
       ${items.filter((p) => !p.disabled).map((p) => html`<article style=${`border:${p.id === active ? '2px solid var(--acc)' : '1px solid var(--line)'};border-radius:12px;padding:${p.id === active ? 13 : 14}px;display:flex;flex-direction:column;gap:8px`}>
         <div class="row-flex" style="justify-content:space-between"><b style="font-weight:600;text-transform:capitalize">${p.id}</b>
-          ${p.id === active ? html`<span class="chip acc">Active</span>` : html`<button type="button" class="btn sm" onClick=${() => use(p.id)}>Use</button>`}</div>
+          ${p.id === active ? html`<span class="chip acc">Default</span>` : html`<button type="button" class="btn sm" onClick=${() => use(p.id)}>Make default</button>`}</div>
         <p class="small muted" style="margin:0">${p.entry.description || ''}</p>
-        <div class="row-flex">${chips(p.entry.overrides || {}).map((c) => html`<span class="chip">${c}</span>`)}</div>
+        ${p.entry.hotkey && html`<div class="small"><span class="muted">Hold </span><b>${String(p.entry.hotkey).split(' | ')[0]}</b></div>`}
+        <div class="row-flex">${chips(p.entry, schema).map((c) => html`<span class="chip">${c}</span>`)}</div>
         <div class="row-flex"><button type="button" class="btn ghost sm" onClick=${() => openProfileEditor(p, reload)}>Edit</button>
           ${p.origin === 'yours' && html`<button type="button" class="btn ghost sm" onClick=${() => call('profile_delete', p.id).then(reload)}>Delete</button>`}
           ${p.origin === 'changed' && html`<button type="button" class="btn ghost sm" onClick=${() => call('profile_delete', p.id).then(reload)}>Reset</button>`}

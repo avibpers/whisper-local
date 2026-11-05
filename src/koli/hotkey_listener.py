@@ -19,7 +19,7 @@ class HotkeyListener:
                  recording_mode: str = "push_to_talk", paste_last_hotkey: str = None,
                  double_tap_to_lock: bool = False, double_tap_window_ms: int = 400,
                  meeting_hotkey: str = None, meeting_mute_hotkey: str = None,
-                 meeting_screenshot_hotkey: str = None, translate_hotkey: str = None):
+                 meeting_screenshot_hotkey: str = None):
         self.state_manager = state_manager
         self.recording_hotkey = recording_hotkey
         self.stop_key = stop_key
@@ -27,7 +27,6 @@ class HotkeyListener:
         self.cancel_combination = cancel_combination
         self.command_hotkey = command_hotkey
         self.rephrase_hotkey = rephrase_hotkey
-        self.translate_hotkey = translate_hotkey
         self.pause_hotkey = pause_hotkey
         self.transforms_manager = transforms_manager
         self.recording_mode = recording_mode
@@ -129,12 +128,12 @@ class HotkeyListener:
                 'name': 'rephrase (push-to-talk)'
             })
 
-        if self.translate_hotkey:
+        for name, combination in self._profile_hotkeys():
             hotkey_configs.append({
-                'combination': self.translate_hotkey,
-                'callback': self._translate_hotkey_pressed,
-                'release_callback': self._translate_hotkey_released,
-                'name': 'translate (push-to-talk)'
+                'combination': combination,
+                'callback': self._profile_key_pressed(name),
+                'release_callback': self._profile_key_released,
+                'name': f'profile:{name} (push-to-talk)'
             })
 
         # Fires on press: the macOS backend only reports releases for
@@ -334,13 +333,23 @@ class HotkeyListener:
         self.keys_armed = False
         self.state_manager.start_command_recording()
 
-    def _translate_hotkey_pressed(self):
-        self.logger.info(f"Translate hotkey pressed: {self.translate_hotkey}")
-        self.keys_armed = False
-        self.state_manager.start_translate_recording()
+    # Each profile with a key of its own: hold it to dictate with that profile.
+    def _profile_hotkeys(self) -> list:
+        manager = getattr(self.state_manager, 'profile_manager', None)
+        try:
+            return list(manager.hotkeys()) if manager is not None else []
+        except TypeError:
+            return []
 
-    def _translate_hotkey_released(self):
-        self.logger.info("Translate hotkey released")
+    def _profile_key_pressed(self, name: str):
+        def pressed():
+            self.logger.info(f"Profile hotkey pressed: {name}")
+            self.keys_armed = False
+            self.state_manager.start_profile_recording(name)
+        return pressed
+
+    def _profile_key_released(self):
+        self.logger.info("Profile hotkey released")
         self.keys_armed = True
         self.state_manager.stop_recording()
 
@@ -431,7 +440,7 @@ class HotkeyListener:
             self.logger.error(f"Error stopping hotkey listener: {e}")
 
     def change_hotkey_config(self, setting: str, value):
-        valid_settings = ['recording_hotkey', 'stop_key', 'auto_send_key', 'cancel_combination', 'command_hotkey', 'rephrase_hotkey', 'translate_hotkey', 'pause_hotkey', 'paste_last_hotkey', 'meeting_hotkey', 'meeting_mute_hotkey', 'meeting_screenshot_hotkey', 'recording_mode']
+        valid_settings = ['recording_hotkey', 'stop_key', 'auto_send_key', 'cancel_combination', 'command_hotkey', 'rephrase_hotkey', 'pause_hotkey', 'paste_last_hotkey', 'meeting_hotkey', 'meeting_mute_hotkey', 'meeting_screenshot_hotkey', 'recording_mode']
 
         if setting not in valid_settings:
             raise ValueError(f"Invalid setting '{setting}'. Valid options: {valid_settings}")
@@ -459,6 +468,16 @@ class HotkeyListener:
 
     def is_active(self) -> bool:
         return self.is_listening
+
+    # A profile's key changed: register them all again.
+    def refresh_hotkeys(self):
+        self.logger.info("Re-registering hotkeys to pick up profile changes")
+        try:
+            self.stop_listening()
+            self._setup_hotkeys()
+            self.start_listening()
+        except Exception as e:
+            self.logger.error(f"Failed to refresh profile hotkeys: {e}")
 
     def refresh_transforms(self):
         if not self.transforms_manager:

@@ -281,24 +281,16 @@ class ScoreTests(unittest.TestCase):
 
 class TranslateWantedTests(unittest.TestCase):
     HEBREW = 'מה קורה אחי הכל טוב'
-    DISCORD = {'translate': 'he_en'}
 
-    def test_the_key_translates_hebrew_anywhere(self):
-        self.assertTrue(sc.translate_wanted(self.HEBREW, None, key_held=True))
+    def test_the_setting_translates_hebrew(self):
+        self.assertTrue(sc.translate_wanted(self.HEBREW, 'he_en'))
 
-    def test_an_app_rule_translates_hebrew_without_the_key(self):
-        self.assertTrue(sc.translate_wanted(self.HEBREW, self.DISCORD))
-
-    def test_in_a_translating_app_the_key_writes_as_you_said_it(self):
-        self.assertFalse(sc.translate_wanted(self.HEBREW, self.DISCORD, key_held=True))
-
-    def test_nothing_asked_means_no_translation(self):
-        self.assertFalse(sc.translate_wanted(self.HEBREW, None))
-        self.assertFalse(sc.translate_wanted(self.HEBREW, {'style': 'casual'}))
+    def test_off_writes_what_you_said(self):
+        for setting in ('off', None, ''):
+            self.assertFalse(sc.translate_wanted(self.HEBREW, setting))
 
     def test_english_stays_english(self):
-        self.assertFalse(sc.translate_wanted('how are you doing', self.DISCORD))
-        self.assertFalse(sc.translate_wanted('how are you doing', None, key_held=True))
+        self.assertFalse(sc.translate_wanted('how are you doing', 'he_en'))
 
 
 class TranslateTests(unittest.TestCase):
@@ -356,20 +348,20 @@ class PipelineStepTests(unittest.TestCase):
 
     def test_a_translation_runs_even_with_polish_off(self):
         from unittest import mock
-        sm = self._manager({})
+        sm = self._manager({'ai.translate': 'he_en'})
         with mock.patch.object(type(sm), '_ai_translate', return_value='English') as run:
-            self.assertEqual(sm._ai_step('מה קורה אחי', {'translate': 'he_en'}, False, False), 'English')
+            self.assertEqual(sm._ai_step('מה קורה אחי', False), 'English')
             run.assert_called_once()
 
     def test_nothing_runs_when_nothing_is_on(self):
         sm = self._manager({})
-        self.assertEqual(sm._ai_step('מה קורה אחי', None, False, False), '')
+        self.assertEqual(sm._ai_step('מה קורה אחי', False), '')
 
     def test_grammar_mode_asks_for_grammar(self):
         from unittest import mock
         sm = self._manager({'ai.polish.mode': 'grammar'})
         with mock.patch.object(type(sm), '_ai_correct', return_value='') as run:
-            sm._ai_step('how is you', None, False, True)
+            sm._ai_step('how is you', True)
             self.assertIs(run.call_args.kwargs['grammar'], True)
 
 

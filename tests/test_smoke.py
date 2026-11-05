@@ -4201,6 +4201,16 @@ class _FakeConfig:
         self.data = copy.deepcopy(data)
         self._defaults_baseline = copy.deepcopy(data)
 
+    @property
+    def global_config(self):
+        return self.config
+
+    def overlay_has(self, path):
+        return False
+
+    def get_global(self, path, default=None):
+        return self.get_path(path, default)
+
     def get_path(self, path, default=None):
         node = self.data
         for key in path.split('.'):

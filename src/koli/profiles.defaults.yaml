@@ -1,70 +1,42 @@
 # Koli — Profiles
 #
-# Each profile defines overrides applied to user_settings.yaml when the
-# profile is activated from the system tray "Profile" submenu.
+# A profile holds only what it changes, on top of your global settings, which it
+# never overwrites. Everything else is "use global". Three things choose one, first
+# that applies: holding its `hotkey`, the profile set on the app's rule, the active
+# profile (the default for the whole system, in the tray and the app window).
 #
-# Sections that can be overridden: any top-level key in config.defaults.yaml
-# (whisper, hotkey, vad, audio, clipboard, voice_commands, auto_dictation, ...).
-# For example, a profile can start listening whenever a text field gets focus:
-#   overrides:
-#     auto_dictation:
-#       enabled: true
+# It can set what can change from one dictation to the next (settings/schema.py,
+# PROFILE_PATHS), not the speech model or the microphone.
 
 active: dictation
 
 profiles:
   dictation:
-    description: General-purpose voice typing
-    overrides:
-      clipboard:
-        auto_paste: true
-        delivery_method: paste
-      whisper:
-        task: transcribe
-        initial_prompt: ""
-      voice_commands:
-        enabled: true
+    description: Your global settings as they are
+    overrides: {}
 
   chat:
-    description: Hold-to-talk for chat apps; auto-send on Alt
+    description: Pastes right away, for chat apps
     overrides:
-      hotkey:
-        recording_mode: push_to_talk
       clipboard:
         auto_paste: true
         delivery_method: paste
-      whisper:
-        task: transcribe
-        initial_prompt: ""
 
   code:
-    description: Copy-only mode for editors; never auto-send
+    description: Copies only, never pastes, for editors
     overrides:
       clipboard:
         auto_paste: false
-        delivery_method: paste
-      whisper:
-        task: transcribe
-        initial_prompt: ""
-      voice_commands:
-        enabled: true
 
   notes:
-    description: Quiet copy-to-clipboard mode for note-taking
+    description: Copies only, for note-taking
     overrides:
       clipboard:
         auto_paste: false
-      whisper:
-        task: transcribe
-        initial_prompt: ""
-      voice_commands:
-        enabled: false
 
   translate:
-    description: Translate any spoken language into English
+    description: Speak Hebrew, write English
+    hotkey: "ctrl+win+y | macos: ctrl+option+t"
     overrides:
-      whisper:
-        task: translate
-        language: auto
-      clipboard:
-        auto_paste: true
+      ai:
+        translate: he_en

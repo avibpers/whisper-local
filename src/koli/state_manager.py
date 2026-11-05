@@ -38,7 +38,7 @@ from .audio_feedback import AudioFeedback
 from .utils import OptionalComponent, get_user_app_data_path
 from .voice_activity_detection import VadEvent, VadManager
 from .voice_commands import VoiceCommandManager
-from .profiles import ProfileManager
+from .profiles import ProfileManager, ProfileLayer
 from .app_rules import AppRules, formatting_overrides as app_rules_formatting_overrides, effective_postprocess_config
 from .transforms import TransformsManager
 from .text_postprocess import postprocess
@@ -93,7 +93,7 @@ def _rule_label(rule) -> Optional[str]:
 
 
 class StateManager:
-    _translate_key = False   # the translate key is down for this recording
+    _key_profile = None   # the profile whose key is held for this recording
     # ── Recordings nobody started with a key ─────────────────────────────────
     # Auto-dictation sessions are numbered, and each phrase is tied to the
     # session it was spoken in. Phrases are prepared on their own thread, so
@@ -153,7 +153,6 @@ class StateManager:
         self.recent_transcriptions = collections.deque(maxlen=10)
         self._rephrase_mode = False
         self._rephrase_selection = ''
-        self._translate_key = False
         self._continuous_aborted = False
         # True while the running recording was started by auto-dictation (a text
         # field got focus) rather than a hotkey; see auto_dictation.py.
@@ -194,6 +193,7 @@ class StateManager:
         self._current_audio_host = None
         self._initialize_audio_host()
         self.profile_manager = ProfileManager(config_manager)
+        self.profile_layer = ProfileLayer(config_manager, self.profile_manager)
         self.app_rules = AppRules()
         self.transforms_manager = TransformsManager()
         self.level_overlay = None
@@ -428,7 +428,7 @@ class StateManager:
             self._command_mode = False
             self._rephrase_mode = False
             self._rephrase_selection = ''
-            self._translate_key = False
+            self._key_profile = None
         self._continuous_aborted = True
         self._auto_started = False
         self._hands_free = False
@@ -549,23 +549,39 @@ class StateManager:
         self.system_tray.refresh_menu()  # the tray's Pause/Resume label follows
         self._publish_state(self.get_current_state())
 
-    # The translate key: this dictation does the opposite of what this app normally
-    # does, translated or as you said it.
-    def start_translate_recording(self):
+    # A profile's key is held: this one dictation uses that profile.
+    def start_profile_recording(self, name: str):
         self._cancel_pending_send('you started a new dictation')
         if not self.can_start_recording():
             return
         with self._state_lock:
-            self._translate_key = True
+            self._key_profile = name
+        print(f"\n🎙  Profile: {name}")
         self.start_recording()
         if not self.audio_recorder.get_recording_status():
-            with self._state_lock:
-                self._translate_key = False
+            self._end_profile()
+
+    # Back to the system's default, between dictations and for what isn't a dictation.
+    def _end_profile(self):
+        with self._state_lock:
+            self._key_profile = None
+        layer = getattr(self, 'profile_layer', None)
+        if layer is not None:
+            layer.use()
+
+    # The profile files changed: read them, and take up any new key.
+    def profiles_changed(self):
+        self.profile_manager.reload()
+        if not self.audio_recorder.get_recording_status():
+            self.profile_layer.use()
+        if self._hotkey_listener_ref:
+            self._hotkey_listener_ref.refresh_hotkeys()
 
     def start_rephrase_recording(self):
         self._cancel_pending_send('you started a new dictation')
         if not self.can_start_recording():
             return
+        self._end_profile()
         # The selection, read with Ctrl+C; your clipboard comes back whole.
         selection = self.clipboard_manager.read_selection(0.12)
 
@@ -589,6 +605,7 @@ class StateManager:
         if not self.can_start_recording():
             return
 
+        self._end_profile()
         with self._state_lock:
             self._command_mode = True
 
@@ -619,7 +636,7 @@ class StateManager:
         else:
             # Words while you speak: the engine for this dictation, and the
             # pause that ends each phrase it transcribes.
-            phrase_pause = self.live.prepare('translate' if self._translate_key else 'dictate') if self.live is not None else None
+            phrase_pause = self.live.prepare('dictate') if self.live is not None else None
         success = self.audio_recorder.start_recording(silence_timeout=silence_timeout, phrase_pause=phrase_pause)
 
         if success:
@@ -1355,6 +1372,15 @@ class StateManager:
             self.logger.warning(f"Media control skipped: {e}")
 
     def _apply_recording_context(self):
+        try:
+            rule = self.app_rules.match_for_foreground() or {}
+        except Exception:
+            rule = {}
+        # The profile comes first: everything below reads through it. Its key
+        # when held, else this app's, else the system's default.
+        layer = getattr(self, 'profile_layer', None)
+        if layer is not None:
+            layer.use(self._key_profile or rule.get('profile'))
         whisper_cfg = self.config_manager.get_whisper_config()
         prompt_parts = []
         base_prompt = whisper_cfg.get('initial_prompt') or ''
@@ -1363,10 +1389,6 @@ class StateManager:
         language = whisper_cfg.get('language') or 'auto'
         task = whisper_cfg.get('task') or 'transcribe'
 
-        try:
-            rule = self.app_rules.match_for_foreground() or {}
-        except Exception:
-            rule = {}
         if rule.get('initial_prompt'):
             prompt_parts.append(str(rule['initial_prompt']))
             self.logger.debug(f"App rule {rule.get('match')} → initial_prompt applied")
@@ -1443,7 +1465,12 @@ class StateManager:
         with self._pipeline_lock:
             with self._state_lock:
                 ends_auto_session = not phrase and bool(self._auto_started)
-            self._transcription_pipeline_locked(audio_data, use_auto_enter, phrase, phrase_session, written)
+            try:
+                self._transcription_pipeline_locked(audio_data, use_auto_enter, phrase, phrase_session, written)
+            finally:
+                # A session that goes on keeps its profile until it ends.
+                if not phrase and not self.audio_recorder.get_recording_status():
+                    self._end_profile()
             # The last words of an auto-dictation session (or none, after an
             # echo was dropped): the session as a whole may now be sent.
             if ends_auto_session:
@@ -1480,8 +1507,6 @@ class StateManager:
                 rephrase_selection = self._rephrase_selection
                 self._rephrase_mode = False
                 self._rephrase_selection = ''
-                translate_key = self._translate_key
-                self._translate_key = False
             mode = 'command' if command_mode else ('rephrase' if rephrase_mode and rephrase_selection else 'dictate')
 
             if written is not None:
@@ -1648,8 +1673,8 @@ class StateManager:
             heard_text = transcribed_text
             polish_on = self.config_manager.get_path('ai.polish.enabled') is True
             polish = None
-            if polish_on or translate_key or (rule or {}).get('translate'):
-                polish = lambda text: self._ai_step(text, rule, translate_key, polish_on)
+            if polish_on or self.config_manager.get_path('ai.translate') == 'he_en':
+                polish = lambda text: self._ai_step(text, polish_on)
             self._ai_outcome = None
             if written is None:
                 transcribed_text = postprocess(transcribed_text, postprocess_cfg, trace=trace, polish=polish,
@@ -2408,9 +2433,9 @@ class StateManager:
     # empty answer (model down, too slow) keeps the dictation as it was.
     # What one dictation goes through: a translation if this app or the key asks
     # for one, otherwise the Polish setting. '' keeps the text as it is.
-    def _ai_step(self, text: str, rule: Optional[dict], translate_key: bool, polish_on: bool) -> str:
+    def _ai_step(self, text: str, polish_on: bool) -> str:
         from . import smart_correction
-        if smart_correction.translate_wanted(text, rule, translate_key):
+        if smart_correction.translate_wanted(text, self.config_manager.get_path('ai.translate')):
             return self._ai_translate(text)
         return self._ai_polish(text) if polish_on else ''
 
@@ -2494,7 +2519,7 @@ class StateManager:
     # you stop speaking. Costs 5 ms when it already is.
     def _warm_correction(self):
         get = self.config_manager.get_path
-        if not self._translate_key and (get('ai.polish.enabled') is not True or get('ai.polish.mode') not in ('correct', 'grammar')):
+        if get('ai.translate') != 'he_en' and (get('ai.polish.enabled') is not True or get('ai.polish.mode') not in ('correct', 'grammar')):
             return
         from . import llm
         spec = llm.model_for('polish')
@@ -2620,40 +2645,11 @@ class StateManager:
     def get_active_profile(self) -> Optional[str]:
         return self.profile_manager.get_active()
 
+    # The default for the whole system. Your global settings stay as they are.
     def activate_profile(self, name: str) -> bool:
-        old_whisper = dict(self.config_manager.get_whisper_config())
-
-        if not self.profile_manager.apply(name):
+        if not self.profile_manager.activate(name):
             return False
-
-        new_whisper = self.config_manager.get_whisper_config()
-
-        if new_whisper.get('language') != old_whisper.get('language'):
-            lang = new_whisper.get('language', 'auto')
-            try:
-                self.whisper_engine.language = None if lang == 'auto' else lang
-            except Exception:
-                pass
-
-        if new_whisper.get('task') != old_whisper.get('task'):
-            task = new_whisper.get('task') or 'transcribe'
-            try:
-                self.whisper_engine.task = task if task in ('transcribe', 'translate') else 'transcribe'
-            except Exception:
-                pass
-
-        new_prompt = new_whisper.get('initial_prompt') or ''
-        if new_prompt != (old_whisper.get('initial_prompt') or ''):
-            try:
-                self.whisper_engine.initial_prompt = new_prompt or None
-            except Exception:
-                pass
-
-        if new_whisper.get('model') and new_whisper.get('model') != old_whisper.get('model'):
-            try:
-                self._execute_model_change(new_whisper['model'])
-            except Exception as e:
-                self.logger.error(f"Profile model change failed: {e}")
+        self.profile_layer.use()
 
         # A profile may switch auto-dictation on or off; the tray path bypasses
         # the settings appliers, so apply it here.

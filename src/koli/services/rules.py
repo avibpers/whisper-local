@@ -12,7 +12,7 @@ from .. import defaults_merge as dm
 from .. import profiles as pf
 from ..utils import get_user_app_data_path
 
-RULE_KEYS = ('match', 'window_title', 'auto_send', 'auto_send_delay', 'send_key', 'auto_paste', 'suppress', 'initial_prompt',
+RULE_KEYS = ('match', 'window_title', 'profile', 'auto_send', 'auto_send_delay', 'send_key', 'auto_paste', 'suppress', 'initial_prompt',
              'language', 'task', 'style', 'auto_dictation', 'keep_audio', 'meeting', 'meeting_mic') + ar.FORMATTING_KEYS
 
 
@@ -98,6 +98,11 @@ def matching_rule(rules: list, exe: str, title: str):
 def list_profiles(manager) -> dict:
     view = dm.layered_view(pf.PROFILES_DEFAULTS, _profiles_path(), 'profiles', pf.USER_FILE_HEADER,
                            mapping=True)
+    # The shipped key names every platform ("ctrl+win+y | macos: ..."): the page shows this one's.
+    from ..config_manager import _resolve_platform_values
+    for item in view:
+        if item['entry'].get('hotkey'):
+            item['entry'] = {**item['entry'], 'hotkey': _resolve_platform_values({'hotkey': str(item['entry']['hotkey'])})['hotkey']}
     return {'profiles': view, 'active': manager.get_active() if manager else None}
 
 
@@ -126,22 +131,38 @@ def profile_patch(entry: dict) -> dict:
     return {p: v for p, v in patch.items() if schema.get(p) is not None}
 
 
-def activate_profile(settings, manager, name: str) -> dict:
+# Makes it the default for the whole system. Your global settings stay as they are.
+def activate_profile(manager, layer, name: str) -> dict:
     view = {p['id']: p for p in list_profiles(manager)['profiles']}
     if name not in view:
         raise ValueError(f"No profile named {name}")
-    result = settings.set_many(profile_patch(view[name]['entry']), label=f"Profile: {name}")
     manager.profiles = {k: v['entry'] for k, v in view.items() if not v['disabled']}
-    manager.active = name
-    manager._persist_active()
-    return result
+    manager.activate(name)
+    layer.use()
+    return {'active': name}
 
 
-def save_profile(entry: dict, name: str, original_id: str = None) -> str:
+# A key that already does something else would do both.
+def _check_hotkey_is_free(hotkey: str, name: str, original_id: str = None, koli_keys: dict = None):
+    def same(a, b):
+        return sorted(str(a).lower().replace(' ', '').split('+')) == sorted(str(b).lower().replace(' ', '').split('+'))
+    for setting, keys in (koli_keys or {}).items():
+        if keys and str(setting).endswith(('hotkey', '_key', 'combination')) and same(keys, hotkey):
+            raise ValueError(f"Koli already uses that key ({str(setting).replace('_', ' ')})")
+    for other, entry in dm.load_layered(pf.PROFILES_DEFAULTS, _profiles_path(), 'profiles', pf.USER_FILE_HEADER, mapping=True)[0].items():
+        if other not in (name, original_id) and (entry or {}).get('hotkey') and same(str(entry['hotkey']).split(' | ')[0], hotkey):
+            raise ValueError(f"The profile \"{other}\" already uses that key")
+
+
+def save_profile(entry: dict, name: str, original_id: str = None, koli_keys: dict = None) -> str:
     name = _slug(name).replace('-', '_') if name else ''
     if not name:
         raise ValueError("A profile needs a name")
     clean = {'description': str(entry.get('description', '')), 'overrides': entry.get('overrides') or {}}
+    hotkey = str(entry.get('hotkey') or '').strip()
+    if hotkey:
+        _check_hotkey_is_free(hotkey, name, original_id, koli_keys)
+        clean['hotkey'] = hotkey
     return dm.save_entry(pf.PROFILES_DEFAULTS, _profiles_path(), 'profiles', pf.USER_FILE_HEADER,
                          clean, mapping=True, name=name, original_id=original_id)
 

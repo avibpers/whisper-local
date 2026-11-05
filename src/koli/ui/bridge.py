@@ -1069,7 +1069,7 @@ class Bridge:
     @_api
     def profile_activate(self, name):
         from ..services import rules
-        result = rules.activate_profile(self._settings, self._sm.profile_manager, name)
+        result = rules.activate_profile(self._sm.profile_manager, self._sm.profile_layer, name)
         self._sm.system_tray.refresh_menu()
         publish('profile', {'active': name})
         return result
@@ -1077,12 +1077,15 @@ class Bridge:
     @_api
     def profile_save(self, entry, name, original_id=None):
         from ..services import rules
-        return rules.save_profile(entry, name, original_id)
+        saved = rules.save_profile(entry, name, original_id, self._sm.config_manager.get_hotkey_config())
+        self._sm.profiles_changed()
+        return saved
 
     @_api
     def profile_delete(self, name):
         from ..services import rules
         rules.delete_profile(name)
+        self._sm.profiles_changed()
 
     @_api
     def profile_enable(self, name, enabled):

@@ -18,7 +18,6 @@ _LISTENER_KEYS = {
     'hotkey.recording_hotkey': 'recording_hotkey', 'hotkey.stop_key': 'stop_key',
     'hotkey.auto_send_key': 'auto_send_key', 'hotkey.cancel_combination': 'cancel_combination',
     'hotkey.command_hotkey': 'command_hotkey', 'hotkey.rephrase_hotkey': 'rephrase_hotkey',
-    'hotkey.translate_hotkey': 'translate_hotkey',
     'hotkey.pause_hotkey': 'pause_hotkey', 'hotkey.paste_last_hotkey': 'paste_last_hotkey',
     'hotkey.recording_mode': 'recording_mode', 'hotkey.meeting_hotkey': 'meeting_hotkey',
     'hotkey.meeting_mute_hotkey': 'meeting_mute_hotkey',
@@ -65,7 +64,14 @@ class Appliers:
         budget.on_change(self._budget_changed)
 
     # Apply one changed setting. Returns {'applied': kind, 'task_id': id|None}.
+    # A global change to a setting the active profile overrides waits: the profile
+    # still decides, and the new value takes over when the profile goes.
     def apply(self, path: str, value: Any, old: Any) -> dict:
+        if self.ctx.config_manager.overlay_has(path):
+            return self._live()
+        return self.apply_for_profile(path, value, old)
+
+    def apply_for_profile(self, path: str, value: Any, old: Any) -> dict:
         if path in _READ_ON_USE or path.startswith(('postprocess.', 'ai.')):
             return self._live()
         if path in _LISTENER_KEYS or path.startswith('hotkey.'):

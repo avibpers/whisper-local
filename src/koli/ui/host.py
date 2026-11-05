@@ -259,11 +259,12 @@ class UiHost:
 
         def activate(name):
             from ..services import rules
-            rules.activate_profile(svc, sm.profile_manager, name)
+            rules.activate_profile(sm.profile_manager, sm.profile_layer, name)
             sm.system_tray.refresh_menu()
             publish('profile', {'active': name})
             return True
         sm.activate_profile = activate
+        sm.profile_layer.attach(svc.appliers)
 
         tray = self.ctx.system_tray
         if tray is not None:

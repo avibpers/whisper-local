@@ -77,19 +77,19 @@ class SettingsService:
     # ── Reading ──────────────────────────────────────────────────────────────
 
     def get(self, path: str, default: Any = None) -> Any:
-        return self.cm.get_path(path, default)
+        return self.cm.get_global(path, default)
 
     def has(self, path: str) -> bool:
         if path in _NEEDS_SCREENSHOTS and not _screenshots_available():
             return False
         sentinel = object()
-        return self.cm.get_path(path, sentinel) is not sentinel
+        return self.cm.get_global(path, sentinel) is not sentinel
 
     # The whole config as plain data for the page.
     def snapshot(self) -> dict:
         from ..config_manager import _to_plain
         with self._lock:
-            return copy.deepcopy(_to_plain(self.cm.config))
+            return copy.deepcopy(_to_plain(self.cm.global_config))
 
     def default_of(self, path: str) -> Any:
         node = self.cm._defaults_baseline
@@ -117,7 +117,7 @@ class SettingsService:
         warnings = self._validate(path, value)
 
         with self._lock:
-            old = copy.deepcopy(self.cm.get_path(path))
+            old = copy.deepcopy(self.cm.get_global(path))
             if old == value:
                 return {'ok': True, 'path': path, 'value': value, 'old': old, 'applied': 'unchanged',
                         'task_id': None, 'warnings': warnings}
@@ -156,7 +156,7 @@ class SettingsService:
     def set_many(self, patch: dict, source: str = 'ui', label: str = '') -> dict:
         results, olds = [], []
         for path, value in patch.items():
-            before = copy.deepcopy(self.cm.get_path(path))
+            before = copy.deepcopy(self.cm.get_global(path))
             res = self.set(path, value, source=source, record_undo=False)
             if res.get('applied') != 'unchanged':
                 olds.append((path, before))
@@ -217,16 +217,16 @@ class SettingsService:
                 for other in HOTKEY_PATHS:
                     if other == path:
                         continue
-                    if _norm_hotkey(self.cm.get_path(other)) == keys:
+                    if _norm_hotkey(self.cm.get_global(other)) == keys:
                         other_label = schema.get(other).label
                         if {path, other} == {'hotkey.stop_key', 'hotkey.auto_send_key'}:
                             raise SettingsError(f"Already used by “{other_label}”. Stop and send-with-Enter need different keys.")
                         raise SettingsError(f"Already used by “{other_label}”.")
             elif path == 'hotkey.recording_hotkey':
                 raise SettingsError("The record shortcut can't be empty.")
-        if path == 'vad.vad_offset_threshold' and value > (self.cm.get_path('vad.vad_onset_threshold') or 1):
+        if path == 'vad.vad_offset_threshold' and value > (self.cm.get_global('vad.vad_onset_threshold') or 1):
             warnings.append("“Speech ends at” is higher than “Speech starts at”, so detection may flicker.")
-        if path == 'vad.vad_onset_threshold' and value < (self.cm.get_path('vad.vad_offset_threshold') or 0):
+        if path == 'vad.vad_onset_threshold' and value < (self.cm.get_global('vad.vad_offset_threshold') or 0):
             warnings.append("“Speech starts at” is lower than “Speech ends at”, so detection may flicker.")
         if path == 'audio.noise_suppression.enabled' and value:
             from ..services import system
@@ -275,7 +275,7 @@ class SettingsService:
             setting = schema.get(probe)
         if setting is None:
             return
-        value = self.cm.get_path(setting.path)
+        value = self.cm.get_global(setting.path)
         logger.info(f"Setting changed: {setting.path} -> {_brief(value)} (user_settings.yaml edited)")
         if self.appliers is not None:
             try:

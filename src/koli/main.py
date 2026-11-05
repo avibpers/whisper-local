@@ -436,7 +436,6 @@ def setup_hotkey_listener(hotkey_config, state_manager, voice_commands_enabled=T
         cancel_combination=hotkey_config.get('cancel_combination'),
         command_hotkey=hotkey_config.get('command_hotkey') if voice_commands_enabled else None,
         rephrase_hotkey=hotkey_config.get('rephrase_hotkey'),
-        translate_hotkey=hotkey_config.get('translate_hotkey'),
         pause_hotkey=hotkey_config.get('pause_hotkey'),
         transforms_manager=getattr(state_manager, 'transforms_manager', None),
         recording_mode=hotkey_config.get('recording_mode', 'push_to_talk'),
