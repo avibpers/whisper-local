@@ -52,11 +52,11 @@ Koli is a fork of `drajb/whisper-local` by Rohit Burani (repo `avibpers/whisper-
 | **Secrets** | `platform/*/secrets.py` | Encrypts AI logins and keys (DPAPI on Windows; pass-through on macOS for now) | pywin32 |
 | **Transforms** | `transforms.py` | Wispr-style AI text transforms with the Rewrite model | ruamel.yaml |
 | **Dictionary** | `dictionary.py` | Hotword add/remove/list + add-word dialog | tkinter, ruamel.yaml |
-| **Profiles** | `profiles.py` | Dictation/Chat/Code/Notes/Translate presets | ruamel.yaml |
+| **Profiles** | `profiles.py` | Named settings on top of your global ones, which they never overwrite; one per dictation: the key you hold, else the app's, else the default (design: `docs/design/profiles.md`) | ruamel.yaml |
 | **Per-App Rules** | `app_rules.py` | Foreground-app-specific behaviour overrides | ruamel.yaml |
 | **Layered Defaults** | `defaults_merge.py` | Loads shipped defaults under the user's app_rules/commands/transforms/profiles, and migrates pre-0.21 full copies | ruamel.yaml |
 | **Text Post-Process** | `text_postprocess.py` | Inline formatting, smart formatting, voice editing, corrections, near misses of your words, fillers by language, then the optional AI polish it is handed | re |
-| **Smart Correction** | `smart_correction.py` | A small local model after Whisper, with the language, window, your last dictations there and your words: fixes misheard words and your English grammar (Polish mode), translates Hebrew to English (a key or an app rule), scores whether the sentence makes sense; what you said and every changed word stay with the clip; never makes you wait for a load, a hard time limit, rewrites thrown away; dictation only (design: `docs/design/smart-correction.md`) | llm |
+| **Smart Correction** | `smart_correction.py` | A small local model after Whisper, with the language, window, your last dictations there and your words: fixes misheard words and your English grammar (Polish mode), translates Hebrew to English (a profile's setting), scores whether the sentence makes sense; what you said and every changed word stay with the clip; never makes you wait for a load, a hard time limit, rewrites thrown away; dictation only (design: `docs/design/smart-correction.md`) | llm |
 | **Word Snap** | `word_snap.py` | Near misses of your own words written your way ("Kubernetis" → "Kubernetes"): edit distance plus Soundex over spans of up to three words, after Handy | re |
 | **Dictation Cleanup** | `dictation_cleanup.py` | Backtrack ("actually 3"), stutter removal, spoken lists, lowercase | re |
 | **Snippets** | `snippets.py` | Spoken shortcuts expanded inline during dictation | re |

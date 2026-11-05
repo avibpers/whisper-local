@@ -136,9 +136,9 @@ function ContextCard() {
       ${[['clipboard.auto_paste', 'Auto-paste at cursor'], ['audio.continuous_mode', 'Continuous dictation']].map(([p, l]) => html`
         <label class="row-flex" style="justify-content:space-between"><span>${l}</span>
           <${Toggle} checked=${g(p)} label=${l} onChange=${(v) => saveSetting(p, v)} /></label>`)}
-      <label class="row-flex" style="justify-content:space-between"><span>Translate to English</span>
-        <${Toggle} checked=${g('whisper.task') === 'translate'} label="Translate to English"
-          onChange=${(v) => saveSetting('whisper.task', v ? 'translate' : 'transcribe')} /></label>
+      <label class="row-flex" style="justify-content:space-between"><span>Translate my Hebrew to English</span>
+        <${Toggle} checked=${g('ai.translate') === 'he_en'} label="Translate my Hebrew to English"
+          onChange=${(v) => saveSetting('ai.translate', v ? 'he_en' : 'off')} /></label>
     </div>
   </section>`;
 }

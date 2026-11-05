@@ -1,7 +1,7 @@
 # smart_correction.py
 # What a small AI model does to a dictation right after Whisper: fixes misheard
 # words (ai.polish.mode: correct), also your English grammar (grammar), or translates
-# your Hebrew to English (a key, or an app rule). The model is told the language, the
+# your Hebrew to English (ai.translate, usually from a profile). The model is told the language, the
 # window, what you wrote just before and the names you use. Speed comes first: you
 # never wait for the model to load, the wait has a hard limit, and anything that looks
 # like a rewrite is thrown away. What Whisper heard and every changed word are kept
@@ -208,14 +208,10 @@ def accept_translation(text: str, answer: str) -> str:
     return answer
 
 
-# Whether this dictation gets translated. Only Hebrew to English for now. A rule
-# makes it the normal thing in an app, and the translate key does the opposite of
-# the normal thing, so either kind of message stays one key away.
-def translate_wanted(text: str, rule: Optional[dict] = None, key_held: bool = False) -> bool:
-    wanted = (rule or {}).get('translate') == 'he_en'
-    if key_held:
-        wanted = not wanted
-    return wanted and _mostly_hebrew(text or '')
+# Whether this dictation gets translated: the `ai.translate` setting, usually set by
+# a profile. Only Hebrew to English for now, so English stays English.
+def translate_wanted(text: str, setting: Optional[str]) -> bool:
+    return setting == 'he_en' and _mostly_hebrew(text or '')
 
 
 # ── Keeping the model loaded ─────────────────────────────────────────────────

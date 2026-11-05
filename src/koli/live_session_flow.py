@@ -84,7 +84,8 @@ class LiveWordsFlow:
         except Exception:
             rule = {}
         whisper_cfg = self.sm.config_manager.get_whisper_config() or {}
-        if ((rule.get('task') or whisper_cfg.get('task')) == 'translate' or rule.get('translate')) and mode == 'dictate':
+        translating = (rule.get('task') or whisper_cfg.get('task')) == 'translate' or self.sm.config_manager.get_path('ai.translate') == 'he_en'
+        if translating and mode == 'dictate':
             mode = 'translate'
         language = resolve_languages(whisper_cfg, rule)
         self.choice = choose_engine(cfg, rule, mode=mode, language=language,

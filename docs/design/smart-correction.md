@@ -16,8 +16,7 @@ owner's rule is plain: if it means waiting a few seconds, it isn't wanted.
 |---|---|
 | `ai.polish.mode: correct` | Misheard words are fixed |
 | `ai.polish.mode: grammar` | Also your English: `is` to `are`, tenses, articles, plural. Hebrew gets `correct` only |
-| The translate key (`hotkey.translate_hotkey`) | This dictation's Hebrew is written in English |
-| App rule `translate: he_en` (Apps, "When I speak Hebrew") | Hebrew is always written in English in that app, and the translate key writes it as you said it |
+| `ai.translate: he_en`, usually from a profile (`docs/design/profiles.md`) | Hebrew is written in English: hold the Translate profile's key, set the profile on an app, or make it the default |
 
 English stays English for now. Whisper's own translation isn't used: on 40 of the
 owner's clips `large-v3-turbo` and `hebrew-large-v3` stayed in Hebrew, and only the

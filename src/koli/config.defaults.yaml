@@ -280,10 +280,6 @@ hotkey: # Hotkey Configuration
     # Leave empty to disable.
     rephrase_hotkey: "ctrl+shift+win | macos: ctrl+option+command"
 
-    # Hold to speak Hebrew and write English, with the Polish model (Settings > AI).
-    # In an app whose rule translates, it writes as you said it. Empty to disable.
-    translate_hotkey: "ctrl+win+y | macos: ctrl+option+t"
-
     # Key combination to pause/resume all Koli hotkeys
     # Press once to disable hotkey processing (so you can use the same keys
     # in another app); press again to resume. Leave empty to disable.
@@ -979,6 +975,10 @@ ai: # Language models for polish, rewrites and later features (Settings › AI)
 
     # Seconds a feature waits for an answer, fallbacks included
     timeout: 30
+
+    # Your speech written in another language, with the Polish model: off or he_en.
+    # Usually set in a profile (profiles.yaml). English stays English.
+    translate: 'off'
 
     # Polish every dictation after the offline rules
     polish:

@@ -247,9 +247,12 @@ function SoundControl({ s, value }) {
 }
 
 // The control for one schema entry.
-export function SettingControl({ s }) {
-  const value = useSetting(s.path);
-  const save = (v) => saveSetting(s.path, v).catch(() => {});
+// Bound to the saved setting; with `onChange` it edits `given` instead, for a
+// form that keeps its own values until you press Save (a profile's settings).
+export function SettingControl({ s, given, onChange }) {
+  const stored = useSetting(s.path);
+  const value = onChange ? given : stored;
+  const save = onChange || ((v) => saveSetting(s.path, v).catch(() => {}));
   switch (s.control) {
     case 'toggle': return html`<${Toggle} checked=${value} label=${s.label} onChange=${save} />`;
     case 'segmented': return html`<${Segmented} value=${value} options=${s.choices} label=${s.label} onChange=${save} />`;

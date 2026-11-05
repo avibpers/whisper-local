@@ -223,7 +223,7 @@ function ProfileSelect() {
   const [profiles, setProfiles] = useState([]);
   useEffect(() => { call('profiles_list').then((r) => setProfiles(r.profiles.filter((p) => !p.disabled))).catch(() => {}); }, [profile]);
   if (!profiles.length) return null;
-  return html`<select class="sel" aria-label="Active profile" style="height:38px;border-radius:30px;padding:0 12px" onChange=${(e) => {
+  return html`<select class="sel" aria-label="Default profile" title="The default profile for the whole system" style="height:38px;border-radius:30px;padding:0 12px" onChange=${(e) => {
     const name = e.currentTarget.value;
     call('profile_activate', name).then(() => { app.set({ profile: name }); toast(`Profile: ${name}`); })
       .catch((err) => toast(err.message, { kind: 'err' }));
