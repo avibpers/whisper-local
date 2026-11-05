@@ -37,6 +37,12 @@ to the cloud models in `ai.fallbacks`.
 The warm-up and the calls must send the same `num_ctx`, or Ollama loads the model
 a second time. That cost 17 s in the first test.
 
+## Seeing it work
+
+Each dictation shows what the model got besides its fixed instruction, and what
+became of its answer, on the terminal and in the Live screen's console. Not in
+`app.log`, which stays free of your text unless `logging.log_transcriptions` is on.
+
 ## What is thrown away
 
 The model's answer is written only if it changes words, keeps the alphabet of the

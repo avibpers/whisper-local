@@ -65,6 +65,12 @@ def messages(text: str, language: str = '', terms: Optional[list] = None, app: s
     return [{'role': 'system', 'content': '\n\n'.join(parts)}, {'role': 'user', 'content': text}]
 
 
+# What goes to the model besides the fixed instruction, for the console.
+def describe(sent: list) -> str:
+    context = sent[0]['content'][len(INSTRUCTION):].strip()
+    return f"{context}\n\nDictation: {sent[1]['content']}"
+
+
 # ── Keeping the model honest ─────────────────────────────────────────────────
 
 _HEBREW = re.compile(r'[֐-׿]')
@@ -161,22 +167,36 @@ class Warmer:
 # model that doesn't need one. Returns the corrected text, or '' to keep the
 # dictation as it is, without ever waiting longer than the setting allows.
 def correct(text: str, spec: str, complete: Callable, kind_of: Callable, warmer: Optional[Warmer], language: str = '',
-            terms: Optional[list] = None, app: str = '', title: str = '', before: Optional[list] = None) -> str:
-    if not text or not spec or len(text) > MAX_CHARS:
+            terms: Optional[list] = None, app: str = '', title: str = '', before: Optional[list] = None,
+            show: Callable[[str], None] = lambda message: None) -> str:
+    if not text or not spec:
+        return ''
+    if len(text) > MAX_CHARS:
+        show(f"AI correction not used: {len(text)} characters is over the {MAX_CHARS} limit")
         return ''
     if warmer is not None and not warmer.ready(spec):
         warmer.warm(spec)
         logger.info("Correction skipped: the model is still loading")
+        show('AI correction not used: the model is still loading')
         return ''
     private = kind_of(spec) == 'local'
-    result = complete('polish', messages(text, language, terms, app, title, before, private), json=True,
-                      fallbacks=not private, options=OLLAMA_OPTIONS if warmer is not None else None)
+    sent = messages(text, language, terms, app, title, before, private)
+    show(f"AI correction, what {spec} gets besides its instruction:\n{describe(sent)}")
+    result = complete('polish', sent, json=True, fallbacks=not private, options=OLLAMA_OPTIONS if warmer is not None else None)
     if result.error:
         logger.info(f"Correction skipped: {result.error}")
+        show(f"AI correction not used: {result.error}")
         if warmer is not None:
             warmer.lost(spec)
         return ''
     from .llm import prompts
-    fixed = accept(text, prompts.polish_answer(result.text))
+    answer = prompts.polish_answer(result.text)
+    fixed = accept(text, answer)
     logger.info(f"Correction: {'changed the text' if fixed else 'no change'}")
+    if fixed:
+        show(f"AI correction changed it to: {fixed}")
+    elif _words(answer) == _words(text) or not answer:
+        show('AI correction: no change')
+    else:
+        show(f"AI correction thrown away: {answer}")
     return fixed

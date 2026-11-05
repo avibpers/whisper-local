@@ -2402,7 +2402,18 @@ class StateManager:
         return smart_correction.correct(
             text, spec, llm.complete, llm.kind_of, self._correction_warmer(spec), language=language_name(code) if code else '',
             terms=self._correction_terms(code), app=app, title=title,
-            before=smart_correction.previous_in_window(load_recent_transcripts(), app, title))
+            before=smart_correction.previous_in_window(load_recent_transcripts(), app, title),
+            show=self._show_correction)
+
+    # On the terminal and the Live console, where your words already show.
+    # Never in app.log: it stays free of your text unless you ask for it.
+    def _show_correction(self, message: str):
+        print(f"   🧠 {message}")
+        try:
+            from .ui import log_stream
+            log_stream.show(message, 'smart_correction')
+        except Exception as e:
+            self.logger.debug(f"Live console unavailable: {e}")
 
     def _correction_terms(self, language: str) -> list:
         hotwords = self.config_manager.get_path('whisper.hotwords')

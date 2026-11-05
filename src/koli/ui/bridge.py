@@ -1110,8 +1110,8 @@ class Bridge:
 
     @_api
     def ai_test(self, model):
-        from .. import llm
-        return llm.test(model)
+        from .. import llm, smart_correction
+        return llm.test(model, smart_correction.OLLAMA_OPTIONS if model == llm.model_for('polish') else None)
 
     # A key provider's API key, or LM Studio's optional token. Returns how many
     # models the key can use.
