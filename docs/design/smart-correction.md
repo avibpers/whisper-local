@@ -15,7 +15,7 @@ owner's rule is plain: if it means waiting a few seconds, it isn't wanted.
 | Setting | What happens to a dictation |
 |---|---|
 | `ai.polish.mode: correct` | Misheard words are fixed |
-| `ai.polish.mode: grammar` | Also your English: `is` to `are`, tenses, articles, plural. Hebrew gets `correct` only |
+| `ai.polish.mode: grammar` | Your English grammar only: `is` to `are`, tenses, articles, plural, never a different word. Hebrew gets `correct` |
 | `ai.translate: he_en`, usually from a profile (`docs/design/profiles.md`) | Hebrew is written in English: hold the Translate profile's key, set the profile on an app, or make it the default |
 
 English stays English for now. Whisper's own translation isn't used: on 40 of the
@@ -82,6 +82,13 @@ became of its answer, on the terminal and in the Live screen's console. Not in
 
 ## What is thrown away
 
+Grammar has a check of its own, because the instruction alone didn't hold it: on the
+owner's real dictations `porno` became `promo` and `no messages` became `any messages`.
+`keep_grammar_only` goes through the answer change by change and keeps only what is
+grammar: small words, another form of the same word, words joined or apart, or one of
+your terms that sounds alike. Anything else goes back to what you said, and the clip
+says so (`ai.kept_out`). The cost: real fixes like `roll` to `role` go too.
+
 The model's answer is written only if it changes words, keeps the alphabet of the
 dictation, adds no third alphabet, and changes at most 30% of the words (or 2); 35%
 with grammar, which once made up the end of a sentence. The same words with other
@@ -101,7 +108,8 @@ The same `gemma4:e4b` through this code with the guard and the 1-second limit:
 median 0.21 s, 99% within 0.67 s, worst 0.99 s; changed 17 of 240; closer 9,
 further 4, same 31. With grammar and the score together: median 0.30 s, 99% within
 0.77 s, changed 63 of 120 English dictations. Translation with the score: median
-0.35 s, 99% within 1.1 s. Graphics memory rose by about 4.8 GB by `nvidia-smi`. No
+0.35 s, 99% within 1.1 s. With the careful check, on the dictations since grammar went
+on: 14 of 48 changed against 22 before, median 0.35 s, worst 0.996 s. Graphics memory rose by about 4.8 GB by `nvidia-smi`. No
 measurable GPU load while idle. Reading the whole journal took 149–248 ms, so
 this reads only its end (1 ms).
 

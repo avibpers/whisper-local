@@ -13,8 +13,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
   set it on an app, or make it the default. Uses the small local model, usually 0.35 s.
   If it can't translate, your words are typed and not sent. English stays English.
 - **Your English corrected** (Settings › AI › Polish, What it fixes). The small local
-  model also fixes grammar like "is" for "are". What you really said and every word it
-  changed stay with the clip, so Koli never learns from the AI's words.
+  model fixes grammar like "is" for "are", and a check keeps it from swapping in a
+  different word. What you really said and every word it changed stay with the clip,
+  so Koli never learns from the AI's words.
 - **A score for whether a sentence makes sense**, on the Live console and with each
   clip, for now only to measure it.
 - **Misheard words fixed by a small local model** (Settings › AI › Polish, What

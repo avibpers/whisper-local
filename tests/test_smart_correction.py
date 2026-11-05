@@ -250,6 +250,64 @@ class GrammarTests(unittest.TestCase):
         self.assertEqual(outcome.kind, 'correct')
 
 
+class GrammarOnlyTests(unittest.TestCase):
+    # Real answers from the small model on the owner's dictations, 2026-11-05.
+    def _keep(self, text, answer, terms=None):
+        return sc.keep_grammar_only(text, answer, terms)
+
+    def test_grammar_stays(self):
+        for text, answer in (('why we is going there', 'why we are going there'), ('I update the vault', 'I updated the vault'),
+                             ('we need to damage it', 'we need to damaging it'), ('as you recommending.', 'as you recommended.'),
+                             ('I run it, but it still tells me that it\'s need update', 'I run it, but it still tells me that it needs an update.'),
+                             ('After he will do the merge', 'After he does the merge')):
+            kept, out = self._keep(text, answer)
+            self.assertEqual((kept, out), (answer, []), text)
+
+    def test_words_joined_or_apart_stay(self):
+        self.assertEqual(self._keep('restart builtit now', 'restart built it now')[1], [])
+        self.assertEqual(self._keep('filtered with good sync today', 'filtered with GoodSync today')[1], [])
+
+    def test_a_different_word_goes_back_to_what_you_said(self):
+        kept, out = self._keep('And here is your porno, my man', 'And here is your promo, my man')
+        self.assertEqual(kept, 'And here is your porno, my man')
+        self.assertEqual(out, [{'from': 'porno,', 'to': 'promo,'}])
+
+    def test_a_sentence_that_flips_goes_back(self):
+        text = 'if no one will see no messages today'
+        kept, out = self._keep(text, 'if no one sees any messages today')
+        self.assertIn('no messages', kept)
+        self.assertTrue(out)
+
+    # A change that mixes grammar with new words goes back whole: the safe side.
+    def test_added_meaning_goes_back(self):
+        kept, out = self._keep('we is around and look all the time', 'we are working on it and looking at the machine all the time')
+        self.assertEqual(kept, 'we is around and look all the time')
+        self.assertTrue(out)
+
+    def test_an_answer_about_something_else_is_undone(self):
+        text = 'This is what my CTO wrote to me. Answer him.'
+        self.assertEqual(self._keep(text, 'So we need to do like municipally, that every page we have on file.')[0], text)
+
+    def test_your_own_terms_stay_only_when_they_sound_alike(self):
+        self.assertEqual(self._keep('How gboss works', 'How G-BOSS works', ['G-BOSS'])[1], [])
+        self.assertEqual(self._keep('activate Desk2 command', 'activate Codex command', ['Codex'])[0], 'activate Desk2 command')
+
+    def test_punctuation_changes_stay(self):
+        self.assertEqual(self._keep('yes but why', 'Yes, but why?'), ('Yes, but why?', []))
+
+    def test_the_clip_says_what_was_kept_out(self):
+        outcome = sc.correct('And here is your porno, my man', MODEL, AnsweringLlm('{"text": "And here is your promo, my man"}'),
+                             lambda spec: 'local', ready_warmer(), 'English', grammar=True)
+        self.assertEqual(outcome.text, '')
+        self.assertEqual(outcome.record()['kept_out'], [{'from': 'porno,', 'to': 'promo,'}])
+
+
+class TranslationToneTests(unittest.TestCase):
+    def test_the_model_is_asked_for_everyday_english_and_exact_terms(self):
+        self.assertIn('everyday chat', sc.TRANSLATE_INSTRUCTION)
+        self.assertIn('Keep work terms exact', sc.TRANSLATE_INSTRUCTION)
+
+
 class ScoreTests(unittest.TestCase):
     def test_the_score_is_kept_and_shown_and_changes_nothing_yet(self):
         shown = []
