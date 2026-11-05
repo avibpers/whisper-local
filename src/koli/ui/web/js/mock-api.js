@@ -617,7 +617,9 @@ export function createMock(emit) {
       clips: learningClips, records: learningClips + 40, audio_hours: learningClips ? 6.3 : 0,
       oldest: learningClips ? '2026-09-02T09:14:00' : null, newest: learningClips ? '2026-10-16T11:20:00' : null,
       week: { kept: 96, typed: 81, dropped: 15, said_again: 6, after_drop: 4, hotkey: 70, auto: 26 },
-      by_language: learningClips ? { he: 2130, en: 1290 } : {} }),
+      by_language: learningClips ? { he: 2130, en: 1290 } : {},
+      night: { enabled: true, running: false, waiting: 'in_use', heard: 1204, left: 2216, last_run: '2026-10-16T03:12:00', needs: [],
+        counts: { same: 702, differs: 96, speech: 11, disagree: 314, unsure: 74, noise: 7, wrong_language: 9 } } }),
     learning_recent: (limit = 20, offset = 0, show = 'all') => {
       const rows = learningRecent.filter((c) => show === 'all' || (show === 'typed' && c.outcome === 'typed')
         || (show === 'dropped' && c.outcome.startsWith('dropped')) || (show === 'again' && (c.signals.repeats || c.signals.after_drop)));

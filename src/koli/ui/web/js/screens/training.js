@@ -1,9 +1,10 @@
 // screens/training.js
 // Training: Koli learns your voice from the dictations you already make, with
 // nothing for you to do. This screen is the switch and the disk cap, what is
-// kept and how much space it takes, what Koli noticed this week, the recent
-// clips (play one, or Test how the night model hears it, without learning
-// anything), and the delete buttons. The work happens in learning/ and services/learning.py.
+// kept and how much space it takes, what Koli noticed this week, what the night
+// pass found, the recent clips (play one, or Test how the night model hears it,
+// without learning anything), and the delete buttons. The work happens in
+// learning/ and services/learning.py.
 // Design: docs/design/self-learning.md.
 
 import { html, useEffect, useState } from '../../vendor/preact-htm.module.js';
@@ -14,6 +15,7 @@ import { SettingRow, TaskProgress, settingsBySection, useRunningTasks } from './
 
 const size = (n) => (n ? fmtBytes(n) : '0 MB');
 const fmtDate = (ts) => (ts ? new Date(ts).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) : '—');
+const fmtTime = (ts) => (ts ? new Date(ts).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '');
 const LANGUAGE = { en: 'English', he: 'Hebrew', ar: 'Arabic', '?': 'Unknown' };
 
 // ── The switch and the cap ──────────────────────────────────────────────────
@@ -62,13 +64,45 @@ function Week({ w }) {
   </section>`;
 }
 
+// ── The night pass ──────────────────────────────────────────────────────────
+// Bigger models hear the clips again while nobody uses the PC. Only labels so
+// far: what they agree on will be what Koli learns from in a later update.
+
+const NIGHT_WAIT = {
+  off: 'Off.',
+  battery: 'Waiting for mains power.',
+  busy: 'Waiting for the dictation or meeting to end.',
+  model: 'Waiting for the speech model to be ready on this computer.',
+  in_use: 'Waiting until the PC is locked or left alone for 10 minutes.',
+};
+
+function Night({ n }) {
+  const c = n.counts;
+  const line = n.running ? 'Listening now. It stops the moment you come back.'
+    : n.needs.length ? `Needs these models on this computer: ${n.needs.join(', ')}.`
+    : n.left === 0 && n.heard ? 'Every clip has been heard. New ones wait for the next quiet time.'
+    : NIGHT_WAIT[n.waiting] || 'Starting within a minute.';
+  return html`<section class="card pad stack" aria-labelledby="h-learn-night">
+    <span class="card-title" id="h-learn-night">At night</span>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px">
+      ${[[n.heard.toLocaleString(), `heard, ${n.left.toLocaleString()} left`], [c.same, 'Koli had it right'], [c.differs, 'two models agree on other words'],
+        [c.disagree, 'models disagree: skipped'], [c.speech, 'real speech Koli dropped'], [c.wrong_language, 'in the wrong language']]
+        .map(([v, l]) => html`<div><div class="stat">${v}</div><div class="small muted">${l}</div></div>`)}
+    </div>
+    <p class="small muted" style="margin:0">${line} Nothing is learned from this yet, and your dictation doesn't change.
+      ${n.last_run ? ` Last run: ${fmtTime(n.last_run)}.` : ''}</p>
+  </section>`;
+}
+
 // ── Recent clips: play, and Test with the night model ───────────────────────
 
-const fmtTime = (ts) => (ts ? new Date(ts).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '');
 const KIND = { hotkey: 'hotkey', auto: 'text field', continuous: 'continuous' };
 const VERDICT = {
   same: ['ok', 'The night model heard the same'],
   different: ['warn', 'The night model heard it differently'],
+  differs: ['warn', 'Two models agree on these words, and Koli typed others. Not always better'],
+  disagree: ['', 'The two models disagree, so this clip is skipped'],
+  unsure: ['', 'Not sure enough to count, so this clip is skipped'],
   speech: ['warn', 'Real speech: Koli dropped it'],
   noise: ['ok', 'Noise: dropping it was right'],
 };
@@ -101,8 +135,9 @@ function NightResult({ t }) {
       <span dir=${textDir(t.text)}>${t.words.length ? t.words.map((w, i) => html`${i ? ' ' : ''}${w.changed
         ? html`<mark class="night-diff">${w.text}</mark>` : w.text}`)
         : html`<i class="muted">no words</i>`}</span></div>
+    ${t.other && html`<div class="small"><span class="muted">Other model:</span>${' '}<span dir=${textDir(t.other)}>${t.other}</span></div>`}
     <div class="small" style=${`color:var(--${tone || 'mute'})`}>${label}
-      <span class="muted"> · ${t.model} · ${t.seconds}s · word confidence ${Math.round(t.mean_prob * 100)}%</span></div>
+      <span class="muted"> · ${t.model}${t.seconds != null ? ` · ${t.seconds}s` : ''} · word confidence ${Math.round(t.mean_prob * 100)}%</span></div>
   </div>`;
 }
 
@@ -150,7 +185,7 @@ function RecentClips({ refresh }) {
     <div class="card-head"><div><h2 id="h-learn-recent">Recent clips</h2>
       <p>Play what you said, and press Test to hear it with the night model. Nothing is learned from a test.</p></div>
       <${Segmented} label="Show" value=${show} onChange=${(v) => { setShow(v); setLimit(PAGE); }}
-        options=${[['all', 'All'], ['typed', 'Typed'], ['dropped', 'Dropped'], ['again', 'Said again']]} /></div>
+        options=${[['all', 'All'], ['typed', 'Typed'], ['dropped', 'Dropped'], ['again', 'Said again'], ['night', 'Night found']]} /></div>
     ${data.items.length === 0 ? html`<div class="empty">No clips here yet.</div>`
       : data.items.map((c) => html`<${Clip} key=${c.id} c=${c} playing=${playing === c.id} onPlay=${play} onTested=${tested} />`)}
     ${data.total > data.items.length && html`<div style="padding:10px 18px;border-top:1px solid var(--line)">
@@ -214,7 +249,7 @@ export function TrainingScreen() {
     ${!on && st && st.records === 0 && html`<div class="notice info"><${Icon} name="lock" />
       <span>Off. Nothing is kept until you turn it on. Voice commands, meetings and apps you exclude on the Apps screen are never kept.</span></div>`}
     ${st && html`<div class="grid-cards"><${Storage} st=${st} onOpen=${open} /><${Week} w=${st.week} /></div>
-      <div class="notice info"><${Icon} name="refresh" /><span>Koli is collecting clips now. Re-listening at night and learning from them arrive in the next update; Test below shows how the night model hears a clip today.</span></div>
+      ${st.night && html`<${Night} n=${st.night} />`}
       <${RecentClips} refresh=${`${delivered}:${version}`} />
       <${Delete} onDeleted=${deleted} />`}
   </div>`;

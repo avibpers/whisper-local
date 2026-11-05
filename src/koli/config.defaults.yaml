@@ -329,6 +329,10 @@ learning: # Koli learns your voice from your own dictations
     # Disk space for the clips. When it's full, the clips Koli needs least
     # are deleted first; what it learned from them stays. 0.5 to 20.
     disk_cap_gb: 2
+    # While the PC is locked or untouched for 10 minutes, on mains power, with
+    # no dictation or meeting: two bigger models hear the clips again and mark
+    # the ones they agree on. Stops between clips on any input. Local only.
+    night_pass: true
 
 vad: # Voice Activity Detection (VAD)
     # Voice Activity Detection (VAD) Pre-check
@@ -975,6 +979,11 @@ ai: # Language models for polish, rewrites and later features (Settings › AI)
     # Polish every dictation after the offline rules
     polish:
         enabled: false
+        # punctuation: punctuation and capitals only. correct: misheard words,
+        # with the language, window, your last dictations there and your words
+        # (window and dictations go only to a model on this computer). Over 400
+        # characters isn't sent; while the model loads, the text goes out as is.
+        mode: punctuation
         model: '' # empty = the default model
         timeout: 5
         # The instruction; the dictation is sent as its own message after it,

@@ -218,6 +218,18 @@ class ClipStore:
                 logger.debug(f"Couldn't delete {path.name}: {e}")
 
     # Deletes the audio of these clips; their records stay. Returns how many.
+    # Writes fields onto one clip's record (the night pass's result). False
+    # when the clip is gone: it was deleted while the pass was hearing it.
+    def update(self, clip_id: str, fields: dict) -> bool:
+        with self._lock:
+            records = self._load()
+            for r in records:
+                if r.get('id') == clip_id:
+                    r.update(fields)
+                    self._rewrite(records)
+                    return True
+            return False
+
     def drop_audio(self, ids: Iterable[str]) -> int:
         wanted = set(ids)
         if not wanted:

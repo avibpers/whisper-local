@@ -1,11 +1,11 @@
 # learning/night.py
 # The night model: a bigger, slower Whisper that hears a clip again with a
-# wider search and no prompt, the way the night pass will (phase 2). Today it
-# backs the Training screen's Test button: you see how the night pass would
-# hear one clip, and nothing is saved or learned. Hebrew goes to the Hebrew
-# model, everything else to the official large-v3. The model loads on the
-# first test and unloads after a few quiet minutes, so it never sits in
-# memory next to your dictation model for long.
+# wider search and no prompt. It backs the night pass (night_pass.py) and the
+# Training screen's Test button, which shows how one clip is heard without
+# saving anything. For Test, Hebrew goes to the Hebrew model and everything
+# else to the official large-v3. A model loads on first use and unloads after
+# a few quiet minutes, so it never sits in memory next to your dictation model
+# for long.
 # Design: docs/design/self-learning.md › Phase 2.
 
 import difflib
@@ -54,7 +54,8 @@ class NightModel:
 
     def _live(self):
         engine = self._engine()
-        if engine is None or getattr(engine, 'model', None) is None:
+        # A model unloaded after idle minutes still tells the device and precision.
+        if engine is None or (getattr(engine, 'model', None) is None and not getattr(engine, 'idle_unloaded', False)):
             raise ValueError('The speech model is still loading')
         return engine
 
@@ -65,6 +66,10 @@ class NightModel:
         if registry is None:
             return []
         return [k for k in keys if not registry.is_model_cached(k)]
+
+    def is_missing(self, key: str) -> bool:
+        registry = getattr(self._live(), 'registry', None)
+        return registry is not None and not registry.is_model_cached(key)
 
     # ── Loading ─────────────────────────────────────────────────────────────
 
@@ -77,7 +82,7 @@ class NightModel:
         engine = self._live()
         source = engine._get_model_source(key)
         from faster_whisper import WhisperModel
-        print(f"🌙 Loading the night model [{key}] for a test...")
+        print(f"🌙 Loading the night model [{key}]...")
         model = ENGINE_THREAD.run(WhisperModel, source, device=engine.device,
                                   device_index=engine.device_index if engine.device == 'cuda' else 0,
                                   compute_type=engine.compute_type)
@@ -114,10 +119,14 @@ class NightModel:
         from ..whisper_engine import ENGINE_THREAD
         model = self._model(key)
 
+        # Silences go first, as in a dictation: Whisper invents words in them.
+        from ..whisper_engine import VAD_PARAMETERS
+
         def run():
             segments, info = model.transcribe(audio, beam_size=NIGHT_BEAM, language=language or None,
                                               task='transcribe', condition_on_previous_text=False,
-                                              word_timestamps=True, vad_filter=False)
+                                              word_timestamps=True, vad_filter=True,
+                                              vad_parameters=dict(VAD_PARAMETERS))
             words, texts = [], []
             for s in segments:
                 texts.append(s.text)
@@ -126,6 +135,38 @@ class NightModel:
             return {'text': ''.join(texts).strip(), 'words': words, 'language': info.language,
                     'language_probability': round(float(info.language_probability or 0), 3)}
         return ENGINE_THREAD.run(run)
+
+    # The language of `audio` by the official model, best-scoring among
+    # `allowed` when given; '' when it can't tell.
+    def detect(self, audio, allowed: Optional[list] = None) -> str:
+        from ..whisper_engine import ENGINE_THREAD
+        if len(audio) < 16000:      # too short for a fair guess
+            return ''
+        model = self._model(DEFAULT_TEACHER)
+
+        def run():
+            detected, _probability, scores = model.detect_language(audio, vad_filter=True)
+            if not allowed:
+                return detected
+            listed = {code: score for code, score in (scores or []) if code in allowed}
+            return max(listed, key=listed.get) if listed else ''
+        result = ENGINE_THREAD.run(run)
+        self._mark_used()
+        return result
+
+    # One teacher's hearing of `audio`, with its mean word confidence.
+    def hear_with(self, key: str, audio, language: Optional[str]) -> dict:
+        started = self._clock()
+        result = self._decode(key, audio, language)
+        probs = [w['prob'] for w in result['words']]
+        result.update(model=key, seconds=round(self._clock() - started, 1),
+                      mean_prob=round(sum(probs) / len(probs), 3) if probs else 0.0)
+        self._mark_used()
+        return result
+
+    def _mark_used(self):
+        self._last_used = self._clock()
+        self._schedule_unload()
 
     # How the night pass would hear `audio`. An unknown language is detected
     # by the official model first; Hebrew is then heard again by the Hebrew one.
@@ -139,6 +180,5 @@ class NightModel:
         probs = [w['prob'] for w in result['words']]
         result.update(model=key, seconds=round(self._clock() - started, 1),
                       mean_prob=round(sum(probs) / len(probs), 3) if probs else 0.0)
-        self._last_used = self._clock()
-        self._schedule_unload()
+        self._mark_used()
         return result

@@ -1,9 +1,10 @@
 # services/learning.py
 # The Training screen's view of self-learning: whether clips are kept, how
 # much disk they use against the cap, what happened to the dictations this
-# week, the recent clips (play one, or Test how the night model hears it),
-# and the delete buttons. The recorder (learning/recorder.py) does the
-# keeping; this reads the store, deletes from it and runs Test.
+# week, what the night pass found, the recent clips (play one, or Test how the
+# night model hears it), and the delete buttons. The recorder
+# (learning/recorder.py) does the keeping; this reads the store, deletes from
+# it and runs Test.
 # Design: docs/design/self-learning.md.
 
 import datetime
@@ -50,7 +51,13 @@ class LearningService:
             'newest': max((r['ts'] for r in records if r.get('ts')), default=None),
             'week': self._week_counts(week),
             'by_language': self._languages(with_audio),
+            'night': self._night_status(),
         }
+
+    # What the night pass has heard; None when it isn't running in this app.
+    def _night_status(self) -> Optional[dict]:
+        night_pass = getattr(self.recorder, 'night_pass', None)
+        return night_pass.status() if night_pass is not None else None
 
     @staticmethod
     def _week_counts(week: list) -> dict:
@@ -75,7 +82,8 @@ class LearningService:
     # ── Recent clips (play and test) ────────────────────────────────────────
 
     # Newest first, `limit` at a time from `offset`. `show`: all, typed,
-    # dropped or again (said again, or right after a drop).
+    # dropped, again (said again, or right after a drop) or night (where the
+    # night pass found something other than what was typed).
     def recent(self, limit: int = 20, offset: int = 0, show: str = 'all') -> dict:
         self.recorder.flush()
         rows = [r for r in reversed(self.store.records()) if self._shown(r, show)]
@@ -87,7 +95,8 @@ class LearningService:
         outcome = str(r.get('outcome', ''))
         signals = r.get('signals') or {}
         return {'typed': outcome == 'typed', 'dropped': outcome.startswith('dropped'),
-                'again': bool(signals.get('repeats') or signals.get('after_drop'))}.get(show, True)
+                'again': bool(signals.get('repeats') or signals.get('after_drop')),
+                'night': (r.get('night') or {}).get('verdict') in ('differs', 'speech', 'disagree')}.get(show, True)
 
     def _row(self, r: dict) -> dict:
         return {
@@ -96,8 +105,22 @@ class LearningService:
             'outcome': r.get('outcome', ''), 'why': r.get('why', ''),
             'heard': (r.get('live') or {}).get('text', ''), 'typed': r.get('final_text', ''),
             'signals': r.get('signals') or {}, 'has_audio': bool(r.get('audio')),
-            'test': self._tests.get(r['id']),
+            'test': self._tests.get(r['id']) or self._night_result(r),
         }
+
+    # The night pass's record in the shape the screen shows a Test result in.
+    @staticmethod
+    def _night_result(r: dict) -> Optional[dict]:
+        night = r.get('night')
+        if not night or not night.get('teachers'):
+            return None
+        from ..learning.night import compare
+        first = night['teachers'][0]
+        words, _same = compare(r.get('final_text') or (r.get('live') or {}).get('text', ''), first.get('text', ''))
+        return {'text': first.get('text', ''), 'words': words, 'verdict': night.get('verdict'), 'language': night.get('language'),
+                'model': ' + '.join(t.get('model', '') for t in night['teachers']), 'seconds': night.get('seconds'),
+                'mean_prob': min(float(t.get('mean_prob') or 0) for t in night['teachers']),
+                'other': night['teachers'][1].get('text', '') if night.get('verdict') == 'disagree' and len(night['teachers']) > 1 else ''}
 
     # The clip's audio for the page's player, as a WAV data URL (the file on
     # disk stays FLAC; the window's player can't play FLAC).
