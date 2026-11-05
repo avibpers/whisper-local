@@ -18,6 +18,7 @@ _LISTENER_KEYS = {
     'hotkey.recording_hotkey': 'recording_hotkey', 'hotkey.stop_key': 'stop_key',
     'hotkey.auto_send_key': 'auto_send_key', 'hotkey.cancel_combination': 'cancel_combination',
     'hotkey.command_hotkey': 'command_hotkey', 'hotkey.rephrase_hotkey': 'rephrase_hotkey',
+    'hotkey.translate_hotkey': 'translate_hotkey',
     'hotkey.pause_hotkey': 'pause_hotkey', 'hotkey.paste_last_hotkey': 'paste_last_hotkey',
     'hotkey.recording_mode': 'recording_mode', 'hotkey.meeting_hotkey': 'meeting_hotkey',
     'hotkey.meeting_mute_hotkey': 'meeting_mute_hotkey',

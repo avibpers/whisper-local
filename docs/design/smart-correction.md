@@ -10,6 +10,43 @@ reduce mishearings (`whisper-context` tests, 2026-11-05). A language model can
 read the sentence and choose `role` over `roll`. The price is time, and the
 owner's rule is plain: if it means waiting a few seconds, it isn't wanted.
 
+## What it can do
+
+| Setting | What happens to a dictation |
+|---|---|
+| `ai.polish.mode: correct` | Misheard words are fixed |
+| `ai.polish.mode: grammar` | Also your English: `is` to `are`, tenses, articles, plural. Hebrew gets `correct` only |
+| The translate key (`hotkey.translate_hotkey`) | This dictation's Hebrew is written in English |
+| App rule `translate: he_en` (Apps, "When I speak Hebrew") | Hebrew is always written in English in that app, and the translate key writes it as you said it |
+
+English stays English for now. Whisper's own translation isn't used: on 40 of the
+owner's clips `large-v3-turbo` and `hebrew-large-v3` stayed in Hebrew, and only the
+official `large-v3` translated, badly ("mass calculators" for tax invoices).
+`hebrew-large-v3` with `gemma4:e4b` was clearly better, and also better than the
+Opus-MT translation models, which mangled the owner's terms (merge to "Marge").
+
+## What is kept for learning
+
+The AI must not teach Koli its own words. Every clip keeps `live.text` (what Whisper
+heard, never touched), `final_text` (what was typed) and `ai`: `kind`, `before`,
+`after`, `changes` (`[{"from": "is", "to": "are"}]`), `score`, and `failed` for a
+translation that didn't happen. The journal keeps `heard` and `ai` too, and `language`
+stays the language you spoke, not the one written. Learning reads `live.text`.
+
+## Does the sentence make sense
+
+Next to each correction a second call scores from 1 to 5 how likely it is that a
+person said these words. For now the score is only shown on the consoles and kept
+in `ai.score`; holding a sentence at 2 or below for you to check in the bubble is
+the next step.
+
+On 240 good and 108 broken sentences (the weak `base` model's hearing of the same
+clips): a plain yes or no caught 2 of 108. The 1-to-5 score at 2 or below caught 54
+of 108 (51 of 91 Hebrew, 3 of 17 English) and flagged 4 of 240 good ones, two of
+which really were broken. Asked in the same call as a rewrite it stopped working
+(broken text scored 5), hence the second call; together they take no longer than
+the slower one.
+
 ## What the model gets
 
 The language, the window (app and title), up to 4 earlier dictations from that
@@ -26,6 +63,7 @@ gets the text, the language and your words.
 | No answer within the limit | Your text goes out as it was; a warm-up is started | The limit, once |
 | Model not loaded (10–15 s to load) | Not asked; your text goes out as it was | None |
 | Over 400 characters (2% of dictations) | Not sent, because it wouldn't fit in a second | None |
+| A translation, any length | Gets up to 4 s (872 characters took 2.35 s). If it fails your words are typed and **not sent**, so Hebrew never goes out by accident | Usually 0.35 s |
 | Ollama not running | Not asked after the first failure | None |
 
 A warm-up runs at app start and at every recording start: 5 ms when the model is
@@ -46,8 +84,10 @@ became of its answer, on the terminal and in the Live screen's console. Not in
 ## What is thrown away
 
 The model's answer is written only if it changes words, keeps the alphabet of the
-dictation, adds no third alphabet, and changes at most 30% of the words (or 2).
-The same words with other punctuation count as no change.
+dictation, adds no third alphabet, and changes at most 30% of the words (or 2); 35%
+with grammar, which once made up the end of a sentence. The same words with other
+punctuation count as no change. A translation must be English, about the right
+length, and not an answer about "the dictation".
 
 ## The numbers (RTX 5090, 240 held-out dictations)
 
@@ -60,7 +100,9 @@ The same words with other punctuation count as no change.
 
 The same `gemma4:e4b` through this code with the guard and the 1-second limit:
 median 0.21 s, 99% within 0.67 s, worst 0.99 s; changed 17 of 240; closer 9,
-further 4, same 31. Graphics memory rose by about 4.8 GB by `nvidia-smi`. No
+further 4, same 31. With grammar and the score together: median 0.30 s, 99% within
+0.77 s, changed 63 of 120 English dictations. Translation with the score: median
+0.35 s, 99% within 1.1 s. Graphics memory rose by about 4.8 GB by `nvidia-smi`. No
 measurable GPU load while idle. Reading the whole journal took 149–248 ms, so
 this reads only its end (1 ms).
 

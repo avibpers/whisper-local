@@ -150,6 +150,7 @@ def shortcuts(config: dict, transforms: list) -> list:
         ('Cancel', hk.get('cancel_combination')),
         ('Voice command', hk.get('command_hotkey') if (config.get('voice_commands') or {}).get('enabled', True) else ''),
         ('AI rephrase', hk.get('rephrase_hotkey')),
+        ('Translate', hk.get('translate_hotkey')),
         ('Paste last', hk.get('paste_last_hotkey')),
         ('Pause everything', hk.get('pause_hotkey')),
     ]

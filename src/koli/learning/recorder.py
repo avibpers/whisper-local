@@ -158,6 +158,7 @@ class ClipRecorder:
         else:
             delivery = payload.get('outcome') or ''
             text = payload.get('text') or ''
+            pending['ai'] = payload.get('ai')
             if delivery == 'empty' or not text:
                 self._finish(pending, 'dropped', 'post-processing left nothing', '', delivery)
             elif delivery == 'failed':
@@ -178,6 +179,10 @@ class ClipRecorder:
             'final_text': text, 'signals': self._signals(clip, outcome, text),
             'trust': 'none', 'distilled_at': None,
         })
+        # `live.text` is what you said. `final_text` may be the AI's: learning must
+        # never take its words for yours, so this says exactly what it changed.
+        if pending.get('ai'):
+            clip['ai'] = pending['ai']
         started = clip.pop('started', None)
         self._recent.appendleft({'id': clip['id'], 't': started or self._clock(), 'window': self._window_key(clip),
                                  'outcome': outcome, 'norm': _norm(text)})

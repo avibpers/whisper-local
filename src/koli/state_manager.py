@@ -93,6 +93,7 @@ def _rule_label(rule) -> Optional[str]:
 
 
 class StateManager:
+    _translate_key = False   # the translate key is down for this recording
     # ── Recordings nobody started with a key ─────────────────────────────────
     # Auto-dictation sessions are numbered, and each phrase is tied to the
     # session it was spoken in. Phrases are prepared on their own thread, so
@@ -152,6 +153,7 @@ class StateManager:
         self.recent_transcriptions = collections.deque(maxlen=10)
         self._rephrase_mode = False
         self._rephrase_selection = ''
+        self._translate_key = False
         self._continuous_aborted = False
         # True while the running recording was started by auto-dictation (a text
         # field got focus) rather than a hotkey; see auto_dictation.py.
@@ -426,6 +428,7 @@ class StateManager:
             self._command_mode = False
             self._rephrase_mode = False
             self._rephrase_selection = ''
+            self._translate_key = False
         self._continuous_aborted = True
         self._auto_started = False
         self._hands_free = False
@@ -546,6 +549,19 @@ class StateManager:
         self.system_tray.refresh_menu()  # the tray's Pause/Resume label follows
         self._publish_state(self.get_current_state())
 
+    # The translate key: this dictation does the opposite of what this app normally
+    # does, translated or as you said it.
+    def start_translate_recording(self):
+        self._cancel_pending_send('you started a new dictation')
+        if not self.can_start_recording():
+            return
+        with self._state_lock:
+            self._translate_key = True
+        self.start_recording()
+        if not self.audio_recorder.get_recording_status():
+            with self._state_lock:
+                self._translate_key = False
+
     def start_rephrase_recording(self):
         self._cancel_pending_send('you started a new dictation')
         if not self.can_start_recording():
@@ -603,7 +619,7 @@ class StateManager:
         else:
             # Words while you speak: the engine for this dictation, and the
             # pause that ends each phrase it transcribes.
-            phrase_pause = self.live.prepare('dictate') if self.live is not None else None
+            phrase_pause = self.live.prepare('translate' if self._translate_key else 'dictate') if self.live is not None else None
         success = self.audio_recorder.start_recording(silence_timeout=silence_timeout, phrase_pause=phrase_pause)
 
         if success:
@@ -1464,6 +1480,8 @@ class StateManager:
                 rephrase_selection = self._rephrase_selection
                 self._rephrase_mode = False
                 self._rephrase_selection = ''
+                translate_key = self._translate_key
+                self._translate_key = False
             mode = 'command' if command_mode else ('rephrase' if rephrase_mode and rephrase_selection else 'dictate')
 
             if written is not None:
@@ -1628,7 +1646,11 @@ class StateManager:
             postprocess_cfg = self._with_snap_words(self._with_learned_corrections(postprocess_cfg))
             trace = []
             heard_text = transcribed_text
-            polish = self._ai_polish if self.config_manager.get_path('ai.polish.enabled') is True else None
+            polish_on = self.config_manager.get_path('ai.polish.enabled') is True
+            polish = None
+            if polish_on or translate_key or (rule or {}).get('translate'):
+                polish = lambda text: self._ai_step(text, rule, translate_key, polish_on)
+            self._ai_outcome = None
             if written is None:
                 transcribed_text = postprocess(transcribed_text, postprocess_cfg, trace=trace, polish=polish,
                                                language=info.get('language'))
@@ -1709,6 +1731,12 @@ class StateManager:
                 return
             effective_auto_enter, send_may_wait, send_wait = self._auto_send_plan(
                 use_auto_enter, rule, auto_dictation=auto_session)
+            # A translation that didn't happen is typed for you to see, never sent.
+            ai_outcome = getattr(self, '_ai_outcome', None)
+            ai_record = ai_outcome.record() if ai_outcome is not None else None
+            if ai_outcome is not None and ai_outcome.failed:
+                effective_auto_enter = False
+                self.system_tray.notify('Not translated: your words were typed and not sent.')
             effective_auto_paste = None
             if rule:
                 if 'auto_paste' in rule:
@@ -1754,7 +1782,7 @@ class StateManager:
                 # bubble follows it through the 'auto_send' events.
                 auto_enter=bool(effective_auto_enter and success and not self.clipboard_manager.send_is_pending()),
                 send_pending=bool(effective_auto_enter and success and self.clipboard_manager.send_is_pending()),
-                duration=round(duration, 2))
+                duration=round(duration, 2), ai=ai_record)
             self.logger.info(f"Delivered{' phrase' if phrase else ''}: {'pasted' if delivered_paste else 'copied'}" if success else "Delivery failed")
             if success:
                 self.last_transcription = transcribed_text
@@ -1772,7 +1800,7 @@ class StateManager:
                 )
                 record_transcript(transcribed_text, window=fg, duration_s=duration,
                                   language=(info or {}).get('language') or '', clip_id=clip_id,
-                                  original=(written or {}).get('original') or '', heard=heard_text)
+                                  original=(written or {}).get('original') or '', heard=heard_text, ai=ai_record)
                 audit_enabled = (self.config_manager.config.get('audit') or {}).get('enabled', False)
                 audit_record('delivered', transcribed_text, fg.get('exe', ''), audit_enabled)
                 self._maybe_restart_continuous()
@@ -2378,9 +2406,18 @@ class StateManager:
 
     # The last post-processing step when "Polish every dictation" is on. An
     # empty answer (model down, too slow) keeps the dictation as it was.
+    # What one dictation goes through: a translation if this app or the key asks
+    # for one, otherwise the Polish setting. '' keeps the text as it is.
+    def _ai_step(self, text: str, rule: Optional[dict], translate_key: bool, polish_on: bool) -> str:
+        from . import smart_correction
+        if smart_correction.translate_wanted(text, rule, translate_key):
+            return self._ai_translate(text)
+        return self._ai_polish(text) if polish_on else ''
+
     def _ai_polish(self, text: str) -> str:
-        if self.config_manager.get_path('ai.polish.mode') == 'correct':
-            return self._ai_correct(text)
+        mode = self.config_manager.get_path('ai.polish.mode')
+        if mode in ('correct', 'grammar'):
+            return self._ai_correct(text, grammar=mode == 'grammar')
         from . import llm
         from .llm import prompts
         result = llm.complete('polish', prompts.polish(self.config_manager.get_path('ai.polish.prompt'), text),
@@ -2391,19 +2428,34 @@ class StateManager:
 
     # Misheard words fixed with what Koli knows at this moment: the language,
     # the window, what you wrote there just before, and your words.
-    def _ai_correct(self, text: str) -> str:
+    def _ai_correct(self, text: str, grammar: bool = False) -> str:
         from . import llm, smart_correction
         from .online_stt.audio import language_name
-        from .transcript_log import load_recent_transcripts
         spec = llm.model_for('polish')
         code = (getattr(self.whisper_engine, 'last_info', None) or {}).get('language') or ''
+        outcome = smart_correction.correct(
+            text, spec, llm.complete, llm.kind_of, self._correction_warmer(spec), language=language_name(code) if code else '',
+            terms=self._correction_terms(code), show=self._show_correction, grammar=grammar, **self._correction_window())
+        self._ai_outcome = outcome
+        return outcome.text
+
+    def _ai_translate(self, text: str) -> str:
+        from . import llm, smart_correction
+        spec = llm.model_for('polish')
+        code = (getattr(self.whisper_engine, 'last_info', None) or {}).get('language') or ''
+        outcome = smart_correction.translate(
+            text, spec, llm.complete, llm.kind_of, self._correction_warmer(spec), terms=self._correction_terms(code),
+            show=self._show_correction, **self._correction_window())
+        self._ai_outcome = outcome
+        return outcome.text
+
+    # The window this dictation goes to, and what you wrote there just before.
+    def _correction_window(self) -> dict:
+        from . import smart_correction
+        from .transcript_log import load_recent_transcripts
         window = foreground.get_foreground_app() or {}
         app, title = window.get('exe', ''), window.get('title', '')
-        return smart_correction.correct(
-            text, spec, llm.complete, llm.kind_of, self._correction_warmer(spec), language=language_name(code) if code else '',
-            terms=self._correction_terms(code), app=app, title=title,
-            before=smart_correction.previous_in_window(load_recent_transcripts(), app, title),
-            show=self._show_correction)
+        return {'app': app, 'title': title, 'before': smart_correction.previous_in_window(load_recent_transcripts(), app, title)}
 
     # On the terminal and the Live console, where your words already show.
     # Never in app.log: it stays free of your text unless you ask for it.
@@ -2442,7 +2494,7 @@ class StateManager:
     # you stop speaking. Costs 5 ms when it already is.
     def _warm_correction(self):
         get = self.config_manager.get_path
-        if get('ai.polish.enabled') is not True or get('ai.polish.mode') != 'correct':
+        if not self._translate_key and (get('ai.polish.enabled') is not True or get('ai.polish.mode') not in ('correct', 'grammar')):
             return
         from . import llm
         spec = llm.model_for('polish')
