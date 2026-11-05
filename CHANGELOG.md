@@ -5,6 +5,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 ## [Unreleased]
 
 ### Added
+- **Speak Hebrew, write English.** Hold the new Translate key (Settings › Hotkeys,
+  Ctrl+Win+Y) anywhere, or set an app to always do it (Apps, "When I speak Hebrew");
+  there the key writes as you said it. Uses the small local model, usually 0.35 s. If
+  it can't translate, your words are typed and not sent. English stays English.
+- **Your English corrected** (Settings › AI › Polish, What it fixes). The small local
+  model also fixes grammar like "is" for "are". What you really said and every word it
+  changed stay with the clip, so Koli never learns from the AI's words.
+- **A score for whether a sentence makes sense**, on the Live console and with each
+  clip, for now only to measure it.
 - **Misheard words fixed by a small local model** (Settings › AI › Polish, What
   it fixes). After Whisper, a model on this computer gets the language, the window,
   your last dictations there and your favored words, and fixes words like "roll"
@@ -63,6 +72,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
   chat's language when unsure" turns it off (`docs/design/chat-language.md`).
 
 ### Fixed
+- **The Dictation and Notes profiles replaced your speech model with `base`,** and
+  your Hebrew came out as nonsense. No shipped profile changes the model now.
 - **Word Snap wrote wrong words once a name was in your favored words.** "I can't"
   became "iCount", "So all" became "Soul", "Google cloud" became "Google Claude",
   and "a Gantt" lost its "a". Short words no longer join a match, common words stay

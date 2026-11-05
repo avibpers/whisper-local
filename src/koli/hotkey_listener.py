@@ -19,7 +19,7 @@ class HotkeyListener:
                  recording_mode: str = "push_to_talk", paste_last_hotkey: str = None,
                  double_tap_to_lock: bool = False, double_tap_window_ms: int = 400,
                  meeting_hotkey: str = None, meeting_mute_hotkey: str = None,
-                 meeting_screenshot_hotkey: str = None):
+                 meeting_screenshot_hotkey: str = None, translate_hotkey: str = None):
         self.state_manager = state_manager
         self.recording_hotkey = recording_hotkey
         self.stop_key = stop_key
@@ -27,6 +27,7 @@ class HotkeyListener:
         self.cancel_combination = cancel_combination
         self.command_hotkey = command_hotkey
         self.rephrase_hotkey = rephrase_hotkey
+        self.translate_hotkey = translate_hotkey
         self.pause_hotkey = pause_hotkey
         self.transforms_manager = transforms_manager
         self.recording_mode = recording_mode
@@ -126,6 +127,14 @@ class HotkeyListener:
                 'callback': self._rephrase_hotkey_pressed,
                 'release_callback': self._rephrase_hotkey_released,
                 'name': 'rephrase (push-to-talk)'
+            })
+
+        if self.translate_hotkey:
+            hotkey_configs.append({
+                'combination': self.translate_hotkey,
+                'callback': self._translate_hotkey_pressed,
+                'release_callback': self._translate_hotkey_released,
+                'name': 'translate (push-to-talk)'
             })
 
         # Fires on press: the macOS backend only reports releases for
@@ -325,6 +334,16 @@ class HotkeyListener:
         self.keys_armed = False
         self.state_manager.start_command_recording()
 
+    def _translate_hotkey_pressed(self):
+        self.logger.info(f"Translate hotkey pressed: {self.translate_hotkey}")
+        self.keys_armed = False
+        self.state_manager.start_translate_recording()
+
+    def _translate_hotkey_released(self):
+        self.logger.info("Translate hotkey released")
+        self.keys_armed = True
+        self.state_manager.stop_recording()
+
     def _rephrase_hotkey_pressed(self):
         self.logger.info(f"Rephrase hotkey pressed: {self.rephrase_hotkey}")
         self.keys_armed = False
@@ -412,7 +431,7 @@ class HotkeyListener:
             self.logger.error(f"Error stopping hotkey listener: {e}")
 
     def change_hotkey_config(self, setting: str, value):
-        valid_settings = ['recording_hotkey', 'stop_key', 'auto_send_key', 'cancel_combination', 'command_hotkey', 'rephrase_hotkey', 'pause_hotkey', 'paste_last_hotkey', 'meeting_hotkey', 'meeting_mute_hotkey', 'meeting_screenshot_hotkey', 'recording_mode']
+        valid_settings = ['recording_hotkey', 'stop_key', 'auto_send_key', 'cancel_combination', 'command_hotkey', 'rephrase_hotkey', 'translate_hotkey', 'pause_hotkey', 'paste_last_hotkey', 'meeting_hotkey', 'meeting_mute_hotkey', 'meeting_screenshot_hotkey', 'recording_mode']
 
         if setting not in valid_settings:
             raise ValueError(f"Invalid setting '{setting}'. Valid options: {valid_settings}")

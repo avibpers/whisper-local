@@ -284,6 +284,9 @@ SCHEMA = [
     _S('hotkey.command_hotkey', 'Voice command', 'hotkeys', 'hotkey', nullable=True),
     _S('hotkey.rephrase_hotkey', 'AI rephrase selection', 'hotkeys', 'hotkey', nullable=True,
        help='Needs a model in Settings › AI.'),
+    _S('hotkey.translate_hotkey', 'Translate', 'hotkeys', 'hotkey', nullable=True,
+       help='Hold it to speak Hebrew and write English. In an app that always translates, it writes as you said it. '
+       'Uses the Polish model (Settings > AI).'),
     _S('hotkey.pause_hotkey', 'Pause all hotkeys', 'hotkeys', 'hotkey', nullable=True),
     _S('hotkey.paste_last_hotkey', 'Paste last dictation', 'hotkeys', 'hotkey', nullable=True),
     _S('hotkey.meeting_hotkey', 'Start or end a meeting', 'hotkeys', 'hotkey', nullable=True),
@@ -391,7 +394,8 @@ SCHEMA = [
     _S('ai.polish.enabled', 'Polish every dictation', 'ai', 'toggle', group='Polish',
        help='Runs after the offline rules, on dictation only. Meetings are never sent.'),
     _S('ai.polish.mode', 'What it fixes', 'ai', 'select', group='Polish',
-       choices=[['punctuation', 'Punctuation and capitals'], ['correct', 'Misheard words, using the context']],
+       choices=[['punctuation', 'Punctuation and capitals'], ['correct', 'Misheard words, using the context'],
+                ['grammar', 'Misheard words and my English grammar']],
        help='Misheard words: the model is told the language, the window, what you wrote there just before and your '
        'favored words. Those go only to a model on this computer. A dictation over 400 characters is not sent, and '
        'while the model loads your text goes out without it.'),

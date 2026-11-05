@@ -115,8 +115,8 @@ class CorrectTests(unittest.TestCase):
 
     def test_a_ready_model_corrects(self):
         llm = FakeLlm()
-        self.assertEqual(sc.correct('check the roll', MODEL, llm, self.local, ready_warmer(), 'English'), 'check the role')
-        self.assertEqual(llm.calls[0][0], 'polish')
+        self.assertEqual(sc.correct('check the roll', MODEL, llm, self.local, ready_warmer(), 'English').text, 'check the role')
+        self.assertIn('polish', [call[0] for call in llm.calls])
 
     def test_a_local_model_never_falls_back_to_the_cloud(self):
         llm = FakeLlm()
@@ -127,7 +127,7 @@ class CorrectTests(unittest.TestCase):
         llm = FakeLlm()
         warmed = []
         warmer = sc.Warmer(lambda spec, options: warmed.append((spec, options)))
-        self.assertEqual(sc.correct('check the roll', MODEL, llm, self.local, warmer), '')
+        self.assertEqual(sc.correct('check the roll', MODEL, llm, self.local, warmer).text, '')
         self.assertEqual(llm.calls, [])       # the model wasn't asked at all
         for thread in threading.enumerate():
             if thread.name == 'correction-warm-up':
@@ -136,13 +136,13 @@ class CorrectTests(unittest.TestCase):
 
     def test_a_long_dictation_is_not_sent(self):
         llm = FakeLlm()
-        self.assertEqual(sc.correct('word ' * 100, MODEL, llm, self.local, ready_warmer()), '')
+        self.assertEqual(sc.correct('word ' * 100, MODEL, llm, self.local, ready_warmer()).text, '')
         self.assertEqual(llm.calls, [])
 
     def test_no_answer_in_time_keeps_the_dictation_and_marks_the_model_lost(self):
         warmer = ready_warmer()
         warmer._warm_model = lambda spec, options: threading.Event().wait(0.3)
-        self.assertEqual(sc.correct('check the roll', MODEL, FakeLlm(text='', error='No answer within 1 seconds'), self.local, warmer), '')
+        self.assertEqual(sc.correct('check the roll', MODEL, FakeLlm(text='', error='No answer within 1 seconds'), self.local, warmer).text, '')
         self.assertFalse(warmer.ready(MODEL))
 
     def test_the_warm_up_sends_the_options_the_calls_use(self):
@@ -199,6 +199,221 @@ class TestButtonTests(unittest.TestCase):
         with mock.patch.object(llm, 'complete', return_value=SimpleNamespace(ok=True, text='pong', error='')) as run:
             llm.test(MODEL, sc.OLLAMA_OPTIONS)
             self.assertIs(run.call_args.kwargs['options'], sc.OLLAMA_OPTIONS)
+
+
+class AnsweringLlm(FakeLlm):
+    # A different answer for the correction and for the score, like the real calls.
+    def __init__(self, text='{"text": "check the role"}', score='{"score": 4}', error=''):
+        super().__init__(text, error)
+        self.score = score
+
+    def __call__(self, feature, messages, **kw):
+        self.calls.append((feature, messages, kw))
+        if feature == 'polish_score':
+            return SimpleNamespace(text=self.score, error='')
+        return SimpleNamespace(text=self.text, error=self.error)
+
+
+class GrammarTests(unittest.TestCase):
+    def _run(self, text, answer, **kw):
+        return sc.correct(text, MODEL, AnsweringLlm(answer), lambda spec: 'local', ready_warmer(), 'English', grammar=True, **kw)
+
+    def test_it_fixes_the_english_and_says_which_words(self):
+        outcome = self._run('why we is going there now', '{"text": "why we are going there now"}')
+        self.assertEqual(outcome.text, 'why we are going there now')
+        self.assertEqual(outcome.kind, 'grammar')
+        self.assertEqual(outcome.changes, [{'from': 'is', 'to': 'are'}])
+
+    def test_what_you_said_is_kept_with_what_changed(self):
+        outcome = self._run('why we is going there now', '{"text": "why we are going there now"}')
+        self.assertEqual(outcome.record(), {'kind': 'grammar', 'before': 'why we is going there now', 'after': 'why we are going there now',
+                                            'changes': [{'from': 'is', 'to': 'are'}], 'score': 4})
+
+    def test_an_invented_ending_is_thrown_away(self):
+        # A real answer on 2026-11-05: the rest of the sentence was made up.
+        text = 'Also those need to be click a bell to rush the animation to see results'
+        answer = '{"text": "Also, those need to be clickable, so the user will not need to wait to see all the steps."}'
+        outcome = self._run(text, answer)
+        self.assertEqual(outcome.text, '')
+        self.assertEqual(outcome.changes, [])
+
+    def test_hebrew_is_never_given_the_grammar_rewrite(self):
+        llm = AnsweringLlm('{"text": "נו כבר לעשות merge עכשיו"}')
+        outcome = sc.correct('נו כבר לעשות מרד עכשיו', MODEL, llm, lambda spec: 'local', ready_warmer(), 'Hebrew', grammar=True)
+        self.assertEqual(outcome.kind, 'correct')
+        system = next(call[1][0]['content'] for call in llm.calls if call[0] == 'polish')
+        self.assertTrue(system.startswith(sc.INSTRUCTION))
+
+    def test_without_the_mode_english_keeps_its_grammar_rule_out(self):
+        llm = AnsweringLlm()
+        outcome = sc.correct('check the roll', MODEL, llm, lambda spec: 'local', ready_warmer(), 'English')
+        self.assertEqual(outcome.kind, 'correct')
+
+
+class ScoreTests(unittest.TestCase):
+    def test_the_score_is_kept_and_shown_and_changes_nothing_yet(self):
+        shown = []
+        llm = AnsweringLlm('{"text": "All accounts that work him"}', score='{"score": 2}')
+        outcome = sc.correct('All accounts that work him', MODEL, llm, lambda spec: 'local', ready_warmer(), 'English', show=shown.append)
+        self.assertEqual(outcome.score, 2)
+        self.assertEqual(outcome.text, '')
+        self.assertTrue(any('Makes sense: 2/5' in line and 'held' in line for line in shown))
+
+    def test_a_score_that_makes_no_sense_is_ignored(self):
+        for bad in ('{"score": 9}', '{"score": "high"}', 'not json', '{}'):
+            outcome = sc.correct('check the roll', MODEL, AnsweringLlm(score=bad), lambda spec: 'local', ready_warmer(), 'English')
+            self.assertIsNone(outcome.score, bad)
+
+    def test_it_asks_with_the_same_options_and_never_the_cloud(self):
+        llm = AnsweringLlm()
+        sc.correct('check the roll', MODEL, llm, lambda spec: 'local', ready_warmer(), 'English')
+        score_call = next(call for call in llm.calls if call[0] == 'polish_score')
+        self.assertIs(score_call[2]['options'], sc.OLLAMA_OPTIONS)
+        self.assertIs(score_call[2]['fallbacks'], False)
+        self.assertEqual(score_call[2]['model'], MODEL)
+
+    def test_a_cloud_model_scores_without_what_you_wrote_before(self):
+        llm = AnsweringLlm()
+        sc.correct('check the roll', 'openai/x', llm, lambda spec: 'cloud', None, 'English', before=['my last message'])
+        score_call = next(call for call in llm.calls if call[0] == 'polish_score')
+        self.assertNotIn('my last message', score_call[1][0]['content'])
+
+
+class TranslateWantedTests(unittest.TestCase):
+    HEBREW = 'מה קורה אחי הכל טוב'
+    DISCORD = {'translate': 'he_en'}
+
+    def test_the_key_translates_hebrew_anywhere(self):
+        self.assertTrue(sc.translate_wanted(self.HEBREW, None, key_held=True))
+
+    def test_an_app_rule_translates_hebrew_without_the_key(self):
+        self.assertTrue(sc.translate_wanted(self.HEBREW, self.DISCORD))
+
+    def test_in_a_translating_app_the_key_writes_as_you_said_it(self):
+        self.assertFalse(sc.translate_wanted(self.HEBREW, self.DISCORD, key_held=True))
+
+    def test_nothing_asked_means_no_translation(self):
+        self.assertFalse(sc.translate_wanted(self.HEBREW, None))
+        self.assertFalse(sc.translate_wanted(self.HEBREW, {'style': 'casual'}))
+
+    def test_english_stays_english(self):
+        self.assertFalse(sc.translate_wanted('how are you doing', self.DISCORD))
+        self.assertFalse(sc.translate_wanted('how are you doing', None, key_held=True))
+
+
+class TranslateTests(unittest.TestCase):
+    HEBREW = 'על משימות בגמבו מייל'
+    local = staticmethod(lambda spec: 'local')
+
+    def test_it_writes_the_english(self):
+        outcome = sc.translate(self.HEBREW, MODEL, AnsweringLlm('{"text": "On tasks in JumboMail."}'), self.local, ready_warmer())
+        self.assertEqual(outcome.text, 'On tasks in JumboMail.')
+        self.assertFalse(outcome.failed)
+        self.assertEqual(outcome.record()['before'], self.HEBREW)
+
+    def test_it_gets_a_longer_limit_than_a_correction(self):
+        llm = AnsweringLlm('{"text": "On tasks in JumboMail."}')
+        sc.translate(self.HEBREW, MODEL, llm, self.local, ready_warmer())
+        call = next(c for c in llm.calls if c[0] == 'polish')
+        self.assertEqual(call[2]['timeout'], sc.TRANSLATE_TIMEOUT)
+
+    def test_a_model_still_loading_means_not_translated_and_no_wait(self):
+        llm = AnsweringLlm()
+        outcome = sc.translate(self.HEBREW, MODEL, llm, self.local, sc.Warmer(lambda spec, options: None))
+        self.assertTrue(outcome.failed)
+        self.assertEqual((outcome.text, llm.calls), ('', []))
+
+    def test_no_answer_in_time_means_not_translated(self):
+        warmer = ready_warmer()
+        outcome = sc.translate(self.HEBREW, MODEL, AnsweringLlm('', error='timed out'), self.local, warmer)
+        self.assertTrue(outcome.failed)
+        self.assertEqual(outcome.text, '')
+
+    def test_an_answer_that_is_not_a_translation_is_thrown_away(self):
+        # A real answer on 2026-11-05 to a dictated "Answer in English please".
+        for answer in ('Please provide the dictation you would like me to translate.', 'עדיין בעברית לגמרי', 'word ' * 60):
+            self.assertEqual(sc.accept_translation(self.HEBREW, answer), '', answer)
+
+    def test_a_good_translation_is_kept_even_though_every_word_changed(self):
+        self.assertEqual(sc.accept_translation(self.HEBREW, 'On tasks in JumboMail.'), 'On tasks in JumboMail.')
+
+    def test_a_long_dictation_is_still_translated(self):
+        outcome = sc.translate('מילה ' * 120, MODEL, AnsweringLlm('{"text": "' + 'word ' * 100 + '"}'), self.local, ready_warmer())
+        self.assertFalse(outcome.failed)
+
+
+class PipelineStepTests(unittest.TestCase):
+    def _manager(self, settings):
+        from unittest import mock
+        from koli.state_manager import StateManager
+        sm = StateManager.__new__(StateManager)
+        sm.logger = mock.Mock()
+        sm.config_manager = mock.Mock()
+        sm.config_manager.get_path = lambda path: settings.get(path)
+        sm.config_manager.get_postprocess_config = lambda: {}
+        sm.whisper_engine = mock.Mock(last_info={'language': 'he'})
+        return sm
+
+    def test_a_translation_runs_even_with_polish_off(self):
+        from unittest import mock
+        sm = self._manager({})
+        with mock.patch.object(type(sm), '_ai_translate', return_value='English') as run:
+            self.assertEqual(sm._ai_step('מה קורה אחי', {'translate': 'he_en'}, False, False), 'English')
+            run.assert_called_once()
+
+    def test_nothing_runs_when_nothing_is_on(self):
+        sm = self._manager({})
+        self.assertEqual(sm._ai_step('מה קורה אחי', None, False, False), '')
+
+    def test_grammar_mode_asks_for_grammar(self):
+        from unittest import mock
+        sm = self._manager({'ai.polish.mode': 'grammar'})
+        with mock.patch.object(type(sm), '_ai_correct', return_value='') as run:
+            sm._ai_step('how is you', None, False, True)
+            self.assertIs(run.call_args.kwargs['grammar'], True)
+
+
+class KeptForLearningTests(unittest.TestCase):
+    def test_the_clip_keeps_what_you_said_and_what_the_ai_changed(self):
+        import tempfile
+        from koli.learning.clips import ClipStore
+        from koli.learning.recorder import ClipRecorder
+        import numpy as np
+        ai = {'kind': 'grammar', 'before': 'we is', 'after': 'we are', 'changes': [{'from': 'is', 'to': 'are'}]}
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        config = SimpleNamespace(config={'learning': {'enabled': True, 'disk_cap_gb': 2}})
+        recorder = ClipRecorder(config, None, store=ClipStore(Path(folder.name)))
+        recorder.begin(np.ones(16000, dtype=np.float32) * 0.1, kind='hotkey', mode='dictate', mic='m')
+        recorder.on_event('pipeline', {'stage': 'transcribed', 'raw': 'we is', 'info': {'language': 'en'}})
+        recorder.on_event('pipeline', {'stage': 'delivered', 'outcome': 'pasted', 'text': 'we are', 'ai': ai})
+        recorder.flush()
+        clip = recorder.store.records()[-1]
+        self.assertEqual(clip['live']['text'], 'we is')
+        self.assertEqual(clip['final_text'], 'we are')
+        self.assertEqual(clip['ai'], ai)
+
+    def test_the_journal_keeps_them_too(self):
+        import json
+        import tempfile
+        from unittest import mock
+        from koli import transcript_log
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        ai = {'kind': 'translate', 'before': 'מה קורה', 'after': "What's up"}
+        with mock.patch.object(transcript_log, 'get_user_app_data_path', return_value=folder.name):
+            transcript_log.record_transcript("What's up", heard='מה קורה', language='he', ai=ai)
+            entry = transcript_log.load_recent_transcripts()[-1]
+        self.assertEqual((entry['heard'], entry['ai']['kind'], entry['language']), ('מה קורה', 'translate', 'he'))
+
+
+class ProfileTests(unittest.TestCase):
+    def test_no_shipped_profile_changes_your_speech_model(self):
+        from ruamel.yaml import YAML
+        path = ROOT / 'src' / 'koli' / 'profiles.defaults.yaml'
+        profiles = YAML().load(path.read_text(encoding='utf-8'))['profiles']
+        for name, profile in profiles.items():
+            self.assertNotIn('model', (profile.get('overrides') or {}).get('whisper') or {}, name)
 
 
 class WarmerTests(unittest.TestCase):

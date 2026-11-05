@@ -20,7 +20,6 @@ profiles:
         auto_paste: true
         delivery_method: paste
       whisper:
-        model: base
         task: transcribe
         initial_prompt: ""
       voice_commands:
@@ -56,7 +55,6 @@ profiles:
       clipboard:
         auto_paste: false
       whisper:
-        model: base
         task: transcribe
         initial_prompt: ""
       voice_commands:

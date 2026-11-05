@@ -280,6 +280,10 @@ hotkey: # Hotkey Configuration
     # Leave empty to disable.
     rephrase_hotkey: "ctrl+shift+win | macos: ctrl+option+command"
 
+    # Hold to speak Hebrew and write English, with the Polish model (Settings > AI).
+    # In an app whose rule translates, it writes as you said it. Empty to disable.
+    translate_hotkey: "ctrl+win+y | macos: ctrl+option+t"
+
     # Key combination to pause/resume all Koli hotkeys
     # Press once to disable hotkey processing (so you can use the same keys
     # in another app); press again to resume. Leave empty to disable.
@@ -979,7 +983,8 @@ ai: # Language models for polish, rewrites and later features (Settings › AI)
     # Polish every dictation after the offline rules
     polish:
         enabled: false
-        # punctuation: punctuation and capitals only. correct: misheard words,
+        # punctuation: punctuation and capitals only. grammar: correct, and also
+        # your English grammar (what you said stays with the clip). correct: misheard words,
         # with the language, window, your last dictations there and your words
         # (window and dictations go only to a model on this computer). Over 400
         # characters isn't sent; while the model loads, the text goes out as is.

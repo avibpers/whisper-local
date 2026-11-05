@@ -44,7 +44,7 @@ _write_lock = threading.Lock()
 # changed it, so a mangled polish can be undone from History.
 def record_transcript(text: str, window: dict | None = None, duration_s: float = 0.0,
                       language: str = '', clip_id: str | None = None, original: str = '',
-                      cancelled: bool = False, heard: str = ''):
+                      cancelled: bool = False, heard: str = '', ai: dict | None = None):
     if not text:
         return
     window = window or {}
@@ -65,6 +65,8 @@ def record_transcript(text: str, window: dict | None = None, duration_s: float =
         entry['cancelled'] = True
     if heard and heard.strip() != text.strip():
         entry['heard'] = heard
+    if ai:
+        entry['ai'] = ai        # what the AI did (smart_correction): `heard` stays what you said
     # Window identity — only what this platform reports (macOS has no window id,
     # and its "title" is the app name until a per-window probe exists).
     if window.get('title'):
