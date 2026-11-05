@@ -3755,10 +3755,8 @@ class LayeredDefaultsTests(unittest.TestCase):
             'rules:\n'
             '  - match: ["slack.exe", "discord.exe", "telegram.exe", "whatsapp.exe", "Slack", "Discord"]\n'
             '    auto_send: true\n'
-            '    initial_prompt: "Casual chat message. Conversational tone."\n'
             '  - match: ["code.exe", "cursor.exe", "windsurf.exe", "rider64.exe", "pycharm64.exe", "idea64.exe"]\n'
             '    auto_paste: false\n'
-            '    initial_prompt: "Programming context. Identifiers, snake_case, camelCase, file paths, regex."\n'
             '  - match: ["mytool.exe"]\n'
             '    suppress: true\n'))
 
@@ -3835,14 +3833,28 @@ class LayeredDefaultsTests(unittest.TestCase):
         self._write('app_rules.yaml', (
             'rules:\n'
             '  - match: ["outlook.exe", "thunderbird.exe", "Mail"]\n'
-            '    style: casual\n'
-            '    initial_prompt: "Professional email body. Polite, clear sentences."\n'))
+            '    style: casual\n'))
         rules = self._load_rules()
         self.assertEqual(self._read('app_rules.yaml')['rules'],
                          [{'id': 'email-clients', 'style': 'casual'}])
         email = next(r for r in rules if r.get('id') == 'email-clients')
         self.assertEqual(email['style'], 'casual')
         self.assertEqual(email['match'], ['outlook.exe', 'thunderbird.exe', 'Mail'])
+
+    # Whisper can't follow instructions: a "Friendly tone." prompt changed
+    # nothing in the 2026-11-05 test, and on quiet clips it was typed as text.
+    def test_shipped_rules_and_profiles_carry_no_instruction_prompt(self):
+        from ruamel.yaml import YAML
+        import koli
+        package = Path(koli.__file__).parent
+        with open(package / 'app_rules.defaults.yaml', encoding='utf-8') as f:
+            rules = YAML().load(f)['rules']
+        self.assertEqual([r.get('id') for r in rules if r.get('initial_prompt')], [])
+        with open(package / 'profiles.defaults.yaml', encoding='utf-8') as f:
+            profiles = YAML().load(f)['profiles']
+        prompts = {name: (p.get('overrides', {}).get('whisper') or {}).get('initial_prompt')
+                   for name, p in profiles.items()}
+        self.assertEqual([name for name, prompt in prompts.items() if prompt], [])
 
     def test_user_rules_are_matched_before_shipped_rules(self):
         self._write('app_rules.yaml',

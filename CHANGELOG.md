@@ -5,6 +5,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 ## [Unreleased]
 
 ### Added
+- **Misheard words fixed by a small local model** (Settings › AI › Polish, What
+  it fixes). After Whisper, a model on this computer gets the language, the window,
+  your last dictations there and your favored words, and fixes words like "roll"
+  for "role". It adds about 0.2 s, 1 s at most, you never wait for it to load, and
+  rewrites are thrown away. Dictation only, never meetings. Off by default.
+- **Koli listens again at night** (Training). While the PC is locked or left alone
+  for 10 minutes, two bigger models hear your kept clips again and mark what they
+  agree on. It stops the moment you come back. Labels only: nothing is learned yet
+  and dictation doesn't change.
 - **Open apps by name** (Commands › Voice commands). Say "app Soul" or "app
   Cursor" and Koli brings up the last window you used with that app or main
   window name, on any virtual desktop, with no AI. Say it again for the next one.
@@ -54,6 +63,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
   chat's language when unsure" turns it off (`docs/design/chat-language.md`).
 
 ### Fixed
+- **Word Snap wrote wrong words once a name was in your favored words.** "I can't"
+  became "iCount", "So all" became "Soul", "Google cloud" became "Google Claude",
+  and "a Gantt" lost its "a". Short words no longer join a match, common words stay
+  as they are, and a Hebrew prefix is kept.
+- **Instruction prompts removed from the shipped rules and profiles.** Whisper can't
+  follow "Friendly tone." It changed nothing measurable, and on quiet clips it could
+  be typed as text.
 - **The bubble no longer disappears for the whole session.** Switching virtual
   desktops in the seconds while Koli started left the bubble hidden on every
   desktop until the next restart, though dictation kept working. It now shows

@@ -53,8 +53,11 @@ class Ollama(Provider):
     def address(self) -> str:
         return str(_setting('ai.ollama.address') or 'http://localhost:11434').rstrip('/')
 
-    def complete(self, model, messages, json_mode, on_text, timeout):
-        return ollama_wire.complete(self.address(), model, messages, json_mode, on_text, timeout)
+    def complete(self, model, messages, json_mode, on_text, timeout, options=None):
+        return ollama_wire.complete(self.address(), model, messages, json_mode, on_text, timeout, options)
+
+    def warm(self, model, options=None):
+        ollama_wire.warm(self.address(), model, options)
 
     def list_models(self) -> list:
         return ollama_wire.list_models(self.address())

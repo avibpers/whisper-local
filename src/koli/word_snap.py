@@ -33,6 +33,8 @@ _PROTECTED = {
     'want', 'because', 'these', 'give', 'most', 'done', 'here', 'where', 'were', 'been', 'more',
     'note', 'notes', 'code', 'cold', 'call', 'mail', 'file', 'line', 'list', 'data', 'test',
     'demo', 'name', 'page', 'send', 'sent', 'said', 'does', 'real', 'read', 'ready',
+    # Also names people use (Claude, iCount, Soul...), and fine words as they are.
+    'cloud', 'count', 'soul', 'perspective', 'artifact',
 }
 
 _TOKEN = re.compile(r'\S+')
@@ -117,7 +119,7 @@ def snap_to_words(text: str, words: Iterable[str], threshold: float = THRESHOLD)
         best = None   # (score, span length, word)
         for n in range(min(MAX_SPAN_WORDS, len(tokens) - i), 0, -1):
             span = tokens[i:i + n]
-            if not _joinable(text, span):
+            if not _joinable(text, span) or not _long_enough(span):
                 continue
             candidate = _key(''.join(t.group() for t in span))
             if len(candidate) < 3 or len(candidate) > MAX_KEY_LENGTH:
@@ -125,6 +127,8 @@ def snap_to_words(text: str, words: Iterable[str], threshold: float = THRESHOLD)
             if n == 1 and candidate in _PROTECTED:
                 continue
             for word, target in targets:
+                if _has_other_alphabet(candidate) != _has_other_alphabet(target):
+                    continue   # "ל-iCount" keeps its Hebrew prefix
                 score = _score(candidate, target)
                 if score is not None and score < threshold and (best is None or score < best[0]):
                     best = (score, n, word)
@@ -143,6 +147,26 @@ def snap_to_words(text: str, words: Iterable[str], threshold: float = THRESHOLD)
         i += n
     out.append(text[cursor:])
     return ''.join(out)
+
+
+# A word of one or two letters doesn't join a span ("I can't" isn't "iCount",
+# "So all" isn't "Soul", and "a Gantt" keeps its "a"), except one capital or a
+# number at the end, which is how a name is often heard: "Charge B", "gpt 4".
+# "I", "A" and "So" are words, not the end of a name ("my soul I" keeps its "I").
+def _long_enough(span) -> bool:
+    if len(span) == 1:
+        return True
+    for token in span[:-1]:
+        if len(_key(token.group())) < 3:
+            return False
+    last = span[-1].group()
+    key = _key(last)
+    return len(key) >= 3 or key.isdigit() or (len(key) == 1 and key not in ('i', 'a') and last.strip(' ,.?!').isupper())
+
+
+# Letters beyond the Latin alphabets: Hebrew, Arabic, Cyrillic...
+def _has_other_alphabet(key: str) -> bool:
+    return any(ch.isalpha() and ord(ch) > 0x24F for ch in key)
 
 
 # Whether the tokens of a span may be read as one: only spaces between them,

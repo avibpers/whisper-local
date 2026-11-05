@@ -45,6 +45,27 @@ class SnapTests(unittest.TestCase):
         self.assertEqual(snap_to_words('KUBERNETIS rocks', WORDS), 'KUBERNETES rocks')
         self.assertEqual(snap_to_words('a  kubernetis\n\nb', WORDS), 'a  Kubernetes\n\nb')
 
+    # Each of these was a real dictation on 2026-11-05, and each would have
+    # been written wrong with these words in the favored list.
+    def test_a_short_word_never_joins_a_span(self):
+        words = ['iCount', 'Soul', 'Gantt', 'Codex', 'JumboMail']
+        self.assertEqual(snap_to_words("Why I can't approve it", words), "Why I can't approve it")
+        self.assertEqual(snap_to_words('So all is done', words), 'So all is done')
+        self.assertEqual(snap_to_words('generate a Gantt for it', words), 'generate a Gantt for it')
+        self.assertEqual(snap_to_words('the code as it is', words), 'the code as it is')
+        self.assertEqual(snap_to_words('my soul I keep', words), 'my soul I keep')
+        self.assertEqual(snap_to_words('from my perspective So we go', ['Perspective']), 'from my perspective So we go')
+        self.assertEqual(snap_to_words('open a Jumbo mail page', words), 'open a JumboMail page')
+
+    def test_a_common_word_that_is_also_your_name_stays(self):
+        words = ['Claude', 'iCount', 'Soul', 'Perspective', 'Artifact']
+        for text in ('Google cloud is down', 'count the rows', 'with all my soul',
+                     'from my perspective', 'this artifact is old'):
+            self.assertEqual(snap_to_words(text, words), text)
+
+    def test_a_hebrew_prefix_is_not_swallowed(self):
+        self.assertEqual(snap_to_words('לא עובד ל-iCount היום', ['iCount']), 'לא עובד ל-iCount היום')
+
     def test_hebrew_gets_edit_distance_only(self):
         self.assertEqual(snap_to_words('שלום קולי', ['Koli']), 'שלום קולי')
 

@@ -22,7 +22,7 @@ learned from. Uncertain clips are skipped, not guessed.
 | Phase | What | Status |
 |---|---|---|
 | 1 | Keep clips: opt-in switch, FLAC store, disk cap and eviction ladder, delete buttons, free signals, Training screen | **Built** |
-| 2 | Night re-listen: idle/locked detection, re-transcribe with full large-v3 (+ Hebrew model, + optional Gemini), local AI judge, vote → trusted label or skip, dashboard counts | Next |
+| 2 | Night re-listen: idle/locked detection, two teachers per language, agreement → trusted label or skip, dashboard counts. Labels only; no Gemini vote or local AI judge yet | **Built** |
 | 3 | Auto-learn: favored words, corrections, prompt terms and per-mic thresholds from trusted labels; every change gated on the holdout set and watched for a week, undone automatically if your fix rate rises | Planned |
 | 4 | Smart correction: the local AI fixes low-confidence words that don't fit the sentence, with your past corrections as examples | Planned |
 | 5 | Your voice model: LoRA on the training pool, overnight on the GPU, merged and converted to CTranslate2; gated like phase 3 | Planned |
@@ -111,8 +111,9 @@ services/learning.py  LearningService ◄── ui/bridge.py learning_* ◄─�
 | last | Holdout clips | Only when nothing else is left over the cap |
 | records | Any record without audio | Kept up to 10,000, oldest without audio go first |
 
-Phase 2 adds "the models disagreed" (kept 30 days) and phase 3 "already
-learned from" (audio 7 days after `distilled_at`) to `eviction_rank`.
+Phase 2 keeps clips the teachers differ on later (rank 2, with dropped clips).
+Phase 3 adds "already learned from" (audio 7 days after `distilled_at`) to
+`eviction_rank`.
 
 ### Recent clips and Test (a preview of phase 2)
 
@@ -143,17 +144,56 @@ Off by default. Clips stay in `%APPDATA%\koli\learning`. No cloud call in
 phase 1. Text already sits in plain text in `transcripts.jsonl`, so the clips
 are not encrypted separately.
 
+## Phase 2 (built): the night pass
+
+`learning/night_pass.py` hears kept clips again and writes a label on each
+record. **Nothing is learned and dictation doesn't change**: this only gives
+phase 3 something to learn from. On by default with `learning.enabled`; its own
+switch is `learning.night_pass`.
+
+- **When:** the PC is locked or untouched for 10 minutes (`platform/*/idle.py`:
+  `GetLastInputInfo`; the macOS stub never runs), on mains power, no dictation
+  or meeting, and the live engine exists. Checked every minute, and again
+  between clips, so coming back stops it within one clip (about 2 s on an RTX
+  5090). A dictation that starts during a clip waits for that clip.
+- **Order:** newest first, up to 5 minutes long. A clip that fails twice waits
+  for the next app start; five failures in a row end the run.
+- **Teachers:** Hebrew: `hebrew-large-v3` and the official `large`, because the
+  two ivrit.ai models share training data. English: `large` and
+  `distil-large-v3.5`. Other languages, or a missing second model: `large` with
+  the typed text as the second voice, which can confirm but never overrule. Beam
+  8, voice detection on, no prompt, no vocabulary. The language comes from
+  `large`'s own detection among your languages, since a teacher told the wrong
+  language translates. Models load on the first clip and go when the run ends.
+- **The record** gets `night` (`at`, `language`, `language_changed`, `teachers`
+  with text and mean word confidence, `verdict`, `text`, `seconds`) and `trust`.
+- **Verdicts:** `same` (agree with what was typed), `differs` (agree on other
+  words), `speech` (agree on words in a dropped clip) set `trust: agreement`.
+  `disagree`, `unsure` (agree under 0.7 confidence, or agree with a typed text
+  you then said again) and `noise` stay `trust: none`.
+- **Screen:** the Training screen's At night card, and Night found in Recent clips.
+
+### What the first test showed (2026-11-05, this user's voice)
+
+**Agreement is not truth, and phase 3 must not treat it as truth.** On Practice
+readings, where the exact text is known: English 6 of 8 agreed with no wrong
+word in 79. Hebrew 1 of 14 agreed, with one wrong word (מאלף for מעלף) at 0.93
+and 0.96 confidence, so a higher threshold wouldn't catch it. On 300 real clips,
+43% of Hebrew and 58% of English agreed; of those at 0.7 confidence or more,
+23% of Hebrew (15 of 64) and 38% of English (24 of 64) agreed on other words. Reading them: some are real fixes (תיקין →
+תקין), others are both teachers wrong (`deploy finished` → `the play finished`).
+
+**The teachers have no vocabulary, so on names the live text can be the right
+one.** With the favored words on, Koli typed `Viaset`, `Perspective` and
+`iCount token` where the teachers wrote `Viasat`, `prospective` and `icon`.
+Phase 3 must not unlearn your words from such clips.
+
+Left out on purpose: the local AI judge (in a blind test by the user, AI
+correction beat the Whisper text only 16 to 13) and the Gemini vote (the user
+chose local only for now).
+
 ## Later phases (outline)
 
-- **Phase 2.** `platform/*/idle.py` (Windows `GetLastInputInfo`; macOS stub).
-  A scheduler runs while the PC is locked or idle ≥ 10 min, no dictation or
-  meeting, not on battery; stops between clips on any input. The teacher
-  model loads at job start and unloads at the end. Per clip: full large-v3
-  with a wider beam, the Hebrew model on Hebrew, optionally Gemini; a local
-  model (Ollama / LM Studio) only *chooses* between candidates. Trusted = all
-  agree with good confidence and no free signal against it. The two ivrit.ai
-  models share training data, so their agreement alone is not enough on
-  Hebrew: a different-family vote is required there.
 - **Phase 3.** Trusted labels vs. the live text through `practice/align.py`
   and `practice/findings.py`. A change needs ≥ 3 independent clips, must score
   better on holdout, then a trial week watching fixes-per-100-dictations
@@ -167,8 +207,9 @@ are not encrypted separately.
 
 ## Testing
 
-Unit tests (`tests/test_smoke.py`: `ClipStoreTests`, `RetentionTests`,
-`ClipRecorderTests`, `LearningServiceTests`, `LearningPipelineHookTests`):
+Night pass: `tests/test_night_pass.py` (verdicts, when it runs, stopping between
+clips, failures, language, the screen). Phase 1 unit tests (`tests/test_smoke.py`:
+`ClipStoreTests`, `RetentionTests`, `ClipRecorderTests`, `LearningServiceTests`, `LearningPipelineHookTests`):
 FLAC round trip, records surviving audio deletion and restarts, the fixed
 holdout split, delete by span and range, the eviction ladder, dropped-clip
 expiry, the switch, never-kept modes and apps, drop reasons, both free

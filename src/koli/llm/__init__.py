@@ -97,7 +97,7 @@ def parse_json(text: str):
 
 
 def complete(feature: str, messages: list, json: bool = False, on_text=None,
-             model: str = '', timeout: float = None, fallbacks: bool = True) -> Result:
+             model: str = '', timeout: float = None, fallbacks: bool = True, options: dict = None) -> Result:
     models, route_timeout = routing.route(_setting, feature, model, fallbacks)
     if not models:
         return Result(error='No AI model chosen. Pick one in Settings › AI.')
@@ -122,8 +122,10 @@ def complete(feature: str, messages: list, json: bool = False, on_text=None,
         try:
             provider = providers.get(provider_id)
             sent = images.without_images(messages) if spec in _NO_PICTURES else messages
+            # `options` are Ollama's own request fields; other providers don't take them.
+            extra = {'options': options} if options and provider_id == 'ollama' else {}
             try:
-                text, tokens_in, tokens_out = provider.complete(model_id, sent, json, on_text, remaining)
+                text, tokens_in, tokens_out = provider.complete(model_id, sent, json, on_text, remaining, **extra)
             except (http.HttpError, ProviderError) as e:
                 if not (images.has_images(sent) and _refuses_pictures(e)):
                     raise
@@ -157,6 +159,18 @@ def complete(feature: str, messages: list, json: bool = False, on_text=None,
     if not last.error:
         last.error = f"No answer within {limit:g} seconds"
     return last
+
+
+# Loads an Ollama model ahead of its first use. Raises when it can't.
+def warm(spec: str, options: dict = None):
+    provider_id, model_id = routing.parse(spec)
+    providers.get(provider_id).warm(model_id, options)
+
+
+# Whether a model can be loaded ahead of use.
+def can_warm(spec: str) -> bool:
+    parsed = routing.parse(spec)
+    return bool(parsed) and hasattr(providers.PROVIDERS.get(parsed[0]), 'warm')
 
 
 # Models ("provider/model") that refused a picture this session.

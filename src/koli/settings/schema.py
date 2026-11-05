@@ -147,6 +147,9 @@ SCHEMA = [
     _S('learning.disk_cap_gb', 'Disk space for clips', 'learning', 'number',
        min=0.5, max=20, step=0.5, unit='GB',
        help='When it is full, the clips Koli needs least are deleted first. What it learned from them stays.'),
+    _S('learning.night_pass', 'Listen again at night', 'learning', 'toggle',
+       help='While the PC is locked or nobody has touched it for 10 minutes, two bigger models hear your clips again '
+       'and mark the ones they agree on. It stops the moment you come back. Runs on this computer only.'),
 
     # ── Microphone & audio ───────────────────────────────────────────────────
     _S('audio.input_device', 'Microphone', 'audio', 'microphone', apply=BACKGROUND, mode=SIMPLE,
@@ -386,12 +389,17 @@ SCHEMA = [
     _S('ai.timeout', 'Give up after', 'ai', 'number', group='Models', min=1, max=600, step=1, unit='seconds',
        help='For features without their own limit.'),
     _S('ai.polish.enabled', 'Polish every dictation', 'ai', 'toggle', group='Polish',
-       help='Fixes punctuation and capitals after the offline rules.'),
+       help='Runs after the offline rules, on dictation only. Meetings are never sent.'),
+    _S('ai.polish.mode', 'What it fixes', 'ai', 'select', group='Polish',
+       choices=[['punctuation', 'Punctuation and capitals'], ['correct', 'Misheard words, using the context']],
+       help='Misheard words: the model is told the language, the window, what you wrote there just before and your '
+       'favored words. Those go only to a model on this computer. A dictation over 400 characters is not sent, and '
+       'while the model loads your text goes out without it.'),
     _S('ai.polish.model', 'Polish with', 'ai', 'ai_model', group='Polish', help='Empty uses the default model.'),
     _S('ai.polish.timeout', 'Give up after', 'ai', 'number', group='Polish', min=1, max=120, step=1, unit='seconds',
        help='Then the dictation goes out without polish.'),
     _S('ai.polish.prompt', 'Polish instruction', 'ai', 'textarea', group='Polish',
-       help='{text} is replaced with your dictation.'),
+       help='For punctuation and capitals only. {text} is replaced with your dictation.'),
     _S('ai.rewrite.model', 'Rewrite with', 'ai', 'ai_model', group='Rewrite',
        help='Transforms and Rephrase. Empty uses the default model. A transform can name its own.'),
     _S('ai.rewrite.timeout', 'Give up after', 'ai', 'number', group='Rewrite', min=1, max=600, step=1, unit='seconds'),

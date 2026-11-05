@@ -2147,6 +2147,7 @@ class StateManager:
 
     def start_idle_unload_watch(self):
         self._engine_used_at = time.monotonic()
+        self._warm_correction()
         threading.Thread(target=self._watch_idle_model, daemon=True, name='idle-model-watch').start()
 
     def _watch_idle_model(self):
@@ -2181,10 +2182,16 @@ class StateManager:
         meetings = getattr(self, 'meetings', None)
         return meetings is not None and meetings.is_running()
 
+    # The night pass keeps off the speech model while anything may need it.
+    def night_pass_must_wait(self) -> bool:
+        meetings = getattr(self, 'meetings', None)
+        return not self.is_idle() or (meetings is not None and meetings.is_running())
+
     # A recording starts: the clock restarts, and an unloaded model starts
     # loading now so it is ready by the time you stop speaking.
     def _touch_engine(self):
         self._engine_used_at = time.monotonic()
+        self._warm_correction()
         engine = getattr(self, 'whisper_engine', None)
         if getattr(engine, 'idle_unloaded', False) is True:
             self.logger.info("Loading the speech model again while you speak")
@@ -2372,6 +2379,8 @@ class StateManager:
     # The last post-processing step when "Polish every dictation" is on. An
     # empty answer (model down, too slow) keeps the dictation as it was.
     def _ai_polish(self, text: str) -> str:
+        if self.config_manager.get_path('ai.polish.mode') == 'correct':
+            return self._ai_correct(text)
         from . import llm
         from .llm import prompts
         result = llm.complete('polish', prompts.polish(self.config_manager.get_path('ai.polish.prompt'), text),
@@ -2379,6 +2388,56 @@ class StateManager:
         if result.error:
             self.logger.warning(f"AI polish skipped: {result.error}")
         return prompts.polish_answer(result.text)
+
+    # Misheard words fixed with what Koli knows at this moment: the language,
+    # the window, what you wrote there just before, and your words.
+    def _ai_correct(self, text: str) -> str:
+        from . import llm, smart_correction
+        from .online_stt.audio import language_name
+        from .transcript_log import load_recent_transcripts
+        spec = llm.model_for('polish')
+        code = (getattr(self.whisper_engine, 'last_info', None) or {}).get('language') or ''
+        window = foreground.get_foreground_app() or {}
+        app, title = window.get('exe', ''), window.get('title', '')
+        return smart_correction.correct(
+            text, spec, llm.complete, llm.kind_of, self._correction_warmer(spec), language=language_name(code) if code else '',
+            terms=self._correction_terms(code), app=app, title=title,
+            before=smart_correction.previous_in_window(load_recent_transcripts(), app, title))
+
+    def _correction_terms(self, language: str) -> list:
+        hotwords = self.config_manager.get_path('whisper.hotwords')
+        terms = list(hotwords) if isinstance(hotwords, (list, tuple)) else []
+        try:
+            from . import learned_vocabulary
+            terms += list(learned_vocabulary.get().extras(language or None).get('hotwords', []))
+        except Exception as e:
+            self.logger.debug(f"Learned words skipped for correction: {e}")
+        corrections = self.config_manager.get_postprocess_config().get('corrections')
+        if isinstance(corrections, dict):
+            terms += list(corrections.keys())
+        return [str(t) for t in terms if isinstance(t, str) and t.strip()]
+
+    # The one warmer, for a model that can load ahead of use; None for others.
+    def _correction_warmer(self, spec: str):
+        from . import llm, smart_correction
+        if not llm.can_warm(spec):
+            return None
+        warmer = self.__dict__.get('_warmer')
+        if warmer is None:
+            warmer = self._warmer = smart_correction.Warmer(llm.warm)
+        return warmer
+
+    # App start and every recording: makes sure the model is loaded by the time
+    # you stop speaking. Costs 5 ms when it already is.
+    def _warm_correction(self):
+        get = self.config_manager.get_path
+        if get('ai.polish.enabled') is not True or get('ai.polish.mode') != 'correct':
+            return
+        from . import llm
+        spec = llm.model_for('polish')
+        warmer = self._correction_warmer(spec) if spec else None
+        if warmer is not None:
+            warmer.warm(spec)
 
     def _handle_rephrase(self, selection: str, instruction: str):
         from . import llm

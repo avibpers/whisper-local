@@ -513,6 +513,12 @@ def setup_learning(state_manager: StateManager, config_manager: ConfigManager, l
         recorder = ClipRecorder(config_manager, state_manager.app_rules)
         recorder.start()
         state_manager.clip_recorder = recorder
+        # Hears the kept clips again while nobody is using the PC.
+        from .learning.night import NightModel
+        from .learning.night_pass import NightPass
+        recorder.night_pass = NightPass(recorder, NightModel(lambda: state_manager.whisper_engine),
+                                        is_busy=state_manager.night_pass_must_wait)
+        recorder.night_pass.start()
         return recorder
     except Exception as e:
         logger.warning(f"Learning from dictations not started: {e}")

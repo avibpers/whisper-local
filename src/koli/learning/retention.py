@@ -15,14 +15,14 @@ DEFAULT_CAP_GB = 2.0
 DROPPED_DAYS = 14          # clips dropped as noise: long enough to tune the filters on
 MAX_RECORDS = 10000        # records without audio beyond this go too, oldest first
 
-# Eviction rank, lowest goes first. Phase 1 knows only train and holdout and
-# whether a clip was dropped; later phases add "learned from" (first) and
-# "the models disagreed" (late) here.
+# Eviction rank, lowest goes first. A later phase adds "learned from" (first).
 def eviction_rank(record: dict) -> int:
     if record.get('split') == 'holdout':
         return 3            # every score is measured on these: last
     if str(record.get('outcome', '')).startswith('dropped'):
         return 2            # the only way to measure dropped real speech
+    if (record.get('night') or {}).get('verdict') in ('differs', 'disagree'):
+        return 2            # where the models differ is what later phases learn from
     return 1                # kept, typed dictations: the training pool
 
 
