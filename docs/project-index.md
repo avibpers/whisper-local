@@ -23,6 +23,7 @@ Koli is a fork of `drajb/whisper-local` by Rohit Burani (repo `avibpers/whisper-
 | **System Integration** | `system_tray.py` | Tray icon; a short menu (Open, Pause, Profile, Recent, Quit) with the app window, the full menu with `--legacy-ui` | pystray, Pillow |
 | **Instance Management** | `instance_manager.py` | Single instance enforcement | win32event (Win), fcntl (Mac) |
 | **Voice Commands** | `voice_commands.py` | Trigger matching (with `other_triggers` in any language) & command execution | subprocess |
+| **Agent Chat** | `agent/chat.py` + `ui/web/agent.html` | The conversation with the agent in a floating window: opens on what you say after "Anything else?" or when the AI takes a command, listens without the wake word to your voice only, closes after quiet (design: `docs/design/agent-chat.md`) | Preact, htm |
 | **Wake Word** | `wake_word.py` | "Hey Koli" or your own recorded word starts a voice command: a tap on the mic cuts speech into bursts, Whisper checks the start, your wake voiceprint per microphone (design: `docs/design/wake-word.md`) | ten-vad, faster-whisper |
 | **Platform Abstraction** | `platform/` | OS-specific implementations | pywin32 (Win), pyobjc (Mac) |
 | **GPU Onboarding** | `onboarding.py` | GPU setup prompt & package installation | subprocess |

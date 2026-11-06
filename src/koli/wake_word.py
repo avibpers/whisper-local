@@ -460,6 +460,10 @@ class BurstCutter:
 # ── The listener ─────────────────────────────────────────────────────────────
 
 SLEEPING, AWAKE, WAITING, FOLLOW_UP = 'sleeping', 'awake', 'waiting', 'follow_up'
+# The conversation with the agent (agent/chat.py): open after what you say
+# following "Anything else?", or when the AI took a command, and only with your
+# own word, whose voice is checked. It lasts as long as the conversation does.
+CHAT = 'chat'
 
 # What run_wake_command reports back.
 RAN, MISSED, EMPTY, BUSY = 'ran', 'missed', 'empty', 'busy'
@@ -483,6 +487,9 @@ class WakeListener:
     # A command is short and you've just been asked for it: a shorter pause
     # ends it than the 0.6 s that ends a burst while Koli sleeps.
     COMMAND_END_SILENCE_S = 0.45
+    # In the conversation a sentence ends at a shorter pause than a first
+    # command's 2 s: it's a reply, and you're waiting for Koli's.
+    CHAT_END_S = 1.5
     # When the AI can take it (your own word, AI actions on), a command may
     # be a whole sentence: it runs while you talk, up to SENTENCE_MAX_S, and
     # ends at a SENTENCE_END_S pause. A fixed command is still caught at its
@@ -553,6 +560,7 @@ class WakeListener:
                  ai_listens: Optional[Callable[[], bool]] = None,
                  quick_command: Optional[Callable] = None,
                  my_voice: Optional[Callable] = None,
+                 chat_open: Optional[Callable[[], bool]] = None,
                  clock: Callable[[], float] = time.monotonic):
         self.sm = state_manager
         self.cm = config_manager
@@ -569,6 +577,7 @@ class WakeListener:
         self._ai_listens = ai_listens or self._state_manager_ai
         self._quick_command = quick_command or self._state_manager_quick
         self._my_voice = my_voice or self._meeting_my_voice
+        self._chat_open = chat_open or self._state_manager_chat_open
         self._sentence = False       # this command may be a sentence for the AI
         self._last_pieces = None     # Whisper's pieces with its numbers, from the last wake check
         self._wake_heard = ''        # the wake word as the last wake check wrote it ("dios")
@@ -806,6 +815,8 @@ class WakeListener:
     # Koli got busy (hotkey, meeting) in the middle of a wake.
     def tick(self) -> None:
         if self.state == SLEEPING:
+            if self._in_chat() and self.personal() and self.may_listen():
+                self._enter(CHAT)      # opened by the command hotkey's AI action
             return
         now = self._clock()
         if now - self._busy_checked >= self.BUSY_POLL_S:
@@ -814,6 +825,10 @@ class WakeListener:
                 self.cutter.drop()
                 self._sleep()
                 return
+        # The conversation ends when its window does (agent/chat.py keeps the time).
+        if self.state == CHAT and not self._in_chat():
+            self._sleep()
+            return
         if self.state in (WAITING, FOLLOW_UP) and self.cutter.burst is None and now >= self._deadline:
             self._sleep()
 
@@ -968,7 +983,7 @@ class WakeListener:
             self._wake_in_command = False
         if outcome == RAN:
             self.cutter.drop()
-            self._enter(FOLLOW_UP, self._seconds('follow_up_seconds', 5))
+            self._after_command()
 
     def _on_end(self, burst: Burst) -> None:
         if burst.is_wake:
@@ -988,12 +1003,12 @@ class WakeListener:
             return
         # With your own word, what follows it has to be you too: noise after
         # a wake turned into "Via" (2026-10-16). Not you, Koli keeps waiting.
-        if self.personal() and self.state in (WAITING, FOLLOW_UP) \
+        if self.personal() and self.state in (WAITING, FOLLOW_UP, CHAT) \
                 and not self._sounds_like_you(burst.audio(), say=self.state == WAITING):
             return
         if self.state == WAITING:
             self._run(audio=burst.audio(), first=True)
-        elif self.state == FOLLOW_UP:
+        elif self.state in (FOLLOW_UP, CHAT):
             self._run(audio=burst.audio(), first=False)
 
     # The text after the wake word, or None. Cheapest filter first: length,
@@ -1279,17 +1294,24 @@ class WakeListener:
     def _run(self, audio=None, text=None, first: bool = True, has_wake: bool = False) -> None:
         only_media = not first and not self.personal()
         can_retry = first and self._retry_left
+        # What you say after "Anything else?", with your own word, is the
+        # conversation: anything goes to the AI, and the window opens.
+        chat = not first and self.personal()
         self._wake_in_command = has_wake
         try:
+            extra = {'chat': True} if chat else {}
             outcome = self._run_command(audio=audio, text=text, only_media=only_media, report_miss=first,
-                                        can_retry=can_retry)
+                                        can_retry=can_retry, **extra)
         except Exception as e:
             self.logger.warning(f"Wake word: the command failed ({e})")
             outcome, can_retry = MISSED, False
         finally:
             self._wake_in_command = False
+        if self._in_chat():
+            self._enter(CHAT)
+            return
         if outcome == RAN:
-            self._enter(FOLLOW_UP, self._seconds('follow_up_seconds', 5))
+            self._after_command()
         elif outcome == EMPTY and first:
             self._enter(WAITING, self._seconds('command_timeout_seconds', 5))   # only the wake word was said
         elif can_retry and outcome == MISSED:
@@ -1308,16 +1330,18 @@ class WakeListener:
         # sentence: it runs while you talk and ends at a long pause, with
         # quick checks for a fixed command at the short ones. (Follow-ups
         # never reach the AI, so they stay short.)
-        self._sentence = state in (AWAKE, WAITING) and self._sentence_mode()
-        if state in (WAITING, FOLLOW_UP):
+        # A follow-up may be a sentence for the AI too now: it opens the conversation.
+        self._sentence = state in (AWAKE, WAITING, FOLLOW_UP, CHAT) and self._sentence_mode()
+        if state in (WAITING, FOLLOW_UP, CHAT):
             self.cutter.set_max_seconds(self.SENTENCE_MAX_S if self._sentence else self.COMMAND_MAX_S)
         else:
             self.cutter.set_max_seconds(BurstCutter.MAX_S)
-        self.cutter.set_end_silence(self.SENTENCE_END_S if self._sentence else self.COMMAND_END_SILENCE_S)
+        end = self.CHAT_END_S if state == CHAT else self.SENTENCE_END_S
+        self.cutter.set_end_silence(end if self._sentence else self.COMMAND_END_SILENCE_S)
         self.cutter.set_quiet(self.COMMAND_END_SILENCE_S if self._sentence else 0)
         self._busy_checked = self._clock()
         # Awake → waiting is the same to the bubble: say it once.
-        phase = 'follow_up' if state == FOLLOW_UP else 'awake'
+        phase = {FOLLOW_UP: 'follow_up', CHAT: 'chat'}.get(state, 'awake')
         if phase != getattr(self, '_phase', None):
             self._phase = phase
             self._publish('wake', {'phase': phase})
@@ -1427,6 +1451,20 @@ class WakeListener:
     def _state_manager_ai(self) -> bool:
         enabled = getattr(self.sm, '_agent_enabled', None)
         return bool(enabled()) if callable(enabled) else False
+
+    def _state_manager_chat_open(self) -> bool:
+        chat = getattr(self.sm, 'agent_chat', None)
+        return bool(chat is not None and chat.is_open())
+
+    def _in_chat(self) -> bool:
+        try:
+            return bool(self._chat_open())
+        except Exception:
+            return False
+
+    # A command ran: another may follow without the wake word.
+    def _after_command(self) -> None:
+        self._enter(CHAT if self._in_chat() else FOLLOW_UP, self._seconds('follow_up_seconds', 5))
 
     def _state_manager_quick(self, audio) -> str:
         quick = getattr(self.sm, 'run_quick_command', None)

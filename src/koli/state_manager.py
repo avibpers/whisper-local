@@ -93,6 +93,19 @@ def _rule_label(rule) -> Optional[str]:
 
 
 class StateManager:
+    # Created in __init__; a manager built without it (tests) gets one on first use.
+    @property
+    def agent_chat(self):
+        chat = self.__dict__.get('_agent_chat')
+        if chat is None:
+            from .agent.chat import ChatSession
+            chat = self.__dict__['_agent_chat'] = ChatSession(publish=lambda payload: publish('chat', payload))
+        return chat
+
+    @agent_chat.setter
+    def agent_chat(self, chat):
+        self.__dict__['_agent_chat'] = chat
+
     _key_profile = None   # the profile whose key is held for this recording
     # ── Recordings nobody started with a key ─────────────────────────────────
     # Auto-dictation sessions are numbered, and each phrase is tied to the
@@ -168,6 +181,11 @@ class StateManager:
         self._auto_pasted_words = 0
         self._auto_dictation = None
         self._wake_listener = None   # wake_word.WakeListener, set by main
+        # The conversation with the agent in its own window (agent/chat.py).
+        from .agent.chat import ChatSession
+        self.agent_chat = ChatSession(
+            publish=lambda payload: publish('chat', payload),
+            silence_seconds=lambda: self.config_manager.get_path('wake_word.chat_silence_seconds', 20))
         # MeetingService, set by main when the app window runs (meeting mode).
         self.meetings = None
         # learning.recorder.ClipRecorder, set by main: keeps each dictation's
@@ -767,8 +785,10 @@ class StateManager:
     # a first command says "Didn't catch that"; a follow-up misses quietly.
     # `can_retry`: Koli listens for one more try after this miss, so the
     # bubble asks you to say it again.
+    # `chat`: said after "Anything else?" or in the conversation: it opens the
+    # conversation's window, shows there, and what no command matches goes to the AI.
     def run_wake_command(self, audio=None, text=None, only_media: bool = False, report_miss: bool = True,
-                         can_retry: bool = False) -> str:
+                         can_retry: bool = False, chat: bool = False) -> str:
         from .voice_commands import is_media_command
         from .wake_word import BUSY, EMPTY, MISSED, RAN
         from .utils import normalize_spoken
@@ -803,8 +823,11 @@ class StateManager:
             # "Hey Koli" is anyone's (a TV, a video): a command that runs a
             # program asks first. Your own word was checked against your voice.
             personal = bool(listener is not None and listener.personal())
+            if chat:
+                self.agent_chat.open('after a command')
+                self.agent_chat.you(text)
             matched = self._handle_command_transcription(
-                text, only=is_media_command if only_media else None, announce_miss=report_miss,
+                text, only=is_media_command if only_media else None, announce_miss=report_miss or chat,
                 confirm_runs=not personal, source='personal' if personal else 'generic',
                 info=getattr(self.dictation_engine('command'), 'last_info', None) if audio is not None else None)
             if matched or report_miss:
@@ -1885,16 +1908,22 @@ class StateManager:
             return False
 
         matched = self.voice_command_manager.match_command(text, only=only)
+        chat = self.agent_chat if self.agent_chat.is_open() else None
         if matched:
             if confirm_runs:
                 self.voice_command_manager.execute_command(matched, use_auto_enter, confirm_runs=True)
             else:
                 self.voice_command_manager.execute_command(matched, use_auto_enter)
+            if chat is not None:
+                chat.koli(f"Done: {matched.get('trigger') or 'your command'}", 'done')
             return True
         if announce_miss and only is None and source in ('personal', 'hotkey') and self._agent_enabled():
             return self._hand_to_agent(text, info)
         if announce_miss:
             print(f"   ✗ No matching command for: \"{text[:60]}\"")
+            if chat is not None:
+                chat.koli("No command matches that, and AI actions are off (Commands › AI actions)." if
+                          not self._agent_enabled() else "No command matches that.", 'not_understood')
         return False
 
     # ── AI actions (agent/) ──────────────────────────────────────────────────
@@ -1904,16 +1933,33 @@ class StateManager:
             self.config_manager.get_path('ai.commands.enabled', True) is not False
 
     # Noise Whisper was unsure of never reaches the model; anything else does.
+    # The AI's turn opens the conversation, so what follows needs no wake word.
     def _hand_to_agent(self, text: str, info: Optional[dict]):
         from .dictation_cleanup import unsure_piece
+        chat = self.agent_chat
+        if not chat.is_open():
+            chat.open('the AI took a command')
+            chat.you(text)
         pieces = (info or {}).get('segments') or []
         if pieces and all(unsure_piece(p) for p in pieces):
-            publish('agent', {'phase': 'not_understood', 'text': "Sorry, I didn't understand", 'heard': text})
+            payload = {'phase': 'not_understood', 'text': "Sorry, I didn't understand", 'heard': text}
+            publish('agent', payload)
+            chat.on_agent(payload)
             self.logger.info("AI action: Whisper wasn't sure of the words; not sent to the model")
             return AGENT
         print(f"   🤖 No command matched: asking the AI (\"{text[:60]}\")")
-        self.agent.handle(text)
+        try:
+            self.agent.handle(text)
+        finally:
+            chat.listening()
         return AGENT
+
+    # The conversation's Close button: anything the AI is still doing stops.
+    def close_agent_chat(self):
+        agent = getattr(self, 'agent', None)
+        if agent is not None and getattr(agent, 'busy', False):
+            agent.cancel()
+        self.agent_chat.close('closed')
 
     # The AI actions' runner, wired to this app: the model, the bubble, your
     # commands, and the wake word's microphone and voiceprint for the password.
@@ -1985,7 +2031,8 @@ class StateManager:
             and llm.takes_pictures('commands'))
         runner = AgentRunner(
             complete=lambda feature, messages, json=False: llm.complete(feature, messages, json=json),
-            publish=lambda payload: publish('agent', payload), approval=approval, backend=backend,
+            publish=lambda payload: (publish('agent', payload), self.agent_chat.on_agent(payload)),
+            approval=approval, backend=backend,
             commands=lambda: vcm.plain_phrases() if vcm is not None and vcm.enabled else [],
             run_fixed=lambda phrase: bool(vcm and vcm.run_plain(phrase)),
             has_fixed=lambda phrase: bool(vcm and vcm.enabled and vcm.plain_command(phrase)), hear=hear)

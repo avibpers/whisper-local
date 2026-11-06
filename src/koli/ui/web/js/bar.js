@@ -60,6 +60,7 @@ function wire() {
   // step still running stays.
   on('wake', (w) => {
     const wake = w.phase === 'sleeping' ? null : w.phase;
+    if (wake === 'chat') { clearTimeout(agentTimer); bar.set({ wake, agent: null }); return; }
     const a = bar.get().agent;
     if (wake && a && !AGENT_LIVE.has(a.phase)) {
       clearTimeout(agentTimer);
@@ -69,6 +70,7 @@ function wire() {
     }
   });
   on('agent', (a) => {
+    if (bar.get().wake === 'chat') return;   // the conversation's window shows it
     clearTimeout(agentTimer);
     bar.set({ agent: a, flash: null });
     // A longer message stays up longer: time to read it slowly (about 11
@@ -395,8 +397,9 @@ function Status() {
     </div>`;
   }
   // After the wake word: say the command. After one ran: another works
-  // without the wake word, until the window closes.
-  if (wake) {
+  // without the wake word, until the window closes. The conversation has a
+  // window of its own (agent.js).
+  if (wake && wake !== 'chat') {
     return html`<div class="bub" style="padding-inline-end:16px" role="status"><${Badge} tone="purple" icon="command" />
       <span>${wake === 'awake' ? 'Listening for a command' : 'Anything else?'}</span></div>`;
   }

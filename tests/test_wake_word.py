@@ -225,6 +225,9 @@ class ListenerTestCase(unittest.TestCase):
         self.sounds = 0
         self.locked = locked
         self.outcomes = outcomes
+        self.chat_flags = []          # per run: was it said in the conversation
+        self.chat_open = False        # agent/chat.py's window, as the listener sees it
+        self.open_chat_on_follow_up = True
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.voices = wake_word.WakeVoices(Path(tmp.name) / 'wake_voice.json')
@@ -234,13 +237,16 @@ class ListenerTestCase(unittest.TestCase):
             self.transcribed.append(text)
             return text
 
-        def run_command(audio=None, text=None, only_media=False, report_miss=True, can_retry=False):
+        def run_command(audio=None, text=None, only_media=False, report_miss=True, can_retry=False, chat=False):
             said = text if text is not None else (fake_transcribe(audio) or '')
             # Like StateManager.run_wake_command: the listener's own word is dropped.
             self.wake_flags.append(self.listener._wake_in_command)
             said = self.listener.strip_wake(said)
             self.runs.append({'text': said, 'audio': audio is not None, 'only_media': only_media,
                               'report_miss': report_miss})
+            self.chat_flags.append(chat)
+            if chat and self.open_chat_on_follow_up:
+                self.chat_open = True
             self.retries.append(can_retry)
             self.run_times.append(self.clock.now)
             if self.outcomes:
@@ -260,7 +266,7 @@ class ListenerTestCase(unittest.TestCase):
             wake_voices=self.voices, speech_prob=lambda frame: 0.9 if np.any(frame) else 0.0,
             is_locked=lambda: self.locked, publish=lambda topic, payload: self.events.append((topic, payload)),
             play_sound=sound, clock=self.clock, frame_level=fake_level,
-            learned_level=lambda mic: learned_level)
+            learned_level=lambda mic: learned_level, chat_open=lambda: self.chat_open)
         return self.listener
 
     def feed(self, value, seconds):
@@ -781,7 +787,8 @@ class PersonalWakeWordTests(ListenerTestCase):
         self.say(3)
         self.quiet(0.8)
         self.assertEqual(self.runs[-1], {'text': 'undo', 'audio': True, 'only_media': False, 'report_miss': False})
-        self.assertEqual(listener.state, self.ww.FOLLOW_UP)
+        self.assertEqual(self.chat_flags[-1], True, 'what you say after "Anything else?" is the conversation')
+        self.assertEqual(listener.state, self.ww.CHAT)
 
     # Noise after a real wake became "Via" (2026-10-16): the command after a
     # pause has to be you too, and Koli keeps waiting for one that is.
@@ -1008,6 +1015,85 @@ class PersonalWakeWordTests(ListenerTestCase):
         self.sm.meetings.voiceprint_ready = lambda: asked.append(True) or True
         self.quiet(3)
         self.assertEqual(asked, [])
+
+
+class ChatTests(ListenerTestCase):
+    setUp = PersonalWakeWordTests.setUp
+    make_personal = PersonalWakeWordTests.make_personal
+
+    # 2026-11-06: "music", then "open download folder" in the window after it,
+    # matched no fixed command and was dropped without a word.
+    def test_what_you_say_after_a_command_opens_the_conversation(self):
+        listener = self.make_personal(self.mine)
+        self.say(4, 2, seconds=0.6)
+        self.quiet(0.8)
+        self.assertEqual(listener.state, self.ww.FOLLOW_UP)
+        self.assertEqual(self.chat_flags, [False], 'the quick command stays quick')
+        self.say(3)
+        self.quiet(1.6)
+        self.assertEqual(self.chat_flags[-1], True)
+        self.assertEqual(listener.state, self.ww.CHAT)
+        self.assertEqual(self.phases()[-1], 'chat')
+
+    def test_in_the_conversation_no_wake_word_is_needed_and_a_miss_keeps_it(self):
+        listener = self.make_personal(self.mine)
+        self.chat_open = True
+        listener._enter(self.ww.CHAT)
+        self.say(9)
+        self.quiet(1.6)
+        self.assertIn('blah', self.runs[-1]['text'], 'no wake word, anything goes')
+        self.assertEqual(self.chat_flags[-1], True)
+        self.assertEqual(listener.state, self.ww.CHAT, 'a miss keeps the conversation')
+
+    def test_someone_else_in_the_room_is_not_heard(self):
+        voice = {'now': self.mine}
+        listener = self.make(voiceprint=lambda audio: voice['now'], phrases=['koli'], only_my_voice=True)
+        self.voices.set('Jabra', [self.mine])
+        self.chat_open = True
+        listener._enter(self.ww.CHAT)
+        voice['now'] = self.theirs
+        self.say(3)
+        self.quiet(1.6)
+        self.assertEqual(self.runs, [])
+
+    def test_it_ends_when_the_window_closes(self):
+        listener = self.make_personal(self.mine)
+        self.chat_open = True
+        listener._enter(self.ww.CHAT)
+        self.quiet(30)
+        self.assertEqual(listener.state, self.ww.CHAT, 'the window keeps the time, not the listener')
+        self.chat_open = False
+        self.quiet(0.5)
+        self.assertEqual(listener.state, self.ww.SLEEPING)
+
+    def test_a_conversation_opened_by_the_hotkey_is_heard(self):
+        listener = self.make_personal(self.mine)
+        self.chat_open = True
+        self.quiet(0.5)
+        self.assertEqual(listener.state, self.ww.CHAT)
+
+    def test_a_conversation_ends_at_a_shorter_pause_than_a_first_command(self):
+        listener = self.make_personal(self.mine)
+        listener._ai_listens = lambda: True
+        self.chat_open = True
+        listener._enter(self.ww.CHAT)
+        self.say(3)
+        self.quiet(1.0)
+        self.assertEqual(self.runs, [], 'a 1 s pause to think')
+        self.quiet(0.7)
+        self.assertEqual(self.runs[-1]['text'], 'undo')
+
+    def test_with_hey_koli_there_is_no_conversation(self):
+        listener = self.make()
+        self.say(1)
+        self.say(2)
+        self.quiet(0.8)
+        self.say(3)
+        self.quiet(0.8)
+        self.assertEqual(self.chat_flags, [False, False], 'anyone can say Hey Koli: follow-ups stay media only')
+        self.chat_open = True
+        self.quiet(0.5)
+        self.assertNotEqual(listener.state, self.ww.CHAT)
 
 
 class WakeListenerWiringTests(ListenerTestCase):

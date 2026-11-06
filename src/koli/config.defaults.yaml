@@ -641,8 +641,12 @@ wake_word: # Say a word to run a voice command, no hotkey
     voice_match: 0.45
     # How long to wait for a command after the wake word alone (seconds)
     command_timeout_seconds: 5
-    # How long to keep listening for another command after one runs (seconds)
+    # How long to keep listening for another command after one runs (seconds).
+    # With your own wake word, what you say then opens the conversation with the
+    # agent: a window where you talk without the wake word.
     follow_up_seconds: 5
+    # The conversation closes after this many seconds of quiet (5 to 300).
+    chat_silence_seconds: 20
 
 overlay: # Floating speech-level overlay (Wispr-style bottom-center bar)
     # Show Koli's bubble on the screen so you can see it listening and

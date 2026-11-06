@@ -1375,6 +1375,15 @@ class Bridge:
         return agent
 
     @_api
+    def agent_chat_close(self):
+        self._sm.close_agent_chat()
+
+    # The open conversation, for the window when it (re)loads.
+    @_api
+    def agent_chat_state(self):
+        return self._sm.agent_chat.snapshot()
+
+    @_api
     def agent_cancel(self):
         self._agent.cancel()
 
