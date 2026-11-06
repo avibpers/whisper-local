@@ -895,7 +895,8 @@ class HandOffTests(unittest.TestCase):
         result, pub = self.run_(sm, source='personal', info=info)
         self.assertEqual(result, AGENT)
         sm.agent.handle.assert_not_called()
-        self.assertEqual(pub.call_args.args[1]['phase'], 'not_understood')
+        said = [c.args[1] for c in pub.call_args_list if c.args[0] == 'agent']
+        self.assertEqual(said[-1]['phase'], 'not_understood')
 
 
 class SavedCommandTests(AgentTestCase):

@@ -34,6 +34,10 @@ APP_ID = 'Koli.App'
 MAIN_TITLE = 'Koli'
 BAR_TITLE = 'Koli · bubble'
 PANEL_TITLE = 'Koli · meeting'
+CHAT_TITLE = 'Koli · agent'
+CHAT_SIZE = (360, 440)          # page pixels
+CHAT_MARGIN = 16
+CHAT_HIDE_DELAY = 2.5           # "Closed" stays this long
 DESKTOP_FOLLOW_INTERVAL = 0.5   # seconds between checks that the panel and bubble are on your desktop
 PANEL_HIDE_DELAY = 2.5
 SUMMARY_READY_SECONDS = 30    # "Summary ready" with Open stays this long
@@ -59,6 +63,7 @@ BAR_TOPICS = {'state', 'bar', 'pipeline', 'notify', 'task', 'level', 'streaming_
               'profile', 'window', 'auto_send', 'problem', 'meeting', 'meeting_shot', 'wake', 'agent',
               'live_words', 'usage'}
 PANEL_TOPICS = {'meeting', 'meeting_turn', 'meeting_shot', 'meeting_summary', 'settings', 'task', 'problem', 'usage'}
+CHAT_TOPICS = {'chat', 'agent', 'settings'}
 COALESCE = {'level', 'vad', 'foreground', 'streaming_text', 'live_words'}
 PUSH_INTERVAL = 0.05
 
@@ -168,6 +173,9 @@ class _PageChannel:
 
 
 class UiHost:
+    chat_hwnd = 0              # the conversation's window, once it exists
+    _chat_hide_timer = None
+
     def __init__(self, ctx, open_page=None, dev=False, instance_name='Koli', notices=None):
         self.ctx = ctx
         # Startup problems to show once the window opens (see main.STARTUP_NOTICES).
@@ -180,6 +188,9 @@ class UiHost:
         self.main = _PageChannel('main')
         self.bar = _PageChannel('bar', BAR_TOPICS)
         self.panel = _PageChannel('meeting', PANEL_TOPICS)
+        self.chat = _PageChannel('agent', CHAT_TOPICS)
+        self.chat_hwnd = 0
+        self._chat_hide_timer = None
         self.main_visible = False
         self.bar_enabled = True
         self.bar_hwnd = 0
@@ -344,6 +355,16 @@ class UiHost:
             focus=False, min_size=(120, 30), shadow=False, background_color='#0B0E11', hidden=True)
         self.panel.window.events.loaded += lambda: self._on_loaded(self.panel)
 
+        # The conversation with the agent (agent/chat.py): dragged from anywhere.
+        if getattr(self, 'chat', None) is None:
+            self.chat = _PageChannel('agent', CHAT_TOPICS)
+        cx, cy = self._chat_geometry()[:2]
+        self.chat.window = webview.create_window(
+            CHAT_TITLE, url=str(WEB_DIR / 'agent.html'), js_api=self.bridge,
+            width=CHAT_SIZE[0], height=CHAT_SIZE[1], x=cx, y=cy, frameless=True, easy_drag=True, resizable=False,
+            on_top=True, focus=False, min_size=(200, 120), shadow=False, background_color='#0B0E11', hidden=True)
+        self.chat.window.events.loaded += lambda: self._on_loaded(self.chat)
+
     # New installs start in Simple mode. Someone upgrading who already tuned
     # settings by hand starts in Advanced, where those settings are visible.
     def _choose_initial_mode(self):
@@ -390,6 +411,14 @@ class UiHost:
             # the user was typing into (Phase 0, spike B).
             if not self.main_visible and self._previous_foreground:
                 win32.restore_foreground(self._previous_foreground)
+        elif channel is self.chat:
+            self.chat_hwnd = win32.find_window(CHAT_TITLE)
+            win32.make_tool_window(self.chat_hwnd)
+            win32.round_corners(self.chat_hwnd)
+            win32.exclude_from_capture(self.chat_hwnd, True)    # what you ask the AI stays off a shared screen
+            self.place_chat()
+            if self.ctx.state_manager.agent_chat.is_open():
+                self._show_chat()
         elif channel is self.panel:
             self.panel_hwnd = win32.find_window(PANEL_TITLE)
             win32.make_tool_window(self.panel_hwnd)
@@ -425,7 +454,7 @@ class UiHost:
         logger.info("Closing the app window")
         if self._shutdown_event is not None:
             self._shutdown_event.set()
-        for channel in (self.bar, self.panel, self.main):
+        for channel in (self.bar, self.panel, self.chat, self.main):
             try:
                 if channel.window is not None:
                     channel.window.destroy()
@@ -786,6 +815,47 @@ class UiHost:
         x, y = panel_origin(area, size, scale, position, custom)
         return x, y, size
 
+    # ── The conversation's window ─────────────────────────────────────────────
+    # Bottom right of the screen, above the taskbar; drag it anywhere for now.
+
+    def _chat_geometry(self):
+        scale = win32.dpi_scale(self.chat_hwnd) or 1.0
+        w, h = int(CHAT_SIZE[0] * scale), int(CHAT_SIZE[1] * scale)
+        left, top, right, bottom = win32.work_area()
+        margin = int(CHAT_MARGIN * scale)
+        return max(left, right - w - margin), max(top, bottom - h - margin), (w, h)
+
+    def place_chat(self):
+        if not self.chat_hwnd:
+            return
+        x, y, size = self._chat_geometry()
+        _place_docked(self.chat.window, self.chat_hwnd, x, y, *size)
+
+    def _show_chat(self):
+        if self._chat_hide_timer is not None:
+            self._chat_hide_timer.cancel()
+            self._chat_hide_timer = None
+        if self.chat_hwnd:
+            win32.show_no_activate(self.chat_hwnd)
+
+    def _hide_chat(self):
+        self._chat_hide_timer = None
+        if self.chat_hwnd and not self.ctx.state_manager.agent_chat.is_open():
+            win32.hide(self.chat_hwnd)
+
+    # Shown when a conversation opens; hidden a moment after it ends.
+    def _on_chat(self, payload):
+        event = payload.get('event')
+        if event == 'open':
+            self.place_chat()
+            self._show_chat()
+        elif event == 'close':
+            if self._chat_hide_timer is not None:
+                self._chat_hide_timer.cancel()
+            self._chat_hide_timer = threading.Timer(CHAT_HIDE_DELAY, self._hide_chat)
+            self._chat_hide_timer.daemon = True
+            self._chat_hide_timer.start()
+
     def place_panel(self):
         if not self.panel_hwnd or self._panel_drag is not None:
             return
@@ -1015,12 +1085,16 @@ class UiHost:
             self._on_summary_status(payload.get('phase', 'none'))
         elif topic == 'live_words' and isinstance(payload, dict):
             self._on_live_words(payload)
+        elif topic == 'chat' and isinstance(payload, dict):
+            self._on_chat(payload)
         item = {'topic': topic, 'payload': payload}
         self.main.queue.put(item)
         if topic in self.bar.topics:
             self.bar.queue.put(item)
         if topic in self.panel.topics:
             self.panel.queue.put(item)
+        if topic in self.chat.topics:
+            self.chat.queue.put(item)
 
     # A meeting began, paused or ended: the tray's item changes with it, and
     # the panel is shown for an offer and while live or paused, hidden a
@@ -1098,7 +1172,7 @@ class UiHost:
         while not self._quitting:
             time.sleep(PUSH_INTERVAL)
             self._sample_levels()
-            for channel in (self.bar, self.panel, self.main):
+            for channel in (self.bar, self.panel, self.chat, self.main):
                 if not channel.ready:
                     continue
                 if channel is self.main and not self.main_visible:

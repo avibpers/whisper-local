@@ -147,6 +147,24 @@ def _phrases_longest_first(commands: list) -> list:
     return pairs
 
 
+# One word the way a phrase is compared: a plural or a verb's "s" doesn't count,
+# so "open download folder" runs "open downloads" (2026-11-06).
+def _word_key(word: str) -> str:
+    return word[:-1] if len(word) > 3 and word.endswith('s') and not word.endswith('ss') else word
+
+
+# Whether `phrase` is in `text` as whole words in a row, plurals aside. Both are
+# already normalized (normalize_spoken).
+def phrase_in(phrase: str, text: str) -> bool:
+    if not phrase:
+        return False
+    if phrase in text:
+        return True
+    want = [_word_key(w) for w in phrase.split()]
+    have = [_word_key(w) for w in text.split()]
+    return any(have[i:i + len(want)] == want for i in range(len(have) - len(want) + 1))
+
+
 # Which of a command's phrases is in `text` (the longest), or '' when only
 # its pattern matched. For "Test a phrase" on the Commands screen.
 def phrase_heard(command: dict, text: str) -> str:
@@ -283,7 +301,7 @@ class VoiceCommandManager:
                     return _with_number(command, _spoken_digit(found.group(1)))
                 continue
 
-            if phrase and normalize_spoken(phrase) in normalized:
+            if phrase and phrase_in(normalize_spoken(phrase), normalized):
                 return command
 
         return None

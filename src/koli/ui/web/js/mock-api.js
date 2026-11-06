@@ -605,6 +605,12 @@ export function createMock(emit) {
     agent_history: () => ok(MOCK_AGENT_HISTORY),
     agent_undo: () => ok('ran'),
     agent_cancel: () => ok(null),
+    agent_chat_close: () => { emit('chat', { event: 'close', why: 'closed', id: 1 }); return ok(null); },
+    agent_chat_state: () => ok({ id: 1, open: true, state: 'listening', status: '', closes_after: 20, turns: [
+      { who: 'you', text: 'music', kind: '' }, { who: 'koli', text: 'Done: music', kind: 'done' },
+      { who: 'you', text: 'open download folder', kind: '' }, { who: 'koli', text: 'Done: open downloads', kind: 'done' },
+      { who: 'you', text: 'make a folder called Invoices in Documents', kind: '' },
+      { who: 'koli', text: 'Made the folder Invoices in Documents', kind: 'done', lines: ['Create folder Documents\\Invoices'] }] }),
     agent_approve: () => ok(null),
     agent_save: (id, phrase) => ok(phrase),
     agent_decline: () => ok(null),

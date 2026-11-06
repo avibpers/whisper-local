@@ -621,7 +621,11 @@ SCHEMA = [
        min=2, max=30, step=1, unit='seconds'),
     _S('wake_word.follow_up_seconds', 'Keeps listening after a command', 'commands', 'number',
        min=1, max=30, step=1, unit='seconds',
-       help='For another command without the wake word, like “louder”.'),
+       help='For another command without the wake word, like “louder”. With your own word, what you say then '
+       'opens the conversation with the agent.'),
+    _S('wake_word.chat_silence_seconds', 'The conversation closes after', 'commands', 'number',
+       min=5, max=300, step=5, unit='seconds of quiet',
+       help='The window where you talk with the agent without the wake word. Close it any time with ×.'),
     _S('wake_word.phrases', 'Your wake word', 'internal', 'readonly', apply=INTERNAL, mode=HIDDEN),
     _S('wake_word.only_my_voice', 'Wake word: only your voice', 'internal', 'readonly', apply=INTERNAL, mode=HIDDEN),
     _S('wake_word.spelling', 'How you spell your wake word', 'internal', 'readonly', apply=INTERNAL, mode=HIDDEN),

@@ -5,6 +5,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 ## [Unreleased]
 
 ### Added
+- **Talk with the agent in its own window.** After a command, what you say next
+  opens a floating conversation: no wake word, your voice only, your commands or
+  the AI for anything else, with what Koli did and Approve or Cancel. It closes
+  after 20 s of quiet (Commands › Wake word) or with ×. With your own wake word.
 - **Profiles you can really set** (Apps). Each setting says "use global" until you
   give it a value, and a profile never overwrites your global settings. Hold a
   profile's own key to dictate with it, set a profile on an app so your main key uses
@@ -76,6 +80,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
   chat's language when unsure" turns it off (`docs/design/chat-language.md`).
 
 ### Fixed
+- **What you said after "Anything else?" was dropped without a word** when no
+  command matched it, and "open download folder" didn't run "open downloads".
 - **The Dictation and Notes profiles replaced your speech model with `base`,** and
   your Hebrew came out as nonsense. No shipped profile changes the model now.
 - **Word Snap wrote wrong words once a name was in your favored words.** "I can't"
