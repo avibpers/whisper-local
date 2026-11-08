@@ -119,6 +119,35 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(live_timer().seconds, 5, 'never shorter than 5 s')
 
 
+class StopTests(unittest.TestCase):
+    def test_saying_only_stop_ends_it(self):
+        from koli.agent.chat import is_stop
+        for said in ('Abort, abort, stop the task', 'stop', 'cancel that', "that's all", "that's all, thanks",
+                     'never mind', 'please stop now', 'עצור', 'די', 'תפסיק את זה'):
+            self.assertTrue(is_stop(said), said)
+
+    def test_a_command_with_stop_in_it_is_still_a_command(self):
+        from koli.agent.chat import is_stop
+        for said in ('Stop the music', 'stop playing music', 'open downloads', 'thank you', 'close the browser tab'):
+            self.assertFalse(is_stop(said), said)
+
+    def test_the_music_goes_down_while_it_is_open(self):
+        changes = []
+        chat = ChatSession(publish=lambda p: None, timer=FakeTimer, on_change=changes.append)
+        chat.open()
+        chat.open()
+        chat.close()
+        chat.close()
+        self.assertEqual(changes, [True, False])
+
+    def test_a_failing_music_step_never_stops_the_conversation(self):
+        def broken(is_open):
+            raise RuntimeError('no audio device')
+        chat = ChatSession(publish=lambda p: None, timer=FakeTimer, on_change=broken)
+        chat.open()
+        self.assertTrue(chat.is_open())
+
+
 class MatchTests(unittest.TestCase):
     def _manager(self, *triggers):
         from koli.voice_commands import VoiceCommandManager
@@ -190,6 +219,31 @@ class PipelineTests(unittest.TestCase):
         sm.agent_chat.open()
         self.assertFalse(sm._handle_command_transcription('do something clever', source='personal'))
         self.assertIn('AI actions are off', sm.agent_chat.turns[-1]['text'])
+
+    def test_stop_in_the_conversation_ends_it_and_stops_the_ai(self):
+        sm = self._sm()
+        sm.agent.busy = True
+        sm.agent_chat.open()
+        self.assertTrue(sm._handle_command_transcription('Abort, abort, stop the task', source='personal'))
+        sm.agent.handle.assert_not_called()
+        sm.agent.cancel.assert_called_once()
+        self.assertFalse(sm.agent_chat.is_open())
+        self.assertEqual(sm.agent_chat.turns[-1]['text'], 'Stopped.')
+
+    def test_stop_outside_the_conversation_is_an_ordinary_command(self):
+        sm = self._sm()
+        sm._handle_command_transcription('stop', source='personal')
+        sm.agent.handle.assert_called_once_with('stop')
+
+    def test_the_music_control_lowers_to_your_level_and_never_pauses(self):
+        sm = self._sm()
+        sm.config_manager.config = {'audio': {'lower_volume': {'enabled': True, 'level': 10}, 'pause_media_on_record': True}}
+        control = mock.Mock()
+        sm.__dict__['_chat_media'] = control
+        sm._chat_music(True)
+        control.on_recording_start.assert_called_once_with({'lower_volume': {'enabled': True, 'level': 10}})
+        sm._chat_music(False)
+        control.on_recording_end.assert_called_once()
 
     def test_closing_stops_what_the_ai_is_doing(self):
         sm = self._sm()

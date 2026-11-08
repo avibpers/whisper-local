@@ -415,7 +415,7 @@ SCHEMA = [
        choices=[['punctuation', 'Punctuation and capitals'], ['correct', 'Misheard words, using the context'],
                 ['grammar', 'Misheard words and my English grammar']],
        help='Misheard words: the model is told the language, the window, what you wrote there just before and your '
-       'favored words. Those go only to a model on this computer. A dictation over 400 characters is not sent, and '
+       'favored words. Those go only to a model on this computer. A long dictation gets up to 3 seconds, and '
        'while the model loads your text goes out without it.'),
     _S('ai.polish.model', 'Polish with', 'ai', 'ai_model', group='Polish', help='Empty uses the default model.'),
     _S('ai.polish.timeout', 'Give up after', 'ai', 'number', group='Polish', min=1, max=120, step=1, unit='seconds',

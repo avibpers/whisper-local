@@ -134,10 +134,29 @@ class CorrectTests(unittest.TestCase):
                 thread.join(2)
         self.assertEqual(warmed[0][0], MODEL)
 
-    def test_a_long_dictation_is_not_sent(self):
+    def test_a_very_long_dictation_is_not_sent(self):
         llm = FakeLlm()
-        self.assertEqual(sc.correct('word ' * 100, MODEL, llm, self.local, ready_warmer()).text, '')
+        self.assertEqual(sc.correct('word ' * 300, MODEL, llm, self.local, ready_warmer()).text, '')
         self.assertEqual(llm.calls, [])
+
+    # 2026-11-08: "update the car there" sat in a 700-character dictation about billing.
+    def test_a_long_dictation_gets_more_time(self):
+        text = 'we charge the invoice and ' * 26 + 'update the car there'
+        llm = FakeLlm(text='{"text": "' + text.replace('car there', 'card there') + '"}')
+        outcome = sc.correct(text, MODEL, llm, self.local, ready_warmer(), grammar=True)
+        self.assertTrue(outcome.text.endswith('card there'))
+        call = next(c for c in llm.calls if c[0] == 'polish')
+        self.assertAlmostEqual(call[2]['timeout'], len(text) / sc.CHARS_PER_SECOND)
+
+    def test_the_wait_grows_with_length_and_stops_at_three_seconds(self):
+        self.assertIsNone(sc.time_limit('x' * 400), 'short ones keep the setting')
+        self.assertAlmostEqual(sc.time_limit('x' * 700), 2.0)
+        self.assertEqual(sc.time_limit('x' * 1150), 3.0)
+
+    def test_a_long_one_running_out_of_time_keeps_the_model(self):
+        warmer = ready_warmer()
+        sc.correct('word ' * 120, MODEL, FakeLlm(text='', error='No answer within 2 seconds'), self.local, warmer)
+        self.assertTrue(warmer.ready(MODEL))
 
     def test_no_answer_in_time_keeps_the_dictation_and_marks_the_model_lost(self):
         warmer = ready_warmer()
@@ -173,7 +192,7 @@ class ConsoleTests(unittest.TestCase):
 
     def test_it_says_why_the_model_was_not_used(self):
         self.assertIn('still loading', self._run(FakeLlm(), warmer=sc.Warmer(lambda spec, options: None))[0])
-        self.assertIn('over the 400 limit', self._run(FakeLlm(), text='word ' * 100)[0])
+        self.assertIn('over the 1200 limit', self._run(FakeLlm(), text='word ' * 300)[0])
 
     def test_the_live_console_gets_it_and_the_log_file_does_not(self):
         import logging
@@ -287,6 +306,16 @@ class GrammarOnlyTests(unittest.TestCase):
     def test_an_answer_about_something_else_is_undone(self):
         text = 'This is what my CTO wrote to me. Answer him.'
         self.assertEqual(self._keep(text, 'So we need to do like municipally, that every page we have on file.')[0], text)
+
+    def test_a_misheard_word_one_letter_away_is_fixed(self):
+        for text, answer in (('update the car there', 'update the card there'),
+                             ('we are talking about hard payments', 'we are talking about card payments'),
+                             ('check the roll of the user', 'check the role of the user')):
+            self.assertEqual(self._keep(text, answer), (answer, []), text)
+
+    def test_a_letter_that_turns_the_meaning_around_stays(self):
+        for text, answer in (('it is not ready', 'it is now ready'), ('I can do it', "I can't do it")):
+            self.assertEqual(self._keep(text, answer)[0], text, text)
 
     def test_your_own_terms_stay_only_when_they_sound_alike(self):
         self.assertEqual(self._keep('How gboss works', 'How G-BOSS works', ['G-BOSS'])[1], [])

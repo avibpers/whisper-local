@@ -16,6 +16,26 @@ logger = logging.getLogger(__name__)
 MAX_TURNS = 60
 DEFAULT_SILENCE_S = 20.0
 
+# Saying only these (and words like "the task") ends the conversation and stops the
+# AI. "Abort, abort, stop the task" went to the AI as a request (2026-11-08).
+STOP_WORDS = frozenset('stop cancel abort enough quit exit bye goodbye close nevermind '
+                       'עצור תעצור די ביטול בטל תבטל תפסיק הפסק סגור תסגור מספיק זהו'.split())
+STOP_PHRASES = ('thats all', 'thats it', 'never mind', 'that is all', 'זה הכל')
+FILLER = frozenset('the a task it that this please now all everything koli chat conversation window thanks thank you '
+                   'את זה המשימה הכל בבקשה עכשיו תודה'.split())
+
+
+# Whether what you said only asks to stop. "Stop the music" isn't: music isn't filler.
+def is_stop(text: str) -> bool:
+    import re
+    words = re.sub(r"[^\w\s]", '', (text or '').lower()).split()
+    if not words:
+        return False
+    joined = ' '.join(words)
+    if any(joined == p or joined.startswith(p + ' ') for p in STOP_PHRASES):
+        return all(w in FILLER or w in STOP_WORDS or w in ' '.join(STOP_PHRASES).split() for w in words)
+    return any(w in STOP_WORDS for w in words) and all(w in STOP_WORDS or w in FILLER for w in words)
+
 # The agent's phases (agent/runner.py) as the conversation shows them.
 WORKING = ('thinking', 'checking', 'working')                    # a status line, the clock waits
 WAITING_ON_YOU = ('ask', 'approve')                             # Koli's turn, the clock waits for your answer
@@ -25,9 +45,12 @@ FINISHED = ('done', 'failed', 'not_understood', 'nothing', 'cancelled', 'undone'
 class ChatSession:
     # `publish(payload)` sends a 'chat' event; `silence_seconds()` reads the
     # setting each time, so a change applies to the open conversation.
+    # `on_change(open)` runs when it opens and closes (the music goes down and back up).
     def __init__(self, publish: Callable[[dict], None], silence_seconds: Callable[[], float] = lambda: DEFAULT_SILENCE_S,
-                 clock: Callable[[], float] = time.monotonic, timer: Callable = threading.Timer):
+                 clock: Callable[[], float] = time.monotonic, timer: Callable = threading.Timer,
+                 on_change: Optional[Callable[[bool], None]] = None):
         self._publish = publish
+        self._on_change = on_change
         self._silence_seconds = silence_seconds
         self._clock = clock
         self._timer_factory = timer
@@ -56,6 +79,7 @@ class ChatSession:
             logger.info(f"Agent chat opened{f' ({why})' if why else ''}")
             self._send({'event': 'open', **self.snapshot()})
             self._arm()
+        self._changed(True)
 
     # `why`: quiet (the silence ran out), closed (its button), or another reason for the log.
     def close(self, why: str = 'closed'):
@@ -67,6 +91,7 @@ class ChatSession:
             self._cancel_timer()
             logger.info(f"Agent chat closed ({why})")
             self._send({'event': 'close', 'why': why, 'id': self._id})
+        self._changed(False)
 
     # ── What happened ───────────────────────────────────────────────────────
 
@@ -157,6 +182,14 @@ class ChatSession:
         if self._timer is not None:
             self._timer.cancel()
             self._timer = None
+
+    def _changed(self, is_open: bool):
+        if self._on_change is None:
+            return
+        try:
+            self._on_change(is_open)
+        except Exception as e:
+            logger.debug(f"Agent chat: {'opening' if is_open else 'closing'} step failed: {e}")
 
     def _send(self, payload: dict):
         try:

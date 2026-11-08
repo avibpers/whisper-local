@@ -185,7 +185,8 @@ class StateManager:
         from .agent.chat import ChatSession
         self.agent_chat = ChatSession(
             publish=lambda payload: publish('chat', payload),
-            silence_seconds=lambda: self.config_manager.get_path('wake_word.chat_silence_seconds', 20))
+            silence_seconds=lambda: self.config_manager.get_path('wake_word.chat_silence_seconds', 20),
+            on_change=self._chat_music)
         # MeetingService, set by main when the app window runs (meeting mode).
         self.meetings = None
         # learning.recorder.ClipRecorder, set by main: keeps each dictation's
@@ -1907,8 +1908,13 @@ class StateManager:
             self.logger.warning("Voice commands disabled")
             return False
 
-        matched = self.voice_command_manager.match_command(text, only=only)
         chat = self.agent_chat if self.agent_chat.is_open() else None
+        from .agent.chat import is_stop
+        if chat is not None and is_stop(text):
+            chat.koli('Stopped.', 'cancelled')
+            self.close_agent_chat('you said stop')
+            return True
+        matched = self.voice_command_manager.match_command(text, only=only)
         if matched:
             if confirm_runs:
                 self.voice_command_manager.execute_command(matched, use_auto_enter, confirm_runs=True)
@@ -1954,12 +1960,27 @@ class StateManager:
             chat.listening()
         return AGENT
 
-    # The conversation's Close button: anything the AI is still doing stops.
-    def close_agent_chat(self):
+    # The conversation's Close button, or "stop": anything the AI is still doing stops.
+    def close_agent_chat(self, why: str = 'closed'):
         agent = getattr(self, 'agent', None)
         if agent is not None and getattr(agent, 'busy', False):
             agent.cancel()
-        self.agent_chat.close('closed')
+        self.agent_chat.close(why)
+
+    # The music goes down while the conversation is open, as while you dictate
+    # (audio.lower_volume), so a song isn't taken for you. Never paused: you may
+    # just have asked for it. Its own control, so a dictation ending meanwhile
+    # doesn't bring it back up.
+    def _chat_music(self, is_open: bool):
+        control = self.__dict__.get('_chat_media')
+        if control is None:
+            from .media_control import MediaControl
+            control = self.__dict__['_chat_media'] = MediaControl()
+        if is_open:
+            lower = (self.config_manager.config.get('audio') or {}).get('lower_volume') or {}
+            control.on_recording_start({'lower_volume': lower})
+        else:
+            control.on_recording_end()
 
     # The AI actions' runner, wired to this app: the model, the bubble, your
     # commands, and the wake word's microphone and voiceprint for the password.

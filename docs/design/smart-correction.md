@@ -61,7 +61,8 @@ gets the text, the language and your words.
 | Model loaded | It answers | 0.2 s typical, 1 s at most (`ai.polish.timeout`) |
 | No answer within the limit | Your text goes out as it was; a warm-up is started | The limit, once |
 | Model not loaded (10–15 s to load) | Not asked; your text goes out as it was | None |
-| Over 400 characters (2% of dictations) | Not sent, because it wouldn't fit in a second | None |
+| 400 to 1,200 characters | Sent with more time: a second per 350 characters, at most 3 s. "update the car there" sat in a 700-character dictation the AI used to skip (2026-11-08); given the time it wrote "card" in 1 s | Up to 3 s |
+| Over 1,200 characters | Not sent, because it wouldn't finish in 3 s | None |
 | A translation, any length | Gets up to 4 s (872 characters took 2.35 s). If it fails your words are typed and **not sent**, so Hebrew never goes out by accident | Usually 0.35 s |
 | Ollama not running | Not asked after the first failure | None |
 
@@ -85,9 +86,10 @@ became of its answer, on the terminal and in the Live screen's console. Not in
 Grammar has a check of its own, because the instruction alone didn't hold it: on the
 owner's real dictations `porno` became `promo` and `no messages` became `any messages`.
 `keep_grammar_only` goes through the answer change by change and keeps only what is
-grammar: small words, another form of the same word, words joined or apart, or one of
-your terms that sounds alike. Anything else goes back to what you said, and the clip
-says so (`ai.kept_out`). The cost: real fixes like `roll` to `role` go too.
+grammar: small words, another form of the same word, words joined or apart, one of
+your terms that sounds alike, or a misheard word one letter away (car to card, hard to
+card, roll to role), never a word like "not" or "now" that turns the meaning around. Anything else goes back to what you said, and the clip
+says so (`ai.kept_out`). The cost: a misheard word more than a letter away stays.
 
 The model's answer is written only if it changes words, keeps the alphabet of the
 dictation, adds no third alphabet, and changes at most 30% of the words (or 2); 35%
