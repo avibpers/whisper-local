@@ -22,7 +22,7 @@ word.
 | The command hotkey and something the AI takes | The conversation opens too |
 | In the conversation, anything | No wake word: a fixed command if one matches, otherwise the AI |
 | Quiet for `wake_word.chat_silence_seconds` (20) | It closes. The time doesn't run while the AI works or waits for your answer |
-| × in the window | It closes, and an AI action still running stops |
+| × in the window, or saying only "stop", "cancel", "abort", "that's all" (or עצור, די, ביטול) | It closes, and an AI action still running stops. "Stop the music" is a command, not a stop |
 
 ## Decisions
 
@@ -39,5 +39,10 @@ word.
   the AI's questions, a status line while it works, and Approve and Cancel. The
   bubble stays quiet meanwhile. The window is hidden from screen sharing.
 - **Command phrases ignore plurals**: "open download folder" runs "open downloads".
+- **The music goes down while it is open**, to your dictation level
+  (`audio.lower_volume`), never paused, and back up when it closes. On 2026-11-08 a
+  song playing on Spotify reached the AI as "Scabibar" and "A Morte".
+- **While the AI works, saying "stop" isn't heard**: the action runs on the
+  listener's thread. Cancel in the window stops it.
 - **Not in this version:** typing in the window, moving it to a remembered place,
   and a conversation in a meeting (the wake word doesn't listen during one).

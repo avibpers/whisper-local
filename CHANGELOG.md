@@ -80,6 +80,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
   chat's language when unsure" turns it off (`docs/design/chat-language.md`).
 
 ### Fixed
+- **A long dictation skipped the AI**, so "update the car there" stayed "car" in a
+  dictation about billing. Long ones now get more time, up to 3 s, and the grammar
+  fix may also mend a misheard word one letter away (car to card).
+- **The conversation couldn't be stopped by voice** ("abort, stop the task" went to
+  the AI), and a song on Spotify reached it as words. "Stop", "cancel" or "that's
+  all" now end it, and the music goes down while it is open.
 - **What you said after "Anything else?" was dropped without a word** when no
   command matched it, and "open download folder" didn't run "open downloads".
 - **The Dictation and Notes profiles replaced your speech model with `base`,** and
