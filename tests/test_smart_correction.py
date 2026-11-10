@@ -171,6 +171,51 @@ class CorrectTests(unittest.TestCase):
         self.assertIs(sc.OLLAMA_OPTIONS['think'], False)
 
 
+# 2026-11-10: Codex answers in 1-2 s, and with the 1 s meant for a local model every
+# dictation ran out of time. An online model is for PCs too weak for a local one.
+class OnlineModelTests(unittest.TestCase):
+    ONLINE = 'codex/gpt-6-luna'
+    cloud = staticmethod(lambda spec: 'cloud')
+
+    def _calls(self, llm, feature):
+        return [c for c in llm.calls if c[0] == feature]
+
+    def test_a_short_dictation_waits_seconds_not_one(self):
+        llm = AnsweringLlm()
+        sc.correct('check the roll', self.ONLINE, llm, self.cloud, None, 'English')
+        polish = self._calls(llm, 'polish')[0]
+        self.assertGreaterEqual(polish[2]['timeout'], sc.ONLINE_WAIT_S)
+
+    def test_the_score_gets_the_same_time_as_the_correction(self):
+        llm = AnsweringLlm()
+        sc.correct('check the roll', self.ONLINE, llm, self.cloud, None, 'English')
+        self.assertEqual(self._calls(llm, 'polish_score')[0][2]['timeout'], self._calls(llm, 'polish')[0][2]['timeout'])
+
+    def test_the_wait_grows_with_length_and_has_a_ceiling(self):
+        self.assertEqual(sc.time_limit('x' * 10, online=True), sc.ONLINE_WAIT_S + 10 / sc.ONLINE_CHARS_PER_SECOND)
+        self.assertGreater(sc.time_limit('x' * 1000, online=True), sc.time_limit('x' * 100, online=True))
+        self.assertEqual(sc.time_limit('x' * 4000, online=True), sc.ONLINE_MAX_WAIT_S)
+
+    def test_a_long_dictation_still_goes_to_an_online_model(self):
+        llm = AnsweringLlm()
+        sc.correct('word ' * 300, self.ONLINE, llm, self.cloud, None, 'English')
+        self.assertTrue(self._calls(llm, 'polish'), '1,500 characters is over the local limit only')
+        llm = AnsweringLlm()
+        sc.correct('word ' * 900, self.ONLINE, llm, self.cloud, None, 'English')
+        self.assertEqual(llm.calls, [])
+
+    def test_a_translation_waits_the_online_time(self):
+        llm = AnsweringLlm('{"text": "On tasks in JumboMail."}')
+        sc.translate('על משימות בגמבו מייל', self.ONLINE, llm, self.cloud, None)
+        self.assertGreaterEqual(self._calls(llm, 'polish')[0][2]['timeout'], sc.ONLINE_WAIT_S)
+
+    def test_a_local_model_keeps_its_short_limits(self):
+        llm = AnsweringLlm()
+        sc.correct('check the roll', MODEL, llm, lambda spec: 'local', ready_warmer(), 'English')
+        self.assertIsNone(self._calls(llm, 'polish')[0][2]['timeout'], 'the setting decides')
+        self.assertEqual(self._calls(llm, 'polish_score')[0][2]['timeout'], sc.SCORE_TIMEOUT)
+
+
 class ConsoleTests(unittest.TestCase):
     def _run(self, llm, text='check the roll', warmer=None):
         shown = []

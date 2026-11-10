@@ -25,6 +25,20 @@ class NetworkError(Exception):
     pass
 
 
+# The server was reached but didn't answer within the time the caller allowed.
+class TimedOut(NetworkError):
+    pass
+
+
+# The one error a socket failure becomes. urllib wraps a failed connect in URLError
+# (not reachable, even when the connect timed out); a bare timeout came after the
+# server was reached, while waiting for its answer (TimedOut).
+def _network_error(e: Exception) -> NetworkError:
+    reason = getattr(e, 'reason', None) or e
+    kind = TimedOut if isinstance(e, TimeoutError) else NetworkError
+    return kind(str(reason) or e.__class__.__name__)
+
+
 def _request(method: str, url: str, headers: dict = None, body: bytes = None, timeout: float = 30):
     req = urllib.request.Request(url, data=body, method=method, headers=headers or {})
     try:
@@ -36,8 +50,37 @@ def _request(method: str, url: str, headers: dict = None, body: bytes = None, ti
             text = ''
         raise HttpError(e.code, text, url) from None
     except (urllib.error.URLError, socket.timeout, TimeoutError, ConnectionError, OSError) as e:
-        reason = getattr(e, 'reason', None) or e
-        raise NetworkError(str(reason) or e.__class__.__name__) from None
+        raise _network_error(e) from None
+
+
+# The open streaming response. Reading it raises NetworkError (TimedOut when the
+# answer stops arriving in time), like opening it does, never a bare socket error:
+# a stream that ran out of time is an ordinary "too slow", not a crash.
+class _Stream:
+    def __init__(self, resp):
+        self._resp = resp
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self._resp.close()
+        return False
+
+    def __iter__(self):
+        try:
+            yield from self._resp
+        except (socket.timeout, TimeoutError, ConnectionError, OSError) as e:
+            raise _network_error(e) from None
+
+    def read(self, *args):
+        try:
+            return self._resp.read(*args)
+        except (socket.timeout, TimeoutError, ConnectionError, OSError) as e:
+            raise _network_error(e) from None
+
+    def __getattr__(self, name):
+        return getattr(self._resp, name)
 
 
 def _decode(resp) -> object:
@@ -84,4 +127,4 @@ def raw(method: str, url: str, headers: dict = None, body: bytes = None, timeout
 def post_stream(url: str, payload: dict, headers: dict = None, timeout: float = 60):
     body = json.dumps(payload).encode('utf-8')
     hdrs = {'Content-Type': 'application/json', 'Accept': 'text/event-stream', **(headers or {})}
-    return _request('POST', url, hdrs, body, timeout)
+    return _Stream(_request('POST', url, hdrs, body, timeout))

@@ -196,6 +196,8 @@ def describe_error(provider_id: str, e: Exception) -> str:
     label = providers.PROVIDERS[provider_id].label if provider_id in providers.PROVIDERS else provider_id
     if isinstance(e, (ConfigError, ReconnectNeeded)):
         return str(e)
+    if isinstance(e, http.TimedOut):
+        return f"{label} didn't answer in time: {e}"
     if isinstance(e, http.NetworkError):
         local = provider_id in ('ollama', 'lmstudio')
         return f"{label} isn't reachable{' (is it running?)' if local else ''}: {e}"

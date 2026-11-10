@@ -419,7 +419,8 @@ SCHEMA = [
        'while the model loads your text goes out without it.'),
     _S('ai.polish.model', 'Polish with', 'ai', 'ai_model', group='Polish', help='Empty uses the default model.'),
     _S('ai.polish.timeout', 'Give up after', 'ai', 'number', group='Polish', min=1, max=120, step=1, unit='seconds',
-       help='Then the dictation goes out without polish.'),
+       help='Then the dictation goes out without polish. For a model on this computer; an online model gives up '
+       'when no answer comes for 8 s (15 s for a long dictation), so it works on a PC too weak for a local one.'),
     _S('ai.polish.prompt', 'Polish instruction', 'ai', 'textarea', group='Polish',
        help='For punctuation and capitals only. {text} is replaced with your dictation.'),
     _S('ai.rewrite.model', 'Rewrite with', 'ai', 'ai_model', group='Rewrite',

@@ -992,6 +992,8 @@ ai: # Language models for polish, rewrites and later features (Settings › AI)
         # with the language, window, your last dictations there and your words
         # (window and dictations go only to a model on this computer). Over 400
         # characters isn't sent; while the model loads, the text goes out as is.
+        # timeout is for a model on this computer: an online one gives up when no answer
+        # comes for 8 s (15 s for a long dictation) and takes up to 4,000 characters.
         mode: punctuation
         model: '' # empty = the default model
         timeout: 5

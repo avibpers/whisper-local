@@ -4,7 +4,8 @@
 # your Hebrew to English (ai.translate, usually from a profile). The model is told the language, the
 # window, what you wrote just before and the names you use. Speed comes first: you
 # never wait for the model to load, the wait has a hard limit, and anything that looks
-# like a rewrite is thrown away. What Whisper heard and every changed word are kept
+# like a rewrite is thrown away. An online model gets seconds instead of one, so a PC
+# too weak for a local model can trade a short wait for the fix. What Whisper heard and every changed word are kept
 # with the clip, so learning uses what you really said. Dictation only; meetings never
 # come here. Why these limits: the 2026-11-05 tests, docs/design/smart-correction.md.
 
@@ -32,6 +33,17 @@ MAX_CHANGE = 0.3            # of the words, for fixing misheard words
 MAX_GRAMMAR_CHANGE = 0.35   # grammar touches more words; beyond this it was inventing
 TRANSLATE_TIMEOUT = 4       # a translation can't be skipped for length, so long ones may wait this
 SCORE_WAIT = 0.3            # how long a finished correction waits for its score
+SCORE_TIMEOUT = 1           # the score's own limit on a local model
+
+# An online model (Codex, Gemini, OpenRouter, OpenAI...) answers in 1-2 s and up to 9 s
+# on a cold connection (Codex, 2026-11-10); with 1 s every dictation ran out of time.
+# Whoever picks one accepts the wait: a short dictation gets ONLINE_WAIT_S, a long one a
+# second more per ONLINE_CHARS_PER_SECOND, the translation and the score the same.
+ONLINE_WAIT_S = 8.0
+ONLINE_CHARS_PER_SECOND = 200
+ONLINE_MAX_WAIT_S = 15.0
+ONLINE_MAX_CHARS = 4000     # an online model finishes far more in ONLINE_MAX_WAIT_S
+ONLINE_SCORE_WAIT = 1.0     # the score runs alongside, but over the network it may land a little later
 HELD_SCORE = 2              # this or lower: the sentence doesn't make sense
 
 # Sent with every call to Ollama. The same numbers must go with the warm-up, or
@@ -351,8 +363,11 @@ class Warmer:
         self.warm(spec)
 
 
-# The wait for a dictation this long: None keeps the setting's (short ones).
-def time_limit(text: str) -> Optional[float]:
+# The wait for a dictation this long. On a local model None keeps the setting's (short
+# ones); an online model always gets its own, longer one.
+def time_limit(text: str, online: bool = False) -> Optional[float]:
+    if online:
+        return min(ONLINE_MAX_WAIT_S, ONLINE_WAIT_S + len(text or '') / ONLINE_CHARS_PER_SECOND)
     if len(text or '') <= LONG_CHARS:
         return None
     return min(MAX_WAIT_S, len(text) / CHARS_PER_SECOND)
@@ -363,14 +378,17 @@ def time_limit(text: str) -> Optional[float]:
 # Runs next to the correction on its own thread, so together they take no longer
 # than the slower one. For now it is only shown and kept with the clip.
 class _Score:
-    def __init__(self, text: str, language: str, before: Optional[list], spec: str, complete: Callable, options, private: bool):
+    # `timeout` is the score's own limit; `wait` how long the finished correction waits for it.
+    def __init__(self, text: str, language: str, before: Optional[list], spec: str, complete: Callable, options, private: bool,
+                 timeout: float = SCORE_TIMEOUT, wait: float = SCORE_WAIT):
         self.value = None
+        self._wait = wait
         known = [f'The speaker is speaking {language}.'] if language else []
         if private and before:
             known.append('What the speaker wrote just before:\n' + '\n'.join(before))
         system = '\n\n'.join([SCORE_INSTRUCTION] + known)
         self._call = lambda: complete('polish_score', [{'role': 'system', 'content': system}, {'role': 'user', 'content': text}],
-                                      json=True, model=spec, timeout=1, fallbacks=False, options=options)
+                                      json=True, model=spec, timeout=timeout, fallbacks=False, options=options)
         self._thread = threading.Thread(target=self._run, daemon=True, name='correction-score')
         self._thread.start()
 
@@ -384,7 +402,7 @@ class _Score:
             logger.debug(f"Sense score failed: {e}")
 
     def result(self) -> Optional[int]:
-        self._thread.join(SCORE_WAIT)
+        self._thread.join(self._wait)
         return self.value
 
 
@@ -394,6 +412,13 @@ def _say_score(score: Optional[int], show: Callable[[str], None]):
 
 
 # ── One dictation ────────────────────────────────────────────────────────────
+
+# The score for this dictation: a local model keeps its 1 s, an online one gets the correction's limit.
+def _start_score(text, language, before, spec, complete, options, private: bool, limit: Optional[float]) -> _Score:
+    if private:
+        return _Score(text, language, before, spec, complete, options, private)
+    return _Score(text, language, before, spec, complete, options, private, timeout=limit, wait=ONLINE_SCORE_WAIT)
+
 
 # The model is usable right now; if not, says so, and starts loading it.
 def _ready(spec: str, warmer: Optional[Warmer], what: str, show: Callable[[str], None]) -> bool:
@@ -413,20 +438,21 @@ def correct(text: str, spec: str, complete: Callable, kind_of: Callable, warmer:
             show: Callable[[str], None] = lambda message: None, grammar: bool = False) -> Outcome:
     if not text or not spec:
         return Outcome()
-    if len(text) > MAX_CHARS:
-        show(f"AI correction not used: {len(text)} characters is over the {MAX_CHARS} limit")
+    private = kind_of(spec) == 'local'
+    max_chars = MAX_CHARS if private else ONLINE_MAX_CHARS
+    if len(text) > max_chars:
+        show(f"AI correction not used: {len(text)} characters is over the {max_chars} limit")
         return Outcome()
-    limit = time_limit(text)
+    limit = time_limit(text, online=not private)
     if not _ready(spec, warmer, 'correction', show):
         return Outcome()
-    private = kind_of(spec) == 'local'
     options = OLLAMA_OPTIONS if warmer is not None else None
     grammar = grammar and not _mostly_hebrew(text)
     instruction = GRAMMAR_INSTRUCTION if grammar else INSTRUCTION
     outcome = Outcome(kind='grammar' if grammar else 'correct', before=text)
     sent = messages(text, language, terms, app, title, before, private, instruction)
     show(f"AI correction, what {spec} gets besides its instruction:\n{describe(sent, instruction)}")
-    score = _Score(text, language, before, spec, complete, options, private)
+    score = _start_score(text, language, before, spec, complete, options, private, limit)
     result = complete('polish', sent, json=True, fallbacks=not private, options=options, timeout=limit)
     if result.error:
         logger.info(f"Correction skipped: {result.error}")
@@ -468,8 +494,9 @@ def translate(text: str, spec: str, complete: Callable, kind_of: Callable, warme
     options = OLLAMA_OPTIONS if warmer is not None else None
     sent = messages(text, 'Hebrew', terms, app, title, before, private, TRANSLATE_INSTRUCTION)
     show(f"AI translation, what {spec} gets besides its instruction:\n{describe(sent, TRANSLATE_INSTRUCTION)}")
-    score = _Score(text, 'Hebrew', before, spec, complete, options, private)
-    result = complete('polish', sent, json=True, timeout=TRANSLATE_TIMEOUT, fallbacks=not private, options=options)
+    limit = TRANSLATE_TIMEOUT if private else time_limit(text, online=True)
+    score = _start_score(text, 'Hebrew', before, spec, complete, options, private, limit)
+    result = complete('polish', sent, json=True, timeout=limit, fallbacks=not private, options=options)
     if result.error:
         logger.info(f"Translation failed: {result.error}")
         show(f"AI translation failed, your words were typed and not sent: {result.error}")
