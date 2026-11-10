@@ -5,6 +5,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 ## [Unreleased]
 
 ### Added
+- **An online model can fix your dictation**, for a PC too weak for a local one.
+  Pick ChatGPT (Codex), Gemini or any other online model for Polish: the correction,
+  grammar, translation and score give it 8 s to answer (15 s for a long dictation)
+  instead of the 1 s a local model gets, and take up to 4,000 characters.
 - **Talk with the agent in its own window.** After a command, what you say next
   opens a floating conversation: no wake word, your voice only, your commands or
   the AI for anything else, with what Koli did and Approve or Cancel. It closes
@@ -80,6 +84,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
   chat's language when unsure" turns it off (`docs/design/chat-language.md`).
 
 ### Fixed
+- An AI answer that stopped arriving in time was logged as a crash with a traceback
+  and as "isn't reachable". It now says the provider didn't answer in time.
 - **A long dictation skipped the AI**, so "update the car there" stayed "car" in a
   dictation about billing. Long ones now get more time, up to 3 s, and the grammar
   fix may also mend a misheard word one letter away (car to card).

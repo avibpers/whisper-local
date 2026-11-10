@@ -470,5 +470,53 @@ class PictureTests(unittest.TestCase):
             temp.__exit__(None, None, None)
 
 
+# ── An answer that stops arriving ────────────────────────────────────────────
+
+# 2026-11-10: Codex began its answer and the 1 s limit ran out mid-stream. That was
+# a bare TimeoutError logged as a crash; it must be the provider being too slow.
+class StalledStreamTests(unittest.TestCase):
+    def setUp(self):
+        import socket
+        self.listener = socket.socket()
+        self.listener.bind(('127.0.0.1', 0))
+        self.listener.listen(1)
+        self.url = f"http://127.0.0.1:{self.listener.getsockname()[1]}"
+        self.release = threading.Event()
+        threading.Thread(target=self._serve, daemon=True).start()
+
+    # Sends the headers and one event, then nothing until the test is over.
+    def _serve(self):
+        conn, _ = self.listener.accept()
+        conn.recv(65536)
+        event = b'data: {"type": "response.output_text.delta", "delta": "hi"}\n\n'
+        head = b'HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n'
+        conn.sendall(head + f'{len(event):x}\r\n'.encode() + event + b'\r\n')
+        self.release.wait(5)
+        conn.close()
+
+    def tearDown(self):
+        self.release.set()
+        self.listener.close()
+
+    def test_a_stalled_stream_is_a_timeout_not_a_crash(self):
+        from koli.llm import http, describe_error
+        with self.assertRaises(http.TimedOut) as caught:
+            with http.post_stream(self.url, {}, timeout=0.5) as resp:
+                for _ in resp:
+                    pass
+        self.assertIsInstance(caught.exception, http.NetworkError)
+        message = describe_error('codex', caught.exception)
+        self.assertIn("didn't answer in time", message)
+        self.assertNotIn("isn't reachable", message)
+
+    def test_a_closed_port_is_still_not_reachable(self):
+        from koli.llm import http, describe_error
+        self.listener.close()
+        with self.assertRaises(http.NetworkError) as caught:
+            http.post_stream(self.url, {}, timeout=0.5)
+        self.assertNotIsInstance(caught.exception, http.TimedOut)
+        self.assertIn("isn't reachable", describe_error('codex', caught.exception))
+
+
 if __name__ == '__main__':
     unittest.main()

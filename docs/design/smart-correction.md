@@ -75,6 +75,33 @@ to the cloud models in `ai.fallbacks`.
 The warm-up and the calls must send the same `num_ctx`, or Ollama loads the model
 a second time. That cost 17 s in the first test.
 
+## An online model: a wait instead of a strong PC
+
+The table above is for a model on this computer. Not every PC can run one, so an
+online model (Codex, Gemini, OpenRouter, OpenAI, any provider) also does the
+correction, the grammar and the translation. Whoever picks one accepts a wait. On
+2026-11-10 Codex answered in 1.1–1.6 s, and 9.3 s on a cold connection. With the
+local 1 s limit every correction and every score ran out of time.
+
+| Situation | Online model |
+|---|---|
+| Short dictation | Gives up when no answer comes for 8 s (`ONLINE_WAIT_S`); usually 1–2 s |
+| Longer dictation | A second more per 200 characters, at most 15 s |
+| Over 4,000 characters | Not sent |
+| Translation | The same limit as a correction |
+| Sense score | Runs alongside with the same limit; the finished correction waits 1 s more for it |
+| No answer in time | Your text goes out as it was (a translation: typed, not sent); the next dictation asks again |
+
+The limit is the socket's: each wait for the connection, the reply and every
+piece of the stream may take that long, so it isn't a hard total. A correction is
+about 30 tokens and streams in well under a second once it starts.
+
+`ai.polish.timeout` stays the limit for a local model. The window and what you
+wrote before still go only to a local model.
+
+A stream that stops in the middle of an answer is `http.TimedOut`: the log says
+"didn't answer in time" instead of "isn't reachable" with a traceback.
+
 ## Seeing it work
 
 Each dictation shows what the model got besides its fixed instruction, and what
