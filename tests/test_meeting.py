@@ -3741,11 +3741,6 @@ class MeetingSearchTests(unittest.TestCase):
         store.save(b)
         store.save_brief(b['id'], {'tldr': ['Monitoring comes first.'], 'decisions': [{'id': 'D1', 'text': 'Ship on Sunday', 'at': 12}]},
                          rename_meeting=False)
-        # Word search ignores words said in over 30% of meetings: other meetings make "budget" or "sunday" rare.
-        for n in range(8):
-            store.save(dict(summary_meeting([{'start': 1.0, 'end': 5.0, 'speaker': 'you', 'text': 'just a quick chat', 'lang': 'en'}]),
-                            id=f'2026-10-{10 + n:02d}-080000', title='Chat', started_at=f'2026-10-{10 + n:02d}T08:00:00+03:00',
-                            speakers=[{'id': 'you', 'name': 'You', 'colour': 0}], screenshots=[]))
         return store
 
     def test_a_title_match_needs_no_snippet(self):
@@ -3766,7 +3761,7 @@ class MeetingSearchTests(unittest.TestCase):
         self.assertEqual(store.search('budget sheet')[0]['where'], 'screenshot')
         self.assertEqual(store.search('התקציב')[0]['title'], 'Budget review')
 
-    def test_every_rare_word_must_appear_and_newest_comes_first(self):
+    def test_every_word_must_appear_and_newest_comes_first(self):
         store = self.store()
         self.assertEqual(store.search('budget sunday'), [])
         self.assertEqual(store.search('   '), [])

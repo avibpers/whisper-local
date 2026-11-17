@@ -37,7 +37,8 @@ CHAT_SUFFIX = '.chat.json'
 # Word search (measured in the lab): whole words, Hebrew prefixes, rare words count most.
 WORD_RE = re.compile(r"[\w״\"׳'-]+")
 HEBREW_PREFIXES = 'והבלמשכ'   # one of these glued to the front of a word is not part of it
-COMMON_SHARE = 0.3                   # a word in more than this share of meetings tells nothing
+COMMON_SHARE = 0.3                   # a word in more than this share of meetings tells nothing...
+COMMON_MIN_MEETINGS = 3              # ...but only once more than this many meetings hold it (1-3 meetings stay searchable)
 
 
 # ── Shapes ───────────────────────────────────────────────────────────────────
@@ -172,7 +173,8 @@ def _first_word_matching(text: str, variants: set) -> Optional[str]:
 
 # About 70 characters around the first place the term appears.
 def _snippet(text: str, term: str, width: int = 70) -> str:
-    i = text.lower().find(term)
+    lowered = text.lower()
+    i = next((m.start() for m in WORD_RE.finditer(lowered) if m.group() == term), lowered.find(term))
     if i < 0:
         return text[:width]
     start = max(0, i - width // 3)
@@ -258,6 +260,7 @@ class MeetingStore:
         self.folder = Path(folder) if folder else meetings_dir()
         self._lock = threading.Lock()
         self._word_cache = {}        # meeting id -> (mtimes, entry) for search
+        self._word_lock = threading.Lock()   # overlapping searches build and prune that cache one at a time
 
     def path(self, meeting_id: str) -> Path:
         return self.folder / f"{meeting_id}.json"
@@ -312,37 +315,35 @@ class MeetingStore:
     def _word_index(self) -> list:
         if not self.folder.exists():
             return []
-        seen, index = set(), []
-        for path in sorted(self.folder.glob('*.json'), reverse=True):
-            if path.name.endswith((BRIEF_SUFFIX, CHAT_SUFFIX)):
-                continue
-            meeting_id = path.name[:-len('.json')]
-            try:
-                brief_path = self.brief_path(meeting_id)
-                mtimes = (path.stat().st_mtime_ns, brief_path.stat().st_mtime_ns if brief_path.exists() else None)
-            except OSError:
-                continue
-            cached = self._word_cache.get(meeting_id)
-            if not cached or cached[0] != mtimes:
+        with self._word_lock:
+            seen, index = set(), []
+            for path in sorted(self.folder.glob('*.json'), reverse=True):
+                if path.name.endswith((BRIEF_SUFFIX, CHAT_SUFFIX)):
+                    continue
+                meeting_id = path.name[:-len('.json')]
                 try:
-                    meeting = self.load(meeting_id)
-                except Exception as e:
+                    brief_path = self.brief_path(meeting_id)
+                    mtimes = (path.stat().st_mtime_ns, brief_path.stat().st_mtime_ns if brief_path.exists() else None)
+                    cached = self._word_cache.get(meeting_id)
+                    if not cached or cached[0] != mtimes:
+                        meeting = self.load(meeting_id)
+                        parts = self._search_parts(meeting, self.load_brief(meeting_id) or {})
+                        counts = Counter(words_of(' '.join([parts['names'], parts['summary'], parts['captions']]
+                                                           + [text for _, text in parts['turns']])))
+                        cached = (mtimes, {'id': meeting_id, 'title': parts['title'],
+                                           'started_at': meeting.get('started_at'), 'counts': counts})
+                        self._word_cache[meeting_id] = cached
+                except Exception as e:      # a file that isn't a readable meeting is skipped, not fatal
                     logger.warning(f"Skipping unreadable meeting {path.name}: {e}")
                     continue
-                parts = self._search_parts(meeting, self.load_brief(meeting_id) or {})
-                counts = Counter(words_of(' '.join([parts['names'], parts['summary'], parts['captions']]
-                                                   + [text for _, text in parts['turns']])))
-                cached = (mtimes, {'id': meeting_id, 'title': parts['title'],
-                                   'started_at': meeting.get('started_at'), 'counts': counts})
-                self._word_cache[meeting_id] = cached
-            seen.add(meeting_id)
-            index.append(cached[1])
-        for gone in set(self._word_cache) - seen:
-            del self._word_cache[gone]
-        return index
+                seen.add(meeting_id)
+                index.append(cached[1])
+            for gone in set(self._word_cache) - seen:
+                self._word_cache.pop(gone, None)
+            return index
 
-    # Meetings that hold every query word that is not common (a word in over 30% of meetings tells
-    # nothing; one in no meeting still has to be there). Score: rare words said often rank first;
+    # Meetings that hold every query word that is not common (a word in over 30% of meetings, and more than
+    # 3 meetings, tells nothing; one in no meeting still has to be there). Score: rare words said often rank first;
     # ties newest first. Each hit says where the rarest word is (title, transcript, summary or a
     # screenshot caption) with a snippet and, for the transcript, the second of the first matching
     # turn so the page can open it there. `meeting_id` limits the hits to one meeting.
@@ -360,7 +361,7 @@ class MeetingStore:
                 matched = _matching_words(entry['counts'], variants)
                 if matched:
                     holders[entry['id']] = sum(entry['counts'][w] for w in matched)
-            if len(holders) / total <= COMMON_SHARE:
+            if len(holders) <= COMMON_MIN_MEETINGS or len(holders) / total <= COMMON_SHARE:
                 wanted.append((word, variants, holders))
         if not wanted:
             return []
@@ -384,7 +385,8 @@ class MeetingStore:
                'where': 'title', 'snippet': entry['title'], 'at': None}
         try:
             parts = self._search_parts(self.load(entry['id']), self.load_brief(entry['id']) or {})
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Search could not read meeting {entry['id']} for its snippet: {e}")
             return hit
         if all(_first_word_matching(parts['names'], variants) for variants in all_variants):
             return hit

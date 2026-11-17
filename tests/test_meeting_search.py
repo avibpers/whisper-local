@@ -176,6 +176,44 @@ class WordSearchTests(unittest.TestCase):
         with self.assertNoLogs('koli.meeting.store', level='WARNING'):
             self.assertEqual(len(self.store.list()), 10)
 
+    def test_few_meetings_still_searchable(self):
+        # With 1 to 3 meetings every word is in over 30% of them: nothing is "common" until more than 3 hold it.
+        for letter in 'defghij':
+            self.store.delete(letter)
+        self.assertEqual([h['id'] for h in self.store.search('budget')], ['a', 'c'])      # 3 meetings
+        self.store.delete('b')
+        self.store.delete('c')
+        self.assertEqual([h['id'] for h in self.store.search('budget')], ['a'])           # 1 meeting
+
+    def test_snippet_centres_on_the_whole_word(self):
+        m = self.store.load('a')
+        m['turns'].insert(0, {'start': 1.0, 'end': 2.0, 'speaker': 'you', 'text': 'x' * 100 + ' budgeting is not it, ' + 'y' * 100 + ' the budget', 'lang': 'en'})
+        self.store.save(m)
+        hit = self.store.search('budget')[0]
+        self.assertEqual(hit['at'], 1.0)
+        self.assertIn('the budget', hit['snippet'])
+        self.assertNotIn('budgeting', hit['snippet'])
+
+    def test_unreadable_meeting_file_is_skipped(self):
+        (self.store.folder / 'zzz.json').write_text('[1, 2]', encoding='utf-8')     # not a meeting
+        with self.assertLogs('koli.meeting.store', level='WARNING'):
+            self.assertEqual(self.store.search('budget')[0]['id'], 'a')
+
+    def test_overlapping_searches_do_not_crash(self):
+        import threading
+        errors = []
+        def run():
+            try:
+                for _ in range(20):
+                    self.store.search('budget')
+            except Exception as e:
+                errors.append(e)
+        threads = [threading.Thread(target=run) for _ in range(6)]
+        for t in threads: t.start()
+        self.store.delete('j')
+        for t in threads: t.join()
+        self.assertEqual(errors, [])
+
 
 if __name__ == "__main__":
     unittest.main()
