@@ -430,5 +430,74 @@ class IndexTests(unittest.TestCase):
         self.assertFalse((self.folder / f"{self.m['id']}.index.npz").exists())
 
 
+# ── Merging words and meaning ────────────────────────────────────────────────
+
+def w(meeting_id):
+    """A word hit (one per meeting) as MeetingStore.search returns it."""
+    return {'id': meeting_id, 'title': f'T-{meeting_id}', 'started_at': '2026-11-01T10:00:00+03:00',
+            'score': 1.0, 'where': 'transcript', 'snippet': f'word {meeting_id}', 'at': 5}
+
+
+def mh(meeting_id, score, at=None, text=None, kind='transcript'):
+    """A meaning hit (a piece) as MeetingIndex.search returns it."""
+    return {'kind': kind, 'field': 'transcript', 'at': at, 'text': text or f'piece {meeting_id} {at}',
+            'id': meeting_id, 'title': f'T-{meeting_id}', 'started_at': '2026-11-01T10:00:00+03:00',
+            'score': score}
+
+
+class MergeTests(unittest.TestCase):
+    def test_found_by_both_ranks_above_either(self):
+        from koli.meeting.find import merge
+        words = [w('x'), w('both')]; meaning = [mh('y', 0.9), mh('both', 0.8)]
+        out = merge(words, meaning)
+        self.assertEqual(out[0]['id'], 'both')
+        self.assertEqual(out[0]['by'], ['words', 'meaning'])
+
+    def test_places_capped_meaning_first(self):
+        from koli.meeting.find import merge
+        out = merge([w('a')], [mh('a', 0.9, at=10), mh('a', 0.8, at=20), mh('a', 0.7, at=30), mh('a', 0.6, at=40)], places=3)
+        self.assertEqual([p['at'] for p in out[0]['places']], [10, 20, 30])
+
+    def test_words_only_when_no_meaning(self):
+        from koli.meeting.find import merge
+        self.assertEqual([r['id'] for r in merge([w('a'), w('b')], [])], ['a', 'b'])
+
+    def test_meaning_rank_is_best_piece_per_meeting(self):
+        # Meeting "a" has two pieces ahead of "b"'s: still one rank each, a first, b second.
+        from koli.meeting.find import merge
+        out = merge([], [mh('a', 0.9, at=1), mh('a', 0.8, at=2), mh('b', 0.7, at=3)])
+        self.assertEqual([r['id'] for r in out], ['a', 'b'])
+        self.assertEqual([r['by'] for r in out], [['meaning'], ['meaning']])
+
+    def test_word_place_added_when_new_and_skipped_when_same(self):
+        from koli.meeting.find import merge
+        # Word hit at 5/transcript is new next to a meaning piece at 10: added after it.
+        out = merge([w('a')], [mh('a', 0.9, at=10)])
+        self.assertEqual([p['at'] for p in out[0]['places']], [10, 5])
+        # Same second and place as the meaning piece: not repeated.
+        out = merge([w('a')], [mh('a', 0.9, at=5)])
+        self.assertEqual([p['at'] for p in out[0]['places']], [5])
+
+    def test_meaning_kind_and_text_become_where_and_snippet(self):
+        from koli.meeting.find import merge
+        out = merge([], [mh('a', 0.9, at=7, text='line one\nline two', kind='summary')])
+        self.assertEqual(out[0]['places'], [{'where': 'summary', 'snippet': 'line one · line two', 'at': 7}])
+
+    def test_snippet_capped_at_160_characters(self):
+        from koli.meeting.find import merge
+        out = merge([], [mh('a', 0.9, at=1, text='ab\n' + 'x' * 400)])
+        snippet = out[0]['places'][0]['snippet']
+        self.assertEqual(len(snippet), 160)
+        self.assertTrue(snippet.startswith('ab · x'))
+        self.assertNotIn('\n', snippet)
+
+    def test_limit_and_title_from_whichever_list_has_it(self):
+        from koli.meeting.find import merge
+        out = merge([w('a')], [mh('b', 0.9, at=1)], limit=1)
+        self.assertEqual(len(out), 1)
+        out = merge([w('a')], [mh('b', 0.9, at=1)])
+        self.assertEqual({r['id']: r['title'] for r in out}, {'a': 'T-a', 'b': 'T-b'})
+
+
 if __name__ == "__main__":
     unittest.main()
