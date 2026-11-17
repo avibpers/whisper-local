@@ -105,10 +105,14 @@ get none.
 An index is current when it is newer than both the meeting file and its summary
 file and was made with the chosen model.
 
-**When a meeting is indexed:** when it ends, when its summary is written or
+**When a meeting is indexed:** the indexer starts with the app window, not
+with `--legacy-ui`. A meeting is indexed when it ends, when its summary is written or
 changed (a summary, the Chat tab's changes, a rename, attendees, a caption), and
-for every meeting without an up-to-date index when Koli starts. The indexer waits
-while a meeting is running, so Whisper keeps the GPU. A new summary usually
+for every meeting without an up-to-date index when the app window opens. The indexer waits
+while a meeting is running, so Whisper keeps the GPU. When the model can't be reached
+(Ollama off, model missing) the whole indexer rests for 60 s. Any other error is the
+meeting's own (a broken file): that meeting goes to the back of the queue so the ones
+behind it aren't held up, and it is given up after 3 tries until it changes. A new summary usually
 retitles the meeting, and the title is in every piece, so the whole meeting is
 embedded again: up to 2 s, intended. The model setting is read on every pass, so
 changing it re-indexes every meeting without a restart.
@@ -116,7 +120,8 @@ changing it re-indexes every meeting without a restart.
 ### Words
 
 The word search compares whole words, not pieces of words. Words that appear in
-more than 30% of meetings ("the", "דיברנו", "פגישה") are ignored. A meeting is a
+more than 30% of meetings ("the", "דיברנו", "פגישה") are ignored, but only once more
+than 3 meetings hold them, so in a small archive every word stays searchable. A meeting is a
 word hit when it holds every remaining word of the query, and it ranks by
 `Σ log(1 + meetings / meetings_with_word) · log(1 + times_said)`. A Hebrew word
 longer than 3 letters also counts without one leading prefix letter (ו ה ב ל מ ש
@@ -137,7 +142,10 @@ Every call to the model asks Ollama to keep it loaded for 30 minutes
 search box answers with the word results right away. The meaning results come in
 the same call when the model answers within 2 s; otherwise the call returns words
 only with `meaning: "loading"`, the model loads in the background, and the page
-asks again 2 s later. If Ollama isn't running, the model isn't
+asks again 2 s later, at most 3 times. At most one question is embedded at a time:
+a search that arrives meanwhile waits on that call for what is left of its 2 s
+instead of starting another, and a different question waits for the running one to
+finish first. If Ollama isn't running, the model isn't
 downloaded or the GPU is full, the page shows word results and one line saying
 why. Search during a live meeting works: one question is a tiny embedding.
 
@@ -145,12 +153,16 @@ why. Search during a live meeting works: one question is a tiny embedding.
 
 `meeting/ask.py`, the same shape as `meeting/chat.py`:
 
-1. **Plan.** The AI gets the meeting list and the question (and the earlier
-   questions), and answers `{"task", "search": [up to 3 phrases], "open": [up to 3
+1. **Plan.** The AI gets the meeting list (newest first, one line each; a title is
+   cut to 80 characters and the people to 120; the whole list to 20,000 characters,
+   the oldest lines dropped) and the question (and the earlier questions), and answers `{"task", "search": [up to 3 phrases], "open": [up to 3
    meeting ids]}`. Unknown ids are dropped.
 2. **Material.** Search phrases give up to 30 pieces, at most 4 per meeting. An
    opened meeting goes in whole if the material stays under 60,000 characters;
-   otherwise its 12 best pieces for the question go in.
+   otherwise its 12 best pieces for the question go in. Ask waits up to 30 s for a
+   cold model (the search box waits 2 s). When meaning search is unavailable, the
+   material ends with a line saying that only whole meetings were read, so the AI
+   doesn't answer as if it had searched.
 3. **Answer.** The AI answers `{"reply", "refs": [{"id", "at"}]}`, with `[1]`,
    `[2]` in the reply pointing at `refs`. A ref whose meeting wasn't in the
    material, or whose second is past the meeting's end, is dropped, and so is its
