@@ -535,6 +535,13 @@ SCHEMA = [
        help='A template can set its own language; picking one when you summarize wins over both.'),
     _S('ai.meetings.timeout', 'Give up after', 'meetings', 'number', group='Summary', min=30, max=900, step=10,
        unit='seconds', help='How long the AI may take to write one summary.'),
+    # Search the meetings by meaning (docs/design/meeting-search.md); Ollama's address is on its AI card.
+    _S('meeting.search.meaning', 'Search by meaning', 'meetings', 'toggle', group='Search',
+       help='The search box finds a meeting by what it is about, not only by the words you type. '
+            'Needs a small model in Ollama (about 640 MB); words search works without it.'),
+    _S('meeting.search.model', 'Meaning model (Ollama)', 'meetings', 'text', group='Search',
+       help='The Ollama embedding model that reads your meetings and questions. Changing it indexes every '
+            'meeting again with the new model.'),
     # The default template is chosen in Meetings › Templates.
     _S('meeting.summary.template', 'Default summary template', 'meetings', 'text', apply=INTERNAL, mode=HIDDEN),
     _S('meeting.model', 'Transcribe meetings with', 'meetings', 'stt_model', apply=NEXT_RECORDING,

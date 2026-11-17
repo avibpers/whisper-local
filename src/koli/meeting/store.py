@@ -20,7 +20,7 @@ import time
 import wave
 from collections import Counter
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import numpy as np
 
@@ -261,6 +261,19 @@ class MeetingStore:
         self._lock = threading.Lock()
         self._word_cache = {}        # meeting id -> (mtimes, entry) for search
         self._word_lock = threading.Lock()   # overlapping searches build and prune that cache one at a time
+        # Told the meeting id after every save, brief save and delete, so the search indexer
+        # follows the files (set by whoever owns the store; never called under the store's lock).
+        self.on_change: Optional[Callable[[str], None]] = None
+
+    # Calls on_change outside the lock; a failing listener never breaks a save.
+    def _notify(self, meeting_id: str) -> None:
+        listener = self.on_change
+        if listener is None:
+            return
+        try:
+            listener(meeting_id)
+        except Exception as e:
+            logger.warning(f"Meeting change listener failed for {meeting_id}: {e}")
 
     def path(self, meeting_id: str) -> Path:
         return self.folder / f"{meeting_id}.json"
@@ -274,6 +287,7 @@ class MeetingStore:
             tmp = path.with_suffix('.json.tmp')
             tmp.write_text(json.dumps(meeting, ensure_ascii=False, indent=1), encoding='utf-8')
             os.replace(tmp, path)
+        self._notify(meeting['id'])
         return path
 
     def load(self, meeting_id: str) -> dict:
@@ -401,6 +415,12 @@ class MeetingStore:
 
     # Deleting a meeting deletes its kept audio and its screenshots too.
     def delete(self, meeting_id: str) -> bool:
+        deleted = self._delete_files(meeting_id)
+        self._notify(meeting_id)
+        return deleted
+
+    # The files of one meeting, removed under the lock; True when the meeting file itself existed.
+    def _delete_files(self, meeting_id: str) -> bool:
         with self._lock:
             shutil.rmtree(self.audio_dir(meeting_id), ignore_errors=True)
             shutil.rmtree(self.shots_dir(meeting_id), ignore_errors=True)
@@ -491,7 +511,9 @@ class MeetingStore:
             meeting = self.load(meeting_id)
             if meeting.get('title') != title:
                 meeting['title'] = title
-                self.save(meeting)
+                self.save(meeting)       # tells the listener too, after the brief is on disk
+                return path
+        self._notify(meeting_id)
         return path
 
     # ── Screenshots: PNGs in "<id>.shots/" ───────────────────────────────────

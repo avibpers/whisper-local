@@ -33,6 +33,7 @@ from ..usage import ledger as usage_ledger
 from ..usage.ledger import for_meeting
 from ..ui.events import publish as publish_event, report_problem
 from ..ui.tasks import get_task_manager
+from .meeting_search import MeetingSearch
 
 
 # meeting.model names a local Whisper model this way; anything else is online.
@@ -118,6 +119,11 @@ class MeetingService:
         self._watcher: Optional[threading.Thread] = None   # "every snip" mode's clipboard watcher
         self._watch_stop = threading.Event()
         self.store = store or MeetingStore()
+        # Search by words and by meaning; its indexer follows the store's changes and starts with
+        # the app window (ui_ready), so building the service never calls the model.
+        self.finder = MeetingSearch(self.store, setting=self._setting, is_running=self.is_running,
+                                    publish=lambda topic, payload: self._publish(topic, payload))
+        self.store.on_change = self.finder.changed
         # Saved voices live next to the meetings folder (beside it, so the
         # meeting list never reads them as a meeting).
         self.voices = voices if voices is not None else VoiceBook(Path(self.store.folder).parent / VOICES_FILE)
@@ -174,6 +180,7 @@ class MeetingService:
     # pywebview's limit, which then never created the bubble and the panel.
     # The Meet extension's port opens here too (only in the app, never in tests).
     def ui_ready(self):
+        self.finder.start()
         if self._setting('meeting.enabled', True):
             self.start_detector()
         if self._meet_mode() != 'off':
@@ -1626,8 +1633,10 @@ class MeetingService:
     def list(self) -> list:
         return self._with_usage(self.store.list())
 
-    def search(self, query: str) -> list:
-        return self._with_usage(self.store.search(query))
+    # {results, meaning}: meetings found by words and by meaning, each with what it cost.
+    def search(self, query: str, meeting_id: Optional[str] = None) -> dict:
+        found = self.finder.search(query, meeting_id=meeting_id)
+        return {**found, 'results': self._with_usage(found['results'])}
 
     @staticmethod
     def _with_usage(rows: list) -> list:
@@ -1747,6 +1756,7 @@ class MeetingService:
     # opening a listener nothing would close.
     def shutdown(self):
         self._closed = True
+        self.finder.stop()
         self._watch_stop.set()
         self._call_stop.set()
         self._meet_link.stop()
