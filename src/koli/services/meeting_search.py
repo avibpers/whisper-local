@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
-from ..llm.http import NetworkError
+from ..llm.http import TimedOut
 from ..meeting import ask as meeting_ask
 from ..meeting.find import merge
 from ..meeting.index import MeetingIndex, cap
@@ -26,7 +26,9 @@ ASK_WAIT_S = 30.0         # "Ask all meetings" may wait for a cold model: it tak
 DEBOUNCE_S = 10.0         # a meeting's changes are indexed this long after the last one
 RETRY_S = 60.0            # after a failed embed (Ollama off, model missing) the indexer waits this long
 MAX_ATTEMPTS = 3         # an indexing error that is the meeting's own: given up after this many tries
+SMALL_BATCH = 8           # pieces per model call when a meeting's whole batch timed out (slow CPU-only Ollama)
 TICK_S = 1.0              # the indexer thread looks for work this often, one meeting at a time
+BLOCKING = ('no_ollama', 'no_model')   # problems a search answers at once while the indexer rests
 DEFAULT_MODEL = 'qwen3-embedding:0.6b'
 DEFAULT_ADDRESS = 'http://localhost:11434'
 ASK_FILE = 'meetings_ask.json'     # the Ask conversation, in the user data folder
@@ -38,10 +40,13 @@ def _default_embed(model: str, texts: list):
     return llm.embed(model, texts)
 
 
-# Why the model call failed, as the page understands it: Ollama not reachable, or the model not
-# downloaded. Anything unexpected is reported as Ollama not working (and logged by the caller).
+# Why the model call failed, as the page understands it: Ollama not reachable, the model not
+# downloaded, or Ollama too slow to answer in time ('loading': it is busy, not missing). Anything
+# unexpected is reported as Ollama not working (and logged by the caller).
 def problem_of(error: Exception) -> str:
     from ..llm.http import HttpError, NetworkError
+    if isinstance(error, TimedOut):
+        return 'loading'
     if isinstance(error, NetworkError):
         return 'no_ollama'
     message = f'{getattr(error, "body", "")} {error}'.lower()
@@ -101,6 +106,7 @@ class MeetingSearch:
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._flight: Optional[_QueryFlight] = None    # the one query embedding in progress or just finished
+        self._batch = threading.local()                # .size: pieces per model call while a retry runs small
 
     # ── Settings ─────────────────────────────────────────────────────────────
 
@@ -121,12 +127,11 @@ class MeetingSearch:
                 return self._index, False
             switched = self._index is not None
             # The model is captured here, so an index only ever asks the model it was made for.
-            self._index = MeetingIndex(self.store.folder, model, lambda texts, model=model: self._embed(model, texts))
+            self._index = MeetingIndex(self.store.folder, model,
+                                       lambda texts, model=model: self._embed_pieces(model, texts))
             if switched:
-                self._problem = None
-                self._blocked_until = 0.0
+                self._clear_problem()
                 self._pending.clear()
-                self._attempts.clear()
                 self._queue_all(self._clock() if now is None else now)
         if switched:
             self._publish_status()
@@ -135,6 +140,23 @@ class MeetingSearch:
     @staticmethod
     def _clock() -> float:
         return time.time()
+
+    # The index's model call: all pieces at once, or SMALL_BATCH at a time while this thread retries a
+    # meeting whose whole batch timed out.
+    def _embed_pieces(self, model: str, texts: list):
+        size = getattr(self._batch, 'size', None)
+        if not size or len(texts) <= size:
+            return self._embed(model, texts)
+        import numpy as np
+        return np.concatenate([np.asarray(self._embed(model, texts[start:start + size]), dtype=np.float32)
+                               for start in range(0, len(texts), size)])
+
+    # Forgets the model problem and every meeting's failed tries: the model answers again.
+    def _clear_problem(self) -> None:
+        with self._lock:
+            self._problem = None
+            self._blocked_until = 0.0
+            self._attempts.clear()
 
     # ── Which meetings exist, and which are out of date ──────────────────────
 
@@ -246,6 +268,7 @@ class MeetingSearch:
 
     # Reloads the meeting from disk (the live copy changes every few seconds) and updates its index.
     # A failed model call keeps the meeting queued and rests the indexer; a deleted meeting loses its index.
+    # A timeout (a long meeting on a slow, CPU-only model) is tried once more in small batches at once.
     def _index_one(self, meeting_id: str, index: MeetingIndex, now: float) -> None:
         try:
             meeting = self.store.load(meeting_id)
@@ -258,7 +281,16 @@ class MeetingSearch:
             self._finish(meeting_id)
             return
         try:
-            index.update(meeting, self.store.load_brief(meeting_id))
+            brief = self.store.load_brief(meeting_id)
+            try:
+                index.update(meeting, brief)
+            except TimedOut:
+                logger.info(f'Meeting search timed out on {meeting_id}; trying {SMALL_BATCH} pieces at a time')
+                self._batch.size = SMALL_BATCH
+                try:
+                    index.update(meeting, brief)
+                finally:
+                    self._batch.size = None
         except Exception as e:
             self._fail(meeting_id, e, now)
             return
@@ -268,8 +300,10 @@ class MeetingSearch:
                 return
             if self._pending.get(meeting_id, 0.0) <= now:     # not changed again while it was being embedded
                 self._pending.pop(meeting_id, None)
+            self._attempts.pop(meeting_id, None)
             recovered = self._problem is not None
-            self._problem = None
+        if recovered:
+            self._clear_problem()
         self._publish_status(force=recovered)
 
     def _finish(self, meeting_id: str) -> None:
@@ -277,13 +311,15 @@ class MeetingSearch:
             self._pending.pop(meeting_id, None)
         self._publish_status()
 
-    # An update failed. A model problem (Ollama off, model missing) is remembered as the current problem
-    # and rests the whole indexer for RETRY_S. Any other error is this meeting's own (a broken file, a
-    # locked index) and is logged once. The meeting goes to the back of the queue, so one bad meeting
-    # never holds up the ones behind it, and is given up after MAX_ATTEMPTS tries (until it changes).
+    # An update failed. A model problem (Ollama off, model missing, a server error, a timeout) is
+    # remembered as the current problem and rests the whole indexer for RETRY_S. Any other error is this
+    # meeting's own (a broken file, a locked index) and is logged once. The meeting goes to the back of
+    # the queue, so one bad meeting never holds up the ones behind it, and is given up after
+    # MAX_ATTEMPTS tries (until it changes).
     def _fail(self, meeting_id: str, error: Exception, now: float) -> None:
-        # Ollama off or the model missing says nothing about this meeting, so it doesn't count as a try.
-        unavailable = isinstance(error, NetworkError) or (is_model_error(error) and problem_of(error) == 'no_model')
+        # Ollama off, busy or the model missing says nothing about this meeting, so it isn't a try. A
+        # timeout even in small batches is: this meeting is too much for the model, others may not be.
+        unavailable = is_model_error(error) and not isinstance(error, TimedOut)
         if is_model_error(error):
             self._note_failure(error)
             with self._lock:
@@ -296,6 +332,8 @@ class MeetingSearch:
             if tries >= MAX_ATTEMPTS:
                 self._pending.pop(meeting_id, None)
                 logger.warning(f'Meeting search gave up indexing {meeting_id} after {tries} tries')
+                if isinstance(error, TimedOut) and self._problem == 'loading':
+                    self._problem = None                  # it was this meeting, not a model still starting
             else:
                 self._pending[meeting_id] = now + RETRY_S
         self._publish_status()
@@ -309,10 +347,13 @@ class MeetingSearch:
             logger.warning(message)
 
     # Records a model failure as the current problem (shown on the Meetings screen) and logs it once.
+    # Ollama off or the model missing also rests searches for RETRY_S: each would wait for the same refusal.
     def _note_failure(self, error: Exception) -> str:
         problem = problem_of(error)
         with self._lock:
             self._problem = problem
+            if problem in BLOCKING:
+                self._blocked_until = max(self._blocked_until, self._clock() + RETRY_S)
         self._log_once(f'Meeting search model call failed ({problem}): {error}', error)
         return problem
 
@@ -344,8 +385,8 @@ class MeetingSearch:
         hits = index.search(vector, meeting_id)
         with self._lock:
             recovered = self._problem is not None
-            self._problem = None
         if recovered:
+            self._clear_problem()
             self._publish_status()
         return hits, 'indexing' if self._indexing() else 'on'
 
@@ -353,13 +394,18 @@ class MeetingSearch:
     # problem of a failed call. Only one model call is ever in flight: a search arriving meanwhile waits on
     # it for what remains of `wait` instead of starting another, and a call for another question is
     # waited out before this one's own starts. A call that fails after its search gave up records the
-    # problem (so the status shows it) and the next search reports it, then tries again.
+    # problem (so the status shows it) and the next search reports it. While Ollama is known to be off or
+    # the model missing, searches answer that at once until the rest is over (RETRY_S), then try again.
     def _query_vector(self, index: MeetingIndex, question: str, wait: float):
         text = index.query_text(question)
         key = (index.model, text)
         deadline = time.monotonic() + wait
         while True:
             with self._lock:
+                if self._problem in BLOCKING and self._clock() < self._blocked_until:
+                    if self._flight is not None and self._flight.done.is_set() and self._flight.error is not None:
+                        self._flight.consumed = True      # its error is the problem reported here
+                    return None, self._problem
                 flight = self._flight
                 if flight is not None and flight.done.is_set():
                     if flight.error is not None:
@@ -509,10 +555,9 @@ class MeetingSearch:
                 best[0] = max(best[0], float(fraction))
                 reporter.report(best[0], status)
             ollama_wire.pull(address, model, on_progress)
-            with self._lock:
-                self._problem = None
-                self._blocked_until = 0.0
+            self._clear_problem()
             self._queue_all(self._clock())
             self._publish_status(force=True)
 
-        return tasks.run('Downloading the meaning model', pull_model, kind='model').id
+        # Its own ref, so the Meetings screen shows this download and not a Whisper model's.
+        return tasks.run('Downloading the meaning model', pull_model, kind='model', ref='meeting-search').id

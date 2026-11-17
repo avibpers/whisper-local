@@ -95,20 +95,28 @@ def clean_plan(plan: dict, known_ids: set) -> dict:
 
 # How long a meeting ran, as far as its turns and screenshots say: references past it are made up.
 def _duration(meeting: dict) -> float:
-    ends = [float(t.get('end', t.get('start', 0)) or 0) for t in meeting.get('turns', [])]
-    ends += [float(s.get('at', 0) or 0) for s in meeting.get('screenshots', [])]
-    return max(ends, default=0.0)
+    ends = [t.get('end', t.get('start')) for t in meeting.get('turns', [])]
+    ends += [s.get('at') for s in meeting.get('screenshots', [])]
+    return max((float(end) for end in ends if _is_number(end)), default=0.0)
+
+
+# True for a real number of seconds (a bool is not one).
+def _is_number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
 def _heading(title, started_at, meeting_id, where: str) -> str:
     return f'[{title or "Meeting"} | {str(started_at or "")[:10]} | {meeting_id} | {where}]'
 
 
-# A whole meeting: its heading, then one line per turn, "m:ss Name: text", in time order.
+# A whole meeting: its heading, then one line per turn, "m:ss Name: text", in time order. A turn
+# without a numeric start can't be placed or referenced, so it is left out (as pieces.py does).
 def _full_text(meeting: dict) -> str:
     names = {s['id']: s.get('name') or s['id'] for s in meeting.get('speakers', [])}
-    turns = sorted(meeting.get('turns', []), key=lambda t: float(t['start']))
-    lines = [f"{_clock(t['start'])} {names.get(t['speaker'], t['speaker'])}: {t['text']}" for t in turns]
+    turns = sorted((t for t in meeting.get('turns', []) if _is_number(t.get('start'))),
+                   key=lambda t: float(t['start']))
+    lines = [f"{_clock(t['start'])} {names.get(t.get('speaker'), t.get('speaker'))}: {t.get('text', '')}"
+             for t in turns]
     head = _heading(meeting.get('title'), meeting.get('started_at'), meeting['id'], 'full transcript')
     return '\n'.join([head, *lines])
 

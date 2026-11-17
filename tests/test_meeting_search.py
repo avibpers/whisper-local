@@ -122,7 +122,8 @@ class WordSearchTests(unittest.TestCase):
     def test_common_words_ignored_every_rare_word_needed(self):
         self.assertEqual([h['id'] for h in self.store.search('what about the budget')], ['a', 'c'])
         self.assertEqual(self.store.search('budget lunch'), [])    # "lunch" is in no meeting
-        self.assertEqual(self.store.search('what about the plans'), [])   # only common words: no word hits
+        # Only common words: every one of them is needed, so the meetings holding them all are word hits.
+        self.assertEqual(len(self.store.search('what about the plans')), 10)
 
     def test_ranked_by_times_said(self):
         hits = self.store.search('budget')
@@ -158,6 +159,16 @@ class WordSearchTests(unittest.TestCase):
 
     def test_meeting_filter(self):
         self.assertEqual({h['id'] for h in self.store.search('budget', meeting_id='c')}, {'c'})
+
+    def test_only_common_words_still_find_meetings(self):
+        # "plans" is in every meeting: common, yet the only word asked, so it is needed rather than dropped.
+        self.assertEqual(len(self.store.search('plans')), 10)
+        self.assertEqual(self.store.search('plans lunch'), [])          # "lunch" is in no meeting
+
+    def test_one_meeting_needs_every_query_word_even_common_ones(self):
+        self.assertEqual([h['id'] for h in self.store.search('plans', meeting_id='e')], ['e'])
+        self.assertEqual([h['id'] for h in self.store.search('plans budget', meeting_id='c')], ['c'])
+        self.assertEqual(self.store.search('plans budget', meeting_id='e'), [])   # e never says budget
 
     def test_limit_and_empty_query(self):
         self.assertEqual(len(self.store.search('budget', limit=1)), 1)
@@ -479,6 +490,14 @@ class MergeTests(unittest.TestCase):
         out = merge([w('a')], [mh('a', 0.9, at=5)])
         self.assertEqual([p['at'] for p in out[0]['places']], [5])
 
+    def test_summary_word_place_kept_when_its_snippet_differs(self):
+        from koli.meeting.find import merge
+        word = {**w('a'), 'where': 'summary', 'at': None, 'snippet': 'the budget was approved'}
+        out = merge([word], [mh('a', 0.9, kind='summary', text='hiring two people')])
+        self.assertEqual([p['snippet'] for p in out[0]['places']], ['hiring two people', 'the budget was approved'])
+        out = merge([word], [mh('a', 0.9, kind='summary', text='the budget was approved')])
+        self.assertEqual(len(out[0]['places']), 1)                  # the same place and text: shown once
+
     def test_meaning_kind_and_text_become_where_and_snippet(self):
         from koli.meeting.find import merge
         out = merge([], [mh('a', 0.9, at=7, text='line one\nline two', kind='summary')])
@@ -722,6 +741,67 @@ class SearchServiceTests(unittest.TestCase):
             svc.run_pending(now=time.time() + 11 + step * 61)
         self.assertEqual(svc.pending(), ['a'])
 
+    def test_busy_ollama_never_gives_up_a_meeting(self):
+        from koli.llm.http import HttpError
+        from koli.llm.types import ProviderError
+        busy = [True]
+        errors = [HttpError(503, 'server busy'), ProviderError('overloaded')]
+
+        def embed(model, texts):
+            if busy[0]:
+                errors.reverse()
+                raise errors[0]
+            return self.fake_embed(model, texts)
+        svc = self.service(embed=embed)
+        for meeting_id in 'abc':
+            svc.changed(meeting_id)
+        now = time.time() + 11
+        for step in range(8):                                  # many passes, each a model error
+            svc.run_pending(now=now + step * 61)
+        self.assertEqual(svc.pending(), ['a', 'b', 'c'])       # nobody given up: the server was at fault
+        busy[0] = False
+        for step in range(8, 14):
+            svc.run_pending(now=now + step * 61)
+        self.assertEqual(svc.pending(), [])
+        self.assertEqual(svc.status(), {'meaning': 'on', 'indexed': 3, 'total': 3, 'model': 'fake-model'})
+
+    # Meeting "a" again, with one 75 s piece per turn: `pieces` of them.
+    def long_meeting(self, pieces=12):
+        self.store.save({'id': 'a', 'title': 'Meeting a', 'started_at': '2026-11-16T10:00:00+02:00',
+                         'speakers': [{'id': 'you', 'name': 'You'}],
+                         'turns': [{'start': i * 80.0, 'end': i * 80.0 + 20, 'speaker': 'you',
+                                    'text': f'budget point {i}'} for i in range(pieces)], 'screenshots': []})
+
+    def test_timeout_retries_the_meeting_in_small_batches(self):
+        from koli.llm.http import TimedOut
+        sizes = []
+
+        def slow_for_big_batches(model, texts):
+            sizes.append(len(texts))
+            if len(texts) > 8:
+                raise TimedOut('timed out')
+            return self.fake_embed(model, texts)
+        self.long_meeting()
+        svc = self.service(embed=slow_for_big_batches)
+        svc.run_all()
+        self.assertEqual(svc.status(), {'meaning': 'on', 'indexed': 3, 'total': 3, 'model': 'fake-model'})
+        first = sizes.index(12)                                 # tried whole first, then in eights
+        self.assertEqual(sizes[first + 1:first + 3], [8, 4])
+
+    def test_timeout_every_time_shows_loading_and_is_given_up(self):
+        from koli.llm.http import TimedOut
+        self.long_meeting()
+        svc = self.service(embed=self.raising(TimedOut('timed out')))
+        svc.changed('a')
+        now = time.time() + 11
+        svc.run_pending(now=now)
+        self.assertEqual(svc.status()['meaning'], 'loading')    # slow, not "needs Ollama running"
+        self.assertIn('a', svc.pending())
+        svc.run_pending(now=now + 61)
+        svc.run_pending(now=now + 122)                          # third timed-out try: given up
+        self.assertEqual(svc.pending(), [])
+        self.assertEqual(svc.status()['meaning'], 'on')
+
     def test_many_searches_on_a_slow_model_make_one_model_call(self):
         calls = []
 
@@ -752,7 +832,26 @@ class SearchServiceTests(unittest.TestCase):
             time.sleep(0.5)
             self.assertEqual(svc.status()['meaning'], 'no_ollama')       # recorded when the call failed
             self.assertEqual(svc.search('budget')['meaning'], 'no_ollama')
-        self.assertEqual(svc.search('budget')['meaning'], 'on')          # the reason was reported once; now it retries
+        self.assertEqual(svc.search('budget')['meaning'], 'no_ollama')   # known problem: no new call for RETRY_S
+        with mock.patch.object(svc, '_clock', return_value=time.time() + 61):
+            self.assertEqual(svc.search('budget')['meaning'], 'on')      # the rest is over: it tries again
+
+    def test_without_ollama_searches_answer_at_once(self):
+        from koli.llm.http import NetworkError
+        calls = []
+
+        def refusing(model, texts):
+            calls.append(texts)
+            time.sleep(0.5)                                   # Windows takes a while to refuse localhost
+            raise NetworkError('[WinError 10061] connection refused')
+        svc = self.service(embed=refusing)
+        self.assertEqual(svc.search('budget')['meaning'], 'no_ollama')
+        for query in ('budget', 'hire', 'office', 'spring', 'people'):
+            started = time.monotonic()
+            out = svc.search(query)
+            self.assertLess(time.monotonic() - started, 0.2)
+            self.assertEqual(out['meaning'], 'no_ollama')
+        self.assertEqual(len(calls), 1)
 
     def test_another_question_never_gets_the_in_flight_vector(self):
         seen = []
@@ -805,7 +904,7 @@ class SearchServiceTests(unittest.TestCase):
 
         class Tasks:
             def run(self, label, fn, kind='general', on_done=None, ref=None):
-                self.label, self.kind = label, kind
+                self.label, self.kind, self.ref = label, kind, ref
                 fn(Reporter())
                 return type('T', (), {'id': 7, 'status': 'done'})()
 
@@ -818,7 +917,8 @@ class SearchServiceTests(unittest.TestCase):
         with mock.patch('koli.llm.transports.ollama.pull', pull):
             self.assertEqual(svc.download(), 7)
         self.assertEqual(pulled, [('http://localhost:11434', 'fake-model')])
-        self.assertEqual((tasks.label, tasks.kind), ('Downloading the meaning model', 'model'))
+        self.assertEqual((tasks.label, tasks.kind, tasks.ref),
+                         ('Downloading the meaning model', 'model', 'meeting-search'))
         self.assertEqual(progress, sorted(progress))
         self.assertEqual(set(svc.pending()), {'a', 'b', 'c'})
 
@@ -956,6 +1056,16 @@ class AskTests(unittest.TestCase):
         self.assertIn('[Pricing call | 2026-11-01 | m1 | full transcript]', text)
         self.assertIn('m1', given)
         self.assertEqual(given['m1'], 40.0)             # the last turn's end
+
+    def test_open_meeting_skips_turns_without_a_numeric_start(self):
+        from koli.meeting.ask import material
+        self.meetings['m1']['turns'] += [{'speaker': 'sp1', 'text': 'missing'},
+                                         {'start': None, 'speaker': 'sp1', 'text': 'empty'},
+                                         {'start': 'soon', 'speaker': 'sp1', 'text': 'worded'}]
+        text, given = material({'search': [], 'open': ['m1']}, 'q', self.load, self.hits_for)
+        self.assertIn('0:15 Shahar: turn 1', text)
+        for skipped in ('missing', 'empty', 'worded'):
+            self.assertNotIn(skipped, text)
 
     def test_material_uses_pieces_when_meeting_too_long(self):
         from koli.meeting.ask import MAX_MATERIAL, material

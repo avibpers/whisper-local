@@ -357,8 +357,9 @@ class MeetingStore:
             return index
 
     # Meetings that hold every query word that is not common (a word in over 30% of meetings, and more than
-    # 3 meetings, tells nothing; one in no meeting still has to be there). Score: rare words said often rank first;
-    # ties newest first. Each hit says where the rarest word is (title, transcript, summary or a
+    # 3 meetings, tells nothing; one in no meeting still has to be there). A query of common words only
+    # needs all of them, and so does a search inside one meeting (`meeting_id`), where nothing is common.
+    # Score: rare words said often rank first; ties newest first. Each hit says where the rarest word is (title, transcript, summary or a
     # screenshot caption) with a snippet and, for the transcript, the second of the first matching
     # turn so the page can open it there. `meeting_id` limits the hits to one meeting.
     def search(self, query: str, limit: int = 50, meeting_id: Optional[str] = None) -> list:
@@ -367,7 +368,7 @@ class MeetingStore:
         if not query_words or not index:
             return []
         total = len(index)
-        wanted = []      # (query word, its variants, meetings holding it as {id: times said})
+        every = []       # (query word, its variants, meetings holding it as {id: times said})
         for word in query_words:
             variants = word_variants(word)
             holders = {}
@@ -375,10 +376,11 @@ class MeetingStore:
                 matched = _matching_words(entry['counts'], variants)
                 if matched:
                     holders[entry['id']] = sum(entry['counts'][w] for w in matched)
-            if len(holders) <= COMMON_MIN_MEETINGS or len(holders) / total <= COMMON_SHARE:
-                wanted.append((word, variants, holders))
-        if not wanted:
-            return []
+            every.append((word, variants, holders))
+        wanted = [item for item in every
+                  if len(item[2]) <= COMMON_MIN_MEETINGS or len(item[2]) / total <= COMMON_SHARE]
+        if meeting_id is not None or not wanted:
+            wanted = every
         scored = []
         for entry in index:                 # newest first, so a stable sort keeps ties newest first
             if meeting_id is not None and entry['id'] != meeting_id:

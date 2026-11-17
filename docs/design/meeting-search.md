@@ -110,9 +110,14 @@ with `--legacy-ui`. A meeting is indexed when it ends, when its summary is writt
 changed (a summary, the Chat tab's changes, a rename, attendees, a caption), and
 for every meeting without an up-to-date index when the app window opens. The indexer waits
 while a meeting is running, so Whisper keeps the GPU. When the model can't be reached
-(Ollama off, model missing) the whole indexer rests for 60 s. Any other error is the
-meeting's own (a broken file): that meeting goes to the back of the queue so the ones
-behind it aren't held up, and it is given up after 3 tries until it changes. A new summary usually
+or fails (Ollama off, model missing, a server error while Ollama is busy) the whole
+indexer rests for 60 s, and that never counts against the meeting. A timeout (a long
+meeting on a slow, CPU-only Ollama) is retried at once with 8 pieces per call; if that
+times out too, the indexer rests 60 s, the page says "Search by meaning is starting…"
+rather than "needs Ollama running", and the timeout counts as one of the meeting's
+tries. Any other error is the meeting's own (a broken file): that meeting goes to the
+back of the queue so the ones behind it aren't held up, and it is given up after 3
+tries until it changes. When the model answers again, every meeting's tries start over. A new summary usually
 retitles the meeting, and the title is in every piece, so the whole meeting is
 embedded again: up to 2 s, intended. The model setting is read on every pass, so
 changing it re-indexes every meeting without a restart.
@@ -123,10 +128,12 @@ The word search compares whole words, not pieces of words. Words that appear in
 more than 30% of meetings ("the", "דיברנו", "פגישה") are ignored, but only once more
 than 3 meetings hold them, so in a small archive every word stays searchable. A meeting is a
 word hit when it holds every remaining word of the query, and it ranks by
-`Σ log(1 + meetings / meetings_with_word) · log(1 + times_said)`. A Hebrew word
+`Σ log(1 + meetings / meetings_with_word) · log(1 + times_said)`. A query made only
+of common words ("David" when every meeting has him) needs all of them rather than
+none, and inside one meeting (**Only this meeting**) nothing is common: every query
+word must be there. A Hebrew word
 longer than 3 letters also counts without one leading prefix letter (ו ה ב ל מ ש
 כ), in the question and in the meeting, so "בתקציב" and "תקציב" find each other. A
-query left with no word after that has no word hits; meaning alone answers it. A
 hit still says where it matched, with a snippet and a second.
 
 ### Both together
@@ -147,7 +154,9 @@ a search that arrives meanwhile waits on that call for what is left of its 2 s
 instead of starting another, and a different question waits for the running one to
 finish first. If Ollama isn't running, the model isn't
 downloaded or the GPU is full, the page shows word results and one line saying
-why. Search during a live meeting works: one question is a tiny embedding.
+why. Once Ollama is known to be off or the model missing, searches say so at once
+for the next 60 s instead of each waiting for the same refusal (Windows takes about
+2 s to refuse a connection); after that the next search tries the model again. Search during a live meeting works: one question is a tiny embedding.
 
 ### Asking all meetings
 

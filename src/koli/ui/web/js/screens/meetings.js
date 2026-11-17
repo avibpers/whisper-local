@@ -278,7 +278,8 @@ function meaningLine(meaning, status) {
 
 // The one-time offer to download the model that search by meaning needs, with its progress.
 function MeaningModelCard() {
-  const running = useRunningTasks('model');
+  // Only this card's own download (its ref), not a Whisper model being downloaded meanwhile.
+  const running = useRunningTasks('model').filter((t) => t.ref === 'meeting-search');
   return html`<section class="card pad stack" aria-label="Search by meaning">
     <span class="card-title">Search by meaning</span>
     <span class="small muted">Find meetings by what was said, in Hebrew or English, not only by exact words. Needs a 640 MB model, kept on this computer.</span>
@@ -335,7 +336,12 @@ export function MeetingsScreen({ route = 'meetings' } = {}) {
       if (stale) return;
       setFound(r);
       if (r.meaning === 'loading' && retry < SEARCH_RETRIES) timer = setTimeout(() => run(retry + 1), 2000);
-    }).catch(() => { if (!stale) setFound({ results: [], meaning: 'off' }); });
+    }).catch((e) => {
+      if (stale) return;
+      // A failed call says so; a retry keeps the word results this query already has.
+      toast(e.message, { kind: 'err' });
+      setFound((cur) => (retry > 0 && cur ? cur : { results: [], meaning: 'off', failed: true }));
+    });
     timer = setTimeout(() => run(0), 200);
     return () => { stale = true; clearTimeout(timer); };
   }, [query, scopeId]);
@@ -379,7 +385,7 @@ export function MeetingsScreen({ route = 'meetings' } = {}) {
         ${line && html`<div class="small muted" role="status">${line}</div>`}
         ${status && status.meaning === 'no_model' && html`<${MeaningModelCard} />`}
         ${found && html`<section class="card" style="overflow:hidden" aria-label="Search results">
-          ${found.results.length === 0 && html`<div class="empty">No meeting matches “${query.trim()}”.</div>`}
+          ${found.results.length === 0 && html`<div class="empty">${found.failed ? "Search didn't work. Try again." : `No meeting matches “${query.trim()}”.`}</div>`}
           ${found.results.map((h) => html`<${SearchResult} hit=${h} current=${current} onOpen=${openAt} />`)}
         </section>`}
         ${!found && html`<section class="card" style="overflow:hidden" aria-label="Past meetings">

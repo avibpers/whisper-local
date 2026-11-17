@@ -25,6 +25,7 @@ function withRefs(text, refs, onOpen) {
   });
 }
 
+// The Ask all meetings conversation: the saved questions and answers, a box for the next one.
 export function AskAll({ initial = '', onOpen }) {
   const [messages, setMessages] = useState(null);
   const [text, setText] = useState('');
@@ -33,6 +34,7 @@ export function AskAll({ initial = '', onOpen }) {
   const alive = useRef(true);
   useEffect(() => { if (box.current) box.current.scrollTop = box.current.scrollHeight; }, [messages, waiting]);
 
+  // Sends one question; the box gets it back when the AI fails, so nothing typed is lost.
   const ask = (question) => {
     const q = String(question || '').trim();
     if (!q || waiting) return;
@@ -52,6 +54,7 @@ export function AskAll({ initial = '', onOpen }) {
     });
     return () => { alive.current = false; };
   }, []);
+  // Removes the whole conversation after the user confirms; the meetings stay.
   const clear = async () => {
     if (await confirmModal({ title: 'Clear this conversation?', body: 'The questions and answers about all your meetings are removed. The meetings stay.', confirm: 'Clear', danger: true })) {
       call('meetings_ask_clear').then(() => setMessages([])).catch((e) => toast(e.message, { kind: 'err' }));

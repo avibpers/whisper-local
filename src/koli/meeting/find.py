@@ -63,8 +63,10 @@ def merge(word_hits: list, meaning_hits: list, places: int = 3, limit: int = 50)
         if word_hit is not None:
             word_place = {"where": word_hit.get("where"), "snippet": _one_line_snippet(word_hit.get("snippet")),
                           "at": word_hit.get("at")}
+            # A place without a second (summary, screenshot captions) is the same only when its text is too.
             already_shown = any(
                 place["where"] == word_place["where"] and place["at"] == word_place["at"]
+                and (word_place["at"] is not None or place["snippet"] == word_place["snippet"])
                 for place in meeting_places[:places]
             )
             if not already_shown:
