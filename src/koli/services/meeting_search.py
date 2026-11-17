@@ -8,6 +8,7 @@ import threading
 import time
 from typing import Callable, Optional
 
+from ..llm.http import NetworkError
 from ..meeting.find import merge
 from ..meeting.index import MeetingIndex, cap
 from ..meeting.store import BRIEF_SUFFIX, CHAT_SUFFIX
@@ -20,6 +21,7 @@ QUERY_WAIT_S = 2.0        # a search waits this long for the model (cold load 3.
 ASK_WAIT_S = 30.0         # "Ask all meetings" may wait for a cold model: it takes seconds anyway
 DEBOUNCE_S = 10.0         # a meeting's changes are indexed this long after the last one
 RETRY_S = 60.0            # after a failed embed (Ollama off, model missing) the indexer waits this long
+MAX_ATTEMPTS = 3         # an indexing error that is the meeting's own: given up after this many tries
 TICK_S = 1.0              # the indexer thread looks for work this often, one meeting at a time
 DEFAULT_MODEL = 'qwen3-embedding:0.6b'
 DEFAULT_ADDRESS = 'http://localhost:11434'
@@ -50,6 +52,16 @@ def is_model_error(error: Exception) -> bool:
     return isinstance(error, (NetworkError, HttpError, ProviderError))
 
 
+# One query embedding on its own thread: at most one is in flight, so a hung model never collects calls.
+class _QueryFlight:
+    def __init__(self, key: tuple):
+        self.key = key                      # (model, query text)
+        self.done = threading.Event()
+        self.vector = None
+        self.error: Optional[Exception] = None
+        self.consumed = False               # a search has reported this error already
+
+
 class MeetingSearch:
     # `setting(path, default)` reads the live settings; `is_running()` says a meeting is on (it keeps
     # the GPU, so nothing is indexed then); `publish(topic, payload)` sends events; `embed(model, texts)`
@@ -68,11 +80,13 @@ class MeetingSearch:
         self._problem: Optional[str] = None            # 'no_ollama' | 'no_model' after a failed model call
         self._blocked_until = 0.0                      # the indexer rests until then after a failure
         self._logged: set = set()                      # failure messages already in the log
+        self._attempts: dict = {}                      # meeting id -> failed indexing tries since it last changed
         self._scan_needed = False                      # queue every meeting without a current index
         self._was_on = True
         self._last_status: Optional[dict] = None
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
+        self._flight: Optional[_QueryFlight] = None    # the one query embedding in progress or just finished
 
     # ── Settings ─────────────────────────────────────────────────────────────
 
@@ -98,6 +112,7 @@ class MeetingSearch:
                 self._problem = None
                 self._blocked_until = 0.0
                 self._pending.clear()
+                self._attempts.clear()
                 self._queue_all(self._clock() if now is None else now)
         if switched:
             self._publish_status()
@@ -144,6 +159,7 @@ class MeetingSearch:
     # The store tells us a meeting changed: it is indexed once it has been quiet for DEBOUNCE_S.
     def changed(self, meeting_id: str) -> None:
         with self._lock:
+            self._attempts.pop(meeting_id, None)          # new content: worth another try
             self._pending[meeting_id] = self._clock() + DEBOUNCE_S
 
     # Ids waiting to be indexed, in a stable order.
@@ -152,24 +168,29 @@ class MeetingSearch:
             return sorted(self._pending)
 
     # Starts the indexer thread once; its first pass queues every meeting whose index isn't current.
+    # Each run has its own stop event, so a thread still finishing after stop() never runs on with a
+    # restarted one's event.
     def start(self) -> None:
         with self._lock:
-            if self._thread is not None and self._thread.is_alive():
+            if self._thread is not None and self._thread.is_alive() and not self._stop.is_set():
                 return
             self._scan_needed = True
-            self._stop.clear()
-            self._thread = threading.Thread(target=self._loop, daemon=True, name='meeting-search-indexer')
+            self._stop = threading.Event()
+            self._thread = threading.Thread(target=self._loop, args=(self._stop,), daemon=True,
+                                            name='meeting-search-indexer')
             self._thread.start()
 
+    # Asks the indexer to stop; the thread reference stays until the thread has really exited.
     def stop(self) -> None:
         self._stop.set()
         thread = self._thread
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=1)
-        self._thread = None
+        if thread is not None and not thread.is_alive():
+            self._thread = None
 
-    def _loop(self) -> None:
-        while not self._stop.wait(TICK_S):
+    def _loop(self, stop: threading.Event) -> None:
+        while not stop.wait(TICK_S):
             try:
                 self.run_pending(self._clock())
             except Exception as e:                        # the thread must outlive any one bad pass
@@ -243,10 +264,12 @@ class MeetingSearch:
         self._publish_status()
 
     # An update failed. A model problem (Ollama off, model missing) is remembered as the current problem
-    # and rests the whole indexer for RETRY_S; any other error is this meeting's own (a broken file, a
-    # locked index) and only logs once. Either way the meeting goes to the back of the queue, so one bad
-    # meeting never holds up the ones behind it.
+    # and rests the whole indexer for RETRY_S. Any other error is this meeting's own (a broken file, a
+    # locked index) and is logged once. The meeting goes to the back of the queue, so one bad meeting
+    # never holds up the ones behind it, and is given up after MAX_ATTEMPTS tries (until it changes).
     def _fail(self, meeting_id: str, error: Exception, now: float) -> None:
+        # Ollama off or the model missing says nothing about this meeting, so it doesn't count as a try.
+        unavailable = isinstance(error, NetworkError) or (is_model_error(error) and problem_of(error) == 'no_model')
         if is_model_error(error):
             self._note_failure(error)
             with self._lock:
@@ -254,7 +277,13 @@ class MeetingSearch:
         else:
             self._log_once(f'Meeting search could not index {meeting_id}: {error}', error)
         with self._lock:
-            self._pending[meeting_id] = now + RETRY_S
+            tries = self._attempts.get(meeting_id, 0) + (0 if unavailable else 1)
+            self._attempts[meeting_id] = tries
+            if tries >= MAX_ATTEMPTS:
+                self._pending.pop(meeting_id, None)
+                logger.warning(f'Meeting search gave up indexing {meeting_id} after {tries} tries')
+            else:
+                self._pending[meeting_id] = now + RETRY_S
         self._publish_status()
 
     # Logs a warning once per distinct error text.
@@ -294,25 +323,11 @@ class MeetingSearch:
         if not self._meaning_on():
             return [], 'off'
         index, _switched = self._current_index()
-        outcome: dict = {}
-        done = threading.Event()
-
-        def work():
-            try:
-                outcome['vector'] = self._embed(index.model, [index.query_text(question)])[0]
-            except Exception as e:
-                outcome['error'] = e
-            finally:
-                done.set()
-
-        threading.Thread(target=work, daemon=True, name='meeting-search-query').start()
-        if not done.wait(wait):
-            return [], 'loading'
-        if 'error' in outcome:
-            problem = self._note_failure(outcome['error'])
+        vector, problem = self._query_vector(index, question, wait)
+        if problem:
             self._publish_status()
             return [], problem
-        hits = index.search(outcome['vector'], meeting_id)
+        hits = index.search(vector, meeting_id)
         with self._lock:
             recovered = self._problem is not None
             self._problem = None
@@ -320,10 +335,56 @@ class MeetingSearch:
             self._publish_status()
         return hits, 'indexing' if self._indexing() else 'on'
 
+    # The question's vector, or (None, reason) when it isn't there: 'loading' after `wait` seconds, or the
+    # problem of a failed call. Only one model call is ever in flight: a search arriving meanwhile waits on
+    # it for what remains of `wait` instead of starting another, and a call for another question is
+    # waited out before this one's own starts. A call that fails after its search gave up records the
+    # problem (so the status shows it) and the next search reports it, then tries again.
+    def _query_vector(self, index: MeetingIndex, question: str, wait: float):
+        text = index.query_text(question)
+        key = (index.model, text)
+        deadline = time.monotonic() + wait
+        while True:
+            with self._lock:
+                flight = self._flight
+                if flight is not None and flight.done.is_set():
+                    if flight.error is not None:
+                        if not flight.consumed:
+                            flight.consumed = True
+                            return None, problem_of(flight.error)
+                        flight = None
+                    elif flight.key != key:
+                        flight = None                     # another question's vector is of no use
+                if flight is None:
+                    flight = self._flight = _QueryFlight(key)
+                    threading.Thread(target=self._run_query, args=(flight, index.model, text), daemon=True,
+                                     name='meeting-search-query').start()
+            if not flight.done.wait(max(0.0, deadline - time.monotonic())):
+                return None, 'loading'
+            if flight.error is not None:
+                with self._lock:
+                    flight.consumed = True
+                return None, problem_of(flight.error)
+            if flight.key == key:
+                return flight.vector, None
+
+    # The thread of one query embedding: keeps the vector or the error, and notes a failure at once.
+    def _run_query(self, flight: _QueryFlight, model: str, text: str) -> None:
+        try:
+            flight.vector = self._embed(model, [text])[0]
+        except Exception as e:
+            flight.error = e
+            self._note_failure(e)
+            self._publish_status()
+        finally:
+            flight.done.set()
+
     # The index is catching up: meetings are queued and the indexer isn't held back by a live meeting.
+    # Meetings that already failed are not waited for, so the status settles when one can't be indexed.
     def _indexing(self) -> bool:
         with self._lock:
-            return bool(self._pending) and not self._is_running()
+            waiting = any(not self._attempts.get(meeting_id) for meeting_id in self._pending)
+            return waiting and not self._is_running()
 
     # ── Status ───────────────────────────────────────────────────────────────
 

@@ -698,13 +698,89 @@ class SearchServiceTests(unittest.TestCase):
                 raise ValueError('cannot read this meeting')
             return self.fake_embed(model, texts)
         svc = self.service(embed=embed)
-        svc.run_all()
-        now = time.time() + 1
+        for meeting_id in 'abc':
+            svc.changed(meeting_id)
+        now = time.time() + 11
         for _ in range(3):
             svc.run_pending(now=now)
         self.assertEqual(svc.pending(), ['a'])                  # b and c got their turn; a waits its retry
         self.assertEqual(svc.status()['indexed'], 2)
-        self.assertEqual(svc.status()['meaning'], 'indexing')   # not "no_ollama"
+        self.assertEqual(svc.status()['meaning'], 'on')         # a failed meeting is not waited for; not "no_ollama"
+        svc.run_pending(now=now + 61)                           # second try
+        self.assertEqual(svc.pending(), ['a'])
+        svc.run_pending(now=now + 122)                          # third try: given up, the status settles
+        self.assertEqual(svc.pending(), [])
+        self.assertEqual(svc.status()['meaning'], 'on')
+        svc.changed('a')                                        # new content is worth a new try
+        self.assertEqual(svc.pending(), ['a'])
+
+    def test_ollama_down_is_never_given_up_on(self):
+        from koli.llm.http import NetworkError
+        svc = self.service(embed=self.raising(NetworkError('refused')))
+        svc.changed('a')
+        for step in range(1, 6):
+            svc.run_pending(now=time.time() + 11 + step * 61)
+        self.assertEqual(svc.pending(), ['a'])
+
+    def test_many_searches_on_a_slow_model_make_one_model_call(self):
+        calls = []
+
+        def slow(model, texts):
+            calls.append(texts)
+            time.sleep(0.6)
+            return self.fake_embed(model, texts)
+        svc = self.service(embed=slow)
+        with mock.patch('koli.services.meeting_search.QUERY_WAIT_S', 0.05):
+            states = [svc.search('budget')['meaning'] for _ in range(5)]
+        self.assertEqual(states, ['loading'] * 5)
+        time.sleep(0.8)
+        self.assertEqual(len(calls), 1)
+
+    def test_late_error_shows_on_the_next_search_then_it_tries_again(self):
+        from koli.llm.http import NetworkError
+        outcomes = [NetworkError('refused'), None]
+
+        def embed(model, texts):
+            time.sleep(0.3)
+            outcome = outcomes.pop(0)
+            if outcome:
+                raise outcome
+            return self.fake_embed(model, texts)
+        svc = self.service(embed=embed)
+        with mock.patch('koli.services.meeting_search.QUERY_WAIT_S', 0.05):
+            self.assertEqual(svc.search('budget')['meaning'], 'loading')
+            time.sleep(0.5)
+            self.assertEqual(svc.status()['meaning'], 'no_ollama')       # recorded when the call failed
+            self.assertEqual(svc.search('budget')['meaning'], 'no_ollama')
+        self.assertEqual(svc.search('budget')['meaning'], 'on')          # the reason was reported once; now it retries
+
+    def test_another_question_never_gets_the_in_flight_vector(self):
+        seen = []
+
+        def embed(model, texts):
+            seen.append(texts[0])
+            time.sleep(0.3)
+            return self.fake_embed(model, texts)
+        svc = self.service(embed=embed)
+        with mock.patch('koli.services.meeting_search.QUERY_WAIT_S', 0.05):
+            svc.search('budget')                                          # loading, call 1 in flight
+        out = svc.search('hire')                                          # waits for call 1, then asks its own
+        self.assertEqual(out['meaning'], 'on')
+        self.assertEqual(len(seen), 2)
+        self.assertIn('Query: hire', seen[1])
+
+    def test_stop_then_start_runs_one_indexer(self):
+        svc = self.service()
+        svc.start()
+        first = svc._thread
+        svc.stop()
+        svc.start()
+        second = svc._thread
+        self.assertIsNot(first, second)
+        first.join(timeout=3)
+        self.assertFalse(first.is_alive())
+        self.assertTrue(second.is_alive())
+        svc.stop()
 
     def test_status_counts_indexed_meetings_and_is_published(self):
         svc = self.service()
