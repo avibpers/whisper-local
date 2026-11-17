@@ -881,5 +881,170 @@ class SearchSettingsAndWiringTests(unittest.TestCase):
         self.assertIn('usage', out['results'][0])
 
 
+class AskTests(unittest.TestCase):
+    # Ask all meetings with a scripted AI: the first reply is the plan, the second the answer.
+    def setUp(self):
+        import json
+        import tempfile
+        from types import SimpleNamespace
+        self.json, self.reply_type = json, SimpleNamespace
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.hits_for_calls = []
+        self.messages_seen = []
+        self.replies = [{'task': 'pricing', 'search': ['pricing'], 'open': []},
+                        {'reply': 'Pricing was set [1].', 'refs': [{'id': 'm1', 'at': 30}]}]
+        self.heads = [{'id': 'm1', 'title': 'Pricing call', 'source': 'zoom', 'started_at': '2026-11-01T10:00:00+02:00',
+                       'speakers': ['Shahar', 'Dana'], 'turns': 2, 'brief': True},
+                      {'id': 'm2', 'title': 'Planning', 'source': 'meet', 'started_at': '2026-11-02T10:00:00+02:00',
+                       'speakers': ['You'], 'turns': 1, 'brief': False},
+                      {'id': 'long', 'title': 'Long one', 'source': 'meet', 'started_at': '2026-11-03T10:00:00+02:00',
+                       'speakers': ['You'], 'turns': 1216, 'brief': True}]
+        self.meetings = {
+            'm1': self.meeting('m1', 'Pricing call', 2),
+            'm2': self.meeting('m2', 'Planning', 1),
+            'long': self.meeting('long', 'Long one', 1216)}
+
+    @staticmethod
+    def meeting(meeting_id, title, turns):
+        return {'id': meeting_id, 'title': title, 'source': 'meet', 'started_at': '2026-11-01T10:00:00+02:00',
+                'speakers': [{'id': 'sp1', 'name': 'Shahar'}],
+                'turns': [{'start': 15.0 * (i + 1), 'end': 15.0 * (i + 1) + 10, 'speaker': 'sp1',
+                           'text': f'turn {i + 1} ' + 'word ' * 12} for i in range(turns)],
+                'screenshots': []}
+
+    def load(self, meeting_id):
+        return self.meetings[meeting_id]
+
+    def hits_for(self, question, meeting_id, per_meeting, total):
+        self.hits_for_calls.append((question, meeting_id, per_meeting, total))
+        who = meeting_id or 'm1'
+        return [{'kind': 'transcript', 'field': 'transcript', 'at': 30 + i, 'text': f'piece {i} ' + 'x' * 200,
+                 'id': who, 'title': f'T-{who}', 'started_at': '2026-11-01T10:00:00+02:00', 'score': 1.0 - i / 100}
+                for i in range(total)]
+
+    def complete(self, feature, msgs, json=False):
+        self.messages_seen.append((feature, msgs))
+        return self.reply_type(ok=True, text=self.json.dumps(self.replies.pop(0)), error='')
+
+    def service(self):
+        from koli.services.meeting_search import MeetingSearch
+        from koli.meeting.store import MeetingStore
+        store = MeetingStore(Path(self.tmp.name) / 'meetings')
+        for meeting in self.meetings.values():
+            store.save(meeting)
+        return MeetingSearch(store, setting=lambda path, default=None: False, is_running=lambda: False,
+                             publish=lambda *a: None, embed=lambda model, texts: None,
+                             complete=self.complete, parse=self.json.loads, ai_ready=lambda: True,
+                             ask_path=Path(self.tmp.name) / 'meetings_ask.json')
+
+    def test_plan_drops_unknown_ids(self):
+        from koli.meeting.ask import clean_plan
+        self.assertEqual(clean_plan({'task': 't', 'search': ['a', 'b', 'c', 'd'], 'open': ['m1', 'nope']}, {'m1'}),
+                         {'task': 't', 'search': ['a', 'b', 'c'], 'open': ['m1']})
+
+    def test_meeting_list_has_one_line_each(self):
+        from koli.meeting.ask import meeting_list
+        lines = meeting_list(self.heads).splitlines()
+        self.assertEqual(lines[0], 'm1 | 2026-11-01 10:00 | Pricing call | zoom | Shahar, Dana | 2 | summary')
+        self.assertTrue(lines[1].endswith('| 1 | no summary'))
+
+    def test_open_meeting_goes_in_whole(self):
+        from koli.meeting.ask import material
+        text, given = material({'search': [], 'open': ['m1']}, 'q', self.load, self.hits_for)
+        self.assertIn('0:15 Shahar: turn 1', text)
+        self.assertIn('[Pricing call | 2026-11-01 | m1 | full transcript]', text)
+        self.assertIn('m1', given)
+        self.assertEqual(given['m1'], 40.0)             # the last turn's end
+
+    def test_material_uses_pieces_when_meeting_too_long(self):
+        from koli.meeting.ask import MAX_MATERIAL, material
+        text, given = material({'search': [], 'open': ['long', 'm1', 'm2']}, 'q', self.load, self.hits_for)
+        self.assertLessEqual(len(text), MAX_MATERIAL)
+        self.assertEqual(self.hits_for_calls[-1][1], 'long')            # restricted to that meeting
+        self.assertNotIn('Long one | 2026-11-01 | long | full transcript', text)
+        self.assertIn('T-long | 2026-11-01 | long | transcript 0:30', text)   # its pieces instead
+        self.assertIn('0:15 Shahar: turn 1', text)                      # the short ones still went in whole
+        self.assertEqual(set(given), {'long', 'm1', 'm2'})
+
+    def test_search_pieces_come_after_opened_and_skip_opened(self):
+        from koli.meeting.ask import material
+        text, given = material({'search': ['pricing'], 'open': ['m2']}, 'q', self.load, self.hits_for)
+        self.assertLess(text.index('m2 | full transcript'), text.index('m1 | transcript 0:30'))
+        self.assertEqual(self.hits_for_calls[-1], ('pricing', None, 4, 30))
+        self.assertEqual(text.count('m1 | transcript'), 4)              # at most 4 pieces of one meeting
+        self.assertEqual(set(given), {'m1', 'm2'})
+
+    def test_answer_drops_unknown_refs_and_markers(self):
+        from koli.meeting.ask import clean_answer
+        out = clean_answer({'reply': 'Pricing [1], budget [2].', 'refs': [{'id': 'm1', 'at': 30}, {'id': 'ghost', 'at': 5}]},
+                           {'m1': 600.0})
+        self.assertEqual(out['reply'], 'Pricing [1], budget.')
+        self.assertEqual([r['id'] for r in out['refs']], ['m1'])
+
+    def test_kept_refs_keep_their_numbers(self):
+        from koli.meeting.ask import clean_answer
+        out = clean_answer({'reply': 'A [1] B [2] C [3]', 'refs': [{'id': 'ghost', 'at': 1}, {'id': 'm1', 'at': 5},
+                                                                   {'id': 'm1', 'at': 'x'}]},
+                           {'m1': 600.0}, {'m1': 'Pricing call'})
+        self.assertEqual(out['reply'], 'A B [2] C')
+        self.assertEqual(out['refs'], [{'n': 2, 'id': 'm1', 'title': 'Pricing call', 'at': 5}])
+
+    def test_ref_past_the_end_dropped(self):
+        from koli.meeting.ask import clean_answer
+        self.assertEqual(clean_answer({'reply': 'x [1]', 'refs': [{'id': 'm1', 'at': 9999}]}, {'m1': 600.0})['refs'], [])
+        self.assertEqual(clean_answer({'reply': 'x [1]', 'refs': [{'id': 'm1', 'at': -3}]}, {'m1': 600.0})['refs'], [])
+
+    def test_ask_records_cost_without_meeting(self):
+        from koli.meeting.ask import ask
+        with mock.patch('koli.meeting.ask.for_meeting') as fm:
+            ask('where is pricing?', [], self.heads, self.load, self.hits_for, self.complete, self.json.loads)
+        fm.assert_called_with(None, 'meeting_ask')
+
+    def test_ask_plans_then_answers_with_checked_refs(self):
+        from koli.meeting.ask import ask
+        out = ask('where is pricing?', [], self.heads, self.load, self.hits_for, self.complete, self.json.loads)
+        self.assertEqual(out['reply'], 'Pricing was set [1].')
+        self.assertEqual(out['refs'], [{'n': 1, 'id': 'm1', 'title': 'Pricing call', 'at': 30}])
+        self.assertEqual([feature for feature, _ in self.messages_seen], ['meetings', 'meetings'])
+        self.assertIn('Pricing call', self.messages_seen[0][1][-1]['content'])      # the planner saw the list
+
+    def test_ask_without_plan_searches_the_question(self):
+        from koli.meeting.ask import ask
+        self.replies[0] = {'task': '', 'search': [], 'open': ['nope']}
+        ask('where is pricing?', [], self.heads, self.load, self.hits_for, self.complete, self.json.loads)
+        self.assertEqual(self.hits_for_calls[0][0], 'where is pricing?')
+
+    def test_ask_sends_only_the_last_questions(self):
+        from koli.meeting.ask import ask, HISTORY
+        history = [{'role': 'user' if i % 2 == 0 else 'assistant', 'text': f'h{i}'} for i in range(60)]
+        ask('q', history, self.heads, self.load, self.hits_for, self.complete, self.json.loads)
+        sent = [m['content'] for m in self.messages_seen[0][1] if m['content'].startswith('h')]
+        self.assertEqual(len(sent), 2 * HISTORY)
+        self.assertEqual(sent[-1], 'h59')
+
+    def test_ask_error_raises_summary_error(self):
+        from koli.meeting.ask import ask
+        from koli.meeting.summarize import SummaryError
+        failing = lambda feature, msgs, json=False: self.reply_type(ok=False, text='', error='no model')
+        with self.assertRaises(SummaryError):
+            ask('q', [], self.heads, self.load, self.hits_for, failing, self.json.loads)
+        with self.assertRaises(SummaryError):
+            ask('  ', [], self.heads, self.load, self.hits_for, self.complete, self.json.loads)
+
+    def test_history_saved_and_cleared(self):
+        self.replies[0] = {'task': 'pricing', 'search': [], 'open': ['m1']}     # real search is off: open it whole
+        svc = self.service(); svc.ask('where is pricing?')
+        self.assertEqual([m['role'] for m in svc.ask_history()], ['user', 'assistant'])
+        self.assertEqual(svc.ask_history()[1]['refs'][0]['id'], 'm1')
+        svc.ask_clear(); self.assertEqual(svc.ask_history(), [])
+
+    def test_ask_needs_a_model(self):
+        svc = self.service()
+        svc._ai_ready = lambda: False
+        with self.assertRaises(ValueError):
+            svc.ask('q')
+
+
 if __name__ == "__main__":
     unittest.main()

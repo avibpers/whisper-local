@@ -122,7 +122,9 @@ class MeetingService:
         # Search by words and by meaning; its indexer follows the store's changes and starts with
         # the app window (ui_ready), so building the service never calls the model.
         self.finder = MeetingSearch(self.store, setting=self._setting, is_running=self.is_running,
-                                    publish=lambda topic, payload: self._publish(topic, payload))
+                                    publish=lambda topic, payload: self._publish(topic, payload),
+                                    complete=lambda *args, **kwargs: self._ai()(*args, **kwargs),
+                                    parse=self._parse, ai_ready=self.ai_ready)
         self.store.on_change = self.finder.changed
         # Saved voices live next to the meetings folder (beside it, so the
         # meeting list never reads them as a meeting).

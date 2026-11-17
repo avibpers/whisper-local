@@ -858,6 +858,19 @@ class Bridge:
     def meeting_chat_clear(self, meeting_id):
         self._meetings.chat_clear(str(meeting_id))
 
+    # Ask all meetings (docs/design/meeting-search.md): waits for the AI; returns {'messages'}.
+    @_api
+    def meetings_ask(self, question):
+        return self._meetings.finder.ask(str(question or ''))
+
+    @_api
+    def meetings_ask_history(self):
+        return self._meetings.finder.ask_history()
+
+    @_api
+    def meetings_ask_clear(self):
+        self._meetings.finder.ask_clear()
+
     # ── Summary templates (docs/design/meeting-summary.md) ───────────────────
 
     @_api

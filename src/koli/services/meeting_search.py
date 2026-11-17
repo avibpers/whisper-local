@@ -3,12 +3,16 @@
 # meaning index up to date. Never makes the caller wait on the model: words come back at once, and
 # the meaning part says why it is missing (docs/design/meeting-search.md).
 
+import json
 import logging
+import os
 import threading
 import time
+from pathlib import Path
 from typing import Callable, Optional
 
 from ..llm.http import NetworkError
+from ..meeting import ask as meeting_ask
 from ..meeting.find import merge
 from ..meeting.index import MeetingIndex, cap
 from ..meeting.store import BRIEF_SUFFIX, CHAT_SUFFIX
@@ -25,6 +29,7 @@ MAX_ATTEMPTS = 3         # an indexing error that is the meeting's own: given up
 TICK_S = 1.0              # the indexer thread looks for work this often, one meeting at a time
 DEFAULT_MODEL = 'qwen3-embedding:0.6b'
 DEFAULT_ADDRESS = 'http://localhost:11434'
+ASK_FILE = 'meetings_ask.json'     # the Ask conversation, in the user data folder
 
 
 # The embedding call the app uses; imported when first needed so building the service never loads it.
@@ -65,15 +70,23 @@ class _QueryFlight:
 class MeetingSearch:
     # `setting(path, default)` reads the live settings; `is_running()` says a meeting is on (it keeps
     # the GPU, so nothing is indexed then); `publish(topic, payload)` sends events; `embed(model, texts)`
-    # is the model call (llm.embed); `tasks` is the task manager (default: the app's).
+    # is the model call (llm.embed); `tasks` is the task manager (default: the app's). For Ask: `complete`
+    # and `parse` are the AI completer and its JSON parser, `ai_ready()` says a model is chosen, and
+    # `ask_path` is where the conversation is kept (default: the user data folder).
     def __init__(self, store, setting: Callable[[str, object], object], is_running: Callable[[], bool],
-                 publish: Callable[[str, dict], None], embed: Optional[Callable] = None, tasks=None):
+                 publish: Callable[[str, dict], None], embed: Optional[Callable] = None, tasks=None,
+                 complete: Optional[Callable] = None, parse: Optional[Callable] = None,
+                 ai_ready: Optional[Callable[[], bool]] = None, ask_path: Optional[Path] = None):
         self.store = store
         self._setting = setting
         self._is_running = is_running
         self._publish = publish
         self._embed = embed or _default_embed
         self._tasks = tasks
+        self._complete = complete
+        self._parse = parse
+        self._ai_ready = ai_ready
+        self._ask_path = Path(ask_path) if ask_path else None
         self._lock = threading.RLock()
         self._index: Optional[MeetingIndex] = None     # built for the model setting, replaced when it changes
         self._pending: dict = {}                       # meeting id -> when it may be indexed (epoch seconds)
@@ -385,6 +398,50 @@ class MeetingSearch:
         with self._lock:
             waiting = any(not self._attempts.get(meeting_id) for meeting_id in self._pending)
             return waiting and not self._is_running()
+
+    # ── Ask all meetings ─────────────────────────────────────────────────────
+
+    def _ask_file(self) -> Path:
+        if self._ask_path is None:
+            from ..utils import get_user_app_data_path
+            self._ask_path = Path(get_user_app_data_path()) / ASK_FILE
+        return self._ask_path
+
+    # The saved conversation, oldest first; [] when there is none or the file is unreadable.
+    def ask_history(self) -> list:
+        try:
+            data = json.loads(self._ask_file().read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            return []
+        return data if isinstance(data, list) else []
+
+    def ask_clear(self) -> None:
+        with self._lock:
+            self._ask_file().unlink(missing_ok=True)
+
+    # Written to a temp file first, so a crash mid-write never loses the conversation.
+    def _ask_save(self, messages: list) -> None:
+        path = self._ask_file()
+        with self._lock:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix('.json.tmp')
+            tmp.write_text(json.dumps(messages, ensure_ascii=False, indent=1), encoding='utf-8')
+            os.replace(tmp, path)
+
+    # Asks the AI about all meetings and keeps the question and answer; returns {'messages': the conversation}.
+    # Raises ValueError when no AI model is chosen, SummaryError when the AI fails.
+    def ask(self, question: str) -> dict:
+        ready = self._ai_ready() if self._ai_ready is not None else self._complete is not None
+        if not ready or self._complete is None:
+            raise ValueError("Choose an AI model in Settings › AI first")
+        history = self.ask_history()
+        answer = meeting_ask.ask(question, history, self.store.list(), self.store.load, self.hits_for,
+                                 self._complete, self._parse or json.loads)
+        now = time.strftime('%Y-%m-%dT%H:%M:%S')
+        history = history + [{'role': 'user', 'text': str(question).strip(), 'at': now},
+                             {'role': 'assistant', 'text': answer['reply'], 'at': now, 'refs': answer['refs']}]
+        self._ask_save(history)
+        return {'messages': history}
 
     # ── Status ───────────────────────────────────────────────────────────────
 
