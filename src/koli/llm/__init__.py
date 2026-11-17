@@ -15,6 +15,7 @@ import threading
 import time
 
 from . import http, images, providers, routing
+from .transports import ollama as ollama_wire
 from .oauth import SUBSCRIPTIONS
 from .types import AnswerStopped, ConfigError, ProviderError, ReconnectNeeded, Result
 from ..usage import budget, ledger, prices
@@ -22,7 +23,7 @@ from ..usage import budget, ledger, prices
 logger = logging.getLogger(__name__)
 
 __all__ = ['Result', 'configure', 'complete', 'list_models', 'provider_status', 'test', 'kind_of',
-           'start_background', 'strip_reasoning', 'parse_json', 'model_for', 'takes_pictures']
+           'start_background', 'strip_reasoning', 'parse_json', 'model_for', 'takes_pictures', 'embed']
 
 _config_manager = None
 
@@ -224,6 +225,25 @@ def _error_message(body: str) -> str:
     except (ValueError, AttributeError):
         return ''
     return '. '.join(message.split('. ')[:2]).strip()[:200]
+
+
+# ── Embeddings ───────────────────────────────────────────────────────────────
+
+# Meaning vectors for texts, from a local Ollama embedding model (a bare model
+# name, not "provider/model"): a float32 matrix, one unit-length row per text,
+# so a dot product is the cosine. Raises ProviderError / http errors; the
+# caller (meeting search) decides what to say when the model isn't there.
+def embed(model: str, texts: list, batch: int = 64, timeout: float = 120):
+    import numpy as np
+    if not texts:
+        return np.zeros((0, 0), dtype=np.float32)
+    address = str(_setting('ai.ollama.address') or 'http://localhost:11434')
+    rows = []
+    for start in range(0, len(texts), batch):
+        rows.extend(ollama_wire.embed(address, model, list(texts[start:start + batch]), timeout))
+    matrix = np.asarray(rows, dtype=np.float32)
+    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+    return matrix / np.where(norms == 0, 1.0, norms)
 
 
 # ── Settings screen ──────────────────────────────────────────────────────────

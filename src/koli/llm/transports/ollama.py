@@ -55,3 +55,39 @@ def warm(base_url: str, model: str, options: dict = None, timeout: float = 120):
 def list_models(base_url: str, timeout: float = 5) -> list:
     data = http.get_json(f"{base_url.rstrip('/')}/api/tags", timeout=timeout)
     return [{'id': m['name'], 'label': m['name']} for m in data.get('models') or [] if m.get('name')]
+
+
+# Vectors for a list of texts, one per text and in order. `keep_alive` leaves
+# the model loaded between questions, so a search after the first is instant.
+def embed(base_url: str, model: str, texts: list, timeout: float = 120) -> list:
+    data = http.post_json(f"{base_url.rstrip('/')}/api/embed",
+                          {'model': model, 'input': texts, 'keep_alive': '30m'}, timeout=timeout)
+    if data.get('error'):
+        raise ProviderError(str(data['error']))
+    vectors = data.get('embeddings') or []
+    if len(vectors) != len(texts):
+        raise ProviderError(f"{model} returned {len(vectors)} vectors for {len(texts)} texts")
+    return vectors
+
+
+# Downloads a model, reporting how far it is (0..1) and Ollama's status line
+# ("pulling <layer>", "verifying", "success") for a progress bar.
+def pull(base_url: str, model: str, on_progress, timeout: float = 3600) -> None:
+    url = f"{base_url.rstrip('/')}/api/pull"
+    with http.post_stream(url, {'model': model, 'stream': True}, timeout=timeout) as resp:
+        for line in resp:
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                continue
+            if obj.get('error'):
+                raise ProviderError(str(obj['error']))
+            status = str(obj.get('status') or '')
+            total, completed = obj.get('total'), obj.get('completed')
+            # Only layer downloads carry sizes; the other status lines have none.
+            if total:
+                on_progress(min(1.0, float(completed or 0) / float(total)), status)
+            elif status == 'success':
+                on_progress(1.0, status)
+            else:
+                on_progress(0.0, status)
