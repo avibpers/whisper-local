@@ -55,7 +55,8 @@ class MeetingIndex:
         self.embed = embed
         # {meeting_id: entry dict (mtime, vectors float32, rows, model, hashes)}, refreshed per file by mtime.
         self._cache: dict = {}
-        self._lock = threading.RLock()
+        self._lock = threading.RLock()          # disk and cache: searches take only this one
+        self._update_lock = threading.Lock()    # one update at a time, held across the slow model call
 
     def query_text(self, question: str) -> str:
         return query_text(question)
@@ -72,26 +73,28 @@ class MeetingIndex:
         cut = pieces(meeting, brief)
         texts = [embed_text(meeting, piece) for piece in cut]
         hashes = [_hash(text) for text in texts]
-        # The lock covers only the disk and the cache: the model call can take seconds
-        # (a cold load) or hang, and searches must not wait for it.
-        with self._lock:
-            known = self._known_vectors(meeting_id)
-        missing = {}                                  # hash -> text, once each
-        for h, text in zip(hashes, texts):
-            if h not in known:
-                missing.setdefault(h, text)
-        if missing:
-            fresh = np.asarray(self.embed(list(missing.values())), dtype=np.float32)
-            if len(fresh) != len(missing):
-                raise ValueError(f'embed returned {len(fresh)} vectors for {len(missing)} texts')
-            known.update(zip(missing.keys(), fresh))
-        vectors = (np.stack([known[h] for h in hashes]) if hashes
-                   else np.zeros((0, 0), dtype=np.float32))
-        rows = [{**piece, 'id': meeting_id, 'title': meeting.get('title') or '',
-                 'started_at': meeting.get('started_at') or ''} for piece in cut]
-        with self._lock:
-            self._write(meeting_id, vectors, hashes, rows)
-        return len(missing)
+        # Updates run one at a time so an older state never overwrites a newer one. The data
+        # lock covers only the disk and the cache: the model call can take seconds (a cold
+        # load) or hang, and searches must not wait for it.
+        with self._update_lock:
+            with self._lock:
+                known = self._known_vectors(meeting_id)
+            missing = {}                                  # hash -> text, once each
+            for h, text in zip(hashes, texts):
+                if h not in known:
+                    missing.setdefault(h, text)
+            if missing:
+                fresh = np.asarray(self.embed(list(missing.values())), dtype=np.float32)
+                if len(fresh) != len(missing):
+                    raise ValueError(f'embed returned {len(fresh)} vectors for {len(missing)} texts')
+                known.update(zip(missing.keys(), fresh))
+            vectors = (np.stack([known[h] for h in hashes]) if hashes
+                       else np.zeros((0, 0), dtype=np.float32))
+            rows = [{**piece, 'id': meeting_id, 'title': meeting.get('title') or '',
+                     'started_at': meeting.get('started_at') or ''} for piece in cut]
+            with self._lock:
+                self._write(meeting_id, vectors, hashes, rows)
+            return len(missing)
 
     # The vectors already on disk for this meeting by piece hash; empty for another model.
     def _known_vectors(self, meeting_id: str) -> dict:
@@ -166,12 +169,24 @@ class MeetingIndex:
         return [{**rows[i], 'score': float(scores[i])} for i in best]
 
     # Ids of the meetings that have an index file now (a cheap folder scan on every search).
+    # An index whose meeting file is gone (a delete that could not remove it) is dropped.
     def _meeting_ids(self, meeting_id: str | None) -> list:
-        if meeting_id is not None:
-            return [meeting_id]
         if not self.folder.exists():
             return []
-        ids = [p.name[:-len(INDEX_SUFFIX)] for p in self.folder.glob(f'*{INDEX_SUFFIX}')]
-        for gone in set(self._cache) - set(ids):      # forget meetings whose file was deleted
-            self._cache.pop(gone, None)
-        return sorted(ids)
+        if meeting_id is not None:
+            ids = [meeting_id]
+        else:
+            ids = sorted(p.name[:-len(INDEX_SUFFIX)] for p in self.folder.glob(f'*{INDEX_SUFFIX}'))
+            for gone in set(self._cache) - set(ids):      # forget meetings whose file was deleted
+                self._cache.pop(gone, None)
+        alive = []
+        for mid in ids:
+            if (self.folder / f'{mid}.json').exists():
+                alive.append(mid)
+            else:
+                self._cache.pop(mid, None)
+                try:
+                    self._path(mid).unlink(missing_ok=True)
+                except OSError:
+                    pass                                   # still held by something; skipped again next time
+        return alive

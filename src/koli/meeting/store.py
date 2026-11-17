@@ -408,7 +408,7 @@ class MeetingStore:
             self.chat_path(meeting_id).unlink(missing_ok=True)
             try:
                 (self.folder / f"{meeting_id}{INDEX_SUFFIX}").unlink(missing_ok=True)
-            except OSError as e:        # a search may hold the file open (Windows); the meeting still goes
+            except OSError as e:        # an indexer, antivirus or Explorer may hold the file (Windows); the meeting still goes
                 logger.warning(f"Could not delete the search index of {meeting_id}: {e}")
             try:
                 self.path(meeting_id).unlink()

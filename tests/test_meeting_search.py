@@ -236,10 +236,12 @@ class IndexTests(unittest.TestCase):
         self.index.update(self.other, None)
 
     def meeting(self, meeting_id, title, lines):
-        return {'id': meeting_id, 'title': title, 'started_at': '2026-11-16T10:00:00+02:00',
-                'speakers': [{'id': 'you', 'name': 'You'}],
-                'turns': [{'start': i * 30.0, 'end': i * 30.0 + 20, 'speaker': 'you', 'text': t} for i, t in enumerate(lines)],
-                'screenshots': []}
+        meeting = {'id': meeting_id, 'title': title, 'started_at': '2026-11-16T10:00:00+02:00',
+                   'speakers': [{'id': 'you', 'name': 'You'}],
+                   'turns': [{'start': i * 30.0, 'end': i * 30.0 + 20, 'speaker': 'you', 'text': t} for i, t in enumerate(lines)],
+                   'screenshots': []}
+        self.store.save(meeting)           # a search only trusts an index whose meeting file exists
+        return meeting
 
     def embed(self, texts):
         self.embedded_texts.extend(texts)
@@ -367,7 +369,6 @@ class IndexTests(unittest.TestCase):
         self.assertFalse((self.folder / 'a.index.npz').exists())
 
     def test_delete_survives_a_locked_index_file(self):
-        self.store.save(self.m)
         self.index.update(self.m, None)
         real_unlink = Path.unlink
 
@@ -376,9 +377,47 @@ class IndexTests(unittest.TestCase):
                 raise PermissionError('in use')
             return real_unlink(path, *args, **kwargs)
 
-        with mock.patch.object(Path, 'unlink', locked):
+        with mock.patch.object(Path, 'unlink', locked), self.assertLogs('koli.meeting.store', 'WARNING'):
             self.assertTrue(self.store.delete('a'))
-        self.assertFalse((self.folder / 'a.json').exists())
+            self.assertFalse((self.folder / 'a.json').exists())
+            self.assertTrue((self.folder / 'a.index.npz').exists())         # could not be removed...
+            hits = self.index.search(self.embed(['budget'])[0])
+            self.assertTrue(hits and all(h['id'] == 'b' for h in hits))    # ...but never found again
+            self.assertEqual(self.index.search(self.embed(['budget'])[0], meeting_id='a'), [])
+
+    def test_orphan_index_is_removed_by_a_search(self):
+        self.index.update(self.m, None)
+        (self.folder / 'a.json').unlink()
+        self.index.search(self.embed(['budget'])[0])
+        self.assertFalse((self.folder / 'a.index.npz').exists())
+
+    def test_concurrent_updates_keep_the_newer_state(self):
+        import threading
+        gate = threading.Event()
+        started = threading.Event()
+        calls = []
+
+        def gated_embed(texts):
+            calls.append(list(texts))
+            if len(calls) == 1:                         # the first (older) update stalls in the model
+                started.set()
+                gate.wait(10)
+            return self.embed(texts)
+
+        from koli.meeting.index import MeetingIndex
+        index = MeetingIndex(self.folder, 'fake-model', gated_embed)
+        old_state = self.meeting('a', 'Budget talk', ['the budget for next year'])
+        new_state = self.meeting('a', 'Budget talk', ['the budget for next year', 'a later sentence added'])
+        first = threading.Thread(target=index.update, args=(old_state, None))
+        first.start()
+        self.assertTrue(started.wait(5))
+        second = threading.Thread(target=index.update, args=(new_state, None))
+        second.start()
+        gate.set()
+        first.join(10)
+        second.join(10)
+        texts = ' '.join(h['text'] for h in index.search(self.embed(['sentence'])[0], meeting_id='a'))
+        self.assertIn('later sentence', texts)          # the older update did not win
 
     def test_query_text(self):
         self.assertEqual(self.index.query_text('what did we decide?'),
