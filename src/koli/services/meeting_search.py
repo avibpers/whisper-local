@@ -87,6 +87,7 @@ class MeetingSearch:
         self._parse = parse
         self._ai_ready = ai_ready
         self._ask_path = Path(ask_path) if ask_path else None
+        self._ask_lock = threading.Lock()              # one writer of the Ask conversation at a time
         self._lock = threading.RLock()
         self._index: Optional[MeetingIndex] = None     # built for the model setting, replaced when it changes
         self._pending: dict = {}                       # meeting id -> when it may be indexed (epoch seconds)
@@ -416,17 +417,16 @@ class MeetingSearch:
         return data if isinstance(data, list) else []
 
     def ask_clear(self) -> None:
-        with self._lock:
+        with self._ask_lock:
             self._ask_file().unlink(missing_ok=True)
 
     # Written to a temp file first, so a crash mid-write never loses the conversation.
     def _ask_save(self, messages: list) -> None:
         path = self._ask_file()
-        with self._lock:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix('.json.tmp')
-            tmp.write_text(json.dumps(messages, ensure_ascii=False, indent=1), encoding='utf-8')
-            os.replace(tmp, path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix('.json.tmp')
+        tmp.write_text(json.dumps(messages, ensure_ascii=False, indent=1), encoding='utf-8')
+        os.replace(tmp, path)
 
     # Asks the AI about all meetings and keeps the question and answer; returns {'messages': the conversation}.
     # Raises ValueError when no AI model is chosen, SummaryError when the AI fails.
@@ -434,13 +434,24 @@ class MeetingSearch:
         ready = self._ai_ready() if self._ai_ready is not None else self._complete is not None
         if not ready or self._complete is None:
             raise ValueError("Choose an AI model in Settings › AI first")
-        history = self.ask_history()
-        answer = meeting_ask.ask(question, history, self.store.list(), self.store.load, self.hits_for,
-                                 self._complete, self._parse or json.loads)
+        states: list = []                                 # what each meaning search said, to tell if it was unavailable
+
+        def hits_for(text: str, meeting_id: Optional[str], per_meeting: int, total: int) -> list:
+            hits, state = self._meaning(text, meeting_id, ASK_WAIT_S)
+            states.append(state)
+            return cap(hits, per_meeting, total)
+
+        def unavailable() -> bool:
+            return any(state in ('off', 'loading', 'no_ollama', 'no_model') for state in states)
+
+        answer = meeting_ask.ask(question, self.ask_history(), self.store.list(), self.store.load, hits_for,
+                                 self._complete, self._parse or json.loads, unavailable)
         now = time.strftime('%Y-%m-%dT%H:%M:%S')
-        history = history + [{'role': 'user', 'text': str(question).strip(), 'at': now},
-                             {'role': 'assistant', 'text': answer['reply'], 'at': now, 'refs': answer['refs']}]
-        self._ask_save(history)
+        with self._ask_lock:                              # read again: another question may have been saved meanwhile
+            history = self.ask_history() + [{'role': 'user', 'text': str(question).strip(), 'at': now},
+                                            {'role': 'assistant', 'text': answer['reply'], 'at': now,
+                                             'refs': answer['refs']}]
+            self._ask_save(history)
         return {'messages': history}
 
     # ── Status ───────────────────────────────────────────────────────────────

@@ -1039,6 +1039,49 @@ class AskTests(unittest.TestCase):
         self.assertEqual(svc.ask_history()[1]['refs'][0]['id'], 'm1')
         svc.ask_clear(); self.assertEqual(svc.ask_history(), [])
 
+    def test_prose_answer_is_kept_when_parser_gives_none(self):
+        from koli.meeting.ask import ask
+        self.complete = lambda feature, msgs, json=False: self.reply_type(ok=True, text='Plain words, no JSON.', error='')
+        out = ask('q', [], self.heads, self.load, self.hits_for, self.complete, lambda text: None)
+        self.assertEqual(out, {'reply': 'Plain words, no JSON.', 'refs': []})
+
+    def test_ref_with_list_id_is_dropped_not_fatal(self):
+        from koli.meeting.ask import clean_answer
+        out = clean_answer({'reply': 'x [1] y [2]', 'refs': [{'id': ['m1'], 'at': 5}, {'id': {'a': 1}, 'at': 5}]},
+                           {'m1': 600.0})
+        self.assertEqual(out, {'reply': 'x y', 'refs': []})
+
+    def test_meeting_list_stays_under_its_character_budget(self):
+        from koli.meeting.ask import LIST_MAX_CHARS, meeting_list
+        heads = [{'id': f'id{i:04d}', 'title': 'T' * 400, 'source': 'meet', 'started_at': '2026-11-01T10:00:00+02:00',
+                  'speakers': ['Name' * 100], 'turns': 5, 'brief': True} for i in range(500)]
+        listing = meeting_list(heads)
+        self.assertLessEqual(len(listing), LIST_MAX_CHARS)
+        lines = listing.splitlines()
+        self.assertTrue(lines[0].startswith('id0000'))                  # newest first; the oldest fell off
+        self.assertLess(len(lines), 500)
+        self.assertNotIn('T' * 81, listing)
+
+    def test_ref_title_comes_from_all_heads(self):
+        from koli.meeting.ask import ask
+        heads = [{**self.heads[1], 'id': f'x{i}', 'title': 'F' * 400} for i in range(300)] + self.heads
+        out = ask('where is pricing?', [], heads, self.load, self.hits_for, self.complete, self.json.loads)
+        self.assertEqual(out['refs'][0]['title'], 'Pricing call')       # m1 is past the listing's budget
+
+    def test_material_says_when_search_is_unavailable(self):
+        from koli.meeting.ask import material
+        text, _ = material({'search': ['pricing'], 'open': ['m1']}, 'q', self.load, lambda *a: [], lambda: True)
+        self.assertIn('Search by meaning is unavailable right now', text)
+        self.assertIn('0:15 Shahar: turn 1', text)
+        text, _ = material({'search': ['pricing'], 'open': []}, 'q', self.load, lambda *a: [], lambda: False)
+        self.assertEqual(text, '')
+
+    def test_service_reports_unavailable_meaning_to_the_model(self):
+        self.replies[0] = {'task': 'pricing', 'search': ['pricing'], 'open': []}
+        svc = self.service()                                            # meaning is off in these settings
+        svc.ask('where is pricing?')
+        self.assertIn('Search by meaning is unavailable', self.messages_seen[1][1][-1]['content'])
+
     def test_ask_needs_a_model(self):
         svc = self.service()
         svc._ai_ready = lambda: False

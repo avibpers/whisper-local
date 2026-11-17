@@ -23,7 +23,10 @@ OPEN_PIECES = 12          # a meeting too long to open whole gives its best piec
 PER_MEETING = 4           # pieces of one meeting among the search results
 TOTAL_PIECES = 30
 HISTORY = 10              # earlier questions (with their answers) the model sees again
-LIST_MAX = 500            # newest meetings in the list the planner reads
+LIST_MAX_CHARS = 20000    # the planner's list of meetings, newest first, the oldest lines dropped
+TITLE_MAX = 80            # a title or the people in one list line are cut to this many characters
+PEOPLE_MAX = 120
+UNAVAILABLE_NOTE = '(Search by meaning is unavailable right now; only whole meetings were read.)'
 
 PLAN_SYSTEM = (
     "You help the user with their past meetings. You get the list of all meetings and the question. "
@@ -47,15 +50,20 @@ def _clock(seconds: float) -> str:
     return f'{seconds // 60}:{seconds % 60:02d}'
 
 
-# One line per meeting: id | start | title | app | people | turns | summary or not.
-def meeting_list(heads: list) -> str:
-    lines = []
+# One line per meeting, newest first: id | start | title | app | people | turns | summary or not. Title and
+# people are cut short and the list stops at `max_chars`, so the oldest meetings fall off a long list.
+def meeting_list(heads: list, max_chars: int = LIST_MAX_CHARS) -> str:
+    lines, used = [], 0
     for head in heads:
         start = str(head.get('started_at') or '')[:16].replace('T', ' ')
         people = ', '.join(str(name) for name in head.get('speakers') or [])
-        lines.append(' | '.join([str(head.get('id') or ''), start, str(head.get('title') or ''),
-                                 str(head.get('source') or ''), people, str(head.get('turns') or 0),
-                                 'summary' if head.get('brief') else 'no summary']))
+        line = ' | '.join([str(head.get('id') or ''), start, str(head.get('title') or '')[:TITLE_MAX],
+                           str(head.get('source') or ''), people[:PEOPLE_MAX], str(head.get('turns') or 0),
+                           'summary' if head.get('brief') else 'no summary'])
+        if used + len(line) + 1 > max_chars:
+            break
+        lines.append(line)
+        used += len(line) + 1
     return '\n'.join(lines)
 
 
@@ -126,8 +134,10 @@ def _search_pieces(phrases: list, question: str, hits_for: Callable) -> list:
 
 # What the answering model reads and which meetings it came from: opened meetings first (whole when they
 # fit, else their best pieces), then the pieces the search phrases found, never more than MAX_MATERIAL.
+# `search_unavailable()` says the meaning search couldn't run; the material then tells the model so.
 # Returns (text, {meeting_id: duration_s}) for every meeting that put something in.
-def material(plan: dict, question: str, load: Callable[[str], dict], hits_for: Callable) -> tuple:
+def material(plan: dict, question: str, load: Callable[[str], dict], hits_for: Callable,
+             search_unavailable: Optional[Callable[[], bool]] = None) -> tuple:
     blocks: list = []
     given: dict = {}
     used = [0]
@@ -171,6 +181,9 @@ def material(plan: dict, question: str, load: Callable[[str], dict], hits_for: C
     for piece in cap([p for p in pieces if p['id'] not in opened], PER_MEETING, TOTAL_PIECES):
         if not add(_piece_text(piece), piece['id'], None):
             break
+    if plan.get('search') and search_unavailable is not None and search_unavailable() \
+            and used[0] + len(UNAVAILABLE_NOTE) + 2 <= MAX_MATERIAL:
+        blocks.append(UNAVAILABLE_NOTE)
     return '\n\n'.join(blocks), given
 
 
@@ -193,7 +206,8 @@ def clean_answer(answer: dict, given: dict, titles: Optional[dict] = None) -> di
     raw = answer.get('refs') if isinstance(answer.get('refs'), list) else []
     refs = []
     for n, ref in enumerate(raw, 1):
-        if not isinstance(ref, dict) or ref.get('id') not in given or isinstance(ref.get('at'), bool):
+        if not isinstance(ref, dict) or not isinstance(ref.get('id'), str) or ref['id'] not in given \
+                or isinstance(ref.get('at'), bool):
             continue
         try:
             at = float(ref['at'])
@@ -215,26 +229,27 @@ def _call(complete: Callable, parse: Callable, msgs: list):
     if not result.ok:
         raise SummaryError(result.error or 'The AI did not answer')
     try:
-        return parse(result.text)
+        parsed = parse(result.text)
     except Exception:
-        return {'reply': result.text}
+        parsed = None                                     # llm.parse_json gives None, not an error, for prose
+    return parsed if isinstance(parsed, dict) else {'reply': result.text}     # prose is still an answer
 
 
 # Plans, gathers, answers: {'reply', 'refs'}. The cost is recorded for no meeting (feature "meeting_ask").
 # Raises SummaryError when the question is empty or the AI fails.
 def ask(question: str, history: list, heads: list, load: Callable[[str], dict], hits_for: Callable,
-        complete: Callable, parse: Optional[Callable] = None) -> dict:
+        complete: Callable, parse: Optional[Callable] = None,
+        search_unavailable: Optional[Callable[[], bool]] = None) -> dict:
     question = str(question or '').strip()
     if not question:
         raise SummaryError('Write a question first')
     parse = parse or json.loads
-    heads = heads[:LIST_MAX]
     with for_meeting(None, 'meeting_ask'):
         plan = clean_plan(_call(complete, parse, plan_messages(meeting_list(heads), history, question)),
                           {h['id'] for h in heads})
         if not plan['search'] and not plan['open']:           # no usable plan: search for the question itself
             plan['search'] = [question]
-        text, given = material(plan, question, load, hits_for)
+        text, given = material(plan, question, load, hits_for, search_unavailable)
         answer = _call(complete, parse, answer_messages(plan['task'], text, history, question))
     return clean_answer(answer, given, {h['id']: h.get('title') or '' for h in heads})
 
