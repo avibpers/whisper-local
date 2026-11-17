@@ -52,3 +52,45 @@ class EmbedTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ── Pieces of a meeting ──────────────────────────────────────────────────────
+
+class PiecesTests(unittest.TestCase):
+    def meeting(self, n_turns=10, step=15.0):
+        return {'id': 'm1', 'title': 'Pricing', 'started_at': '2026-11-16T17:51:57+02:00',
+                'speakers': [{'id': 'you', 'name': 'You'}, {'id': 's1', 'name': 'Shahar'}],
+                'turns': [{'start': i * step, 'speaker': 's1' if i % 2 else 'you', 'text': f'turn {i}'} for i in range(n_turns)],
+                'screenshots': [{'at': 30.0, 'caption': 'The price table for enterprise'}]}
+
+    def test_transcript_windows_overlap(self):
+        from koli.meeting.pieces import pieces
+        ps = [p for p in pieces(self.meeting(), None) if p['kind'] == 'transcript']
+        self.assertEqual(ps[0]['at'], 0.0)
+        self.assertIn('Shahar: turn 1', ps[0]['text'])
+        self.assertEqual(ps[1]['at'], 60.0)          # 75 s window, next starts 20 s before its end (55 s → first turn at 60)
+        self.assertIn('turn 4', ps[0]['text'])      # 60 s is inside the first window too
+
+    def test_summary_items_plain_and_layout_skipped(self):
+        from koli.meeting.pieces import pieces
+        brief = {'tldr': 'We agreed the enterprise price', 'decisions': [{'id': 'D1', 'text': 'Enterprise costs 40 per seat', 'at': 120}],
+                 'labels': {'tldr': 'סיכום'}, 'generator': 'codex via Koli', 'avi_vision': ['Koli answers every meeting question'],
+                 'action_items': [{'task': 'ok'}]}
+        ps = [p for p in pieces(self.meeting(), brief) if p['kind'] == 'summary']
+        texts = [p['text'] for p in ps]
+        self.assertIn('Enterprise costs 40 per seat', texts)
+        self.assertEqual(next(p for p in ps if p['field'] == 'decisions')['at'], 120)
+        self.assertIn('Koli answers every meeting question', texts)      # a template's own field
+        self.assertFalse(any('סיכום' in t or 'codex' in t or '{' in t for t in texts))
+        self.assertNotIn('ok', texts)                                     # under 15 characters
+
+    def test_screenshot_caption_piece_and_label(self):
+        from koli.meeting.pieces import embed_text, pieces
+        m = self.meeting()
+        shot = next(p for p in pieces(m, None) if p['kind'] == 'screenshot')
+        self.assertEqual(shot['at'], 30.0)
+        self.assertTrue(embed_text(m, shot).startswith('Meeting "Pricing" on 2026-11-16\n'))
+
+    def test_empty_meeting_has_no_pieces(self):
+        from koli.meeting.pieces import pieces
+        self.assertEqual(pieces({'id': 'x', 'title': '', 'turns': [], 'speakers': []}, None), [])

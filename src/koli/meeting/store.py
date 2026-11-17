@@ -108,22 +108,27 @@ def roster(meeting: dict) -> list:
 
 
 # What the list shows: never the turns or the voiceprints.
-# All the words of a summary, for search: titles, lists, agenda, topics.
-def _brief_text(brief: dict) -> str:
+# All the words of a summary (or one item of it), without ids, times and layout fields.
+def plain_text(value) -> str:
     parts = []
 
-    def walk(value):
-        if isinstance(value, str):
-            parts.append(value)
-        elif isinstance(value, list):
-            for v in value:
+    def walk(item):
+        if isinstance(item, str):
+            parts.append(item)
+        elif isinstance(item, list):
+            for v in item:
                 walk(v)
-        elif isinstance(value, dict):
-            for k, v in value.items():
+        elif isinstance(item, dict):
+            for k, v in item.items():
                 if k not in ('id', 'at', 'start', 'end', 'version', 'generator', 'template', 'written', 'language', 'status'):
                     walk(v)
-    walk(brief)
+    walk(value)
     return ' '.join(parts)
+
+
+# All the words of a summary, for search: titles, lists, agenda, topics.
+def _brief_text(brief: dict) -> str:
+    return plain_text(brief)
 
 
 # About 70 characters around the first place the term appears.
