@@ -11,11 +11,14 @@
 import datetime
 import json
 import logging
+import math
 import os
+import re
 import shutil
 import threading
 import time
 import wave
+from collections import Counter
 from pathlib import Path
 from typing import Optional
 
@@ -30,6 +33,11 @@ SAVE_INTERVAL = 5.0
 EXPORT_FORMATS = ('txt', 'md')
 BRIEF_SUFFIX = '.brief.json'
 CHAT_SUFFIX = '.chat.json'
+
+# Word search (measured in the lab): whole words, Hebrew prefixes, rare words count most.
+WORD_RE = re.compile(r"[\w״\"׳'-]+")
+HEBREW_PREFIXES = 'והבלמשכ'   # one of these glued to the front of a word is not part of it
+COMMON_SHARE = 0.3                   # a word in more than this share of meetings tells nothing
 
 
 # ── Shapes ───────────────────────────────────────────────────────────────────
@@ -131,6 +139,37 @@ def _brief_text(brief: dict) -> str:
     return plain_text(brief)
 
 
+# Every whole word of a text, lower-cased.
+def words_of(text: str) -> list:
+    return WORD_RE.findall(str(text or '').lower())
+
+
+# A word and, for a Hebrew word longer than 3 letters that starts with a prefix letter, the word without it.
+def word_variants(word: str) -> set:
+    variants = {word}
+    if len(word) > 3 and word[0] in HEBREW_PREFIXES:
+        variants.add(word[1:])
+    return variants
+
+
+# The words of a meeting (counts by word) that are one of the variants: the word itself or a prefixed form of it.
+def _matching_words(counts: Counter, variants: set) -> set:
+    found = set()
+    for variant in variants:
+        if variant in counts:
+            found.add(variant)
+        for prefix in HEBREW_PREFIXES:
+            prefixed = prefix + variant
+            if len(prefixed) > 3 and prefixed in counts:
+                found.add(prefixed)
+    return found
+
+
+# The first word of a text that is one of the variants, as it is written there.
+def _first_word_matching(text: str, variants: set) -> Optional[str]:
+    return next((w for w in words_of(text) if word_variants(w) & variants), None)
+
+
 # About 70 characters around the first place the term appears.
 def _snippet(text: str, term: str, width: int = 70) -> str:
     i = text.lower().find(term)
@@ -218,6 +257,7 @@ class MeetingStore:
     def __init__(self, folder: Optional[Path] = None):
         self.folder = Path(folder) if folder else meetings_dir()
         self._lock = threading.Lock()
+        self._word_cache = {}        # meeting id -> (mtimes, entry) for search
 
     def path(self, meeting_id: str) -> Path:
         return self.folder / f"{meeting_id}.json"
@@ -243,7 +283,7 @@ class MeetingStore:
         with self._lock:
             files = sorted(self.folder.glob('*.json'), reverse=True) if self.folder.exists() else []
             for path in files:
-                if path.name.endswith(BRIEF_SUFFIX):
+                if path.name.endswith((BRIEF_SUFFIX, CHAT_SUFFIX)):
                     continue
                 try:
                     head = header(json.loads(path.read_text(encoding='utf-8')))
@@ -253,45 +293,109 @@ class MeetingStore:
                     logger.warning(f"Skipping unreadable meeting {path.name}: {e}")
         return out
 
-    # Meetings that hold every word of the query, in their title, speakers,
-    # summary, screenshot captions or transcript; newest first. Each result
-    # says where it matched, with a short snippet and, for the transcript, the
-    # second of the first matching turn so the page can open it there.
-    def search(self, query: str, limit: int = 50) -> list:
-        terms = [w for w in str(query or '').lower().split() if w]
-        if not terms:
+    # ── Word search ──────────────────────────────────────────────────────────
+
+    # Everything a meeting says, as parts: title and speakers, summary, screenshot captions, transcript turns.
+    @staticmethod
+    def _search_parts(meeting: dict, brief: dict) -> dict:
+        title = str(meeting.get('title') or '')
+        speakers = ' '.join(str(s.get('name') or '') for s in meeting.get('speakers', []))
+        return {
+            'title': title, 'names': title + ' ' + speakers,
+            'summary': _brief_text(brief),
+            'captions': ' '.join(str(s.get('caption') or '') for s in meeting.get('screenshots', [])),
+            'turns': [(t.get('start', 0), str(t.get('text') or '')) for t in meeting.get('turns', [])],
+        }
+
+    # How often each word is said in every meeting, kept per file modification time so a
+    # search over many meetings only reads the ones that changed. Newest first.
+    def _word_index(self) -> list:
+        if not self.folder.exists():
             return []
-        out = []
-        for head in self.list():
+        seen, index = set(), []
+        for path in sorted(self.folder.glob('*.json'), reverse=True):
+            if path.name.endswith((BRIEF_SUFFIX, CHAT_SUFFIX)):
+                continue
+            meeting_id = path.name[:-len('.json')]
             try:
-                m = self.load(head['id'])
-            except Exception:
+                brief_path = self.brief_path(meeting_id)
+                mtimes = (path.stat().st_mtime_ns, brief_path.stat().st_mtime_ns if brief_path.exists() else None)
+            except OSError:
                 continue
-            brief = self.load_brief(head['id']) or {}
-            title = str(m.get('title') or '')
-            speakers = ' '.join(str(s.get('name') or '') for s in m.get('speakers', []))
-            summary = _brief_text(brief)
-            captions = ' '.join(str(s.get('caption') or '') for s in m.get('screenshots', []))
-            turns = [(t.get('start', 0), str(t.get('text') or '')) for t in m.get('turns', [])]
-            everything = ' '.join([title, speakers, summary, captions] + [text for _, text in turns]).lower()
-            if not all(term in everything for term in terms):
+            cached = self._word_cache.get(meeting_id)
+            if not cached or cached[0] != mtimes:
+                try:
+                    meeting = self.load(meeting_id)
+                except Exception as e:
+                    logger.warning(f"Skipping unreadable meeting {path.name}: {e}")
+                    continue
+                parts = self._search_parts(meeting, self.load_brief(meeting_id) or {})
+                counts = Counter(words_of(' '.join([parts['names'], parts['summary'], parts['captions']]
+                                                   + [text for _, text in parts['turns']])))
+                cached = (mtimes, {'id': meeting_id, 'title': parts['title'],
+                                   'started_at': meeting.get('started_at'), 'counts': counts})
+                self._word_cache[meeting_id] = cached
+            seen.add(meeting_id)
+            index.append(cached[1])
+        for gone in set(self._word_cache) - seen:
+            del self._word_cache[gone]
+        return index
+
+    # Meetings that hold every query word that is not common (a word in over 30% of meetings tells
+    # nothing; one in no meeting still has to be there). Score: rare words said often rank first;
+    # ties newest first. Each hit says where the rarest word is (title, transcript, summary or a
+    # screenshot caption) with a snippet and, for the transcript, the second of the first matching
+    # turn so the page can open it there. `meeting_id` limits the hits to one meeting.
+    def search(self, query: str, limit: int = 50, meeting_id: Optional[str] = None) -> list:
+        query_words = list(dict.fromkeys(words_of(query)))
+        index = self._word_index()
+        if not query_words or not index:
+            return []
+        total = len(index)
+        wanted = []      # (query word, its variants, meetings holding it as {id: times said})
+        for word in query_words:
+            variants = word_variants(word)
+            holders = {}
+            for entry in index:
+                matched = _matching_words(entry['counts'], variants)
+                if matched:
+                    holders[entry['id']] = sum(entry['counts'][w] for w in matched)
+            if len(holders) / total <= COMMON_SHARE:
+                wanted.append((word, variants, holders))
+        if not wanted:
+            return []
+        scored = []
+        for entry in index:                 # newest first, so a stable sort keeps ties newest first
+            if meeting_id is not None and entry['id'] != meeting_id:
                 continue
-            hits = sum(everything.count(term) for term in terms)
-            hit = {'id': head['id'], 'title': title, 'started_at': head.get('started_at'), 'hits': hits,
-                   'where': 'title', 'snippet': title, 'at': None}
-            if not all(term in (title + ' ' + speakers).lower() for term in terms):
-                first = terms[0]
-                turn = next(((at, text) for at, text in turns if first in text.lower()), None)
-                if turn:
-                    hit.update(where='transcript', snippet=_snippet(turn[1], first), at=turn[0])
-                elif first in summary.lower():
-                    hit.update(where='summary', snippet=_snippet(summary, first))
-                elif first in captions.lower():
-                    hit.update(where='screenshot', snippet=_snippet(captions, first))
-            out.append(hit)
-            if len(out) >= limit:
+            if not all(entry['id'] in holders for _, _, holders in wanted):
+                continue
+            score = sum(math.log(1 + total / len(holders)) * math.log(1 + holders[entry['id']])
+                        for _, _, holders in wanted)
+            scored.append((score, entry))
+        scored.sort(key=lambda pair: -pair[0])
+        rarest_variants = min(wanted, key=lambda item: len(item[2]))[1]
+        return [self._hit(entry, score, [variants for _, variants, _ in wanted], rarest_variants)
+                for score, entry in scored[:limit]]
+
+    # One result: the title unless the rarest word is somewhere else, then its first place there.
+    def _hit(self, entry: dict, score: float, all_variants: list, rarest_variants: set) -> dict:
+        hit = {'id': entry['id'], 'title': entry['title'], 'started_at': entry['started_at'], 'score': score,
+               'where': 'title', 'snippet': entry['title'], 'at': None}
+        try:
+            parts = self._search_parts(self.load(entry['id']), self.load_brief(entry['id']) or {})
+        except Exception:
+            return hit
+        if all(_first_word_matching(parts['names'], variants) for variants in all_variants):
+            return hit
+        places = [('transcript', at, text) for at, text in parts['turns']] + [
+            ('summary', None, parts['summary']), ('screenshot', None, parts['captions'])]
+        for where, at, text in places:
+            term = _first_word_matching(text, rarest_variants)
+            if term:
+                hit.update(where=where, snippet=_snippet(text, term), at=at)
                 break
-        return out
+        return hit
 
     # Deleting a meeting deletes its kept audio and its screenshots too.
     def delete(self, meeting_id: str) -> bool:

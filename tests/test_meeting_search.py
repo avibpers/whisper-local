@@ -50,10 +50,6 @@ class EmbedTests(unittest.TestCase):
         self.assertEqual(seen[0], (0.5, 'pulling'))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 # ── Pieces of a meeting ──────────────────────────────────────────────────────
 
 class PiecesTests(unittest.TestCase):
@@ -94,3 +90,92 @@ class PiecesTests(unittest.TestCase):
     def test_empty_meeting_has_no_pieces(self):
         from koli.meeting.pieces import pieces
         self.assertEqual(pieces({'id': 'x', 'title': '', 'turns': [], 'speakers': []}, None), [])
+
+
+# ── Word search ──────────────────────────────────────────────────────────────
+
+class WordSearchTests(unittest.TestCase):
+    # Ten meetings ("a".."d" plus six others), every one saying "what about the plans for today";
+    # "a" also "the budget for next year, budget again", "b" "תקציב של השנה", "c" "budget" once,
+    # "d" "מס״ב נפל". A query word found in no meeting still counts (lab rule), so a meeting must
+    # hold it: no word hits.
+    EXTRA = {'a': 'the budget for next year, budget again', 'b': 'תקציב של השנה', 'c': 'budget', 'd': 'מס״ב נפל'}
+
+    def setUp(self):
+        import datetime
+        import tempfile
+        from koli.meeting.store import MeetingStore, new_meeting
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.store = MeetingStore(Path(self.tmp.name))
+        tz = datetime.timezone(datetime.timedelta(hours=3))
+        for day, letter in enumerate('abcdefghij', start=1):
+            m = new_meeting(letter, f'Meeting {letter}', {'app': 'x', 'kind': 'native', 'title': '', 'code': ''},
+                            datetime.datetime(2026, 11, day, 10, 0, 0, tzinfo=tz))
+            m['turns'].append({'start': 5.0, 'end': 9.0, 'speaker': 'you', 'text': 'what about the plans for today', 'lang': 'en'})
+            if letter in self.EXTRA:
+                m['turns'].append({'start': 20.0, 'end': 30.0, 'speaker': 'you', 'text': self.EXTRA[letter], 'lang': 'en'})
+            self.store.save(m)
+
+    def test_common_words_ignored_every_rare_word_needed(self):
+        self.assertEqual([h['id'] for h in self.store.search('what about the budget')], ['a', 'c'])
+        self.assertEqual(self.store.search('budget lunch'), [])    # "lunch" is in no meeting
+        self.assertEqual(self.store.search('what about the plans'), [])   # only common words: no word hits
+
+    def test_ranked_by_times_said(self):
+        hits = self.store.search('budget')
+        self.assertEqual(hits[0]['id'], 'a')
+        self.assertGreater(hits[0]['score'], hits[1]['score'])
+
+    def test_hit_says_where_with_snippet_and_second(self):
+        hit = self.store.search('budget')[0]
+        self.assertEqual((hit['where'], hit['at']), ('transcript', 20.0))
+        self.assertIn('budget', hit['snippet'])
+        self.assertEqual(hit['title'], 'Meeting a')
+
+    def test_ties_newest_first(self):
+        # "plans" and "today" are common; "year" is only in "a"; equal scores sort newest first.
+        self.assertEqual([h['id'] for h in self.store.search('budget')][1:], ['c'])
+        m = self.store.load('j')
+        m['turns'].append({'start': 40.0, 'end': 41.0, 'speaker': 'you', 'text': 'budget', 'lang': 'en'})
+        self.store.save(m)
+        self.assertEqual([h['id'] for h in self.store.search('budget')], ['a', 'j', 'c'])
+
+    def test_hebrew_prefix_both_ways(self):
+        self.assertEqual(self.store.search('בתקציב')[0]['id'], 'b')  # the meeting says "תקציב"
+        m = self.store.load('e')
+        m['turns'].append({'start': 40.0, 'end': 41.0, 'speaker': 'you', 'text': 'בתקציב', 'lang': 'he'})
+        self.store.save(m)                                          # now the meeting has the prefix, the query not
+        self.assertEqual({h['id'] for h in self.store.search('תקציב')}, {'b', 'e'})
+
+    def test_whole_words_only(self):
+        self.assertEqual(self.store.search('udge'), [])
+
+    def test_abbreviation_with_gershayim(self):
+        self.assertEqual(self.store.search('מס״ב')[0]['id'], 'd')
+
+    def test_meeting_filter(self):
+        self.assertEqual({h['id'] for h in self.store.search('budget', meeting_id='c')}, {'c'})
+
+    def test_limit_and_empty_query(self):
+        self.assertEqual(len(self.store.search('budget', limit=1)), 1)
+        self.assertEqual(self.store.search('   '), [])
+
+    def test_changed_meeting_is_seen_again(self):
+        # The cache follows the file's modification time: an edit shows up in the next search.
+        self.assertEqual(self.store.search('lunch'), [])
+        m = self.store.load('f')
+        m['turns'].append({'start': 50.0, 'end': 51.0, 'speaker': 'you', 'text': 'lunch', 'lang': 'en'})
+        self.store.save(m)
+        self.assertEqual([h['id'] for h in self.store.search('lunch')], ['f'])
+        self.store.delete('f')
+        self.assertEqual(self.store.search('lunch'), [])
+
+    def test_list_skips_chat_files(self):
+        self.store.save_chat('a', [{'role': 'user', 'text': 'hi'}])
+        with self.assertNoLogs('koli.meeting.store', level='WARNING'):
+            self.assertEqual(len(self.store.list()), 10)
+
+
+if __name__ == "__main__":
+    unittest.main()
