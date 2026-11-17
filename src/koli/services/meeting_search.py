@@ -40,26 +40,39 @@ def _default_embed(model: str, texts: list):
     return llm.embed(model, texts)
 
 
-# Why the model call failed, as the page understands it: Ollama not reachable, the model not
-# downloaded, or Ollama too slow to answer in time ('loading': it is busy, not missing). Anything
-# unexpected is reported as Ollama not working (and logged by the caller).
-def problem_of(error: Exception) -> str:
-    from ..llm.http import HttpError, NetworkError
-    if isinstance(error, TimedOut):
-        return 'loading'
-    if isinstance(error, NetworkError):
-        return 'no_ollama'
-    message = f'{getattr(error, "body", "")} {error}'.lower()
-    if isinstance(error, HttpError):
-        return 'no_model' if error.status == 404 or 'not found' in message else 'no_ollama'
-    return 'no_model' if 'not found' in message else 'no_ollama'
-
-
-# True for the errors that mean the model can't be asked now (not reachable, not downloaded, refused).
-def is_model_error(error: Exception) -> bool:
+# What a failed model call says: 'outage' (Ollama not reachable), 'missing' (the model isn't
+# downloaded), 'busy' (a server error or "too many requests": try later), 'timeout' (reached but too
+# slow), or 'own': Ollama answered, and the input was the problem (a bad request, an unusable answer,
+# any other error), so only the meeting that sent it is at fault.
+def failure_kind(error: Exception) -> str:
     from ..llm.http import HttpError, NetworkError
     from ..llm.types import ProviderError
-    return isinstance(error, (NetworkError, HttpError, ProviderError))
+    if isinstance(error, TimedOut):
+        return 'timeout'
+    if isinstance(error, NetworkError):
+        return 'outage'
+    if isinstance(error, (HttpError, ProviderError)):
+        status = int(getattr(error, 'status', 0) or 0)
+        message = f'{getattr(error, "body", "")} {error}'.lower()
+        if status == 404 or 'not found' in message:
+            return 'missing'
+        if status == 429 or status >= 500:
+            return 'busy'
+    return 'own'
+
+
+# The page's word for a model problem; None for a meeting's own error, which is no model problem.
+PROBLEM_OF_KIND = {'outage': 'no_ollama', 'missing': 'no_model', 'busy': 'loading', 'timeout': 'loading'}
+
+
+def problem_of(error: Exception) -> Optional[str]:
+    return PROBLEM_OF_KIND.get(failure_kind(error))
+
+
+# What one search says when its own query call failed: the model problem, or for an error of the
+# query's own, that search by meaning didn't work this time (nothing is remembered for the next one).
+def _search_state(error: Exception) -> str:
+    return problem_of(error) or 'no_ollama'
 
 
 # One query embedding on its own thread: at most one is in flight, so a hung model never collects calls.
@@ -131,6 +144,7 @@ class MeetingSearch:
                                        lambda texts, model=model: self._embed_pieces(model, texts))
             if switched:
                 self._clear_problem()
+                self._attempts.clear()                    # a new model: every meeting gets new tries
                 self._pending.clear()
                 self._queue_all(self._clock() if now is None else now)
         if switched:
@@ -151,12 +165,12 @@ class MeetingSearch:
         return np.concatenate([np.asarray(self._embed(model, texts[start:start + size]), dtype=np.float32)
                                for start in range(0, len(texts), size)])
 
-    # Forgets the model problem and every meeting's failed tries: the model answers again.
+    # Forgets the model problem: the model answers again. Meetings' tries stay: they count only their
+    # own errors and timeouts, which a working model doesn't fix.
     def _clear_problem(self) -> None:
         with self._lock:
             self._problem = None
             self._blocked_until = 0.0
-            self._attempts.clear()
 
     # ── Which meetings exist, and which are out of date ──────────────────────
 
@@ -311,23 +325,24 @@ class MeetingSearch:
             self._pending.pop(meeting_id, None)
         self._publish_status()
 
-    # An update failed. A model problem (Ollama off, model missing, a server error, a timeout) is
-    # remembered as the current problem and rests the whole indexer for RETRY_S. Any other error is this
-    # meeting's own (a broken file, a locked index) and is logged once. The meeting goes to the back of
-    # the queue, so one bad meeting never holds up the ones behind it, and is given up after
+    # An update failed. A model problem (Ollama off, model missing, busy, a timeout) is remembered as
+    # the current problem and rests the whole indexer for RETRY_S. Any other error is this meeting's own
+    # (a broken file, a locked index, input Ollama refused) and is logged once. The meeting goes to the
+    # back of the queue, so one bad meeting never holds up the ones behind it, and is given up after
     # MAX_ATTEMPTS tries (until it changes).
     def _fail(self, meeting_id: str, error: Exception, now: float) -> None:
         # Ollama off, busy or the model missing says nothing about this meeting, so it isn't a try. A
         # timeout even in small batches is: this meeting is too much for the model, others may not be.
-        unavailable = is_model_error(error) and not isinstance(error, TimedOut)
-        if is_model_error(error):
+        kind = failure_kind(error)
+        counts = kind in ('own', 'timeout')
+        if kind == 'own':
+            self._log_once(f'Meeting search could not index {meeting_id}: {error}', error)
+        else:
             self._note_failure(error)
             with self._lock:
                 self._blocked_until = now + RETRY_S
-        else:
-            self._log_once(f'Meeting search could not index {meeting_id}: {error}', error)
         with self._lock:
-            tries = self._attempts.get(meeting_id, 0) + (0 if unavailable else 1)
+            tries = self._attempts.get(meeting_id, 0) + (1 if counts else 0)
             self._attempts[meeting_id] = tries
             if tries >= MAX_ATTEMPTS:
                 self._pending.pop(meeting_id, None)
@@ -348,8 +363,12 @@ class MeetingSearch:
 
     # Records a model failure as the current problem (shown on the Meetings screen) and logs it once.
     # Ollama off or the model missing also rests searches for RETRY_S: each would wait for the same refusal.
-    def _note_failure(self, error: Exception) -> str:
+    # An error of the call's own input is only logged: it is no problem of the model.
+    def _note_failure(self, error: Exception) -> Optional[str]:
         problem = problem_of(error)
+        if problem is None:
+            self._log_once(f'Meeting search model call failed: {error}', error)
+            return None
         with self._lock:
             self._problem = problem
             if problem in BLOCKING:
@@ -411,7 +430,7 @@ class MeetingSearch:
                     if flight.error is not None:
                         if not flight.consumed:
                             flight.consumed = True
-                            return None, problem_of(flight.error)
+                            return None, _search_state(flight.error)
                         flight = None
                     elif flight.key != key:
                         flight = None                     # another question's vector is of no use
@@ -424,7 +443,7 @@ class MeetingSearch:
             if flight.error is not None:
                 with self._lock:
                     flight.consumed = True
-                return None, problem_of(flight.error)
+                return None, _search_state(flight.error)
             if flight.key == key:
                 return flight.vector, None
 
@@ -556,6 +575,8 @@ class MeetingSearch:
                 reporter.report(best[0], status)
             ollama_wire.pull(address, model, on_progress)
             self._clear_problem()
+            with self._lock:
+                self._attempts.clear()                    # a fresh model: every meeting gets new tries
             self._queue_all(self._clock())
             self._publish_status(force=True)
 

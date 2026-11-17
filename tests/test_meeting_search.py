@@ -745,7 +745,7 @@ class SearchServiceTests(unittest.TestCase):
         from koli.llm.http import HttpError
         from koli.llm.types import ProviderError
         busy = [True]
-        errors = [HttpError(503, 'server busy'), ProviderError('overloaded')]
+        errors = [HttpError(503, 'server busy'), ProviderError('overloaded', status=429)]
 
         def embed(model, texts):
             if busy[0]:
@@ -764,6 +764,51 @@ class SearchServiceTests(unittest.TestCase):
             svc.run_pending(now=now + step * 61)
         self.assertEqual(svc.pending(), [])
         self.assertEqual(svc.status(), {'meaning': 'on', 'indexed': 3, 'total': 3, 'model': 'fake-model'})
+
+    def test_busy_ollama_shows_loading_and_never_blocks_searches(self):
+        from koli.llm.http import HttpError
+        busy = [True]
+
+        def embed(model, texts):
+            if busy[0] and any(text.startswith('Meeting') for text in texts):   # pieces fail, a query answers
+                raise HttpError(503, 'server busy')
+            return self.fake_embed(model, texts)
+        svc = self.service(embed=embed)
+        svc.changed('a')
+        svc.run_pending(now=time.time() + 11)
+        self.assertEqual(svc.status()['meaning'], 'loading')
+        self.assertNotIn(svc.search('budget')['meaning'], ('no_ollama', 'no_model'))
+
+    def test_meetings_own_model_error_is_given_up_and_never_blocks_searches(self):
+        from koli.llm.types import ProviderError
+
+        def embed(model, texts):
+            if any('Meeting a' in text for text in texts):
+                raise ProviderError('input too long')            # Ollama answered: this meeting is the problem
+            return self.fake_embed(model, texts)
+        svc = self.service(embed=embed)
+        for meeting_id in 'abc':
+            svc.changed(meeting_id)
+        now = time.time() + 11
+        for _ in range(3):
+            svc.run_pending(now=now)
+        self.assertEqual(svc.pending(), ['a'])
+        self.assertEqual(svc.status()['meaning'], 'on')         # not "needs Ollama running"
+        out = svc.search('hire people')
+        self.assertEqual(out['meaning'], 'on')
+        self.assertIn('meaning', out['results'][0]['by'])       # meaning still answers for the other meetings
+        svc.run_pending(now=now + 61)
+        svc.run_pending(now=now + 122)                          # third try: given up
+        self.assertEqual(svc.pending(), [])
+
+    def test_bad_request_is_the_meetings_own_error(self):
+        from koli.llm.http import HttpError
+        from koli.services.meeting_search import failure_kind, problem_of
+        self.assertEqual(failure_kind(HttpError(400, 'input too large')), 'own')
+        self.assertIsNone(problem_of(HttpError(400, 'input too large')))
+        self.assertEqual(failure_kind(ValueError('embed returned 3 vectors for 4 texts')), 'own')
+        self.assertEqual(problem_of(HttpError(500, 'boom')), 'loading')
+        self.assertEqual(problem_of(HttpError(404, 'model not found')), 'no_model')
 
     # Meeting "a" again, with one 75 s piece per turn: `pieces` of them.
     def long_meeting(self, pieces=12):
@@ -801,6 +846,22 @@ class SearchServiceTests(unittest.TestCase):
         svc.run_pending(now=now + 122)                          # third timed-out try: given up
         self.assertEqual(svc.pending(), [])
         self.assertEqual(svc.status()['meaning'], 'on')
+
+    def test_searches_between_timeouts_do_not_reset_the_meetings_tries(self):
+        from koli.llm.http import TimedOut
+
+        def embed(model, texts):
+            if len(texts) > 1:                                  # every piece batch times out; a query answers
+                raise TimedOut('timed out')
+            return self.fake_embed(model, texts)
+        self.long_meeting()
+        svc = self.service(embed=embed)
+        svc.changed('a')
+        now = time.time() + 11
+        for step in range(3):
+            svc.run_pending(now=now + step * 61)
+            self.assertEqual(svc.search('budget')['meaning'] in ('on', 'indexing'), True)
+        self.assertEqual(svc.pending(), [])                     # given up after three timed-out tries
 
     def test_many_searches_on_a_slow_model_make_one_model_call(self):
         calls = []

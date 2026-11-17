@@ -110,14 +110,17 @@ with `--legacy-ui`. A meeting is indexed when it ends, when its summary is writt
 changed (a summary, the Chat tab's changes, a rename, attendees, a caption), and
 for every meeting without an up-to-date index when the app window opens. The indexer waits
 while a meeting is running, so Whisper keeps the GPU. When the model can't be reached
-or fails (Ollama off, model missing, a server error while Ollama is busy) the whole
-indexer rests for 60 s, and that never counts against the meeting. A timeout (a long
+or fails (Ollama off, model missing, a 5xx or 429 while Ollama is busy) the whole
+indexer rests for 60 s, and that never counts against the meeting. A busy Ollama
+shows as "Search by meaning is starting…" and never stops searches from asking it. A timeout (a long
 meeting on a slow, CPU-only Ollama) is retried at once with 8 pieces per call; if that
 times out too, the indexer rests 60 s, the page says "Search by meaning is starting…"
 rather than "needs Ollama running", and the timeout counts as one of the meeting's
-tries. Any other error is the meeting's own (a broken file): that meeting goes to the
-back of the queue so the ones behind it aren't held up, and it is given up after 3
-tries until it changes. When the model answers again, every meeting's tries start over. A new summary usually
+tries. Any other error is the meeting's own (a broken file, a 400 or an `{"error"}`
+answer from Ollama for this input, a wrong number of vectors): it sets no problem on
+the page, that meeting goes to the back of the queue so the ones behind it aren't
+held up, and it is given up after 3 tries until it changes. A working model doesn't
+reset those tries; a new or freshly downloaded model does. A new summary usually
 retitles the meeting, and the title is in every piece, so the whole meeting is
 embedded again: up to 2 s, intended. The model setting is read on every pass, so
 changing it re-indexes every meeting without a restart.
