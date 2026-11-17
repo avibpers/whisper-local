@@ -68,15 +68,17 @@ class MeetingIndex:
 
     # Embeds only the pieces whose text is new (all of them after a retitle or a model change)
     # and rewrites the meeting's file. Returns how many pieces were embedded now.
+    # Callers pass the meeting as currently saved (the indexer reloads it from disk): updates
+    # are ordered by who gets the lock first, so a stale copy would overwrite a newer index.
     def update(self, meeting: dict, brief: dict | None) -> int:
-        meeting_id = meeting['id']
-        cut = pieces(meeting, brief)
-        texts = [embed_text(meeting, piece) for piece in cut]
-        hashes = [_hash(text) for text in texts]
-        # Updates run one at a time so an older state never overwrites a newer one. The data
-        # lock covers only the disk and the cache: the model call can take seconds (a cold
-        # load) or hang, and searches must not wait for it.
+        # Updates run one at a time, snapshot to write, so an older state never overwrites a
+        # newer one. The data lock covers only the disk and the cache: the model call can take
+        # seconds (a cold load) or hang, and searches must not wait for it.
         with self._update_lock:
+            meeting_id = meeting['id']
+            cut = pieces(meeting, brief)
+            texts = [embed_text(meeting, piece) for piece in cut]
+            hashes = [_hash(text) for text in texts]
             with self._lock:
                 known = self._known_vectors(meeting_id)
             missing = {}                                  # hash -> text, once each
