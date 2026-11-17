@@ -159,8 +159,9 @@ class PiecesTests(unittest.TestCase):
 
 ```python
 class WordSearchTests(unittest.TestCase):
-    # setUp: ten meetings all saying "the plans for today"; "a" also "the budget for next year, budget again",
-    # "b" "תקציב של השנה", "c" "budget" once, "d" "מס״ב נפל"
+    # setUp: ten meetings ("a".."d" plus six others), every one saying "what about the plans for today";
+    # "a" also "the budget for next year, budget again", "b" "תקציב של השנה", "c" "budget" once, "d" "מס״ב נפל".
+    # A query word found in no meeting still counts (lab rule), so a meeting must hold it: no word hits.
     def test_common_words_ignored_every_rare_word_needed(self):
         self.assertEqual([h['id'] for h in self.store.search('what about the budget')], ['a', 'c'])
         self.assertEqual(self.store.search('budget lunch'), [])    # "lunch" is in no meeting
