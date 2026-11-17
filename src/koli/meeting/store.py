@@ -406,7 +406,10 @@ class MeetingStore:
             shutil.rmtree(self.shots_dir(meeting_id), ignore_errors=True)
             self.brief_path(meeting_id).unlink(missing_ok=True)
             self.chat_path(meeting_id).unlink(missing_ok=True)
-            (self.folder / f"{meeting_id}{INDEX_SUFFIX}").unlink(missing_ok=True)
+            try:
+                (self.folder / f"{meeting_id}{INDEX_SUFFIX}").unlink(missing_ok=True)
+            except OSError as e:        # a search may hold the file open (Windows); the meeting still goes
+                logger.warning(f"Could not delete the search index of {meeting_id}: {e}")
             try:
                 self.path(meeting_id).unlink()
                 return True

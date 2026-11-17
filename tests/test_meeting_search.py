@@ -328,6 +328,58 @@ class IndexTests(unittest.TestCase):
         m['turns'].append({'start': 'soon', 'speaker': 'you', 'text': 'bad start'})
         self.assertEqual(len(pieces(m, None)), 1)
 
+    def test_search_does_not_wait_for_a_slow_embed(self):
+        import threading
+        release = threading.Event()
+        started = threading.Event()
+
+        def slow_embed(texts):
+            started.set()
+            release.wait(10)
+            return self.embed(texts)
+
+        from koli.meeting.index import MeetingIndex
+        slow = MeetingIndex(self.folder, 'fake-model', slow_embed)
+        worker = threading.Thread(target=slow.update, args=(self.m, None))
+        worker.start()
+        self.addCleanup(worker.join)
+        self.addCleanup(release.set)
+        self.assertTrue(started.wait(5))
+        finished = []
+        searcher = threading.Thread(target=lambda: finished.append(slow.search(self.embed(['budget'])[0])))
+        searcher.start()
+        searcher.join(2)
+        self.assertFalse(searcher.is_alive())          # answered while the embed was still running
+        self.assertTrue(finished and all(h['id'] == 'b' for h in finished[0]))
+
+    def test_damaged_file_is_skipped_then_rebuilt(self):
+        (self.folder / 'a.index.npz').write_bytes(b'not an npz at all')
+        self.assertFalse(self.index.is_current('a', 0))
+        self.assertTrue(all(h['id'] == 'b' for h in self.index.search(self.embed(['budget'])[0])))
+        self.assertGreater(self.index.update(self.m, None), 0)
+        self.assertTrue(self.index.is_current('a', 0))
+
+    def test_embed_row_count_mismatch_raises(self):
+        from koli.meeting.index import MeetingIndex
+        short = MeetingIndex(self.folder, 'fake-model', lambda texts: self.embed(texts)[:-1])
+        with self.assertRaises(ValueError):
+            short.update(self.m, None)
+        self.assertFalse((self.folder / 'a.index.npz').exists())
+
+    def test_delete_survives_a_locked_index_file(self):
+        self.store.save(self.m)
+        self.index.update(self.m, None)
+        real_unlink = Path.unlink
+
+        def locked(path, *args, **kwargs):
+            if path.name.endswith('.index.npz'):
+                raise PermissionError('in use')
+            return real_unlink(path, *args, **kwargs)
+
+        with mock.patch.object(Path, 'unlink', locked):
+            self.assertTrue(self.store.delete('a'))
+        self.assertFalse((self.folder / 'a.json').exists())
+
     def test_query_text(self):
         self.assertEqual(self.index.query_text('what did we decide?'),
                          'Instruct: Given a question about past meetings, retrieve the passages that answer it\nQuery: what did we decide?')

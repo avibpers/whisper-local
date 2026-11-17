@@ -72,21 +72,26 @@ class MeetingIndex:
         cut = pieces(meeting, brief)
         texts = [embed_text(meeting, piece) for piece in cut]
         hashes = [_hash(text) for text in texts]
+        # The lock covers only the disk and the cache: the model call can take seconds
+        # (a cold load) or hang, and searches must not wait for it.
         with self._lock:
             known = self._known_vectors(meeting_id)
-            missing = {}                              # hash -> text, once each
-            for h, text in zip(hashes, texts):
-                if h not in known:
-                    missing.setdefault(h, text)
-            if missing:
-                fresh = np.asarray(self.embed(list(missing.values())), dtype=np.float32)
-                known.update(zip(missing.keys(), fresh))
-            vectors = (np.stack([known[h] for h in hashes]) if hashes
-                       else np.zeros((0, 0), dtype=np.float32))
-            rows = [{**piece, 'id': meeting_id, 'title': meeting.get('title') or '',
-                     'started_at': meeting.get('started_at') or ''} for piece in cut]
+        missing = {}                                  # hash -> text, once each
+        for h, text in zip(hashes, texts):
+            if h not in known:
+                missing.setdefault(h, text)
+        if missing:
+            fresh = np.asarray(self.embed(list(missing.values())), dtype=np.float32)
+            if len(fresh) != len(missing):
+                raise ValueError(f'embed returned {len(fresh)} vectors for {len(missing)} texts')
+            known.update(zip(missing.keys(), fresh))
+        vectors = (np.stack([known[h] for h in hashes]) if hashes
+                   else np.zeros((0, 0), dtype=np.float32))
+        rows = [{**piece, 'id': meeting_id, 'title': meeting.get('title') or '',
+                 'started_at': meeting.get('started_at') or ''} for piece in cut]
+        with self._lock:
             self._write(meeting_id, vectors, hashes, rows)
-            return len(missing)
+        return len(missing)
 
     # The vectors already on disk for this meeting by piece hash; empty for another model.
     def _known_vectors(self, meeting_id: str) -> dict:
