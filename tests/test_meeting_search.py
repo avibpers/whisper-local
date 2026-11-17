@@ -3,6 +3,7 @@
 # index, word search, merged results and Ask, all without a running model.
 import sys
 import unittest
+from collections import Counter
 from pathlib import Path
 from unittest import mock
 
@@ -213,6 +214,129 @@ class WordSearchTests(unittest.TestCase):
         self.store.delete('j')
         for t in threads: t.join()
         self.assertEqual(errors, [])
+
+
+# ── Index ────────────────────────────────────────────────────────────────────
+
+class IndexTests(unittest.TestCase):
+    # Two meetings: "a" talks about the budget, "b" about hiring and the budget; a fake embedder
+    # hashes words into 64 unit-length dimensions and remembers every text it was asked for.
+    def setUp(self):
+        import tempfile
+        from koli.meeting.index import MeetingIndex
+        from koli.meeting.store import MeetingStore
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.folder = Path(self.tmp.name)
+        self.store = MeetingStore(self.folder)
+        self.embedded_texts = []
+        self.m = self.meeting('a', 'Budget talk', ['the budget for next year', 'we cut the budget'])
+        self.other = self.meeting('b', 'Hiring plan', ['we need to hire two people', 'the budget allows one hire'] * 3)
+        self.index = MeetingIndex(self.folder, 'fake-model', self.embed)
+        self.index.update(self.other, None)
+
+    def meeting(self, meeting_id, title, lines):
+        return {'id': meeting_id, 'title': title, 'started_at': '2026-11-16T10:00:00+02:00',
+                'speakers': [{'id': 'you', 'name': 'You'}],
+                'turns': [{'start': i * 30.0, 'end': i * 30.0 + 20, 'speaker': 'you', 'text': t} for i, t in enumerate(lines)],
+                'screenshots': []}
+
+    def embed(self, texts):
+        self.embedded_texts.extend(texts)
+        out = np.zeros((len(texts), 64), dtype=np.float32)
+        for row, text in enumerate(texts):
+            for word in text.lower().split():
+                out[row, sum(map(ord, word)) % 64] += 1.0
+        return out / np.maximum(np.linalg.norm(out, axis=1, keepdims=True), 1e-9)
+
+    def test_update_reuses_unchanged_pieces(self):
+        n1 = self.index.update(self.m, None)
+        self.m['turns'].append({'start': 900.0, 'end': 910.0, 'speaker': 'you', 'text': 'new topic'})
+        n2 = self.index.update(self.m, None)
+        self.assertGreater(n1, 0)
+        self.assertEqual(n2, 1)
+
+    def test_retitle_reembeds_everything(self):
+        n1 = self.index.update(self.m, None)
+        self.m['title'] = 'Another title'
+        self.assertEqual(self.index.update(self.m, None), n1)
+
+    def test_other_model_rebuilds(self):
+        from koli.meeting.index import MeetingIndex
+        self.index.update(self.m, None)
+        other = MeetingIndex(self.folder, 'other-model', self.embed)
+        self.assertFalse(other.is_current(self.m['id'], 0))
+        self.assertEqual(other.search(self.embed(['budget'])[0]), [])   # never mixes models
+        self.assertGreater(other.update(self.m, None), 0)                # nothing reused from the old model
+
+    def test_file_has_no_pickle(self):
+        self.index.update(self.m, None)
+        with np.load(self.folder / f"{self.m['id']}.index.npz", allow_pickle=False) as data:
+            self.assertEqual(data['vectors'].dtype, np.float16)
+            self.assertEqual(str(data['model']), 'fake-model')
+            data['rows']
+        self.assertEqual(list(self.folder.glob('*.tmp*')), [])           # the temp file is gone
+
+    def test_search_filter_and_cap(self):
+        from koli.meeting.index import cap
+        self.index.update(self.m, None)
+        hits = cap(self.index.search(self.embed(['budget'])[0]), per_meeting=2, total=30)
+        self.assertLessEqual(max(Counter(h['id'] for h in hits).values()), 2)
+        filtered = self.index.search(self.embed(['budget'])[0], meeting_id='b')
+        self.assertTrue(filtered and all(h['id'] == 'b' for h in filtered))
+
+    def test_search_rows_ranked_with_meeting_fields(self):
+        self.index.update(self.m, None)
+        hits = self.index.search(self.embed(['we cut the budget'])[0])
+        self.assertEqual(hits[0]['id'], 'a')
+        self.assertEqual(hits[0]['title'], 'Budget talk')
+        self.assertEqual(hits[0]['started_at'], '2026-11-16T10:00:00+02:00')
+        self.assertEqual(hits[0]['kind'], 'transcript')
+        scores = [h['score'] for h in hits]
+        self.assertEqual(scores, sorted(scores, reverse=True))
+        self.assertEqual(len(self.index.search(self.embed(['budget'])[0], top=1)), 1)
+
+    def test_search_sees_a_rewritten_file(self):
+        self.index.update(self.m, None)
+        query = self.embed(['budget'])[0]
+        before = len(self.index.search(query))
+        self.m['turns'].append({'start': 900.0, 'end': 910.0, 'speaker': 'you', 'text': 'budget again'})
+        self.index.update(self.m, None)
+        self.assertEqual(len(self.index.search(query)), before + 1)
+        self.index.remove('a')
+        self.assertTrue(all(h['id'] == 'b' for h in self.index.search(query)))
+
+    def test_is_current_follows_file_time(self):
+        import os
+        self.index.update(self.m, None)
+        os.utime(self.folder / 'a.index.npz', (1000.0, 1000.0))
+        fresh = type(self.index)(self.folder, 'fake-model', self.embed)
+        self.assertTrue(fresh.is_current('a', 999.0))
+        self.assertFalse(fresh.is_current('a', 1001.0))
+        self.assertFalse(fresh.is_current('missing', 0))
+
+    def test_empty_meeting_gets_an_empty_index(self):
+        empty = self.meeting('e', 'Silence', [])
+        self.assertEqual(self.index.update(empty, None), 0)
+        self.assertTrue(self.index.is_current('e', 0))
+        self.assertTrue(all(h['id'] != 'e' for h in self.index.search(self.embed(['budget'])[0])))
+
+    def test_turn_without_start_is_skipped(self):
+        from koli.meeting.pieces import pieces
+        m = self.meeting('x', 'T', ['one two three'])
+        m['turns'].append({'speaker': 'you', 'text': 'no start'})
+        m['turns'].append({'start': 'soon', 'speaker': 'you', 'text': 'bad start'})
+        self.assertEqual(len(pieces(m, None)), 1)
+
+    def test_query_text(self):
+        self.assertEqual(self.index.query_text('what did we decide?'),
+                         'Instruct: Given a question about past meetings, retrieve the passages that answer it\nQuery: what did we decide?')
+
+    def test_store_delete_removes_index(self):
+        self.store.save(self.m)
+        self.index.update(self.m, None)
+        self.store.delete(self.m['id'])
+        self.assertFalse((self.folder / f"{self.m['id']}.index.npz").exists())
 
 
 if __name__ == "__main__":

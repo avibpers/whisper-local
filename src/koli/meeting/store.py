@@ -33,6 +33,7 @@ SAVE_INTERVAL = 5.0
 EXPORT_FORMATS = ('txt', 'md')
 BRIEF_SUFFIX = '.brief.json'
 CHAT_SUFFIX = '.chat.json'
+INDEX_SUFFIX = '.index.npz'
 
 # Word search (measured in the lab): whole words, Hebrew prefixes, rare words count most.
 WORD_RE = re.compile(r"[\w״\"׳'-]+")
@@ -116,7 +117,6 @@ def roster(meeting: dict) -> list:
     return rows
 
 
-# What the list shows: never the turns or the voiceprints.
 # All the words of a summary (or one item of it), without ids, times and layout fields.
 def plain_text(value) -> str:
     parts = []
@@ -406,6 +406,7 @@ class MeetingStore:
             shutil.rmtree(self.shots_dir(meeting_id), ignore_errors=True)
             self.brief_path(meeting_id).unlink(missing_ok=True)
             self.chat_path(meeting_id).unlink(missing_ok=True)
+            (self.folder / f"{meeting_id}{INDEX_SUFFIX}").unlink(missing_ok=True)
             try:
                 self.path(meeting_id).unlink()
                 return True

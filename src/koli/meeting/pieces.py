@@ -38,7 +38,9 @@ def embed_text(meeting: dict, piece: dict) -> str:
 # Windows of WINDOW_S seconds, each starting OVERLAP_S before the last one ended.
 def _transcript_pieces(meeting: dict) -> list[dict]:
     names = {s.get('id'): s.get('name') for s in meeting.get('speakers') or []}
-    turns = [t for t in meeting.get('turns') or [] if str(t.get('text') or '').strip()]
+    # A turn with no usable start second cannot be placed in a window, so it is left out.
+    turns = [t for t in meeting.get('turns') or []
+             if str(t.get('text') or '').strip() and _is_number(t.get('start'))]
     out = []
     first = 0
     while first < len(turns):
@@ -57,6 +59,11 @@ def _transcript_pieces(meeting: dict) -> list[dict]:
             next_first += 1
         first = next_first
     return out
+
+
+# A real number (a bool is not one here).
+def _is_number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
 # "Name: what was said", falling back to the speaker id when the name is unknown.
