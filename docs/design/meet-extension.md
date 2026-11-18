@@ -171,7 +171,7 @@ the low-level keyboard and mouse hooks the whole PC's input waits on.
 Each status carries `muted`: whether your microphone is muted in Meet, read from
 the microphone button (`data-is-muted`; the icon tells it from the camera's).
 Koli records your microphone muted or not, so this is how she knows which of your
-words the call heard (`MeetFeed.unmuted_during`).
+words the call heard (`MeetFeed.heard_state`).
 
 ### Koli's own tile
 

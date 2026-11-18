@@ -123,6 +123,7 @@ def main():
     try:
         if not guest.join_now(code, 'you'):
             return
+        print('  her microphone button:', guest._session.page.evaluate(g.MIC))
         end = time.time() + args.seconds
         step = 0
         while time.time() < end and guest.in_call:

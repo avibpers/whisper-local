@@ -53,24 +53,31 @@ def _clock(seconds) -> str:
 # The meeting's turns from index `first` on, said at or after `since`
 # seconds: [{'at', 'name', 'you', 'text', 'heard'}]. Names are looked up
 # now, so a speaker renamed a minute ago already has the new name.
-# `heard`: everyone in the call heard it. Other people's words always were;
-# yours only when the turn is marked so (your microphone was on in Meet),
-# since the microphone Koli hears may be muted in the call. `heard_only`
-# keeps just those: it is what anything shown or said to the call is made from.
-def lines(m: dict, first: int = 0, since: float = 0.0, heard_only: bool = False) -> list:
+# `heard`: everyone in the call heard it. Other people's words always were.
+# Yours when the turn is marked so (Meet captioned it), else what `heard`
+# answers for the turn: True, False, or None when it can't be known yet
+# (was your microphone on in Meet? Koli hears it muted too). With no
+# `heard` to ask, they weren't. `heard_only` keeps the rows that were: what
+# anything shown or said to the call is made from. `index` is the turn's place.
+def lines(m: dict, first: int = 0, since: float = 0.0, heard: Optional[Callable] = None,
+          heard_only: bool = False) -> list:
     names = {s['id']: s.get('name') or s['id'] for s in (m or {}).get('speakers', [])}
     rows = []
-    for t in ((m or {}).get('turns') or [])[max(0, int(first)):]:
+    first = max(0, int(first))
+    for index, t in enumerate(((m or {}).get('turns') or [])[first:], start=first):
         text = ' '.join(str(t.get('text') or '').split())
         if not text or t.get('start', 0) < since:
             continue
         speaker = t.get('speaker')
         you = speaker == 'you'
-        heard = not you or bool(t.get('heard'))
-        if heard_only and not heard:
+        if not you or t.get('heard'):
+            was_heard = True
+        else:
+            was_heard = heard(t) if heard else False
+        if heard_only and was_heard is not True:
             continue
         name = 'You' if you else names.get(speaker) or ('Speaker ?' if speaker == '?' else str(speaker or 'Someone'))
-        rows.append({'at': t.get('start', 0), 'name': name, 'you': you, 'text': text, 'heard': heard})
+        rows.append({'at': t.get('start', 0), 'name': name, 'you': you, 'text': text, 'heard': was_heard, 'index': index})
     return rows
 
 
