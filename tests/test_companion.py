@@ -214,6 +214,39 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(notes['tasks'], NOTES['tasks'])
         self.assertEqual(notes['questions'], NOTES['questions'])
 
+    def test_an_answer_that_cannot_be_read_is_asked_for_once_more(self):
+        # Seen with a small local model on 2026-11-18: one answer in a few is not the notes.
+        ai = FakeAI('Here are your notes!', {**NOTES, 'topic': 'Second try'})
+        notes = companion.update(NOTES, self.rows, 'insights', 'en', ai)
+        self.assertEqual(notes['topic'], 'Second try')
+        self.assertEqual(len(ai.calls), 2)
+
+    def test_two_answers_that_cannot_be_read_are_enough(self):
+        ai = FakeAI({'error': 'x'})
+        with self.assertRaises(CompanionError):
+            companion.update(NOTES, self.rows, 'insights', 'en', ai)
+        self.assertEqual(len(ai.calls), 2)
+
+    def test_a_model_that_fails_is_not_asked_again(self):
+        ai = FakeAI(FakeResult(error='No AI model chosen. Pick one in Settings › AI.'))
+        with self.assertRaises(CompanionError):
+            companion.update(NOTES, self.rows, 'insights', 'en', ai)
+        self.assertEqual(len(ai.calls), 1)
+
+    def test_the_model_is_told_who_you_are(self):
+        # "Noa, when can we ship?" is a question to "You" only if the model knows You is Noa.
+        ai = FakeAI(NOTES)
+        companion.update(NOTES, self.rows, 'active', 'en', ai, owner='Noa')
+        self.assertIn('"You" is Noa', ai.calls[0]['messages'][0]['content'])
+        ai = FakeAI(NOTES)
+        companion.update(NOTES, self.rows, 'active', 'en', ai)
+        self.assertNotIn('"You" is ', ai.calls[0]['messages'][0]['content'])
+
+    def test_the_field_names_are_asked_for_as_they_are(self):
+        ai = FakeAI(NOTES)
+        companion.update(NOTES, self.rows, 'insights', 'he', ai)
+        self.assertIn('field names exactly as written', ai.calls[0]['messages'][0]['content'])
+
     def test_no_new_lines_no_call(self):
         ai = FakeAI(NOTES)
         self.assertEqual(companion.update(NOTES, [], 'insights', 'en', ai), NOTES)
@@ -236,6 +269,11 @@ class ActionTests(unittest.TestCase):
         self.assertNotIn('earlier meetings', ai.said().lower())
         companion.answer(NOTES, self.rows, 'en', ai, past='12 Oct: we chose Thursday releases')
         self.assertIn('12 Oct: we chose Thursday releases', ai.said())
+
+    def test_an_answer_is_asked_for_once_more_when_it_has_no_words(self):
+        ai = FakeAI({'question': 'q', 'answer': ''}, {'question': 'q', 'answer': 'Monday.', 'points': []})
+        self.assertEqual(companion.answer(NOTES, self.rows, 'en', ai)['answer'], 'Monday.')
+        self.assertEqual(len(ai.calls), 2)
 
     def test_an_answer_with_no_words_raises(self):
         with self.assertRaises(CompanionError):
@@ -894,6 +932,13 @@ class ServiceGuestTests(ServiceCase):
         self.make()
         self.start()
         self.assertEqual(self.guests, [])
+
+    def test_the_notes_are_asked_for_with_your_name(self):
+        self.make(mode='active')
+        self.start()
+        self.turn(5, 's2', LONG)
+        self.drain()
+        self.assertIn('"You" is Noa', self.ai.calls[0]['messages'][0]['content'])
 
     def test_the_board_gets_only_the_public_view(self):
         ask = {'who': 'Eran', 'question': 'When?', 'for_you': True, 'answer': 'SECRET ANSWER', 'points': []}

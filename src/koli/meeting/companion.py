@@ -144,8 +144,10 @@ def clean_notes(raw, mode: str) -> dict:
 # ── Asking the model ─────────────────────────────────────────────────────────
 
 RULES = ("Use this meeting only: nothing you know from elsewhere, nothing invented. "
-         "Write every text in {language}, the language the meeting is spoken in. "
-         "\"You\" in the transcript is the person you work for. Answer with one JSON object only.")
+         "Write every text in {language}, the language the meeting is spoken in, but keep the JSON "
+         "field names exactly as written here, in English. "
+         "\"You\" in the transcript is the person you work for.{owner} Answer with one JSON object only.")
+ATTEMPTS = 2                   # an answer that can't be used is asked for once more (a small model slips now and then)
 
 NOTES_PROMPT = """You are Koli, an assistant sitting in a live meeting. You keep short running notes.
 You get the notes so far (JSON) and the new lines of the transcript since then, as [time] Name: words.
@@ -199,20 +201,28 @@ def _parse(text: str):
         return None
 
 
-# One call: the system prompt, the parts as one user message, a JSON object back.
-def _ask_model(prompt: str, parts: list, language: str, complete: Callable, parse: Optional[Callable]) -> dict:
-    system = prompt.format(language=language_name(language), ask='')
+# One question to the model: the system prompt, the parts as one user
+# message, a JSON object back. `usable(answer)` says whether it holds what
+# was asked for; one that doesn't (or isn't JSON) is asked for once more,
+# then `problem` is raised. A model that fails outright is not asked again.
+# `owner` is the name other people call "You" by.
+def _ask_model(prompt: str, parts: list, language: str, complete: Callable, parse: Optional[Callable],
+               usable: Callable[[dict], bool], problem: str, owner: str = '') -> dict:
+    owner = _text(owner, 40)
+    who = f' "You" is {owner}: when someone says that name, they mean "You".' if owner else ''
+    system = prompt.format(language=language_name(language), ask='', owner=who)
     messages = [{'role': 'system', 'content': system}, {'role': 'user', 'content': '\n\n'.join(p for p in parts if p)}]
-    result = complete(FEATURE, messages, json=True)
-    if not getattr(result, 'ok', False):
-        raise CompanionError(getattr(result, 'error', '') or 'The AI did not answer')
-    try:
-        answer = (parse or _parse)(result.text)
-    except Exception:
-        answer = None
-    if not isinstance(answer, dict):
-        raise CompanionError("The AI's answer could not be read")
-    return answer
+    for _ in range(ATTEMPTS):
+        result = complete(FEATURE, messages, json=True)
+        if not getattr(result, 'ok', False):
+            raise CompanionError(getattr(result, 'error', '') or 'The AI did not answer')
+        try:
+            answer = (parse or _parse)(result.text)
+        except Exception:
+            answer = None
+        if isinstance(answer, dict) and usable(answer):
+            return answer
+    raise CompanionError(problem)
 
 
 def _notes_part(notes: dict) -> str:
@@ -222,16 +232,17 @@ def _notes_part(notes: dict) -> str:
 
 # The notes brought up to date with the new `rows`. With no new lines the
 # notes come back as they are and nothing is asked.
-def update(notes: dict, rows: list, mode: str, language: str, complete: Callable, parse: Optional[Callable] = None) -> dict:
+def update(notes: dict, rows: list, mode: str, language: str, complete: Callable, parse: Optional[Callable] = None,
+           owner: str = '') -> dict:
     if not rows:
         return notes
     prompt = NOTES_PROMPT.replace('{ask}', ASK_PART.replace('{', '{{').replace('}', '}}') if mode == 'active' else '')
-    answer = _ask_model(prompt, [_notes_part(notes), "New lines:\n" + transcript(rows)], language, complete, parse)
     # {} or {"error": ...} is JSON too: without a topic it isn't the notes, and
     # taking it would empty them, and her board in the call with them. A field
     # the model left out keeps what it held.
-    if not isinstance(answer.get('topic'), str):
-        raise CompanionError("The AI's answer was not the notes")
+    answer = _ask_model(prompt, [_notes_part(notes), "New lines:\n" + transcript(rows)], language, complete, parse,
+                        usable=lambda a: isinstance(a.get('topic'), str), problem="The AI's answer was not the notes",
+                        owner=owner)
     kept = {field: (notes or {}).get(field) for field in ('summary', 'decisions', 'tasks', 'questions')}
     return clean_notes({**kept, **answer}, mode)
 
@@ -239,37 +250,32 @@ def update(notes: dict, rows: list, mode: str, language: str, complete: Callable
 # Something to say now: {'question', 'answer', 'points'}. `past` is text
 # from the owner's earlier meetings; it is for the owner's eyes only.
 def answer(notes: dict, rows: list, language: str, complete: Callable, parse: Optional[Callable] = None,
-           past: str = '') -> dict:
+           past: str = '', owner: str = '') -> dict:
     parts = [_notes_part(notes), "The last minutes:\n" + transcript(rows)]
     if str(past or '').strip():
         parts.append("From their earlier meetings, to use only if it bears on the question:\n" + str(past).strip())
-    got = _ask_model(ANSWER_PROMPT, parts, language, complete, parse)
-    said = _text(got.get('answer'), 600)
-    if not said:
-        raise CompanionError("The AI had no answer to suggest")
-    return {'question': _text(got.get('question')), 'answer': said, 'points': _texts(got.get('points'), MAX_POINTS)}
+    got = _ask_model(ANSWER_PROMPT, parts, language, complete, parse, usable=lambda a: bool(_text(a.get('answer'))),
+                     problem="The AI had no answer to suggest", owner=owner)
+    return {'question': _text(got.get('question')), 'answer': _text(got.get('answer'), 600),
+            'points': _texts(got.get('points'), MAX_POINTS)}
 
 
 # The last minutes in up to three lines: {'lines'}.
 def catch_up(rows: list, language: str, complete: Callable, parse: Optional[Callable] = None) -> dict:
     if not rows:
         raise CompanionError("Nothing was said in the last minutes")
-    got = _ask_model(CATCH_UP_PROMPT, ["The last minutes:\n" + transcript(rows)], language, complete, parse)
-    found = _texts(got.get('lines'), MAX_SUMMARY)
-    if not found:
-        raise CompanionError("The AI had nothing to report")
-    return {'lines': found}
+    got = _ask_model(CATCH_UP_PROMPT, ["The last minutes:\n" + transcript(rows)], language, complete, parse,
+                     usable=lambda a: bool(_texts(a.get('lines'), MAX_SUMMARY)), problem="The AI had nothing to report")
+    return {'lines': _texts(got.get('lines'), MAX_SUMMARY)}
 
 
 # The task being talked about just now: {'task', 'owner'}.
 def task_from_talk(rows: list, language: str, complete: Callable, parse: Optional[Callable] = None) -> dict:
     if not rows:
         raise CompanionError("Nothing was said in the last minutes")
-    got = _ask_model(TASK_PROMPT, ["The last minute and a half:\n" + transcript(rows)], language, complete, parse)
-    task = _text(got.get('task'))
-    if not task:
-        raise CompanionError("The AI found no task in what was just said")
-    return {'task': task, 'owner': _text(got.get('owner'), 40) or None}
+    got = _ask_model(TASK_PROMPT, ["The last minute and a half:\n" + transcript(rows)], language, complete, parse,
+                     usable=lambda a: bool(_text(a.get('task'))), problem="The AI found no task in what was just said")
+    return {'task': _text(got.get('task')), 'owner': _text(got.get('owner'), 40) or None}
 
 
 # What Koli answers when someone in the call speaks to her. It goes to
@@ -283,11 +289,9 @@ def public_answer(notes: dict, rows: list, question: str, language: str, complet
     public_notes = "The notes so far (JSON):\n" + json.dumps(
         {field: shown[field] for field in ('topic', 'decisions', 'tasks', 'questions')}, ensure_ascii=False)
     got = _ask_model(PUBLIC_PROMPT, [public_notes, "The last minutes:\n" + transcript(rows),
-                                     "What was said to you:\n" + _text(question, 600)], language, complete, parse)
-    said = _text(got.get('answer'), SAY_MAX)
-    if not said:
-        raise CompanionError("The AI had no answer")
-    return said
+                                     "What was said to you:\n" + _text(question, 600)], language, complete, parse,
+                     usable=lambda a: bool(_text(a.get('answer'))), problem="The AI had no answer")
+    return _text(got.get('answer'), SAY_MAX)
 
 
 # ── What others may see ──────────────────────────────────────────────────────

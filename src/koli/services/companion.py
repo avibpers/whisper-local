@@ -266,7 +266,8 @@ class CompanionService:
         self._updated_at = self._now()          # a failed call waits its turn too
         generation = self._generation
         with for_meeting(m['id'], 'companion'):
-            notes = brain.update(self._notes, rows, mode, meeting_language(m), self._complete, self._parse)
+            notes = brain.update(self._notes, rows, mode, meeting_language(m), self._complete, self._parse,
+                                 owner=self._owner(m))
         # While the model was answering she was brought into the call, or the
         # meeting changed: these notes were made for other eyes, or another meeting.
         if generation != self._generation:
@@ -322,7 +323,7 @@ class CompanionService:
         with for_meeting(m['id'], 'companion'):
             if kind == 'answer':
                 rows = brain.lines(m, since=elapsed - ANSWER_WINDOW_S)
-                got = brain.answer(self._notes, rows, language, self._complete, self._parse)
+                got = brain.answer(self._notes, rows, language, self._complete, self._parse, owner=self._owner(m))
                 self._card('answer', got['question'] or 'What you could say', got['answer'], got['points'])
             elif kind == 'catch_up':
                 minutes = args[0]
