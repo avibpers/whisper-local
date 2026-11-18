@@ -1141,6 +1141,27 @@ class ServiceGuestTests(ServiceCase):
         self.svc.listen()
         self.assertEqual(len(self.cards('said')), 1)
 
+    def test_her_talk_with_one_meeting_is_not_carried_into_the_next(self):
+        # What was said to her, and what she answered, belongs to the meeting it was said in.
+        self.make('FIRST MEETING ANSWER', 'second answer', mode='active')
+        self.start()
+        self.svc.join()
+        self.turn(5, 's2', 'Koli, what is the secret plan?')
+        self.drain()
+        self.assertEqual(len(self.cards('said')), 1)
+        for code in ('zzz-zzzz-zzz', 'abc-defg-hij'):          # another call, then the same call as a new meeting
+            self.another_meeting('m-' + code, code)
+            self.svc.join()
+            self.t += 10
+            turn = {'start': 5, 'end': 7, 'stream': 'loopback', 'speaker': 's1', 'text': 'Koli, are you there?', 'lang': 'en'}
+            self.meetings.session.meeting['turns'].append(turn)
+            self.svc.on_event('meeting_turn', {'id': 'm-' + code, 'turn': turn})
+            self.drain()
+            said = self.ai.said()
+            self.assertIn('Koli, are you there?', said)
+            self.assertNotIn('FIRST MEETING ANSWER', said)
+            self.assertNotIn('secret plan', said)
+
     def test_her_words_appear_on_the_tile_as_they_come(self):
         self.make('The state was founded in 1948, in the month of May.', mode='active')
         self.start()
