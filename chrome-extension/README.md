@@ -6,6 +6,8 @@ Google Meet:
 - when you join and leave, so the meeting starts and ends with you;
 - who is in the call;
 - Meet's live captions, with each speaker's name;
+- whether your microphone is muted in Meet, so Koli knows which of your words
+  the call heard;
 - the size of Koli's own tile on your screen, when she sits in the call as a
   participant, so her board fits it.
 

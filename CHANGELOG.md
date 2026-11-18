@@ -14,7 +14,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 - **Koli as a participant in Google Meet.** Bring Koli in from the panel (or let her
   join by herself) and she sits in the call as a guest with her own tile, showing her
   notes to everyone: the topic, decisions, tasks, open questions, never your private
-  answers. She says who she is in the chat, can send a card's text to the chat on your
+  answers, and only what the call itself heard (not words your microphone picked up
+  while muted in Meet). She says who she is in the chat, can send a card's text to the chat on your
   click, and in Active mode can answer there when someone speaks to her by name. Her
   own browser (Chrome for Testing, 215 MB) is downloaded the first time and closes
   with Koli. Windows only for now; Meet sometimes refuses a guest, so she tries three

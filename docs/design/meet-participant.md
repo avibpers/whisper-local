@@ -216,7 +216,8 @@ The join, in the order that worked:
 4. Click "Join now" or "Ask to join". With "Ask to join": `asking`, up to 3
    minutes, and the panel says "Koli is asking to join; admit her in Meet".
 5. A dialog with "Join now" → press it.
-6. In the call when the leave button is there and no refusal text. Open the chat
+6. In the call when the leave button is there and no refusal text. Mute her
+   microphone (it only sends silence until she has a voice), open the chat
    panel, write the announcement, then mark the page hidden.
 
 While in the call, every 5 seconds: still in the call? which sizes Meet asks
@@ -233,6 +234,24 @@ She leaves when the meeting ends, when you leave the call, when you press Take
 out, or when Koli quits (`MeetingService.shutdown`). Continue previous and
 Start new instead change the meeting, not the call: she stays, and her notes
 start over.
+
+### Only what the call heard
+
+Koli's own Whisper hears your microphone whether or not it is muted in Meet:
+an aside to someone in your room is in the transcript. So from the moment she
+is brought into a call, and for the rest of that meeting:
+
+- her notes start over and are made only from lines the call heard: other
+  people's words, and yours only when your microphone was on in Meet. The
+  extension reports the microphone button's state (`muted`, read from
+  `data-is-muted`); `MeetFeed.unmuted_during` answers for a stretch of time,
+  a mute counting from 1.5 s before it was noticed; the meeting service marks
+  such a turn `heard`. A turn from Meet's captions is marked too. No captions
+  are needed: it works the same when Koli transcribes the audio herself;
+- she answers in the chat only a line the call heard, and the answer is drawn
+  only from such lines and from the part of the notes her board shows;
+- your private buttons (What should I answer?, Catch me up, + Task) still use
+  everything, since only you see them.
 
 ### What the extension adds
 
@@ -263,10 +282,10 @@ never an attendee, a name for a 1:1 call, or a row in the summary's roster.
 - The debugging port is open to any program on this PC while she is in a call.
 - The download has no published checksum; every file in the zip is tested
   before it is unpacked.
-- In "Names only" mode Koli transcribes your microphone herself, so words you
-  say while muted in Meet are in her notes and can reach her board. With
-  "Names and captions" (the default) Meet's captions are the transcript and a
-  muted microphone isn't in them.
+- While she is in the call, her notes hold only what the call heard (see
+  "Only what the call heard"). That needs the extension of this version (0.3.0):
+  with an older one Koli can't tell whether your microphone was on in Meet,
+  and leaves your own words out of them.
 - She can't read the chat or be asked there.
 - Not in this version: her voice, answers that draw on your earlier meetings
   (the search waits on a local model, too slow for a live answer; the brain

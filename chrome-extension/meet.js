@@ -561,13 +561,27 @@
     const now = Date.now();
     const captions = state.captionsOn === true;
     const tile = guestTile();
+    const muted = micMuted();
     return { type: 'status', code, joined: state.joined, captions, title: state.title,
              captions_live: captions && (channel.live || pageReadable(now)),
              source: channel.live ? 'channel' : 'page', visible: state.visible,
              channel: { labels: [...channel.labels], users: channel.users.size, gave_up: channel.givenUp,
                         self_seen: channel.selfSeen, ...channel.counts },
              self_name: state.selfName, at_ms: now, people: [...state.people.values()],
-             ...(tile ? { guest_tile: tile } : {}) };
+             ...(tile ? { guest_tile: tile } : {}), ...(muted === null ? {} : { muted }) };
+  }
+
+  // Whether your microphone is muted in Meet. Its button carries
+  // data-is-muted, and its icon is "mic" or "mic_off" in every language
+  // (the camera's button has the attribute too, with a camera icon). null
+  // when the button isn't there. Koli hears your microphone muted too, and
+  // uses this to know which of your words the call heard.
+  function micMuted() {
+    for (const button of document.querySelectorAll('button[data-is-muted]')) {
+      const isMic = [...button.querySelectorAll('i, span')].some((el) => /^mic(_off)?$/.test(el.textContent.trim()));
+      if (isMic) return button.getAttribute('data-is-muted') === 'true';
+    }
+    return null;
   }
 
   // The size on your screen of Koli's own tile, when she sits in this call
@@ -624,7 +638,7 @@
     const events = readCaptions();
     const status = statusEvent();
     const summary = JSON.stringify([status.captions, status.captions_live, status.source, status.visible,
-                                    status.title, status.people, status.guest_tile]);
+                                    status.title, status.people, status.guest_tile, status.muted]);
     const now = Date.now();
     if (justJoined || summary !== state.lastStatus || now - state.lastStatusAt >= HEARTBEAT_MS) {
       events.unshift(status);

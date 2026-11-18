@@ -22,6 +22,8 @@ CAPTION_LEAD_S = 1.0
 NAME_COVER = 0.5             # share of a chunk one person's caption spans must cover to name it
 SPAN_KEEP_S = 600.0          # spans older than this are forgotten (only recent audio is named)
 CAPTION_KEEP = 400           # caption blocks remembered per call (finished ones are handed out once)
+MUTE_NOTICE_S = 1.5          # the page is read about once a second: a mute may be this old when it is reported
+MUTE_KEEP = 400              # changes of your microphone's state remembered per call
 
 
 def _overlap(a0: float, a1: float, b0: float, b1: float) -> float:
@@ -54,6 +56,7 @@ class MeetCall:
         self.people = []           # [{'id', 'name', 'self'}], the latest list the page showed
         self.guest_tile = None     # [width, height] of Koli's own tile on your screen, when she is in the call
         self.guests = set()        # names Koli sat in this call under: the page keeps listing her after she left
+        self.mute_log = []         # [(epoch seconds, muted)]: each change of your microphone in Meet, oldest first
         self.seen = 0.0            # time.time() of the last message from the tab
         self.joined_at = None      # epoch seconds the extension saw you get in
         self.captions = {}         # block id -> {'name','self','text','t0','t1','final'}
@@ -149,6 +152,12 @@ class MeetFeed:
                   for p in (e.get('people') or []) if isinstance(p, dict) and str(p.get('name') or '').strip()
                   and str(p.get('name')).strip().lower() not in call.guests]
         call.guest_tile = _tile(e.get('guest_tile'))
+        # Your microphone in Meet, as its button shows it. A mute is dated a
+        # moment early: what was said just before it was noticed is not "heard".
+        muted = e.get('muted')
+        if isinstance(muted, bool) and (not call.mute_log or call.mute_log[-1][1] != muted):
+            call.mute_log.append((at - MUTE_NOTICE_S if muted else at, muted))
+            del call.mute_log[:-MUTE_KEEP]
         if title != call.title or (people and people != call.people):
             out['changed'].append(call.code)
         call.title = title or call.title
@@ -225,6 +234,22 @@ class MeetFeed:
 
     def call(self, code: str) -> Optional[dict]:
         return next((c for c in self.joined_calls() if c['code'] == (code or '').lower()), None)
+
+    # Whether your microphone was on in Meet for the whole of [t0, t1] (epoch
+    # seconds), so everyone in the call heard what you said then. Koli's own
+    # recording hears you muted too. Anything unknown is False: before the
+    # extension first reported the button, or with an extension that doesn't.
+    def unmuted_during(self, code: str, t0: float, t1: float) -> bool:
+        with self._lock:
+            call = self._calls.get((code or '').lower())
+            log = list(call.mute_log) if call else []
+        state = None
+        for at, muted in log:
+            if at <= t0:
+                state = muted
+            elif at <= t1 and muted:
+                return False
+        return state is False
 
     # Whether Meet's captions hold what was said in a stretch of audio starting
     # at `t0`: they can be read now, and they could already when it began. A

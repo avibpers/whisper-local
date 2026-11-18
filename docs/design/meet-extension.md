@@ -166,6 +166,13 @@ nobody else. Elsewhere the splitter runs in its own low-priority process
 its whole run: 5-8 s per 15 s chunk in the app froze every thread, including
 the low-level keyboard and mouse hooks the whole PC's input waits on.
 
+### Your microphone's state
+
+Each status carries `muted`: whether your microphone is muted in Meet, read from
+the microphone button (`data-is-muted`; the icon tells it from the camera's).
+Koli records your microphone muted or not, so this is how she knows which of your
+words the call heard (`MeetFeed.unmuted_during`).
+
 ### Koli's own tile
 
 When Koli sits in the call as her own participant (`docs/design/meet-participant.md`),

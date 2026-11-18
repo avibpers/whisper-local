@@ -51,9 +51,13 @@ def _clock(seconds) -> str:
 
 
 # The meeting's turns from index `first` on, said at or after `since`
-# seconds: [{'at', 'name', 'you', 'text'}]. Names are looked up now, so a
-# speaker renamed a minute ago already has the new name.
-def lines(m: dict, first: int = 0, since: float = 0.0) -> list:
+# seconds: [{'at', 'name', 'you', 'text', 'heard'}]. Names are looked up
+# now, so a speaker renamed a minute ago already has the new name.
+# `heard`: everyone in the call heard it. Other people's words always were;
+# yours only when the turn is marked so (your microphone was on in Meet),
+# since the microphone Koli hears may be muted in the call. `heard_only`
+# keeps just those: it is what anything shown or said to the call is made from.
+def lines(m: dict, first: int = 0, since: float = 0.0, heard_only: bool = False) -> list:
     names = {s['id']: s.get('name') or s['id'] for s in (m or {}).get('speakers', [])}
     rows = []
     for t in ((m or {}).get('turns') or [])[max(0, int(first)):]:
@@ -62,8 +66,11 @@ def lines(m: dict, first: int = 0, since: float = 0.0) -> list:
             continue
         speaker = t.get('speaker')
         you = speaker == 'you'
+        heard = not you or bool(t.get('heard'))
+        if heard_only and not heard:
+            continue
         name = 'You' if you else names.get(speaker) or ('Speaker ?' if speaker == '?' else str(speaker or 'Someone'))
-        rows.append({'at': t.get('start', 0), 'name': name, 'you': you, 'text': text})
+        rows.append({'at': t.get('start', 0), 'name': name, 'you': you, 'text': text, 'heard': heard})
     return rows
 
 
@@ -259,10 +266,16 @@ def task_from_talk(rows: list, language: str, complete: Callable, parse: Optiona
 
 
 # What Koli answers when someone in the call speaks to her. It goes to
-# everyone, so the model sees this meeting only, never the owner's others.
+# everyone, so the model sees this meeting only, never the owner's others,
+# and the caller passes only rows the call heard (lines(..., heard_only=True)).
 def public_answer(notes: dict, rows: list, question: str, language: str, complete: Callable,
                   parse: Optional[Callable] = None) -> str:
-    got = _ask_model(PUBLIC_PROMPT, [_notes_part(notes), "The last minutes:\n" + transcript(rows),
+    # Of the notes, only what her board shows anyway: not the summary lines,
+    # not a question put to the owner or the answer suggested to him.
+    shown = public_view(notes, '')
+    public_notes = "The notes so far (JSON):\n" + json.dumps(
+        {field: shown[field] for field in ('topic', 'decisions', 'tasks', 'questions')}, ensure_ascii=False)
+    got = _ask_model(PUBLIC_PROMPT, [public_notes, "The last minutes:\n" + transcript(rows),
                                      "What was said to you:\n" + _text(question, 600)], language, complete, parse)
     said = _text(got.get('answer'), SAY_MAX)
     if not said:

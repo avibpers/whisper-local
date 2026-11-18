@@ -62,7 +62,7 @@ class LinesTests(unittest.TestCase):
     def test_names_are_resolved_and_the_owner_is_you(self):
         m = meeting([(5, 'you', 'I think so'), (65, 's1', 'Hi there')])
         rows = companion.lines(m)
-        self.assertEqual(rows[0], {'at': 5, 'name': 'You', 'you': True, 'text': 'I think so'})
+        self.assertEqual(rows[0], {'at': 5, 'name': 'You', 'you': True, 'text': 'I think so', 'heard': False})
         self.assertEqual(rows[1]['name'], 'Dana')
         self.assertFalse(rows[1]['you'])
 
@@ -80,6 +80,14 @@ class LinesTests(unittest.TestCase):
         self.assertEqual([r['text'] for r in companion.lines(m, first=1)], ['two', 'three'])
         self.assertEqual([r['text'] for r in companion.lines(m, since=100)], ['three'])
         self.assertEqual(companion.lines(m, first=9), [])
+
+    def test_heard_only_leaves_out_your_words_the_call_did_not_hear(self):
+        # Koli's own Whisper hears your microphone even while you are muted in Meet.
+        m = meeting([(5, 'you', 'said while muted'), (9, 's1', 'said by Dana'), (12, 'you', 'said in the call')])
+        m['turns'][2]['heard'] = True
+        self.assertEqual([r['text'] for r in companion.lines(m, heard_only=True)], ['said by Dana', 'said in the call'])
+        self.assertEqual(len(companion.lines(m)), 3)
+        self.assertEqual([r['heard'] for r in companion.lines(m)], [False, True, True])
 
     def test_empty_text_is_left_out(self):
         m = meeting([(5, 's1', '  '), (9, 's1', 'ok')])
@@ -241,6 +249,16 @@ class ActionTests(unittest.TestCase):
     def test_task_from_talk_without_a_task_raises(self):
         with self.assertRaises(CompanionError):
             companion.task_from_talk(self.rows, 'en', FakeAI({'task': '', 'owner': None}))
+
+    def test_public_answer_gets_only_the_public_part_of_the_notes(self):
+        ai = FakeAI({'answer': 'Thursday.'})
+        notes = {**NOTES, 'summary': ['SUMMARY LINE FOR THE OWNER'],
+                 'ask': {'who': 'Eran', 'question': 'q', 'for_you': True, 'answer': 'ANSWER FOR THE OWNER', 'points': []}}
+        companion.public_answer(notes, self.rows, 'Koli, what did we decide?', 'en', ai)
+        said = ai.said()
+        self.assertNotIn('SUMMARY LINE FOR THE OWNER', said)
+        self.assertNotIn('ANSWER FOR THE OWNER', said)
+        self.assertIn('Ship on Thursday', said)                 # a decision is on the board anyway
 
     def test_public_answer_is_from_this_meeting_only_and_short(self):
         ai = FakeAI({'answer': 'We decided to ship on Thursday. ' * 40})
@@ -541,9 +559,11 @@ class ServiceCase(unittest.TestCase):
         self.drain()
         return m
 
-    def turn(self, start, who, text):
+    def turn(self, start, who, text, heard=False):
         turn = {'start': start, 'end': start + 2, 'stream': 'mic' if who == 'you' else 'loopback', 'speaker': who,
                 'text': text, 'lang': 'en'}
+        if heard:
+            turn['heard'] = True
         self.meetings.session.meeting['turns'].append(turn)
         self.svc.on_event('meeting_turn', {'id': 'm1', 'turn': turn})
 
@@ -1001,6 +1021,63 @@ class ServiceGuestTests(ServiceCase):
         first.on_state('failed', 'Koli could not join: the browser is closed', None)
         self.assertEqual(self.svc.state()['guest']['state'], 'in_call')
 
+    def test_in_the_call_her_notes_are_made_only_of_what_the_call_heard(self):
+        self.make()
+        self.start()
+        self.turn(5, 'you', 'PRIVATE ' + LONG)                  # Whisper heard it; Meet may not have
+        self.drain()
+        self.assertIn('PRIVATE', self.ai.said())                 # alone with you, she may use it
+        self.svc.join()
+        self.drain()
+        self.assertEqual(self.svc.state()['notes']['topic'], '')  # notes that held it are not shown to the call
+        self.assertEqual(self.guests[0].views[-1]['topic'], '')
+        calls = len(self.ai.calls)
+        self.t += 60
+        self.turn(70, 's1', 'HEARD ' + LONG)
+        self.turn(80, 'you', 'CAPTIONED ' + LONG, heard=True)
+        self.turn(90, 'you', 'MUTED ' + LONG)
+        self.drain()
+        self.assertEqual(len(self.ai.calls), calls + 1)
+        said = self.ai.said()
+        self.assertIn('HEARD', said)
+        self.assertIn('CAPTIONED', said)
+        self.assertNotIn('MUTED', said)
+        self.assertNotIn('PRIVATE', said)
+
+    def test_your_own_words_to_her_are_answered_in_the_call_only_if_the_call_heard_them(self):
+        self.make({'answer': 'Thursday.'}, mode='active', chat=True)
+        self.start()
+        self.svc.join()
+        self.turn(5, 'you', 'Koli, what did we decide?')         # said with the microphone muted in Meet
+        self.drain()
+        self.assertEqual(self.guests[0].said, [])
+        self.t += 30
+        self.turn(40, 'you', 'Koli, what did we decide?', heard=True)
+        self.drain()
+        self.assertEqual(self.guests[0].said, ['Thursday.'])
+
+    def test_her_answer_to_the_call_is_drawn_only_from_what_the_call_heard(self):
+        self.make({'answer': 'Thursday.'}, mode='active', chat=True)
+        self.start()
+        self.svc.join()
+        self.turn(5, 'you', 'MUTED aside about the budget')
+        self.turn(9, 's2', 'Koli, what did we decide?')
+        self.drain()
+        self.assertEqual(self.guests[0].said, ['Thursday.'])
+        self.assertNotIn('MUTED', self.ai.said())
+
+    def test_she_stays_careful_when_the_meeting_is_continued_in_the_same_call(self):
+        self.make()
+        self.start()
+        self.svc.join()
+        self.another_meeting('m2', 'abc-defg-hij')
+        turn = {'start': 5, 'end': 7, 'stream': 'mic', 'speaker': 'you', 'text': 'MUTED ' + LONG, 'lang': 'en'}
+        self.meetings.session.meeting['turns'].append(turn)
+        self.svc.on_event('meeting_turn', {'id': 'm2', 'turn': turn})
+        calls = len(self.ai.calls)
+        self.drain()
+        self.assertEqual(len(self.ai.calls), calls)              # nothing the call heard: nothing to note
+
     def test_the_tile_goes_to_the_guest(self):
         self.make()
         self.start()
@@ -1111,6 +1188,34 @@ class MeetFeedGuestTests(unittest.TestCase):
         feed.apply([self.status(title='Weekly sync')])
         self.assertEqual([p['name'] for p in feed.call('abc-defg-hij')['people']], ['Noa Levi', 'Dana'])
 
+    def muted_feed(self, reports):
+        from koli.meeting.meet_feed import MeetFeed
+        feed = MeetFeed(now=lambda: 1000.0)
+        for at, muted in reports:
+            feed.apply([self.status(muted=muted, at_ms=at * 1000)])
+        return feed
+
+    def test_unmuted_during_needs_the_microphone_on_the_whole_time(self):
+        feed = self.muted_feed([(100, False), (200, True), (300, False)])
+        code = 'abc-defg-hij'
+        self.assertTrue(feed.unmuted_during(code, 110, 120))
+        self.assertFalse(feed.unmuted_during(code, 210, 220))         # muted
+        self.assertFalse(feed.unmuted_during(code, 190, 205))         # muted before it ended
+        self.assertTrue(feed.unmuted_during(code, 310, 320))          # on again
+        self.assertFalse(feed.unmuted_during(code, 50, 60))           # before the first report: unknown
+        self.assertFalse(feed.unmuted_during('zzz-zzzz-zzz', 110, 120))
+
+    def test_a_mute_counts_from_a_moment_before_it_was_noticed(self):
+        # The page is read about once a second: the mute may be that old when it is reported.
+        feed = self.muted_feed([(100, False), (200, True)])
+        self.assertFalse(feed.unmuted_during('abc-defg-hij', 197, 199.5))
+        self.assertTrue(feed.unmuted_during('abc-defg-hij', 190, 198))
+
+    def test_no_mute_state_at_all_is_not_unmuted(self):
+        feed = self.muted_feed([])
+        feed.apply([self.status()])
+        self.assertFalse(feed.unmuted_during('abc-defg-hij', 110, 120))
+
     def test_her_tile_is_kept(self):
         from koli.meeting.meet_feed import MeetFeed
         feed = MeetFeed(now=lambda: 1000.0, guest_name=lambda: 'Koli')
@@ -1185,6 +1290,58 @@ class WiringTests(unittest.TestCase):
         self.in_a_call(svc)
         svc._meet_events([self.status()])
         self.assertEqual([p['name'] for p in svc.meet.call('abc-defg-hij')['people']], ['Noa Levi', 'Dana'])
+
+    def test_a_turn_from_meets_captions_says_so(self):
+        import time
+        svc = self.make()
+        svc._meet_events([self.status()])
+        svc._on_sources([])
+        self.assertEqual(svc.session.state, 'live')
+        now = time.time()
+        mine = {'type': 'caption', 'code': 'abc-defg-hij', 'id': 'b1', 'name': 'You', 'self': True, 'text': 'Hello all',
+                'first_ms': now * 1000, 'last_ms': (now + 2) * 1000, 'final': True}
+        svc._meet_events([mine])
+        turns = svc.session.meeting['turns']
+        self.assertEqual([(t['speaker'], t['text'], t.get('heard')) for t in turns], [('you', 'Hello all', True)])
+
+    def mic_turn(self, svc, t0, text):
+        svc._on_turn({'t0': t0, 't1': t0 + 2, 'stream': 'mic', 'speaker': 'you', 'text': text, 'lang': 'en',
+                      'meeting_id': svc.session.meeting['id']})
+        return svc.session.meeting['turns'][-1]
+
+    def test_your_words_count_as_heard_only_while_your_microphone_is_on_in_meet(self):
+        # No captions needed: the extension reports the microphone button's state.
+        import time
+        svc = self.make(**{})
+        self.values['meeting.google_meet'] = 'names'
+        now = time.time()
+        svc._meet_events([self.status(muted=False, at_ms=(now - 60) * 1000)])
+        svc._on_sources([])
+        self.assertEqual(svc.session.state, 'live')
+        self.assertIs(self.mic_turn(svc, now - 30, 'said with the microphone on').get('heard'), True)
+        svc._meet_events([self.status(muted=True, at_ms=(now - 20) * 1000)])
+        self.assertNotIn('heard', self.mic_turn(svc, now - 10, 'said while muted in Meet'))
+        svc._meet_events([self.status(muted=False, at_ms=(now - 5) * 1000)])
+        self.assertIs(self.mic_turn(svc, now - 3, 'said after unmuting').get('heard'), True)
+
+    def test_with_no_word_from_the_extension_your_words_are_not_counted_as_heard(self):
+        import time
+        svc = self.make()
+        self.values['meeting.google_meet'] = 'names'
+        svc._meet_events([self.status()])              # an older extension: no mute state
+        svc._on_sources([])
+        self.assertNotIn('heard', self.mic_turn(svc, time.time(), 'who knows'))
+
+    def test_other_peoples_words_need_no_mark(self):
+        import time
+        svc = self.make()
+        svc._meet_events([self.status(muted=True)])
+        svc._on_sources([])
+        now = time.time()
+        svc._on_turn({'t0': now, 't1': now + 2, 'stream': 'loopback', 'speaker': 's1', 'text': 'hello', 'lang': 'en',
+                      'meeting_id': svc.session.meeting['id']})
+        from koli.meeting import companion as brain
+        self.assertEqual([r['heard'] for r in brain.lines(svc.session.meeting)], [True])
 
     def test_her_tile_reaches_her(self):
         svc = self.make()
