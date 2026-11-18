@@ -9,17 +9,20 @@
 // Beside the speakers sit the people who were there but said nothing; "+ Person"
 // adds one. A meeting saved to Google Drive follows its changes there. The
 // Cost tab says which models transcribed, summarized and chatted about it, and
-// what each cost (docs/design/online-models.md).
+// what each cost (docs/design/online-models.md). The search box finds meetings by
+// words and by meaning, and "Ask all meetings" (screens/meetings_ask.js) answers
+// questions across all of them (docs/design/meeting-search.md).
 
 import { html, useEffect, useRef, useState } from '../../vendor/preact-htm.module.js';
 import { call, on } from '../api.js';
 import { app, confirmModal, promptModal, textDir, toast } from '../store.js';
-import { Icon, Select } from '../ui.js';
-import { ExtraInstall, money } from './shared.js';
+import { Icon, Select, Toggle } from '../ui.js';
+import { ExtraInstall, TaskProgress, money, useRunningTasks } from './shared.js';
 import { Lightbox, Thumb, rowsByTime } from '../shots.js';
 import { Brief, BriefData, COLOURS, DriveButton, SummaryBar, printBrief } from './brief.js';
 import { TemplatesView } from './templates.js';
 import { MeetingChat } from './chat.js';
+import { AskAll } from './meetings_ask.js';
 import { openSettingsSection } from './settings.js';
 
 const RUNNING = new Set(['live', 'paused', 'offered']);
@@ -265,6 +268,43 @@ function KnownVoices() {
   </section>`;
 }
 
+// Why meaning results may be missing, in words; nothing when search by meaning works.
+function meaningLine(meaning, status) {
+  if (meaning === 'loading') return 'Search by meaning is starting…';
+  if (meaning === 'indexing') return `Preparing search by meaning: ${status ? status.indexed : 0} of ${status ? status.total : 0} meetings`;
+  if (meaning === 'no_ollama') return 'Search by meaning needs Ollama running (Settings › AI)';
+  return '';
+}
+
+// The one-time offer to download the model that search by meaning needs, with its progress.
+function MeaningModelCard() {
+  // Only this card's own download (its ref), not a Whisper model being downloaded meanwhile.
+  const running = useRunningTasks('model').filter((t) => t.ref === 'meeting-search');
+  return html`<section class="card pad stack" aria-label="Search by meaning">
+    <span class="card-title">Search by meaning</span>
+    <span class="small muted">Find meetings by what was said, in Hebrew or English, not only by exact words. Needs a 640 MB model, kept on this computer.</span>
+    ${running.length > 0
+      ? html`<${TaskProgress} task=${running[0]} />`
+      : html`<div><button type="button" class="btn pri" onClick=${() => call('meetings_search_download').catch((e) => toast(e.message, { kind: 'err' }))}>Download</button></div>`}
+  </section>`;
+}
+
+// One search result: the meeting, a chip when meaning found it, and up to
+// three places (ten inside one meeting), each opening the transcript there.
+function SearchResult({ hit, current, onOpen }) {
+  return html`<div style=${`border-top:1px solid var(--line)${current === hit.id ? ';background:var(--sunk)' : ''}`}>
+    <button type="button" class="menu-item" style="display:block;width:100%;text-align:start;padding:12px 16px 4px" onClick=${() => onOpen(hit.id, null)}>
+      <div style="font-weight:600" dir="auto">${hit.title}${(hit.by || []).includes('meaning') ? html` <span class="chip sm acc" title="Found by what was said, not by the exact words">by meaning</span>` : ''}</div>
+      <div class="small muted">${when(hit.started_at)}</div></button>
+    ${(hit.places || []).map((p) => html`<button type="button" class="menu-item" style="display:block;width:100%;text-align:start;padding:4px 16px 8px" onClick=${() => onOpen(hit.id, p.at)}>
+      <div class="small muted"><span class="mt-hit-where">${p.where}</span>${p.at != null ? ` · ${clock(p.at)}` : ''}</div>
+      ${p.where !== 'title' && html`<span class="mt-hit-snip" dir="auto">${p.snippet}</span>`}</button>`)}
+  </div>`;
+}
+
+// How many times the page asks again while the meaning model is still loading.
+const SEARCH_RETRIES = 3;
+
 export function MeetingsScreen({ route = 'meetings' } = {}) {
   const live = app.use((s) => s.meeting);
   const [list, setList] = useState([]);
@@ -274,30 +314,56 @@ export function MeetingsScreen({ route = 'meetings' } = {}) {
   const routeId = route.split('/')[1] || null;
   useEffect(() => { if (routeId) setSelected(routeId); }, [routeId]);
   const [view, setView] = useState('meetings');
-  // Search: every saved meeting's title, speakers, summary, captions and words.
+  const liveId = live.id && (live.state === 'live' || live.state === 'paused') ? live.id : null;
+  const current = selected || liveId || (list[0] && list[0].id);
+  // Search: every saved meeting's title, speakers, summary, captions and words,
+  // and what they mean. "Only this meeting" limits it to the one that is open.
   const [query, setQuery] = useState('');
-  const [hits, setHits] = useState(null);
+  const [onlyThis, setOnlyThis] = useState(false);
+  const [found, setFound] = useState(null);       // {results, meaning}
+  const [status, setStatus] = useState(null);     // {meaning, indexed, total, model}
   const [focus, setFocus] = useState(null);
+  // Ask all meetings replaces the right pane; `n` makes each new question a fresh start.
+  const [asking, setAsking] = useState(null);
+  const scopeId = onlyThis && current ? current : null;
   useEffect(() => {
     const q = query.trim();
-    if (!q) { setHits(null); return undefined; }
-    const timer = setTimeout(() => call('meetings_search', q).then(setHits).catch(() => setHits([])), 200);
-    return () => clearTimeout(timer);
-  }, [query]);
-  const openHit = (h) => { setSelected(h.id); setFocus(h.at != null ? { at: h.at, n: Date.now() } : null); };
+    if (!q) { setFound(null); return undefined; }
+    let stale = false;
+    let timer = null;
+    // The words answer at once; while the model loads, ask again in 2 s for the meaning part.
+    const run = (retry) => call('meetings_search', q, scopeId).then((r) => {
+      if (stale) return;
+      setFound(r);
+      if (r.meaning === 'loading' && retry < SEARCH_RETRIES) timer = setTimeout(() => run(retry + 1), 2000);
+    }).catch((e) => {
+      if (stale) return;
+      // A failed call says so; a retry keeps the word results this query already has.
+      toast(e.message, { kind: 'err' });
+      setFound((cur) => (retry > 0 && cur ? cur : { results: [], meaning: 'off', failed: true }));
+    });
+    timer = setTimeout(() => run(0), 200);
+    return () => { stale = true; clearTimeout(timer); };
+  }, [query, scopeId]);
+  useEffect(() => { call('meetings_search_status').then(setStatus).catch(() => {}); return on('meeting_search', setStatus); }, []);
+  // A result opens its meeting, at the second it matched when it has one.
+  const openAt = (id, at) => { setAsking(null); setSelected(id); setFocus(at != null ? { at, n: Date.now() } : null); };
+  const openAsk = (initial = '') => setAsking((cur) => ({ initial, n: initial || !cur ? Date.now() : cur.n }));
   const reload = () => call('meetings_list').then(setList).catch(() => {});
   useEffect(() => { reload(); }, [live.state]);
   // A new summary can rename the meeting.
   useEffect(() => on('meeting_brief', reload), []);
   if (view === 'templates') return html`<${TemplatesView} onBack=${() => setView('meetings')} />`;
-  const liveId = live.id && (live.state === 'live' || live.state === 'paused') ? live.id : null;
-  const current = selected || liveId || (list[0] && list[0].id);
+  // A reason from the search itself wins; otherwise the overall status says how far indexing is.
+  const meaning = found && !['on', 'indexing'].includes(found.meaning) ? found.meaning : (status && status.meaning) || (found && found.meaning);
+  const line = meaningLine(meaning, status);
   return html`<div class="page wide">
     <div class="page-head">
       <div><h1 class="page-title">Meetings</h1><p class="page-sub">Calls transcribed as they happen, with who said what. Stored only on this computer.</p></div>
       <div class="row-flex">
         <button type="button" class="btn" title="Meetings settings: when Koli listens, summaries, the panel" onClick=${() => openSettingsSection('meetings')}><${Icon} name="sliders" />Meeting settings</button>
         <button type="button" class="btn" title="The templates the AI writes summaries from" onClick=${() => setView('templates')}><${Icon} name="doc" />Summary templates</button>
+        <button type="button" class="btn" title="Ask the AI about everything said in your meetings" onClick=${() => openAsk()}><${Icon} name="search" />Ask all meetings</button>
         ${!RUNNING.has(live.state) && html`<button type="button" class="btn pri" onClick=${() => call('meeting_start').catch((e) => toast(e.message, { kind: 'err' }))}>Start a meeting now</button>`}
       </div>
     </div>
@@ -309,26 +375,36 @@ export function MeetingsScreen({ route = 'meetings' } = {}) {
           <${Icon} name="search" />
           <input aria-label="Search meetings" placeholder="Search meetings" value=${query} dir="auto"
             onInput=${(e) => setQuery(e.currentTarget.value)}
-            onKeyDown=${(e) => { if (e.key === 'Escape') setQuery(''); }} />
+            onKeyDown=${(e) => {
+              if (e.key === 'Escape') setQuery('');
+              if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && query.trim()) { e.preventDefault(); openAsk(query.trim()); }
+            }} />
           ${query && html`<button type="button" class="btn ghost icon" aria-label="Clear search" onClick=${() => setQuery('')}><${Icon} name="x" size="sm" /></button>`}
         </label>
-        ${hits && html`<section class="card" style="overflow:hidden" aria-label="Search results">
-          ${hits.length === 0 && html`<div class="empty">No meeting mentions “${query.trim()}”.</div>`}
-          ${hits.map((h) => html`<button type="button" class="menu-item" style=${`display:block;width:100%;text-align:start;padding:12px 16px;border-top:1px solid var(--line)${current === h.id ? ';background:var(--sunk)' : ''}`} onClick=${() => openHit(h)}>
-            <div style="font-weight:600" dir="auto">${h.title}</div>
-            <div class="small muted">${when(h.started_at)} · <span class="mt-hit-where">${h.where}</span>${h.at != null ? ` · ${clock(h.at)}` : ''}</div>
-            ${h.where !== 'title' && html`<span class="mt-hit-snip" dir="auto">${h.snippet}</span>`}</button>`)}
+        ${current && html`<label class="row-flex small"><${Toggle} checked=${onlyThis} onChange=${setOnlyThis} label="Only this meeting" />Only this meeting</label>`}
+        ${line && html`<div class="small muted" role="status">${line}</div>`}
+        ${status && status.meaning === 'no_model' && html`<${MeaningModelCard} />`}
+        ${found && html`<section class="card" style="overflow:hidden" aria-label="Search results">
+          ${found.results.length === 0 && html`<div class="empty">${found.failed ? "Search didn't work. Try again." : `No meeting matches “${query.trim()}”.`}</div>`}
+          ${found.results.map((h) => html`<${SearchResult} hit=${h} current=${current} onOpen=${openAt} />`)}
         </section>`}
-        ${!hits && html`<section class="card" style="overflow:hidden" aria-label="Past meetings">
+        ${!found && html`<section class="card" style="overflow:hidden" aria-label="Past meetings">
           ${list.length === 0 && html`<div class="empty">No meetings yet.</div>`}
-          ${list.map((h) => html`<button type="button" class="menu-item" style=${`display:block;width:100%;text-align:start;padding:12px 16px;border-top:1px solid var(--line)${current === h.id ? ';background:var(--sunk)' : ''}`} onClick=${() => setSelected(h.id)}>
+          ${list.map((h) => html`<button type="button" class="menu-item" style=${`display:block;width:100%;text-align:start;padding:12px 16px;border-top:1px solid var(--line)${current === h.id ? ';background:var(--sunk)' : ''}`} onClick=${() => openAt(h.id, null)}>
             <div style="font-weight:600">${h.title}${liveId === h.id ? html` <span class="chip rec">Live</span>` : ''}</div>
             <div class="small muted">${when(h.started_at)} · ${clock(h.duration_s)} · ${h.speakers.join(', ')}</div>
             ${h.usage && h.usage.transcribed_by.length ? html`<div class="small muted">${modelsLine(h.usage.transcribed_by)} · ${money(h.usage.cost)}</div>` : ''}</button>`)}
         </section>`}
         <${KnownVoices} />
       </div>
-      ${current ? html`<${Transcript} id=${current} live=${liveId === current} focus=${focus} onDeleted=${() => { setSelected(null); reload(); }} />` : html`<div class="empty">Pick a meeting.</div>`}
+      ${asking ? html`<section class="card" style="min-width:0;overflow:hidden;display:flex;flex-direction:column;max-height:calc(100vh - 200px)" aria-label="Ask all meetings">
+          <div class="mt-head">
+            <div class="mt-title"><div class="mt-name">Ask all meetings</div></div>
+            <div class="mt-actions">${current && html`<button type="button" class="btn" onClick=${() => setAsking(null)}>Back to the meeting</button>`}</div>
+          </div>
+          <div style="display:flex;flex-direction:column;min-height:0;flex:1;padding:12px 18px 18px">
+            <${AskAll} key=${asking.n} initial=${asking.initial} onOpen=${openAt} /></div></section>`
+        : current ? html`<${Transcript} id=${current} live=${liveId === current} focus=${focus} onDeleted=${() => { setSelected(null); reload(); }} />` : html`<div class="empty">Pick a meeting.</div>`}
     </div>
   </div>`;
 }

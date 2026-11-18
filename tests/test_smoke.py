@@ -8785,9 +8785,11 @@ class MeetingSearchPageTests(unittest.TestCase):
         from koli.ui.bridge import Bridge
 
         class Svc:
-            def search(self, q):
-                return [{'id': 'm1', 'q': q}]
+            def search(self, q, meeting_id=None):
+                return {'results': [{'id': 'm1', 'q': q, 'in': meeting_id}], 'meaning': 'on'}
 
         class Host:
             ctx = type('C', (), {'meetings': Svc()})()
-        self.assertEqual(Bridge(Host()).meetings_search('budget'), {'ok': True, 'data': [{'id': 'm1', 'q': 'budget'}]})
+        bridge = Bridge(Host())
+        self.assertEqual(bridge.meetings_search('budget')['data']['results'], [{'id': 'm1', 'q': 'budget', 'in': None}])
+        self.assertEqual(bridge.meetings_search('budget', 'm9')['data']['results'][0]['in'], 'm9')

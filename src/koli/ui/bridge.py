@@ -730,11 +730,23 @@ class Bridge:
     def meetings_list(self):
         return self._meetings.list()
 
-    # Saved meetings holding every word of the query (title, speakers, summary,
-    # screenshot captions, transcript), with where it matched.
+    # Meetings found by the words of the query and by its meaning, each with where
+    # it matched: {results, meaning} where `meaning` says if the meaning part is
+    # there (on, indexing) or why not (off, loading, no_ollama, no_model).
+    # `meeting_id` limits the search to one meeting.
     @_api
-    def meetings_search(self, query):
-        return self._meetings.search(str(query or ''))
+    def meetings_search(self, query, meeting_id=None):
+        return self._meetings.search(str(query or ''), meeting_id=meeting_id or None)
+
+    # How far meaning search is: {meaning, indexed, total, model}, for the card on the Meetings screen.
+    @_api
+    def meetings_search_status(self):
+        return self._meetings.finder.status()
+
+    # Downloads the meaning model through Ollama (a background task; returns its id).
+    @_api
+    def meetings_search_download(self):
+        return self._meetings.finder.download()
 
     @_api
     def meeting_get(self, meeting_id):
@@ -845,6 +857,19 @@ class Bridge:
     @_api
     def meeting_chat_clear(self, meeting_id):
         self._meetings.chat_clear(str(meeting_id))
+
+    # Ask all meetings (docs/design/meeting-search.md): waits for the AI; returns {'messages'}.
+    @_api
+    def meetings_ask(self, question):
+        return self._meetings.finder.ask(str(question or ''))
+
+    @_api
+    def meetings_ask_history(self):
+        return self._meetings.finder.ask_history()
+
+    @_api
+    def meetings_ask_clear(self):
+        self._meetings.finder.ask_clear()
 
     # ── Summary templates (docs/design/meeting-summary.md) ───────────────────
 

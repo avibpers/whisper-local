@@ -8,6 +8,8 @@
 // ── Meeting summaries and templates (mock) ──────────────────────────────
 const summaries = {};
 const chats = {};      // meeting id -> the Chat tab's conversation
+const searchedBefore = new Set();   // queries the mock has answered once (the first answer says `loading`)
+let askHistory = [];              // the Ask all meetings conversation
 
 // The roster the app adds to a meeting: every voice by talk time, then the
 // names added by hand that never spoke.
@@ -695,17 +697,47 @@ export function createMock(emit) {
     meeting_forget_voice: (id) => { const had = voices.some((v) => v.id === id); voices = voices.filter((v) => v.id !== id); return ok(had); },
     meeting_continue_previous: () => { meeting = { ...meeting, notice: 'resumed', can_continue: false }; emitMeeting(); return ok(); },
     meeting_split: () => { meeting = { ...meeting, notice: 'new', can_split: false }; emitMeeting(); return ok(); },
-    // Search: every word in the title, speakers or the words said.
-    meetings_search: (q) => {
-      const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
-      return ok(Object.values(saved).flatMap((m) => {
-        const words = [m.title, ...m.speakers.map((s) => s.name), ...m.turns.map((t) => t.text)].join(' ').toLowerCase();
-        if (!terms.every((w) => words.includes(w))) return [];
-        const turn = m.turns.find((t) => t.text.toLowerCase().includes(terms[0]));
-        return [{ id: m.id, title: m.title, started_at: m.started_at, hits: 1, where: turn ? 'transcript' : 'title',
-          snippet: turn ? turn.text : m.title, at: turn ? turn.start : null }];
-      }));
+    // Search: every word in the title, speakers or the words said, as {results, meaning}.
+    // The first search for a new query says `loading` (words only), so the page's ask-again
+    // after 2 s can be checked; then the same words also come "by meaning" with a second place.
+    meetings_search: (q, meetingId = null) => {
+      const query = q.trim().toLowerCase();
+      const loading = !searchedBefore.has(query);
+      searchedBefore.add(query);
+      const terms = query.split(/\s+/).filter(Boolean);
+      const results = Object.values(saved).filter((m) => !meetingId || m.id === meetingId).flatMap((m) => {
+        const turns = m.turns.filter((t) => terms.every((w) => t.text.toLowerCase().includes(w)));
+        const inTitle = terms.every((w) => [m.title, ...m.speakers.map((s) => s.name)].join(' ').toLowerCase().includes(w));
+        if (!turns.length && !inTitle) return [];
+        const limit = meetingId ? 10 : 3;
+        const places = turns.slice(0, loading ? 1 : limit).map((t) => ({ where: 'transcript', snippet: t.text, at: t.start }));
+        if (!places.length) places.push({ where: 'title', snippet: m.title, at: null });
+        if (!loading && m.turns[1] && places.length < limit && !places.some((x) => x.at === m.turns[1].start)) {
+          places.push({ where: 'transcript', snippet: m.turns[1].text, at: m.turns[1].start });
+        }
+        return [{ id: m.id, title: m.title, started_at: m.started_at, by: loading ? ['words'] : ['words', 'meaning'], places }];
+      });
+      return ok({ results, meaning: loading ? 'loading' : 'on' });
     },
+    meetings_search_status: () => ok({ meaning: 'on', indexed: Object.keys(saved).length, total: Object.keys(saved).length, model: 'qwen3-embedding:0.6b' }),
+    // The model pull is a task of kind `model`, like the other downloads; the status turns `on` when it ends.
+    meetings_search_download: () => {
+      const id = runTask('Downloading the meaning model', 'model', 3);
+      setTimeout(() => emit('meeting_search', { meaning: 'on', indexed: 0, total: Object.keys(saved).length, model: 'qwen3-embedding:0.6b' }), 3200);
+      return ok(id);
+    },
+    // Ask all meetings: one canned answer after a moment, with a [1] reference to the first saved meeting.
+    meetings_ask_history: () => ok(askHistory.slice()),
+    meetings_ask_clear: () => { askHistory = []; return ok(null); },
+    meetings_ask: (question) => delay(900).then(() => {
+      const first = Object.values(saved)[0];
+      const at = new Date().toISOString().slice(0, 19);
+      const turn = first && first.turns[0];
+      askHistory = [...askHistory, { role: 'user', text: question, at },
+        { role: 'assistant', text: first ? `In the mock, every answer is this one: it was said in "${first.title}" [1], and nowhere else [2].` : 'No meetings in the mock.',
+          at, refs: first ? [{ n: 1, id: first.id, title: first.title, at: turn ? turn.start : 0 }] : [] }];
+      return ok({ messages: askHistory });
+    }),
     meetings_list: () => ok(Object.values(saved).map((m) => ({ id: m.id, title: m.title, source: m.source, started_at: m.started_at,
       ended_at: m.ended_at, duration_s: 2520, speakers: m.speakers.map((s) => s.name), turns: m.turns.length,
       usage: { cost: MOCK_MEETING_USAGE.cost, transcribed_by: MOCK_MEETING_USAGE.transcribed_by } }))),

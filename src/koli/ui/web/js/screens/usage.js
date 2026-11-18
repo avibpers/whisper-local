@@ -13,7 +13,7 @@ import { money, providerName, SettingRow, usePriceList } from './shared.js';
 
 // What each feature name in the ledger is called on screen.
 const FEATURES = { dictation: 'Dictation', meeting: 'Meeting transcription', summary: 'Meeting summary', chat: 'Meeting chat',
-  meetings: 'Meetings (AI)', polish: 'Polish', rewrite: 'Rewrite', practice: 'Practice', commands: 'AI actions' };
+  meeting_ask: 'Ask all meetings', meetings: 'Meetings (AI)', polish: 'Polish', rewrite: 'Rewrite', practice: 'Practice', commands: 'AI actions' };
 const featureName = (f) => FEATURES[f] || f;
 const minutes = (s) => (s >= 60 ? `${(s / 60).toFixed(s >= 600 ? 0 : 1)} min` : `${Math.round(s)} s`);
 const tokens = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n || 0));
