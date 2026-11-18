@@ -171,7 +171,7 @@ class MeetingService:
             is_busy=lambda: not isinstance(self._engine(), OnlineEngine) and not self.ctx.state_manager.is_idle(),
             tracker=self.tracker,
             language_provider=lambda: str(self._setting('meeting.language', 'auto') or 'auto'),
-            on_turn=self.session.add_turn, on_speaker=self.session.ensure_speaker,
+            on_turn=self._on_turn, on_speaker=self.session.ensure_speaker,
             on_pending=self._on_pending, on_behind=self.session.set_behind, keep_audio=self._keep_audio,
             name_at=self._meet_name_at)
         self.transcriber.start()
@@ -424,6 +424,17 @@ class MeetingService:
                             'mode': str(self._setting('meeting.detect', 'auto') or 'auto'), 'device': '', **meet})
         return out
 
+    # A turn from the transcriber. Yours gets the mark `heard` when your
+    # microphone was on in Google Meet the whole time (the extension reports
+    # its button): Koli hears you muted too, and what the call didn't hear
+    # must not reach her tile or the chat (docs/design/meet-participant.md).
+    def _on_turn(self, turn: dict):
+        m = self.session.meeting
+        code = (m.get('source') or {}).get('code') if m else ''
+        if turn.get('stream') == 'mic' and code and self.meet.unmuted_during(code, turn['t0'], turn['t1']):
+            turn = {**turn, 'heard': True}
+        self.session.add_turn(turn)
+
     # One batch from the extension (the meet-link thread). Answers with what
     # Koli is doing, which the extension's popup shows.
     def _meet_events(self, events: list) -> dict:
@@ -496,7 +507,8 @@ class MeetingService:
                 self.session.ensure_speaker(entry, meeting_id)
             stream = 'loopback'
         self.session.add_turn({'t0': caption['t0'] - CAPTION_LEAD_S, 't1': caption['t1'], 'stream': stream,
-                               'speaker': speaker, 'text': caption['text'], 'lang': '', 'meeting_id': meeting_id})
+                               'speaker': speaker, 'text': caption['text'], 'lang': '', 'meeting_id': meeting_id,
+                               'heard': True})   # Meet captioned it, so Meet carried it
 
     # The other person Meet saw talking over [t0, t1] of the live meeting
     # `meeting_id`, for the transcriber; None outside a Meet.

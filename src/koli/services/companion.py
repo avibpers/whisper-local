@@ -74,6 +74,9 @@ class CompanionService:
         self._say = ''                     # what she last said to the call, while it stays on her board
         self._say_until = 0.0
         self._said_at = float('-inf')
+        # She is (or was) in this meeting's call: from then on her notes are made
+        # only of what the call heard, since they are on her tile for everyone.
+        self._public = False
 
     # ── Settings ─────────────────────────────────────────────────────────────
 
@@ -182,6 +185,7 @@ class CompanionService:
                     self._leave_call()
                 self._forget(meeting_id)
                 if same_call:
+                    self._public = True
                     self._auto_tried = meeting_id
                     self._show_board(self._meeting())
                 self._publish_state()
@@ -203,10 +207,12 @@ class CompanionService:
         mode = self._mode()
         turns = len(m.get('turns', []))
         self._heard = min(self._heard, turns)       # the list can get shorter (echo removal, a split)
-        heard = brain.lines(m, first=self._heard)
+        new = brain.lines(m, first=self._heard)
         self._heard = turns
         if mode == 'active':
-            to_her = [row for row in heard if brain.spoken_to(row['text'], self._name())]
+            # Only words the call heard: your own aside to her with the microphone
+            # muted in Meet must not get an answer in front of everyone.
+            to_her = [row for row in new if row['heard'] and brain.spoken_to(row['text'], self._name())]
             if to_her:
                 self._answer_the_call(m, to_her[-1])
         if mode != 'off':
@@ -217,7 +223,7 @@ class CompanionService:
     def _update(self, m: dict, mode: str, force: bool):
         turns = len(m.get('turns', []))
         self._read = min(self._read, turns)
-        rows = brain.lines(m, first=self._read)
+        rows = brain.lines(m, first=self._read, heard_only=self._public)
         if not rows:
             return
         seconds = float(self._setting('meeting.companion.update_seconds', 45) or 45)
@@ -375,6 +381,7 @@ class CompanionService:
             if self._guest is not None and self._guest_state['state'] in GUEST_BUSY:
                 return
             owner = self._owner(m)
+            self._go_public()
             cell = {}
             guest = self._guest_factory(lambda state, detail='', progress=None: self._on_guest_state(cell.get('guest'), state, detail, progress),
                                         self._name(), self._announcement(m, owner))
@@ -385,6 +392,18 @@ class CompanionService:
             guest.show(self._view(m))
             guest.join(code, owner)
         self._publish_state()
+
+    # Her notes are about to be on a tile everyone sees. Notes made so far may
+    # hold what only Koli's own microphone heard, so they start over, from
+    # what the call heard, and stay that way for the rest of this meeting.
+    def _go_public(self):
+        if self._public:
+            return
+        self._public = True
+        self._notes = brain.empty_notes()
+        self._read = 0
+        self._updated_at = float('-inf')
+        self._queue_read()
 
     # "Take Koli out". She won't come back to this meeting by herself.
     def leave(self):
@@ -473,7 +492,7 @@ class CompanionService:
             return
         self._said_at = self._now()
         with for_meeting(m['id'], 'companion'):
-            said = brain.public_answer(self._notes, brain.lines(m, since=self._elapsed(m) - ANSWER_WINDOW_S),
+            said = brain.public_answer(self._notes, brain.lines(m, since=self._elapsed(m) - ANSWER_WINDOW_S, heard_only=True),
                                        row['text'], meeting_language(m), self._complete, self._parse)
         if guest.say(said):
             self._say, self._say_until = said, self._now() + SAY_SHOWN_S

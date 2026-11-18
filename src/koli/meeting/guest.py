@@ -103,6 +103,18 @@ JOIN = _button('join', "/^(Join now|Ask to join)$/.test(b.innerText.trim())")
 DIALOG_JOIN = _button('dialog_join', "b.closest('[role=\"dialog\"]') && b.innerText.trim() === 'Join now'")
 CHAT = _button('chat', "/chat with everyone/i.test(b.getAttribute('aria-label') || '')")
 
+# Her own microphone button and whether it is muted. Meet marks it with
+# data-is-muted, and its icon is "mic" or "mic_off" in every language
+# (measured on Meet's page, 2026-11-18).
+MIC = """/*probe:button:mic*/(() => {
+  const b = [...document.querySelectorAll('button[data-is-muted]')].find((b) =>
+    [...b.querySelectorAll('i, span')].some((e) => /^mic(_off)?$/.test(e.textContent.trim())));
+  if (!b) return null;
+  const r = b.getBoundingClientRect();
+  return r.width ? { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2),
+                     muted: b.getAttribute('data-is-muted') === 'true' } : null;
+})()"""
+
 
 # ── The frame ────────────────────────────────────────────────────────────────
 
@@ -449,9 +461,15 @@ class MeetGuest:
             elif asking_until is None and self._now() >= end:
                 raise _Failed(f"{self.name} pressed Join and the call did not open.")
 
-    # In the call: open the chat (it must be open to write later, and a
-    # hidden page doesn't open it), say who she is, then hide the page.
+    # In the call: mute her microphone (it only sends silence until she has a
+    # voice; muted, Meet shows it), open the chat (it must be open to write
+    # later, and a hidden page doesn't open it), say who she is, then hide
+    # the page. The mute comes after the join, so the way in stays as measured.
     def _settle_in(self, page, session):
+        mic = page.evaluate(MIC)
+        if mic and not mic.get('muted'):
+            self._hands.click(mic['x'], mic['y'])
+            self._wait(POLL_S)
         chat = page.evaluate(CHAT)
         if chat:
             self._hands.click(chat['x'], chat['y'])

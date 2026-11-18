@@ -430,6 +430,20 @@ class InCallTests(GuestCase):
         kinds = self.kinds()
         self.assertLess(kinds.index('eval:button:chat'), kinds.index('hide'))
 
+    def test_she_mutes_her_own_microphone_once_she_is_in(self):
+        # Her microphone sends silence; muted, Meet shows it and nobody wonders.
+        guest = self.make({**HAPPY, 'button:mic': {'x': 310, 'y': 621, 'muted': False}})
+        guest.join_now('abc-defg-hij', 'Noa')
+        self.assertIn((310, 621), self.presses())
+        kinds = self.kinds()
+        self.assertLess(kinds.index('eval:button:mic'), kinds.index('hide'))
+        self.assertLess(kinds.index('eval:button:join'), kinds.index('eval:button:mic'))   # after the join, not before
+
+    def test_a_microphone_already_muted_is_left_alone(self):
+        guest = self.make({**HAPPY, 'button:mic': {'x': 310, 'y': 621, 'muted': True}})
+        guest.join_now('abc-defg-hij', 'Noa')
+        self.assertNotIn((310, 621), self.presses())
+
     def test_she_says_who_she_is_once_when_asked_to(self):
         guest = self.make(announce="Hi, I'm Koli, Noa's AI assistant.")
         guest.join_now('abc-defg-hij', 'Noa')
