@@ -541,11 +541,13 @@ SCHEMA = [
        choices=[['off', 'Just listen'], ['insights', 'Insights'], ['active', 'Active']],
        help='Insights: while a meeting runs Koli keeps short notes in the meeting panel (the topic now, decisions, '
             'tasks, open questions) and answers "What should I answer?" and "Catch me up". Active: also shows an '
-            'answer you could give when someone else asks a question. Both call the AI model about once a minute. '
-            'Just listen writes the transcript only.'),
+            'answer you could give when someone else asks a question, and when Koli sits in the call she answers on '
+            'her tile: whoever speaks to her by name, and anything you say when you are alone with her. Both call '
+            'the AI model about once a minute. Just listen writes the transcript only.'),
     _S('ai.companion.model', 'Notes and answers with', 'meetings', 'ai_model', group='Koli in the meeting',
-       help='The AI model for her notes and answers during a meeting. A fast, cheap one fits: it is asked about '
-            'once a minute. Empty uses the default model (Settings › AI).'),
+       help='The AI model for her notes and answers during a meeting. A fast one fits: it is asked about once a '
+            'minute, and when you talk with her in a call its speed is how long you wait for her answer (a small '
+            'local model starts within a second or two). Empty uses the default model (Settings › AI).'),
     _S('meeting.companion.update_seconds', 'Update the notes every', 'meetings', 'number', group='Koli in the meeting',
        min=20, max=300, step=5, unit='seconds',
        help='The least time between two updates. An update also needs a few new sentences; a silent meeting costs nothing.'),
@@ -561,10 +563,9 @@ SCHEMA = [
        help='The name other people see on her tile.'),
     _S('meeting.companion.announce', 'She says who she is', 'meetings', 'toggle', group='Koli in the meeting',
        help="When she joins she writes one line in the call's chat: that she is your AI assistant and shows notes on her tile."),
-    _S('meeting.companion.chat', 'She answers in the chat', 'meetings', 'toggle', group='Koli in the meeting',
-       warn="Her answers are written in the call's chat, for everyone.",
-       help='In Active mode, while she is in the call: when someone speaks to her by name ("Koli, what did we decide?") '
-            'she answers in the chat, from this meeting only, at most once every 20 seconds.'),
+    _S('meeting.companion.chat', 'Her answers go in the chat too', 'meetings', 'toggle', group='Koli in the meeting',
+       help="In Active mode, in the call, she answers on her tile. With this on she also writes each answer in the "
+            "call's chat, where it stays after her tile has moved on."),
     # Search the meetings by meaning (docs/design/meeting-search.md); Ollama's address is on its AI card.
     _S('meeting.search.meaning', 'Search by meaning', 'meetings', 'toggle', group='Search',
        help='The search box finds a meeting by what it is about, not only by the words you type. '

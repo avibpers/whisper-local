@@ -760,8 +760,9 @@ meeting: # Meetings: calls in Discord, Zoom, Teams and the browser
     companion:
         # off = just listen (the transcript only, no AI calls);
         # insights = notes while the meeting runs: the topic now, decisions,
-        # tasks, open questions; active = insights, and an answer you could
-        # give when someone else asks a question
+        # tasks, open questions; active = insights, an answer you could give
+        # when someone else asks a question, and in a call she sits in she
+        # answers on her tile (by name, or anything you say alone with her)
         mode: 'off'
         # The least time between two updates of the notes, in seconds
         update_seconds: 45
@@ -774,8 +775,8 @@ meeting: # Meetings: calls in Discord, Zoom, Teams and the browser
         # She writes one line in the call's chat when she joins, saying she
         # is your AI assistant
         announce: true
-        # In active mode, in the call: she answers in the chat when someone
-        # speaks to her by name, from this meeting only
+        # In active mode, in the call: her answers are also written in the
+        # call's chat
         chat: false
     # An online model for meetings (provider/model, like
     # whisper.online_model), or empty for local Whisper. Each meeting

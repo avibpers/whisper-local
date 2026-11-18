@@ -58,7 +58,8 @@ def _clock(seconds) -> str:
 # answers for the turn: True, False, or None when it can't be known yet
 # (was your microphone on in Meet? Koli hears it muted too). With no
 # `heard` to ask, they weren't. `heard_only` keeps the rows that were: what
-# anything shown or said to the call is made from. `index` is the turn's place.
+# anything shown or said to the call is made from. `index` is the turn's
+# place; `captioned`: the turn is a finished caption of Meet's.
 def lines(m: dict, first: int = 0, since: float = 0.0, heard: Optional[Callable] = None,
           heard_only: bool = False) -> list:
     names = {s['id']: s.get('name') or s['id'] for s in (m or {}).get('speakers', [])}
@@ -77,7 +78,8 @@ def lines(m: dict, first: int = 0, since: float = 0.0, heard: Optional[Callable]
         if heard_only and was_heard is not True:
             continue
         name = 'You' if you else names.get(speaker) or ('Speaker ?' if speaker == '?' else str(speaker or 'Someone'))
-        rows.append({'at': t.get('start', 0), 'name': name, 'you': you, 'text': text, 'heard': was_heard, 'index': index})
+        rows.append({'at': t.get('start', 0), 'name': name, 'you': you, 'text': text, 'heard': was_heard, 'index': index,
+                     'captioned': bool(t.get('heard'))})
     return rows
 
 
@@ -178,11 +180,11 @@ You get the last minute and a half of the transcript. Find the one task being ta
 Return JSON: {{"task": "the task, one line, starting with a verb", "owner": "who will do it, or null"}}.
 """ + RULES
 
-PUBLIC_PROMPT = """You are Koli, an AI assistant taking notes in a meeting. Someone in the meeting spoke to you.
-Your answer is shown to everyone in the call, so it must hold nothing but what was said in this meeting.
-You get the notes so far, the last minutes of the transcript, and what was said to you.
-Return JSON: {{"answer": "your answer, at most three short sentences"}}. If the meeting doesn't tell, say so in one sentence.
-""" + RULES
+TALK_PROMPT = """You are Koli, an AI assistant sitting in a video call as a participant of your own. You have no voice yet: what you answer appears as text on your video tile, for everyone in the call to read.{owner}
+Someone just spoke to you. Answer them directly, in at most three short sentences, in the language they spoke.
+Use what was said in this meeting, and your general knowledge for general questions. You know nothing about these people beyond this meeting: never guess private details about anyone.
+Their words reach you through speech-to-text, which garbles some of them and may write your name as Coley, Collie or קולי. If you can't tell what was asked, say so in a few words and ask them to say it again.
+Plain words only: no markdown, no lists, no quotation marks around the answer."""
 
 
 # A JSON object out of the model's words: plain, in a code fence, or inside prose.
@@ -278,20 +280,47 @@ def task_from_talk(rows: list, language: str, complete: Callable, parse: Optiona
     return {'task': _text(got.get('task')), 'owner': _text(got.get('owner'), 40) or None}
 
 
-# What Koli answers when someone in the call speaks to her. It goes to
-# everyone, so the model sees this meeting only, never the owner's others,
-# and the caller passes only rows the call heard (lines(..., heard_only=True)).
-def public_answer(notes: dict, rows: list, question: str, language: str, complete: Callable,
-                  parse: Optional[Callable] = None) -> str:
-    # Of the notes, only what her board shows anyway: not the summary lines,
-    # not a question put to the owner or the answer suggested to him.
+# Of the notes, only what her board shows anyway: not the summary lines, not
+# a question put to the owner or the answer suggested to him.
+def _public_notes_part(notes: dict) -> str:
     shown = public_view(notes, '')
-    public_notes = "The notes so far (JSON):\n" + json.dumps(
+    return "The notes so far (JSON):\n" + json.dumps(
         {field: shown[field] for field in ('topic', 'decisions', 'tasks', 'questions')}, ensure_ascii=False)
-    got = _ask_model(PUBLIC_PROMPT, [public_notes, "The last minutes:\n" + transcript(rows),
-                                     "What was said to you:\n" + _text(question, 600)], language, complete, parse,
-                     usable=lambda a: bool(_text(a.get('answer'))), problem="The AI had no answer")
-    return _text(got.get('answer'), SAY_MAX)
+
+
+# The words on her tile: one line of plain text, without the marks a model
+# likes to add, cut to what a tile holds.
+def tidy_say(text: str) -> str:
+    text = ' '.join(str(text or '').replace('**', '').replace('`', '').split())
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in '"\'':
+        text = text[1:-1].strip()
+    return text[:SAY_MAX]
+
+
+# What Koli says back to someone in the call who spoke to her. It goes on
+# her tile for everyone, so the model gets only the public part of the
+# notes, the rows the call heard (the caller passes lines(..., heard_only=
+# True)) and the talk with her so far ([{'who', 'text'}], her own answers
+# among them: they are in no transcript). `on_text(piece)` gets the words as
+# the model writes them. Plain text, not JSON: it is shown as it comes.
+def reply(notes: dict, rows: list, talk: list, who: str, text: str, language: str, complete: Callable,
+          on_text: Optional[Callable] = None, owner: str = '') -> str:
+    owner = _text(owner, 40)
+    system = TALK_PROMPT.format(owner=f' You work for {owner}.' if owner else '')
+    parts = [_public_notes_part(notes)]
+    if rows:
+        parts.append("The last minutes of the meeting:\n" + transcript(rows))
+    if talk:
+        parts.append("Your talk with them so far:\n" + '\n'.join(f"{t['who']}: {t['text']}" for t in talk))
+    parts.append(f"Said to you now by {_text(who, 40) or 'someone'}:\n{_text(text, 600)}")
+    messages = [{'role': 'system', 'content': system}, {'role': 'user', 'content': '\n\n'.join(parts)}]
+    result = complete(FEATURE, messages, json=False, on_text=on_text)
+    if not getattr(result, 'ok', False):
+        raise CompanionError(getattr(result, 'error', '') or 'The AI did not answer')
+    said = tidy_say(result.text)
+    if not said:
+        raise CompanionError("The AI had no answer")
+    return said
 
 
 # ── What others may see ──────────────────────────────────────────────────────
@@ -334,5 +363,5 @@ def spoken_to(text: str, name: str = 'Koli') -> bool:
 
 __all__ = ['ALIASES', 'CompanionError', 'FEATURE', 'MAX_DECISIONS', 'MAX_QUESTIONS', 'MAX_SUMMARY', 'MAX_TASKS',
            'MIN_NEW_WORDS', 'MODES', 'NEW_TEXT_CHARS', 'PUBLIC_FIELDS', 'SAY_MAX', 'answer', 'catch_up', 'clean_notes',
-           'empty_notes', 'lines', 'public_answer', 'public_view', 'spoken_to', 'task_from_talk', 'transcript', 'update',
+           'empty_notes', 'lines', 'public_view', 'reply', 'spoken_to', 'task_from_talk', 'tidy_say', 'transcript', 'update',
            'words']

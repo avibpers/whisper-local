@@ -16,7 +16,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
   notes to everyone: the topic, decisions, tasks, open questions, never your private
   answers, and only what the call itself heard (not words your microphone picked up
   while muted in Meet). She says who she is in the chat, can send a card's text to the chat on your
-  click, and in Active mode can answer there when someone speaks to her by name. Her
+  click. In Active mode she answers on her tile, as soon as you pause: whoever speaks to
+  her by name, and anything you say when the call is just you and her. Her words appear
+  as she writes them, she remembers the conversation, and may also write the answer in
+  the chat (a setting). Her
   own browser (Chrome for Testing, 215 MB) is downloaded the first time and closes
   with Koli. Windows only for now; Meet sometimes refuses a guest, so she tries three
   times and says so.

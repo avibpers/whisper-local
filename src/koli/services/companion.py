@@ -6,6 +6,7 @@
 # a Google Meet call (meeting/guest.py). The panel hears 'meeting_companion'.
 # Design: docs/design/meet-participant.md.
 
+import collections
 import logging
 import queue
 import threading
@@ -24,9 +25,14 @@ TOPIC = 'meeting_companion'
 MAX_CARDS = 6
 ANSWER_WINDOW_S = 180      # the talk an answer is drawn from
 TASK_WINDOW_S = 90         # the talk a new task is found in
-SAY_GAP_S = 20             # the least time between two chat answers of hers
+SAY_GAP_S = 2.0            # the least time between two answers of hers
 SAY_SHOWN_S = 60           # how long what she said stays on her board
-IDLE_S = 5.0               # with nothing new, how often the worker looks whether an update is due
+IDLE_S = 1.0               # how often the worker listens for a pause in what is being said to her
+READ_EVERY = 5             # every so many idle looks, whether the notes are due
+PAUSE_S = 1.2              # a caption unchanged this long: the speaker paused, she may answer
+STREAM_EVERY_S = 0.4       # her tile is redrawn this often while her words come in
+TALK_KEEP = 12             # lines of her talk with the call that the model sees again
+THINKING = '…'             # on her tile from the moment she starts on an answer
 NO_MODEL = "Choose an AI model in Settings › AI first"
 NO_MEETING = "No meeting is running"
 GUEST_BUSY = ('installing', 'starting', 'joining', 'asking', 'in_call', 'refused')
@@ -78,6 +84,8 @@ class CompanionService:
         self._say = ''                     # what she last said to the call, while it stays on her board
         self._say_until = 0.0
         self._said_at = float('-inf')
+        self._talk = collections.deque(maxlen=TALK_KEEP)   # her talk with the call: [{'who', 'text'}], her answers too
+        self._answered = {}                # caption block id -> its words she already took in
         # She is (or was) in this meeting's call: from then on her notes are made
         # only of what the call heard, since they are on her tile for everyone.
         self._public = False
@@ -146,12 +154,15 @@ class CompanionService:
     # ── The worker ───────────────────────────────────────────────────────────
 
     def _loop(self):
+        idle = 0
         while not self._closed:
             try:
-                job = self._jobs.get(timeout=IDLE_S)
+                self._run(self._jobs.get(timeout=IDLE_S))
             except queue.Empty:
-                job = ('read',)
-            self._run(job)
+                idle += 1
+                if idle % READ_EVERY == 0:
+                    self._run(('read',))
+            self._run(('listen',))
 
     # Runs one waiting job; False when there was none. For tests.
     def step(self) -> bool:
@@ -170,6 +181,8 @@ class CompanionService:
                 self._meeting_changed(job[1], job[2])
             elif kind == 'auto_join':
                 self._auto_join()
+            elif kind == 'listen':
+                self.listen()
             elif kind == 'read':
                 with self._lock:
                     self._read_queued = False
@@ -238,9 +251,10 @@ class CompanionService:
         # muted in Meet must not get an answer in front of everyone.
         new, self._heard = self._public_rows(m, self._heard)
         if mode == 'active':
-            to_her = [row for row in new if brain.spoken_to(row['text'], self._name())]
+            # A finished caption of Meet's was already heard while it was open (listen).
+            to_her = [row for row in new if not row['captioned'] and self._to_her(m, row['text'], row['you'])]
             if to_her:
-                self._answer_the_call(m, to_her[-1])
+                self._reply(m, self._owner(m) or 'You' if to_her[-1]['you'] else to_her[-1]['name'], to_her[-1]['text'])
         if mode != 'off':
             self._update(m, mode, force=False)
 
@@ -519,23 +533,82 @@ class CompanionService:
         if not guest.say(card['text']):
             raise ValueError("The message was not sent")
 
-    # Someone spoke to her by name. In Active mode, with the chat allowed and
-    # her in the call, she answers there: from this meeting only, not more
-    # often than every SAY_GAP_S.
-    def _answer_the_call(self, m: dict, row: dict):
+    # ── Talking with her in the call ─────────────────────────────────────────
+    # In Active mode, while she is in the call, she answers on her tile: a
+    # line that speaks to her by name, and when you are alone with her in the
+    # call, anything you say. With meeting.companion.chat the answer is
+    # written in the chat too.
+
+    # Just you and her in the call (Meet's people list has nobody else).
+    def _alone(self, m: dict) -> bool:
+        call = self._meetings.meet.call(self._code(m)) if self._code(m) else None
+        people = (call or {}).get('people') or []
+        return any(p.get('self') for p in people) and not any(not p.get('self') for p in people)
+
+    def _to_her(self, m: dict, text: str, yours: bool) -> bool:
+        return brain.spoken_to(text, self._name()) or (yours and self._alone(m))
+
+    def _can_talk(self) -> bool:
         guest = self._guest
-        if (not self._setting('meeting.companion.chat', False) or guest is None or not guest.in_call
-                or self._now() - self._said_at < SAY_GAP_S or not self._ai_ready()):
+        return (self._mode() == 'active' and guest is not None and guest.in_call
+                and self._meetings.session.state == 'live')
+
+    # Meet closes a caption about 8 seconds after the speaker stops, and only
+    # then is it a line of the transcript. She looks at the captions still
+    # open instead, every second: words to her that haven't changed for
+    # PAUSE_S are answered now. A caption that grows later is answered for
+    # its new words. (Captions are heard by the call by their nature.)
+    def listen(self):
+        m = self._meeting()
+        if not m or not self._can_talk() or not self._code(m):
+            return
+        now = self._now()
+        for block in self._meetings.meet.open_captions(self._code(m))[-2:]:
+            text = ' '.join(str(block.get('text') or '').split())
+            taken = self._answered.get(block['id'], '')
+            if not text or text == taken or now - block['t1'] < PAUSE_S:
+                continue
+            fresh = text[len(taken):].strip() if taken and text.startswith(taken) else text
+            self._answered[block['id']] = text
+            if fresh and self._to_her(m, fresh, bool(block.get('self'))):
+                self._reply(m, (self._owner(m) or 'You') if block.get('self') else block['name'], fresh)
+        for block_id in list(self._answered)[:-20]:
+            del self._answered[block_id]
+
+    # Her answer to `text`, said by `who`: three dots on her tile at once,
+    # then her words as the model writes them, then the whole answer for
+    # SAY_SHOWN_S. Drawn only from what the call heard.
+    def _reply(self, m: dict, who: str, text: str):
+        guest = self._guest
+        if not self._can_talk() or self._now() - self._said_at < SAY_GAP_S or not self._ai_ready():
             return
         self._said_at = self._now()
-        with for_meeting(m['id'], 'companion'):
-            said = brain.public_answer(self._notes, brain.lines(m, since=self._elapsed(m) - ANSWER_WINDOW_S,
-                                                              heard=self._heard_fn(m), heard_only=True),
-                                       row['text'], meeting_language(m), self._complete, self._parse)
-        if guest.say(said):
-            self._say, self._say_until = said, self._now() + SAY_SHOWN_S
+        self._say, self._say_until = THINKING, self._now() + SAY_SHOWN_S
+        self._show_board(m)
+        shown = {'text': '', 'at': float('-inf')}
+
+        def on_text(piece):
+            shown['text'] += str(piece or '')
+            if self._now() - shown['at'] >= STREAM_EVERY_S and brain.tidy_say(shown['text']):
+                shown['at'] = self._now()
+                self._say = brain.tidy_say(shown['text'])
+                self._show_board(m)
+        rows = brain.lines(m, since=self._elapsed(m) - ANSWER_WINDOW_S, heard=self._heard_fn(m), heard_only=True)
+        try:
+            with for_meeting(m['id'], 'companion'):
+                said = brain.reply(self._notes, rows, list(self._talk), who, text, meeting_language(m), self._complete,
+                                   on_text=on_text, owner=self._owner(m))
+        except CompanionError:
+            self._say = ''
             self._show_board(m)
-            self._card('said', f"{self._name()} answered {row['name']} in the chat", said, [])
+            raise
+        self._say, self._say_until = said, self._now() + SAY_SHOWN_S
+        self._show_board(m)
+        self._talk.append({'who': who, 'text': text})
+        self._talk.append({'who': self._name(), 'text': said})
+        if self._setting('meeting.companion.chat', False):
+            guest.say(said)
+        self._card('said', f"{self._name()} answered {who}", said, [])
 
     # ── What the panel gets ──────────────────────────────────────────────────
 
