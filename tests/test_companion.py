@@ -303,9 +303,47 @@ class ActionTests(unittest.TestCase):
         with self.assertRaises(CompanionError):
             companion.task_from_talk(self.rows, 'en', FakeAI({'task': '', 'owner': None}))
 
-    def reply(self, ai, **more):
+    def decide(self, ai, **more):
         return companion.reply(more.pop('notes', NOTES), self.rows, more.pop('talk', []), more.pop('who', 'Eran'),
                                more.pop('text', 'Koli, what did we decide?'), 'en', ai, **more)
+
+    def reply(self, ai, **more):
+        kind, said = self.decide(ai, **more)
+        self.assertEqual(kind, 'answer')
+        return said
+
+    def test_the_model_may_wait_for_the_rest_of_the_sentence(self):
+        # "I have a few questions for Koli, in which year" got an answer of its own (2026-11-18).
+        for words in ('[wait]', ' [WAIT] ', '[wait] the sentence is not finished'):
+            self.assertEqual(self.decide(FakeAI(words), stopped=False), ('wait', ''))
+
+    def test_the_model_may_stay_out_of_what_is_not_for_her(self):
+        self.assertEqual(self.decide(FakeAI('[skip]')), ('skip', ''))
+        self.assertEqual(self.decide(FakeAI('[Skip] they are talking to someone else')), ('skip', ''))
+
+    def test_the_model_is_told_how_to_choose(self):
+        ai = FakeAI('In 1948.')
+        self.decide(ai)
+        system = ai.calls[0]['messages'][0]['content']
+        self.assertIn('[wait]', system)
+        self.assertIn('[skip]', system)
+
+    def test_the_model_is_told_whether_the_speaker_stopped_and_who_is_there(self):
+        ai = FakeAI('In 1948.')
+        self.decide(ai, stopped=False, alone=True)
+        said = ai.said()
+        self.assertIn('paused', said)
+        self.assertIn('only you and', said)
+        ai = FakeAI('In 1948.')
+        self.decide(ai, stopped=True, alone=False)
+        said = ai.said()
+        self.assertIn('has stopped talking', said)
+        self.assertIn('other people in the call', said)
+
+    def test_a_speaker_who_stopped_is_never_kept_waiting(self):
+        # When they have stopped, [wait] makes no sense: it is nothing to answer.
+        self.assertEqual(self.decide(FakeAI('[wait]'), stopped=True), ('skip', ''))
+
 
     def test_reply_is_plain_words_for_her_tile(self):
         ai = FakeAI('  "We decided to ship on **Thursday**."  ')
@@ -1161,6 +1199,110 @@ class ServiceGuestTests(ServiceCase):
             self.assertIn('Koli, are you there?', said)
             self.assertNotIn('FIRST MEETING ANSWER', said)
             self.assertNotIn('secret plan', said)
+
+    def test_half_a_sentence_is_not_answered_and_the_whole_one_is_answered_once(self):
+        # Seen live: one question got three answers, one per breath.
+        self.make('[wait]', 'In 1948.', mode='active')
+        self.start()
+        self.alone()
+        self.svc.join()
+        self.caption('b1', 'I have a few questions for Koli in which year', ago=1.6)
+        self.svc.listen()
+        self.assertEqual(self.cards('said'), [])
+        self.assertEqual(self.guests[0].views[-1]['say'], '')            # nothing stays on her tile
+        self.svc.listen()
+        self.assertEqual(len(self.ai.calls), 1)                         # the same words are not asked about twice
+        self.t += 4
+        self.caption('b1', 'I have a few questions for Koli in which year was the state founded', ago=1.6)
+        self.svc.listen()
+        self.assertEqual(len(self.cards('said')), 1)
+        self.assertIn('Said to you now by Noa:\nI have a few questions for Koli in which year was the state founded', self.ai.said())
+
+    def test_once_the_speaker_has_stopped_the_waiting_words_are_looked_at_again(self):
+        self.make('[wait]', 'Which year do you mean?', mode='active')
+        self.start()
+        self.alone()
+        self.svc.join()
+        self.caption('b1', 'Koli in which year', ago=1.6)
+        self.svc.listen()
+        self.t += 2
+        self.caption('b1', 'Koli in which year', ago=3.6)               # nothing more came
+        self.svc.listen()
+        self.assertEqual(len(self.cards('said')), 1)
+        self.assertIn('has stopped talking', self.ai.said())
+        self.svc.listen()
+        self.assertEqual(len(self.ai.calls), 2)
+
+    def test_words_that_are_not_for_her_get_nothing(self):
+        # Seen live: alone with her in the call, speaking to someone else in the room.
+        self.make('[skip]', 'Yes, I am here.', mode='active')
+        self.start()
+        self.alone()
+        self.svc.join()
+        self.caption('b1', 'come for two minutes before I go to sleep', ago=1.6)
+        self.svc.listen()
+        self.assertEqual(self.cards('said'), [])
+        self.assertEqual(self.guests[0].views[-1]['say'], '')
+        self.t += 5
+        self.caption('b1', 'come for two minutes before I go to sleep Koli are you there', ago=1.6)
+        self.svc.listen()
+        self.assertIn('Said to you now by Noa:\nKoli are you there', self.ai.said())   # the skipped words are behind her
+        self.assertEqual(len(self.cards('said')), 1)
+
+    def test_the_tags_never_show_on_her_tile(self):
+        self.make('[wait] the sentence is not finished', mode='active')
+        self.start()
+        self.alone()
+        self.svc.join()
+        self.caption('b1', 'Koli in which year', ago=1.6)
+        self.svc.listen()
+        self.assertFalse([v['say'] for v in self.guests[0].views if '[' in v['say'] or 'sentence' in v['say']])
+
+    def test_a_follow_up_from_the_one_she_just_answered_needs_no_name(self):
+        # With other people in the call she waits for her name, but not in the middle of a talk with someone.
+        self.make('In 1948.', 'In May.', 'x', mode='active')
+        self.start()
+        self.svc.join()
+        self.meetings.meet.calls['abc-defg-hij']['people'] = [{'id': '1', 'name': 'Noa Levi', 'self': True},
+                                                             {'id': '2', 'name': 'Dana', 'self': False}]
+        self.caption('b1', 'Koli when was the state founded', ago=1.6, mine=False)
+        self.svc.listen()
+        self.t += 10
+        self.caption('b2', 'and in which month', ago=1.6, mine=False)
+        self.svc.listen()
+        self.assertEqual(len(self.cards('said')), 2)
+        self.t += 120
+        self.caption('b3', 'so the price is twenty dollars', ago=1.6, mine=False)
+        self.svc.listen()
+        self.assertEqual(len(self.ai.calls), 2)                        # long after: her name again
+
+    def test_a_word_or_two_in_a_pause_is_not_put_to_the_model(self):
+        # "Koli" and a breath: the rest is coming. Asked about only once the speaker has stopped.
+        self.make('Yes?', mode='active')
+        self.start()
+        self.alone()
+        self.svc.join()
+        self.caption('b1', 'Koli', ago=1.6)
+        self.svc.listen()
+        self.assertEqual(self.ai.calls, [])
+        self.t += 2
+        self.caption('b1', 'Koli', ago=3.6)
+        self.svc.listen()
+        self.assertEqual(len(self.ai.calls), 1)
+
+    def test_each_decision_is_logged_without_the_words(self):
+        self.make('In 1948.', mode='active')
+        self.start()
+        self.alone()
+        self.svc.join()
+        self.caption('b1', 'when was the state founded', ago=1.6)
+        with self.assertLogs('koli.services.companion', level='INFO') as logs:
+            self.svc.listen()
+        line = ' '.join(logs.output)
+        self.assertIn('answer', line)
+        self.assertIn('5 words', line)
+        self.assertNotIn('founded', line)
+        self.assertNotIn('1948', line)
 
     def test_her_words_appear_on_the_tile_as_they_come(self):
         self.make('The state was founded in 1948, in the month of May.', mode='active')

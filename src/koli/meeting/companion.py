@@ -181,10 +181,24 @@ Return JSON: {{"task": "the task, one line, starting with a verb", "owner": "who
 """ + RULES
 
 TALK_PROMPT = """You are Koli, an AI assistant sitting in a video call as a participant of your own. You have no voice yet: what you answer appears as text on your video tile, for everyone in the call to read.{owner}
-Someone just spoke to you. Answer them directly, in at most three short sentences, in the language they spoke.
-Use what was said in this meeting, and your general knowledge for general questions. You know nothing about these people beyond this meeting: never guess private details about anyone.
-Their words reach you through speech-to-text, which garbles some of them and may write your name as Coley, Collie or קולי. If you can't tell what was asked, say so in a few words and ask them to say it again.
-Plain words only: no markdown, no lists, no quotation marks around the answer."""
+Words that may be for you were just said. You get them as speech-to-text wrote them: some words are garbled, there is no punctuation, and your name may be written Coley, Collie or קולי.
+
+First decide which of three things to do, and do exactly one:
+
+1. [wait] - reply with exactly this when the sentence is not finished yet: it stops in the middle, or it only announces that something is coming, or it is only your name. An answer now would cut in. Never fill the gap with "I'm listening", "go ahead" or "yes?": that is [wait].
+   "I have a few questions for Koli" -> [wait]
+   "Koli in which year" -> [wait]
+   "what would you suggest I do for" -> [wait]
+
+2. [skip] - reply with exactly this when the words are not for you. Among other people, speak only when someone speaks to you. Also when you are alone with one person, they may be talking to somebody in their room or on the phone: a request only a person in the room could do (come here, look at my screen, are you at your computer, bring me something) is not for you. When you can't tell whether it is for you, [skip].
+   "come here for two minutes before I go to sleep" -> [skip]
+   "hi Viktor how are you" -> [skip]
+   "so I think we should ship on Thursday" -> [skip]
+
+3. Otherwise answer: directly, in at most three short sentences, in the language they spoke. Use what was said in this meeting, and your general knowledge for general questions. You know nothing about these people beyond this meeting: never guess private details about anyone. If the words are for you but you can't make out what is asked, say so in a few words and ask them to say it again. Plain words only: no markdown, no lists, no quotation marks around the answer.
+   "Koli in which year was the state of Israel founded" -> In 1948.
+
+When you are told the speaker has stopped talking, [wait] is no longer possible: answer what you can make of it, or [skip]."""
 
 
 # A JSON object out of the model's words: plain, in a code fence, or inside prose.
@@ -297,30 +311,44 @@ def tidy_say(text: str) -> str:
     return text[:SAY_MAX]
 
 
-# What Koli says back to someone in the call who spoke to her. It goes on
-# her tile for everyone, so the model gets only the public part of the
-# notes, the rows the call heard (the caller passes lines(..., heard_only=
-# True)) and the talk with her so far ([{'who', 'text'}], her own answers
-# among them: they are in no transcript). `on_text(piece)` gets the words as
-# the model writes them. Plain text, not JSON: it is shown as it comes.
+# What Koli says back to someone in the call, if anything: ('answer', her
+# words), ('wait', '') when the speaker only paused in the middle of a
+# sentence, ('skip', '') when the words aren't for her. The model judges:
+# a pause in a caption is not the end of a sentence, and words said near
+# her are not always said to her. `stopped`: the speaker has gone quiet, so
+# there is nothing to wait for. `alone`: the call is just her and the speaker.
+# An answer goes on her tile for everyone, so the model gets only the
+# public part of the notes, the rows the call heard (the caller passes
+# lines(..., heard_only=True)) and the talk with her so far ([{'who',
+# 'text'}], her own answers among them: they are in no transcript).
+# `on_text(piece)` gets the words as the model writes them. Plain text.
 def reply(notes: dict, rows: list, talk: list, who: str, text: str, language: str, complete: Callable,
-          on_text: Optional[Callable] = None, owner: str = '') -> str:
+          on_text: Optional[Callable] = None, owner: str = '', alone: bool = False, stopped: bool = True) -> tuple:
     owner = _text(owner, 40)
+    who = _text(who, 40) or 'someone'
     system = TALK_PROMPT.format(owner=f' You work for {owner}.' if owner else '')
     parts = [_public_notes_part(notes)]
     if rows:
         parts.append("The last minutes of the meeting:\n" + transcript(rows))
     if talk:
         parts.append("Your talk with them so far:\n" + '\n'.join(f"{t['who']}: {t['text']}" for t in talk))
-    parts.append(f"Said to you now by {_text(who, 40) or 'someone'}:\n{_text(text, 600)}")
+    parts.append("The situation: "
+                 + (f"there are only you and {who} in the call. " if alone else "there are other people in the call. ")
+                 + (f"{who} has stopped talking." if stopped else f"{who} has paused; more words may still come."))
+    parts.append(f"Said to you now by {who}:\n{_text(text, 600)}")
     messages = [{'role': 'system', 'content': system}, {'role': 'user', 'content': '\n\n'.join(parts)}]
     result = complete(FEATURE, messages, json=False, on_text=on_text)
     if not getattr(result, 'ok', False):
         raise CompanionError(getattr(result, 'error', '') or 'The AI did not answer')
+    first = str(result.text or '').strip().lower()
+    if first.startswith('[wait]'):
+        return ('skip', '') if stopped else ('wait', '')     # nobody is left to wait for
+    if first.startswith('[skip]'):
+        return ('skip', '')
     said = tidy_say(result.text)
     if not said:
         raise CompanionError("The AI had no answer")
-    return said
+    return ('answer', said)
 
 
 # ── What others may see ──────────────────────────────────────────────────────

@@ -247,19 +247,30 @@ In Active mode, while she is in the call:
   say is to her.
 - **When.** Meet closes a caption about 8 seconds after the speaker stops, and
   only then is it a line of the transcript. The service looks at the captions
-  still open every second (`MeetFeed.open_captions`): words to her that have
-  not changed for 1.2 s are answered. If the same caption grows later, its new
-  words are the next thing said. A finished caption is not answered again;
-  lines Koli's own Whisper transcribed are answered when they arrive.
+  still open every second (`MeetFeed.open_captions`): words that may be for
+  her and have not changed for 1.5 s are put to the model. A finished caption
+  is not looked at again; lines Koli's own Whisper transcribed are looked at
+  when they arrive.
+- **Whether.** The model decides, each time (`companion.reply`): it answers,
+  or says `[wait]` (the speaker only paused in the middle of a sentence: the
+  words stay and are judged again with what follows, or once the speaker has
+  been quiet for 3 s, when waiting is no longer an answer), or `[skip]` (not
+  for her: said to someone else, thinking aloud). The first hour of real use
+  showed why: one question got three answers, one per breath, and lines said
+  to someone else in the room got answers too. The model is told whether the
+  call is just the two of them and whether the speaker has stopped.
+- **Follow-ups.** For 45 s after she answered someone, that person's next
+  words need no name.
 - **Where.** On her tile: three dots at once, then her words as the model
   writes them (the tile is redrawn every 0.4 s), then the answer for a
-  minute. With `meeting.companion.chat` it is written in the chat too.
+  minute; when she waits or stays out, the dots go and nothing else shows.
+  With `meeting.companion.chat` the answer is written in the chat too.
 - **What she says.** `companion.reply`: plain text, at most three short
   sentences, in the speaker's language, from the meeting and from general
   knowledge; nothing about the people beyond this meeting. The model gets the
   public part of the notes, the lines the call heard, and her talk so far
   (the last 12 lines, her own answers among them: they are in no transcript).
-- **How fast.** The wait is the pause (1.2 s), up to a second for the caption
+- **How fast.** The wait is the pause (1.5 s), up to a second for the caption
   to arrive, and the model's time to its first words. Measured with the local
   `gemma4:e4b`: 0.1 to 2 s to the first words. `ai.companion.model` picks it.
 - Two answers are at least 2 seconds apart.
