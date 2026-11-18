@@ -29,7 +29,10 @@ SAY_GAP_S = 2.0            # the least time between two answers of hers
 SAY_SHOWN_S = 60           # how long what she said stays on her board
 IDLE_S = 1.0               # how often the worker listens for a pause in what is being said to her
 READ_EVERY = 5             # every so many idle looks, whether the notes are due
-PAUSE_S = 1.2              # a caption unchanged this long: the speaker paused, she may answer
+PAUSE_S = 1.5              # a caption unchanged this long: the speaker paused, and the model is asked whether to answer
+STOPPED_S = 3.0            # unchanged this long: the speaker has stopped, there is nothing to wait for
+FOLLOW_UP_S = 45.0         # this long after her answer, the same person's next words need no name
+MIN_PAUSED_WORDS = 3       # fewer words than this in a pause ("Koli…") aren't put to the model: more is coming
 STREAM_EVERY_S = 0.4       # her tile is redrawn this often while her words come in
 TALK_KEEP = 12             # lines of her talk with the call that the model sees again
 THINKING = '…'             # on her tile from the moment she starts on an answer
@@ -85,7 +88,10 @@ class CompanionService:
         self._say_until = 0.0
         self._said_at = float('-inf')
         self._talk = collections.deque(maxlen=TALK_KEEP)   # her talk with the call: [{'who', 'text'}], her answers too
-        self._answered = {}                # caption block id -> its words she already took in
+        # Captions still open, by block id: {'taken': the words she is done with (answered,
+        # or not for her), 'asked': the words the model last judged, 'stopped': judged as final}.
+        self._answered = {}
+        self._last_asker = ''              # whom she answered last: their next words may be a follow-up
         # She is (or was) in this meeting's call: from then on her notes are made
         # only of what the call heard, since they are on her tile for everyone.
         self._public = False
@@ -252,9 +258,10 @@ class CompanionService:
         new, self._heard = self._public_rows(m, self._heard)
         if mode == 'active':
             # A finished caption of Meet's was already heard while it was open (listen).
-            to_her = [row for row in new if not row['captioned'] and self._to_her(m, row['text'], row['you'])]
-            if to_her:
-                self._reply(m, self._owner(m) or 'You' if to_her[-1]['you'] else to_her[-1]['name'], to_her[-1]['text'])
+            for row in new:
+                who = (self._owner(m) or 'You') if row['you'] else row['name']
+                if not row['captioned'] and self._to_her(m, row['text'], row['you'], who):
+                    self._reply(m, who, row['text'], stopped=True)
         if mode != 'off':
             self._update(m, mode, force=False)
 
@@ -545,8 +552,12 @@ class CompanionService:
         people = (call or {}).get('people') or []
         return any(p.get('self') for p in people) and not any(not p.get('self') for p in people)
 
-    def _to_her(self, m: dict, text: str, yours: bool) -> bool:
-        return brain.spoken_to(text, self._name()) or (yours and self._alone(m))
+    # Words she should look at: they name her, or you said them alone with
+    # her, or they come from the person she answered a moment ago. Whether
+    # she answers them is for the model to judge (brain.reply).
+    def _to_her(self, m: dict, text: str, yours: bool, who: str = '') -> bool:
+        follow_up = bool(who) and who == self._last_asker and self._now() - self._said_at < FOLLOW_UP_S
+        return brain.spoken_to(text, self._name()) or (yours and self._alone(m)) or follow_up
 
     def _can_talk(self) -> bool:
         guest = self._guest
@@ -555,9 +566,11 @@ class CompanionService:
 
     # Meet closes a caption about 8 seconds after the speaker stops, and only
     # then is it a line of the transcript. She looks at the captions still
-    # open instead, every second: words to her that haven't changed for
-    # PAUSE_S are answered now. A caption that grows later is answered for
-    # its new words. (Captions are heard by the call by their nature.)
+    # open instead, every second. Words that may be for her and haven't
+    # changed for PAUSE_S are put to the model: it answers, waits (the
+    # words stay, and are judged again with what follows, or once the
+    # speaker has stopped), or stays out (the words are behind her).
+    # (Captions are heard by the call by their nature.)
     def listen(self):
         m = self._meeting()
         if not m or not self._can_talk() or not self._code(m):
@@ -565,43 +578,75 @@ class CompanionService:
         now = self._now()
         for block in self._meetings.meet.open_captions(self._code(m))[-2:]:
             text = ' '.join(str(block.get('text') or '').split())
-            taken = self._answered.get(block['id'], '')
-            if not text or text == taken or now - block['t1'] < PAUSE_S:
+            state = self._answered.setdefault(block['id'], {'taken': '', 'asked': '', 'stopped': False})
+            quiet = now - block['t1']
+            if not text or text == state['taken'] or quiet < PAUSE_S:
                 continue
+            stopped = quiet >= STOPPED_S
+            if text == state['asked'] and (state['stopped'] or not stopped):
+                continue                       # these words were judged already
+            taken = state['taken']
             fresh = text[len(taken):].strip() if taken and text.startswith(taken) else text
-            self._answered[block['id']] = text
-            if fresh and self._to_her(m, fresh, bool(block.get('self'))):
-                self._reply(m, (self._owner(m) or 'You') if block.get('self') else block['name'], fresh)
+            who = (self._owner(m) or 'You') if block.get('self') else block['name']
+            if not fresh or not self._to_her(m, fresh, bool(block.get('self')), who):
+                state['taken'] = text
+                continue
+            if not stopped and len(fresh.split()) < MIN_PAUSED_WORDS:
+                continue                       # a word or two and a breath: looked at once they stop
+            kind = self._reply(m, who, fresh, stopped=stopped)
+            if kind is None:
+                continue                       # too soon after her last answer: next look
+            state['asked'], state['stopped'] = text, stopped
+            if kind != 'wait':
+                state['taken'] = text
         for block_id in list(self._answered)[:-20]:
             del self._answered[block_id]
 
-    # Her answer to `text`, said by `who`: three dots on her tile at once,
-    # then her words as the model writes them, then the whole answer for
-    # SAY_SHOWN_S. Drawn only from what the call heard.
-    def _reply(self, m: dict, who: str, text: str):
+    # What she does with `text`, said by `who`: 'answer', 'wait' or 'skip'
+    # (None when she couldn't even ask: too soon, no model). Three dots on
+    # her tile at once, then her words as the model writes them, then the
+    # whole answer for SAY_SHOWN_S; nothing stays when she waits or stays
+    # out. Drawn only from what the call heard.
+    def _reply(self, m: dict, who: str, text: str, stopped: bool = True) -> Optional[str]:
         guest = self._guest
         if not self._can_talk() or self._now() - self._said_at < SAY_GAP_S or not self._ai_ready():
-            return
-        self._said_at = self._now()
+            return None
+        before = (self._say, self._say_until)
         self._say, self._say_until = THINKING, self._now() + SAY_SHOWN_S
         self._show_board(m)
         shown = {'text': '', 'at': float('-inf')}
 
         def on_text(piece):
             shown['text'] += str(piece or '')
-            if self._now() - shown['at'] >= STREAM_EVERY_S and brain.tidy_say(shown['text']):
+            words = shown['text'].lstrip()
+            if words.startswith('['):
+                return                         # [wait] or [skip]: nothing for her tile
+            if self._now() - shown['at'] >= STREAM_EVERY_S and brain.tidy_say(words):
                 shown['at'] = self._now()
-                self._say = brain.tidy_say(shown['text'])
+                self._say = brain.tidy_say(words)
                 self._show_board(m)
         rows = brain.lines(m, since=self._elapsed(m) - ANSWER_WINDOW_S, heard=self._heard_fn(m), heard_only=True)
+        asked_at = time.time()
         try:
             with for_meeting(m['id'], 'companion'):
-                said = brain.reply(self._notes, rows, list(self._talk), who, text, meeting_language(m), self._complete,
-                                   on_text=on_text, owner=self._owner(m))
+                kind, said = brain.reply(self._notes, rows, list(self._talk), who, text, meeting_language(m),
+                                         self._complete, on_text=on_text, owner=self._owner(m),
+                                         alone=self._alone(m), stopped=stopped)
         except CompanionError:
             self._say = ''
             self._show_board(m)
             raise
+        # What she decided, for the log: never the words themselves.
+        logger.info(f"Koli in the meeting: {kind} to {len(text.split())} words "
+                    f"({'the speaker stopped' if stopped else 'a pause'}, {'alone with her' if self._alone(m) else 'others in the call'}) "
+                    f"in {time.time() - asked_at:.1f} s" + (f", {len(said.split())} words said" if kind == 'answer' else ''))
+        if kind != 'answer':
+            # Her tile goes back to what it showed (an answer still up stays up).
+            self._say, self._say_until = before if before[0] != THINKING else ('', 0.0)
+            self._show_board(m)
+            return kind
+        self._said_at = self._now()
+        self._last_asker = who
         self._say, self._say_until = said, self._now() + SAY_SHOWN_S
         self._show_board(m)
         self._talk.append({'who': who, 'text': text})
@@ -609,6 +654,7 @@ class CompanionService:
         if self._setting('meeting.companion.chat', False):
             guest.say(said)
         self._card('said', f"{self._name()} answered {who}", said, [])
+        return kind
 
     # ── What the panel gets ──────────────────────────────────────────────────
 
