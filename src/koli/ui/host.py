@@ -62,7 +62,7 @@ def summary_panel_action(phase: str) -> tuple:
 BAR_TOPICS = {'state', 'bar', 'pipeline', 'notify', 'task', 'level', 'streaming_text', 'settings',
               'profile', 'window', 'auto_send', 'problem', 'meeting', 'meeting_shot', 'wake', 'agent',
               'live_words', 'usage'}
-PANEL_TOPICS = {'meeting', 'meeting_turn', 'meeting_shot', 'meeting_summary', 'settings', 'task', 'problem', 'usage'}
+PANEL_TOPICS = {'meeting', 'meeting_turn', 'meeting_shot', 'meeting_summary', 'meeting_companion', 'settings', 'task', 'problem', 'usage'}
 CHAT_TOPICS = {'chat', 'agent', 'settings'}
 COALESCE = {'level', 'vad', 'foreground', 'streaming_text', 'live_words'}
 PUSH_INTERVAL = 0.05

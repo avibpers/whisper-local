@@ -51,6 +51,9 @@ const PATHS = {
   'win-restore': '<rect x="6.5" y="9" width="8.5" height="8.5" rx="1.2"/><path d="M9 9V7.7c0-.66.54-1.2 1.2-1.2h6.1c.66 0 1.2.54 1.2 1.2v6.1c0 .66-.54 1.2-1.2 1.2H15"/>',
 };
 
+// Which way a text runs: right to left when it holds Hebrew or Arabic letters.
+export function dir(text) { return /[֐-׿؀-ۿ]/.test(text || '') ? 'rtl' : 'ltr'; }
+
 export function Icon({ name, size = '', label = '' }) {
   return html`<svg class=${'ic ' + size} viewBox="0 0 24 24" aria-hidden=${label ? 'false' : 'true'}
     role=${label ? 'img' : undefined} aria-label=${label || undefined}

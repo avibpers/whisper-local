@@ -31,8 +31,9 @@ from ..platform import screenshots as platform_shots, session as desktop_session
 from ..online_stt import OnlineEngine, mode as online_mode
 from ..usage import ledger as usage_ledger
 from ..usage.ledger import for_meeting
-from ..ui.events import publish as publish_event, report_problem
+from ..ui.events import get_bus, publish as publish_event, report_problem
 from ..ui.tasks import get_task_manager
+from .companion import CompanionService
 from .meeting_search import MeetingSearch
 
 
@@ -160,7 +161,7 @@ class MeetingService:
         self._meeting_local = None        # (key, WhisperEngine or None while loading) for meeting.model "local/<key>"
         # What the Koli Chrome extension reads off Google Meet, and the local
         # port it posts to (docs/design/meet-extension.md).
-        self.meet = MeetFeed()
+        self.meet = MeetFeed(guest_name=lambda: self.companion.guest_name() if hasattr(self, 'companion') else '')
         self._meet_link = MeetLink(self._meet_events, self._meet_status)
         self.session = SessionManager(self.store, start_capture=self._start_capture, stop_capture=self._stop_capture,
                                       publish=self._publish, settings=self._setting, on_speakers=self.tracker.load,
@@ -174,6 +175,15 @@ class MeetingService:
             on_pending=self._on_pending, on_behind=self.session.set_behind, keep_audio=self._keep_audio,
             name_at=self._meet_name_at)
         self.transcriber.start()
+        # Koli in the meeting (docs/design/meet-participant.md): notes, answers and tasks while a
+        # meeting runs, and her own tile in a Google Meet call. She hears the meeting's events on
+        # the bus; with a publish of their own (tests) they are handed to her directly.
+        self.companion = CompanionService(self, setting=self._setting,
+                                          publish=lambda topic, payload: self._publish(topic, payload),
+                                          complete=lambda *args, **kwargs: self._ai()(*args, **kwargs),
+                                          parse=self._parse, ai_ready=self._companion_ready,
+                                          subscribe=None if publish else get_bus().subscribe,
+                                          start_worker=publish is None)
         if autostart and self._setting('meeting.enabled', True):
             self.start_detector()
 
@@ -295,6 +305,8 @@ class MeetingService:
                 self._watch_stop.set()
             # The bubble and the panel show the camera button from this state.
             self._publish('meeting', self.session.state_payload())
+        elif path.startswith('meeting.companion.'):
+            self.companion.apply_setting(path, value)
 
     # The loopback package was installed while the app runs: detection can
     # start now, without a restart.
@@ -422,6 +434,10 @@ class MeetingService:
             logger.info(note)
         for code in result['left']:
             self.session.call_left(code)
+        # The size of Koli's own tile on your screen, for the shape of her board.
+        for call in self.meet.joined_calls():
+            if call.get('guest_tile'):
+                self.companion.tile(*call['guest_tile'])
         m = self.session.meeting
         code = (m.get('source') or {}).get('code') if m else ''
         adopted = False
@@ -443,7 +459,7 @@ class MeetingService:
     def _meet_status(self) -> dict:
         m = self.session.meeting
         return {'mode': self._meet_mode(), 'captions_wanted': self._meet_mode() != 'off',
-                'state': self.session.state,
+                'state': self.session.state, 'guest_name': self.companion.guest_name(),
                 'meeting': {'id': m['id'], 'title': m['title'], 'code': (m.get('source') or {}).get('code', ''),
                             'turns': len(m['turns'])} if m else None}
 
@@ -820,6 +836,16 @@ class MeetingService:
         try:
             from .. import llm
             return bool(llm.model_for('meetings'))
+        except Exception:
+            return False
+
+    # Koli in the meeting has a model of her own (ai.companion.model), else the main one.
+    def _companion_ready(self) -> bool:
+        if self._complete is not None:
+            return True
+        try:
+            from .. import llm
+            return bool(llm.model_for('companion'))
         except Exception:
             return False
 
@@ -1758,6 +1784,7 @@ class MeetingService:
     # opening a listener nothing would close.
     def shutdown(self):
         self._closed = True
+        self.companion.shutdown()     # first: her browser must not stay in a call
         self.finder.stop()
         self._watch_stop.set()
         self._call_stop.set()

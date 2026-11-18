@@ -858,6 +858,65 @@ class Bridge:
     def meeting_chat_clear(self, meeting_id):
         self._meetings.chat_clear(str(meeting_id))
 
+    # ── Koli in the meeting (services/companion.py) ──────────────────────────
+    # The buttons answer at once; what the AI wrote arrives as a
+    # 'meeting_companion' event. The mode is the setting meeting.companion.mode.
+
+    @property
+    def _companion(self):
+        return self._meetings.companion
+
+    @_api
+    def companion_state(self):
+        return self._companion.state()
+
+    @_api
+    def companion_now(self):
+        self._companion.now_()
+
+    @_api
+    def companion_answer(self):
+        self._companion.answer()
+
+    @_api
+    def companion_catch_up(self, minutes=5):
+        self._companion.catch_up(float(minutes or 5))
+
+    @_api
+    def companion_task(self):
+        self._companion.task()
+
+    @_api
+    def companion_task_take(self, index):
+        self._companion.task_take(int(index))
+
+    @_api
+    def companion_task_remove(self, task_id):
+        self._companion.task_remove(str(task_id))
+
+    @_api
+    def companion_dismiss(self, card_id):
+        self._companion.dismiss(str(card_id))
+
+    # The panel never has the focus, so it copies through the app.
+    @_api
+    def companion_copy(self, text):
+        self._companion.copy(str(text or ''))
+
+    # A card's words written in the call's chat by Koli, for everyone.
+    @_api
+    def companion_say(self, card_id):
+        self._companion.say(str(card_id))
+
+    # Koli joins this meeting's Google Meet call as her own participant, or leaves it.
+    @_api
+    def companion_join(self):
+        self._companion.join()
+
+    @_api
+    def companion_leave(self):
+        self._companion.leave()
+
     # Ask all meetings (docs/design/meeting-search.md): waits for the AI; returns {'messages'}.
     @_api
     def meetings_ask(self, question):

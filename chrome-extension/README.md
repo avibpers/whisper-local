@@ -5,7 +5,9 @@ Google Meet:
 
 - when you join and leave, so the meeting starts and ends with you;
 - who is in the call;
-- Meet's live captions, with each speaker's name.
+- Meet's live captions, with each speaker's name;
+- the size of Koli's own tile on your screen, when she sits in the call as a
+  participant, so her board fits it.
 
 Koli uses the names to label the transcript, and teaches each person's
 voiceprint so it recognises them in Zoom, Discord and other calls. With

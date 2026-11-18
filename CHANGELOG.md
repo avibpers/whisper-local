@@ -5,6 +5,20 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 ## [Unreleased]
 
 ### Added
+- **Koli in the meeting.** While a meeting runs, the panel has a Koli section with a
+  mode picker. Insights keeps short notes (the topic now, decisions, tasks, open
+  questions) and gives you What now?, What should I answer?, Catch me up and + Task.
+  Active also shows an answer you could give when someone else asks a question. Tasks
+  you keep are saved with the meeting and go into the summary's action items. Off by
+  default (Settings › Meetings › Koli in the meeting); it has an AI model of its own.
+- **Koli as a participant in Google Meet.** Bring Koli in from the panel (or let her
+  join by herself) and she sits in the call as a guest with her own tile, showing her
+  notes to everyone: the topic, decisions, tasks, open questions, never your private
+  answers. She says who she is in the chat, can send a card's text to the chat on your
+  click, and in Active mode can answer there when someone speaks to her by name. Her
+  own browser (Chrome for Testing, 215 MB) is downloaded the first time and closes
+  with Koli. Windows only for now; Meet sometimes refuses a guest, so she tries three
+  times and says so.
 - **An online model can fix your dictation**, for a PC too weak for a local one.
   Pick ChatGPT (Codex), Gemini or any other online model for Polish: the correction,
   grammar, translation and score give it 8 s to answer (15 s for a long dictation)
@@ -84,6 +98,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
   chat's language when unsure" turns it off (`docs/design/chat-language.md`).
 
 ### Fixed
+- **The meeting panel's collapse arrow works with the mouse again.** The click that
+  collapsed the panel also reached the pill it had just become, which expanded it at once.
 - An AI answer that stopped arriving in time was logged as a crash with a traceback
   and as "isn't reachable". It now says the provider didn't answer in time.
 - **A long dictation skipped the AI**, so "update the car there" stayed "car" in a

@@ -166,6 +166,14 @@ nobody else. Elsewhere the splitter runs in its own low-priority process
 its whole run: 5-8 s per 15 s chunk in the app froze every thread, including
 the low-level keyboard and mouse hooks the whole PC's input waits on.
 
+### Koli's own tile
+
+When Koli sits in the call as her own participant (`docs/design/meet-participant.md`),
+her reply carries her name (`guest_name`). The page then measures the tile with that
+name and sends its size with each status (`guest_tile: [width, height]`), so her board
+can take the shape of the tile on your screen. `MeetFeed` leaves her out of the people:
+she is never an attendee, the other side of a 1:1 call, or a row in the summary.
+
 ## Known limits
 
 - The caption channel is undocumented and Meet may change it. What is expected
