@@ -244,10 +244,16 @@ is brought into a call, and for the rest of that meeting:
 - her notes start over and are made only from lines the call heard: other
   people's words, and yours only when your microphone was on in Meet. The
   extension reports the microphone button's state (`muted`, read from
-  `data-is-muted`); `MeetFeed.unmuted_during` answers for a stretch of time,
-  a mute counting from 1.5 s before it was noticed; the meeting service marks
-  such a turn `heard`. A turn from Meet's captions is marked too. No captions
-  are needed: it works the same when Koli transcribes the audio herself;
+  `data-is-muted`) on every change and every 5 s. `MeetFeed.heard_state`
+  answers for a line when it is read: yes only if the microphone was on for
+  all of it (a mute counts from 1.5 s before it was noticed) and a report
+  dated after the line ended says so; not yet, while that report hasn't come
+  (the line and what follows wait); no after 15 s without one, or when the
+  state was unknown (no button, you not in the call, an older extension). An
+  old "microphone on" is never carried forward. A turn from Meet's captions
+  counts as heard. No captions are needed: it works the same when Koli
+  transcribes the audio herself;
+- notes the model was still writing when she was brought in are thrown away;
 - she answers in the chat only a line the call heard, and the answer is drawn
   only from such lines and from the part of the notes her board shows;
 - your private buttons (What should I answer?, Catch me up, + Task) still use

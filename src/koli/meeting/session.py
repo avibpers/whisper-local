@@ -604,10 +604,9 @@ class SessionManager:
         stored = {'start': round(float(turn['t0']) - base, 2), 'end': round(float(turn['t1']) - base, 2),
                   'stream': turn['stream'], 'speaker': turn['speaker'], 'text': turn['text'],
                   'lang': turn.get('lang', '')}
-        # `heard`: everyone in the call heard these words of yours, because your
-        # microphone was on in Google Meet (or Meet captioned them). Koli hears
-        # your microphone even while it is muted there; without the mark, Koli in
-        # the meeting keeps the words from her tile and the chat.
+        # `heard`: everyone in the call heard these words of yours for certain,
+        # because Google Meet captioned them. For your other words Koli in the
+        # meeting asks the Meet feed whether your microphone was on there.
         if turn.get('heard'):
             stored['heard'] = True
         return stored

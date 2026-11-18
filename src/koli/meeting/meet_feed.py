@@ -24,6 +24,7 @@ SPAN_KEEP_S = 600.0          # spans older than this are forgotten (only recent 
 CAPTION_KEEP = 400           # caption blocks remembered per call (finished ones are handed out once)
 MUTE_NOTICE_S = 1.5          # the page is read about once a second: a mute may be this old when it is reported
 MUTE_KEEP = 400              # changes of your microphone's state remembered per call
+HEARD_WAIT_S = 15.0          # how long a line waits for a report dated after it (one comes every 5 s) before it counts as unheard
 
 
 def _overlap(a0: float, a1: float, b0: float, b1: float) -> float:
@@ -56,7 +57,10 @@ class MeetCall:
         self.people = []           # [{'id', 'name', 'self'}], the latest list the page showed
         self.guest_tile = None     # [width, height] of Koli's own tile on your screen, when she is in the call
         self.guests = set()        # names Koli sat in this call under: the page keeps listing her after she left
-        self.mute_log = []         # [(epoch seconds, muted)]: each change of your microphone in Meet, oldest first
+        # Each change of your microphone in Meet, oldest first: (epoch seconds,
+        # True muted / False on / None not known: no button, or you not in the call).
+        self.mute_log = []
+        self.status_at = 0.0       # the time of the newest status report, by the page's clock
         self.seen = 0.0            # time.time() of the last message from the tab
         self.joined_at = None      # epoch seconds the extension saw you get in
         self.captions = {}         # block id -> {'name','self','text','t0','t1','final'}
@@ -155,9 +159,11 @@ class MeetFeed:
         # Your microphone in Meet, as its button shows it. A mute is dated a
         # moment early: what was said just before it was noticed is not "heard".
         muted = e.get('muted')
-        if isinstance(muted, bool) and (not call.mute_log or call.mute_log[-1][1] != muted):
-            call.mute_log.append((at - MUTE_NOTICE_S if muted else at, muted))
+        state = muted if isinstance(muted, bool) and joined else None
+        if not call.mute_log or call.mute_log[-1][1] != state:
+            call.mute_log.append((at if state is False else at - MUTE_NOTICE_S, state))
             del call.mute_log[:-MUTE_KEEP]
+        call.status_at = max(call.status_at, at)
         if title != call.title or (people and people != call.people):
             out['changed'].append(call.code)
         call.title = title or call.title
@@ -237,19 +243,30 @@ class MeetFeed:
 
     # Whether your microphone was on in Meet for the whole of [t0, t1] (epoch
     # seconds), so everyone in the call heard what you said then. Koli's own
-    # recording hears you muted too. Anything unknown is False: before the
-    # extension first reported the button, or with an extension that doesn't.
-    def unmuted_during(self, code: str, t0: float, t1: float) -> bool:
+    # recording hears you muted too.
+    #
+    # True: on for all of it, and a report dated after t1 says so (a mute in
+    # the last second of the line is reported a moment later, so an older
+    # "on" proves nothing about the end). None: not known yet, ask again;
+    # a report comes every few seconds. False: muted or unknown at some point,
+    # or no report came within HEARD_WAIT_S (the tab closed, the extension
+    # stopped): what was true once is never carried forward.
+    def heard_state(self, code: str, t0: float, t1: float) -> Optional[bool]:
         with self._lock:
             call = self._calls.get((code or '').lower())
             log = list(call.mute_log) if call else []
+            reported = call.status_at if call else 0.0
         state = None
         for at, muted in log:
             if at <= t0:
                 state = muted
-            elif at <= t1 and muted:
+            elif at <= t1 and muted is not False:
                 return False
-        return state is False
+        if state is not False:
+            return False
+        if reported >= t1:
+            return True
+        return None if self._now() - t1 <= HEARD_WAIT_S else False
 
     # Whether Meet's captions hold what was said in a stretch of audio starting
     # at `t0`: they can be read now, and they could already when it began. A

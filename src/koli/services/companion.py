@@ -14,6 +14,7 @@ from typing import Callable, Optional
 
 from ..meeting import companion as brain
 from ..meeting.companion import CompanionError
+from ..meeting.store import started_ts
 from ..meeting.summarize import meeting_language
 from ..usage.ledger import for_meeting
 
@@ -65,6 +66,9 @@ class CompanionService:
     # Everything known about one meeting; a new meeting starts clean.
     def _forget(self, meeting_id: str):
         self._id = meeting_id
+        # Counts every fresh start of the notes: an answer of the model that
+        # was asked before one is thrown away.
+        self._generation = getattr(self, '_generation', 0) + 1
         self._notes = brain.empty_notes()
         self._cards = []
         self._read = 0                     # turns the notes already hold
@@ -86,6 +90,29 @@ class CompanionService:
 
     def _name(self) -> str:
         return str(self._setting('meeting.companion.name', 'Koli') or 'Koli').strip()[:40] or 'Koli'
+
+    # Whether the call heard a turn of yours: your microphone was on in Meet
+    # for all of it (the extension reports the button; the Meet feed keeps
+    # it). True, False, or None while that can't be known yet. Not a Meet
+    # call: nobody heard it there.
+    def _heard_fn(self, m: dict) -> Callable:
+        code = self._code(m)
+        if not code:
+            return lambda turn: False
+        base, feed = started_ts(m), self._meetings.meet
+        return lambda turn: feed.heard_state(code, base + turn.get('start', 0), base + turn.get('end', 0))
+
+    # The lines from turn `first` on that the call heard, and the turn to go
+    # on from next time. A line of yours that can't be told yet stops the
+    # reading there: it and what follows are read once it is known.
+    def _public_rows(self, m: dict, first: int) -> tuple:
+        heard = []
+        for row in brain.lines(m, first=first, heard=self._heard_fn(m)):
+            if row['heard'] is None:
+                return heard, row['index']
+            if row['heard']:
+                heard.append(row)
+        return heard, len(m.get('turns', []))
 
     # A setting of hers changed: the panel shows it, and a mode switched on
     # in the middle of a meeting reads what was said so far.
@@ -207,12 +234,11 @@ class CompanionService:
         mode = self._mode()
         turns = len(m.get('turns', []))
         self._heard = min(self._heard, turns)       # the list can get shorter (echo removal, a split)
-        new = brain.lines(m, first=self._heard)
-        self._heard = turns
+        # Only words the call heard: your own aside to her with the microphone
+        # muted in Meet must not get an answer in front of everyone.
+        new, self._heard = self._public_rows(m, self._heard)
         if mode == 'active':
-            # Only words the call heard: your own aside to her with the microphone
-            # muted in Meet must not get an answer in front of everyone.
-            to_her = [row for row in new if row['heard'] and brain.spoken_to(row['text'], self._name())]
+            to_her = [row for row in new if brain.spoken_to(row['text'], self._name())]
             if to_her:
                 self._answer_the_call(m, to_her[-1])
         if mode != 'off':
@@ -223,8 +249,12 @@ class CompanionService:
     def _update(self, m: dict, mode: str, force: bool):
         turns = len(m.get('turns', []))
         self._read = min(self._read, turns)
-        rows = brain.lines(m, first=self._read, heard_only=self._public)
+        if self._public:
+            rows, upto = self._public_rows(m, self._read)
+        else:
+            rows, upto = brain.lines(m, first=self._read), turns
         if not rows:
+            self._read = upto          # lines the call didn't hear are passed over
             return
         seconds = float(self._setting('meeting.companion.update_seconds', 45) or 45)
         if not force and (brain.words(rows) < brain.MIN_NEW_WORDS or self._now() - self._updated_at < seconds):
@@ -234,10 +264,15 @@ class CompanionService:
                 raise CompanionError(NO_MODEL)
             return
         self._updated_at = self._now()          # a failed call waits its turn too
+        generation = self._generation
         with for_meeting(m['id'], 'companion'):
             notes = brain.update(self._notes, rows, mode, meeting_language(m), self._complete, self._parse)
+        # While the model was answering she was brought into the call, or the
+        # meeting changed: these notes were made for other eyes, or another meeting.
+        if generation != self._generation:
+            return
         self._notes = notes
-        self._read = turns
+        self._read = upto
         ask = notes.get('ask')
         if ask:
             key = (ask['who'].lower(), ask['question'].lower())
@@ -400,6 +435,7 @@ class CompanionService:
         if self._public:
             return
         self._public = True
+        self._generation += 1
         self._notes = brain.empty_notes()
         self._read = 0
         self._updated_at = float('-inf')
@@ -492,7 +528,8 @@ class CompanionService:
             return
         self._said_at = self._now()
         with for_meeting(m['id'], 'companion'):
-            said = brain.public_answer(self._notes, brain.lines(m, since=self._elapsed(m) - ANSWER_WINDOW_S, heard_only=True),
+            said = brain.public_answer(self._notes, brain.lines(m, since=self._elapsed(m) - ANSWER_WINDOW_S,
+                                                              heard=self._heard_fn(m), heard_only=True),
                                        row['text'], meeting_language(m), self._complete, self._parse)
         if guest.say(said):
             self._say, self._say_until = said, self._now() + SAY_SHOWN_S
