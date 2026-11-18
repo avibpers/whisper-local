@@ -37,7 +37,13 @@ class FakeAI:
         answer = self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
         if isinstance(answer, FakeResult):
             return answer
-        return FakeResult(answer if isinstance(answer, str) else __import__('json').dumps(answer, ensure_ascii=False))
+        text = answer if isinstance(answer, str) else __import__('json').dumps(answer, ensure_ascii=False)
+        on_text = kwargs.get('on_text')
+        if on_text:
+            half = len(text) // 2
+            on_text(text[:half])
+            on_text(text[half:])
+        return FakeResult(text)
 
     def said(self, index=-1) -> str:
         return '\n'.join(m['content'] for m in self.calls[index]['messages'])
@@ -62,7 +68,8 @@ class LinesTests(unittest.TestCase):
     def test_names_are_resolved_and_the_owner_is_you(self):
         m = meeting([(5, 'you', 'I think so'), (65, 's1', 'Hi there')])
         rows = companion.lines(m)
-        self.assertEqual(rows[0], {'at': 5, 'name': 'You', 'you': True, 'text': 'I think so', 'heard': False, 'index': 0})
+        self.assertEqual(rows[0], {'at': 5, 'name': 'You', 'you': True, 'text': 'I think so', 'heard': False, 'index': 0,
+                                   'captioned': False})
         self.assertEqual(rows[1]['name'], 'Dana')
         self.assertFalse(rows[1]['you'])
 
@@ -296,24 +303,56 @@ class ActionTests(unittest.TestCase):
         with self.assertRaises(CompanionError):
             companion.task_from_talk(self.rows, 'en', FakeAI({'task': '', 'owner': None}))
 
-    def test_public_answer_gets_only_the_public_part_of_the_notes(self):
-        ai = FakeAI({'answer': 'Thursday.'})
+    def reply(self, ai, **more):
+        return companion.reply(more.pop('notes', NOTES), self.rows, more.pop('talk', []), more.pop('who', 'Eran'),
+                               more.pop('text', 'Koli, what did we decide?'), 'en', ai, **more)
+
+    def test_reply_is_plain_words_for_her_tile(self):
+        ai = FakeAI('  "We decided to ship on **Thursday**."  ')
+        self.assertEqual(self.reply(ai), 'We decided to ship on Thursday.')
+        self.assertFalse(ai.calls[0]['json'])
+        self.assertEqual(ai.calls[0]['feature'], 'companion')
+
+    def test_reply_is_cut_to_what_a_tile_holds(self):
+        self.assertLessEqual(len(self.reply(FakeAI('We decided to ship on Thursday. ' * 40))), companion.SAY_MAX)
+
+    def test_reply_gets_what_was_said_who_said_it_and_the_talk_so_far(self):
+        ai = FakeAI('In 1948.')
+        self.reply(ai, who='Noa', text='and in which month?', owner='Noa',
+                   talk=[{'who': 'Noa', 'text': 'When was the state founded?'}, {'who': 'Koli', 'text': 'In 1948.'}])
+        said = ai.said()
+        self.assertIn('and in which month?', said)
+        self.assertIn('Noa: When was the state founded?', said)
+        self.assertIn('Koli: In 1948.', said)
+        self.assertIn('[1:05] Eran: When can we ship the Pro plan?', said)      # the meeting itself
+
+    def test_reply_may_use_general_knowledge_but_knows_nobody(self):
+        ai = FakeAI('In 1948.')
+        self.reply(ai)
+        system = ai.calls[0]['messages'][0]['content']
+        self.assertIn('general knowledge', system)
+        self.assertIn('everyone in the call', system)
+        self.assertIn('nothing about these people beyond this meeting', system)
+
+    def test_reply_gets_only_the_public_part_of_the_notes(self):
+        ai = FakeAI('Thursday.')
         notes = {**NOTES, 'summary': ['SUMMARY LINE FOR THE OWNER'],
                  'ask': {'who': 'Eran', 'question': 'q', 'for_you': True, 'answer': 'ANSWER FOR THE OWNER', 'points': []}}
-        companion.public_answer(notes, self.rows, 'Koli, what did we decide?', 'en', ai)
+        self.reply(ai, notes=notes)
         said = ai.said()
         self.assertNotIn('SUMMARY LINE FOR THE OWNER', said)
         self.assertNotIn('ANSWER FOR THE OWNER', said)
         self.assertIn('Ship on Thursday', said)                 # a decision is on the board anyway
 
-    def test_public_answer_is_from_this_meeting_only_and_short(self):
-        ai = FakeAI({'answer': 'We decided to ship on Thursday. ' * 40})
-        text = companion.public_answer(NOTES, self.rows, 'Koli, what did we decide?', 'en', ai)
-        self.assertLessEqual(len(text), companion.SAY_MAX)
-        said = ai.said()
-        self.assertIn('everyone in the call', said)
-        self.assertIn('this meeting only', said)
-        self.assertIn('Koli, what did we decide?', said)
+    def test_reply_hands_the_words_on_as_they_come(self):
+        pieces = []
+        self.reply(FakeAI('In 1948, in May.'), on_text=pieces.append)
+        self.assertEqual(''.join(pieces), 'In 1948, in May.')
+        self.assertGreater(len(pieces), 1)
+
+    def test_reply_with_no_words_raises(self):
+        with self.assertRaises(CompanionError):
+            self.reply(FakeAI(FakeResult(error='The model is busy')))
 
 
 # ── What others may see ──────────────────────────────────────────────────────
@@ -519,9 +558,13 @@ class FakeMeet:
     def __init__(self):
         self.calls = {}
         self.states = {}       # epoch second a line began -> True, False or None (not known yet)
+        self.open = []         # caption blocks still being spoken: {'id', 'name', 'self', 'text', 't0', 't1'}
 
     def call(self, code):
         return self.calls.get(code)
+
+    def open_captions(self, code):
+        return [dict(b) for b in self.open]
 
     # What the test said about a line of the owner's, by its words; False when it said nothing.
     def heard_state(self, code, t0, t1):
@@ -969,37 +1012,158 @@ class ServiceGuestTests(ServiceCase):
         with self.assertRaises(ValueError):
             self.svc.say('no-such-card')
 
-    def test_spoken_to_by_name_she_answers_in_the_chat_when_allowed(self):
-        self.make({'answer': 'We decided to ship on Thursday.'}, mode='active', chat=True)
+    def test_spoken_to_by_name_she_answers_on_her_tile(self):
+        self.make('We decided to ship on Thursday.', mode='active')
+        self.start()
+        self.svc.join()
+        self.turn(5, 's2', 'Koli, what did we decide?')
+        self.drain()
+        self.assertEqual(self.guests[0].views[-1]['say'], 'We decided to ship on Thursday.')
+        self.assertEqual(self.guests[0].said, [])               # the chat is a setting of its own
+        self.assertEqual(len(self.cards('said')), 1)
+
+    def test_with_the_chat_setting_her_answer_is_written_there_too(self):
+        self.make('We decided to ship on Thursday.', mode='active', chat=True)
         self.start()
         self.svc.join()
         self.turn(5, 's2', 'Koli, what did we decide?')
         self.drain()
         self.assertEqual(self.guests[0].said, ['We decided to ship on Thursday.'])
-        self.assertEqual(self.guests[0].views[-1]['say'], 'We decided to ship on Thursday.')
-        self.assertEqual(len(self.cards('said')), 1)
-        self.t += 5
-        self.turn(9, 's1', 'Koli, and who does it?')
-        self.drain()
-        self.assertEqual(len(self.guests[0].said), 1)        # not twice within 20 seconds
-        self.t += 30
-        self.turn(40, 's1', 'Koli, and who does it?')
-        self.drain()
-        self.assertEqual(len(self.guests[0].said), 2)
 
-    def test_she_stays_quiet_unless_active_and_allowed_and_in_the_call(self):
-        for settings, joined in (({'mode': 'active', 'chat': False}, True), ({'mode': 'insights', 'chat': True}, True),
-                                 ({'mode': 'active', 'chat': True}, False)):
-            self.make(NOTES, {'answer': 'x'}, **settings)
+    def test_two_answers_are_at_least_two_seconds_apart(self):
+        self.make('Thursday.', mode='active')
+        self.start()
+        self.svc.join()
+        self.turn(5, 's2', 'Koli, what did we decide?')
+        self.drain()
+        self.t += 1
+        self.turn(7, 's1', 'Koli, and who does it?')
+        self.drain()
+        self.assertEqual(len(self.cards('said')), 1)
+        self.t += 3
+        self.turn(12, 's1', 'Koli, and who does it?')
+        self.drain()
+        self.assertEqual(len(self.cards('said')), 2)
+
+    def test_she_answers_only_in_active_mode_and_only_in_the_call(self):
+        for settings, joined in (({'mode': 'insights'}, True), ({'mode': 'active'}, False), ({'mode': 'off'}, True)):
+            self.make('x', **settings)
             self.start()
             if joined:
                 self.svc.join()
             self.turn(5, 's2', 'Koli, what did we decide?')
             self.drain()
-            self.assertEqual([g.said for g in self.guests], [[]] if joined else [])
+            self.assertEqual(self.cards('said'), [])
+            self.assertEqual([c['feature'] for c in self.ai.calls], [])
+
+    def alone(self):
+        self.meetings.meet.calls['abc-defg-hij']['people'] = [{'id': '1', 'name': 'Noa Levi', 'self': True}]
+
+    def test_alone_with_her_everything_you_say_is_to_her(self):
+        # A call with just the two of you is a conversation: no need to say her name.
+        self.make('In 1948.', mode='active')
+        self.start()
+        self.alone()
+        self.svc.join()
+        self.said_at(5, True)
+        self.turn(5, 'you', 'when was the state founded?')
+        self.drain()
+        self.assertEqual(self.guests[0].views[-1]['say'], 'In 1948.')
+
+    def test_with_other_people_in_the_call_she_waits_for_her_name(self):
+        self.make('In 1948.', mode='active')
+        self.start()
+        self.meetings.meet.calls['abc-defg-hij']['people'] = [{'id': '1', 'name': 'Noa Levi', 'self': True},
+                                                             {'id': '2', 'name': 'Dana', 'self': False}]
+        self.svc.join()
+        self.said_at(5, True)
+        self.turn(5, 'you', 'when was the state founded?')
+        self.drain()
+        self.assertEqual(self.cards('said'), [])
+
+    def caption(self, block_id, text, ago, mine=True):
+        self.meetings.meet.open = [{'id': block_id, 'name': 'Noa Levi' if mine else 'Dana', 'self': mine, 'text': text,
+                                    't0': self.t - 10, 't1': self.t - ago}]
+
+    def test_she_answers_when_you_pause_not_when_meet_closes_the_caption(self):
+        # Meet closes a caption about 8 seconds after you stop; she starts after a short pause.
+        self.make('In 1948.', mode='active')
+        self.start()
+        self.alone()
+        self.svc.join()
+        self.caption('b1', 'when was the state founded', ago=0.3)
+        self.svc.listen()
+        self.assertEqual(self.cards('said'), [])                 # still talking
+        self.caption('b1', 'when was the state founded', ago=1.5)
+        self.svc.listen()
+        self.assertEqual(self.guests[0].views[-1]['say'], 'In 1948.')
+        self.assertIn('when was the state founded', self.ai.said())
+        self.svc.listen()
+        self.assertEqual(len(self.cards('said')), 1)            # once for the same words
+
+    def test_more_words_in_the_same_caption_are_answered_as_the_next_thing_said(self):
+        self.make('In 1948.', 'In May.', mode='active')
+        self.start()
+        self.alone()
+        self.svc.join()
+        self.caption('b1', 'when was the state founded', ago=1.5)
+        self.svc.listen()
+        self.t += 5
+        self.caption('b1', 'when was the state founded and in which month', ago=1.5)
+        self.svc.listen()
+        self.assertEqual(len(self.cards('said')), 2)
+        self.assertIn('Said to you now by Noa:\nand in which month', self.ai.said())
+        self.assertIn('Koli: In 1948.', self.ai.said())           # she remembers what she answered
+
+    def test_the_closed_caption_is_not_answered_a_second_time(self):
+        self.make('In 1948.', mode='active')
+        self.start()
+        self.alone()
+        self.svc.join()
+        self.caption('b1', 'when was the state founded', ago=1.5)
+        self.svc.listen()
+        self.meetings.meet.open = []
+        self.t += 10
+        self.turn(5, 'you', 'when was the state founded', heard=True)     # the same words, as Meet's finished caption
+        self.drain()
+        self.assertEqual(len(self.cards('said')), 1)
+
+    def test_a_caption_that_is_not_for_her_is_left_alone(self):
+        self.make('x', mode='active')
+        self.start()
+        self.svc.join()                                          # Dana is in the call too
+        self.meetings.meet.calls['abc-defg-hij']['people'] = [{'id': '1', 'name': 'Noa Levi', 'self': True},
+                                                             {'id': '2', 'name': 'Dana', 'self': False}]
+        self.caption('b1', 'so the price is twenty dollars', ago=1.5, mine=False)
+        self.svc.listen()
+        self.assertEqual(self.ai.calls, [])
+        self.caption('b2', 'Koli what did we decide', ago=1.5, mine=False)
+        self.svc.listen()
+        self.assertEqual(len(self.cards('said')), 1)
+
+    def test_her_words_appear_on_the_tile_as_they_come(self):
+        self.make('The state was founded in 1948, in the month of May.', mode='active')
+        self.start()
+        self.svc.join()
+        self.turn(5, 's2', 'Koli, when was the state founded?')
+        self.drain()
+        says = [v['say'] for v in self.guests[0].views]
+        self.assertIn('…', says)                                 # at once: she heard you
+        self.assertEqual(says[-1], 'The state was founded in 1948, in the month of May.')
+        partial = [x for x in says if x not in ('', '…') and x != says[-1]]
+        self.assertTrue(partial and says[-1].startswith(partial[0]))
+
+    def test_a_model_that_fails_clears_the_tile(self):
+        self.make(FakeResult(error='The model is busy'), mode='active')
+        self.start()
+        self.svc.join()
+        self.turn(5, 's2', 'Koli, what did we decide?')
+        self.drain()
+        self.assertEqual(self.guests[0].views[-1]['say'], '')
+        self.assertEqual(len(self.cards('error')), 1)
 
     def test_what_she_said_leaves_the_board_after_a_minute(self):
-        self.make({'answer': 'Thursday.'}, NOTES, mode='active', chat=True)
+        self.make('Thursday.', NOTES, mode='active')
         self.start()
         self.svc.join()
         self.turn(5, 's2', 'Koli, what did we decide?')
@@ -1143,7 +1307,7 @@ class ServiceGuestTests(ServiceCase):
         self.assertNotIn('MUTED', said)
 
     def test_words_to_her_wait_until_it_is_known_the_call_heard_them(self):
-        self.make({'answer': 'Thursday.'}, mode='active', chat=True)
+        self.make('Thursday.', mode='active', chat=True)
         self.start()
         self.svc.join()
         self.said_at(5, None)
@@ -1174,19 +1338,20 @@ class ServiceGuestTests(ServiceCase):
         self.assertNotIn('PRIVATE TOPIC', _json.dumps(self.guests[0].views))
 
     def test_your_own_words_to_her_are_answered_in_the_call_only_if_the_call_heard_them(self):
-        self.make({'answer': 'Thursday.'}, mode='active', chat=True)
+        self.make('Thursday.', mode='active', chat=True)
         self.start()
         self.svc.join()
         self.turn(5, 'you', 'Koli, what did we decide?')         # said with the microphone muted in Meet
         self.drain()
         self.assertEqual(self.guests[0].said, [])
         self.t += 30
-        self.turn(40, 'you', 'Koli, what did we decide?', heard=True)
+        self.said_at(40, True)
+        self.turn(40, 'you', 'Koli, what did we decide?')
         self.drain()
         self.assertEqual(self.guests[0].said, ['Thursday.'])
 
     def test_her_answer_to_the_call_is_drawn_only_from_what_the_call_heard(self):
-        self.make({'answer': 'Thursday.'}, mode='active', chat=True)
+        self.make('Thursday.', mode='active', chat=True)
         self.start()
         self.svc.join()
         self.turn(5, 'you', 'MUTED aside about the budget')
@@ -1374,6 +1539,20 @@ class MeetFeedGuestTests(unittest.TestCase):
     def test_no_mute_state_at_all_is_unheard(self):
         feed = self.muted_feed([(100, 'absent'), (130, 'absent')])
         self.assertIs(feed.heard_state('abc-defg-hij', 110, 120), False)
+
+    def test_captions_still_being_spoken_can_be_read(self):
+        from koli.meeting.meet_feed import MeetFeed
+        feed = MeetFeed(now=lambda: 1000.0)
+        feed.apply([self.status()])
+        block = {'type': 'caption', 'code': 'abc-defg-hij', 'id': 'b1', 'name': 'Dana', 'self': False,
+                 'text': 'so the price', 'first_ms': 990_000, 'last_ms': 995_000}
+        feed.apply([block])
+        feed.apply([{**block, 'text': 'so the price is twenty', 'last_ms': 997_000}])
+        self.assertEqual(feed.open_captions('abc-defg-hij'),
+                         [{'id': 'b1', 'name': 'Dana', 'self': False, 'text': 'so the price is twenty', 't0': 990.0, 't1': 997.0}])
+        feed.apply([{**block, 'text': 'so the price is twenty', 'last_ms': 997_000, 'final': True}])
+        self.assertEqual(feed.open_captions('abc-defg-hij'), [])
+        self.assertEqual(feed.open_captions('zzz-zzzz-zzz'), [])
 
     def test_her_tile_is_kept(self):
         from koli.meeting.meet_feed import MeetFeed

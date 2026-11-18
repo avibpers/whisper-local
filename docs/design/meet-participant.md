@@ -31,7 +31,7 @@ taking the first down.
 |---|---|
 | `off` — Just listen | As before: the transcript, nothing else. No AI calls. |
 | `insights` | Keeps short notes while the meeting runs: the topic now, decisions, tasks, open questions. The buttons work. |
-| `active` | Insights, and when someone other than you asks a question she shows the question with an answer you could give. In the call she may also answer in the chat when someone speaks to her by name (`meeting.companion.chat`). |
+| `active` | Insights, and when someone other than you asks a question she shows the question with an answer you could give. In the call she answers on her tile: whoever speaks to her by name, and anything you say when you are alone with her (see "Talking with her"). |
 
 ### Koli beside you
 
@@ -92,9 +92,9 @@ Each is a default he can change, listed here so he can reject any.
    tile on your screen; her frame takes that shape, so you see all of it. Other
    people with another layout may see the sides cut; the text is kept in the
    middle for them.
-7. **Answers that go to the call use this meeting only**, never the search over
-   your other meetings. A guest's question must not pull out what was said
-   elsewhere.
+7. **Answers that go to the call never use the search over your other
+   meetings.** A guest's question must not pull out what was said elsewhere.
+   General knowledge is fine ("when was the state founded?").
 8. **She does not read the chat.** Meet stops drawing a hidden page, and hidden is
    what makes her cheap. She hears through your own transcript.
 9. **macOS: the panel part works, the call part says "not on macOS yet".**
@@ -154,10 +154,9 @@ transcript turns ──► SessionManager.add_turn ──publish 'meeting_turn'�
 - Everything is written in the language the meeting is spoken in.
 - `public_view(notes, owner)` returns the only fields the board and the chat may
   use. A test holds the list.
-- Being spoken to by name: a new line that contains her name (or how Whisper and
-  Meet write it: Koli, Coley, Collie, Kohli, קולי) and a question. In Active
-  mode with `chat` on and Koli in the call, she answers in the chat, at most
-  once every 20 seconds, at most 400 characters.
+- Being spoken to by name: a line that contains her name (or how Whisper and
+  Meet write it: Koli, Coley, Collie, Kohli, קולי) and asks something. See
+  "Talking with her"; an answer is at most 400 characters.
 
 ### The service (`services/companion.py`)
 
@@ -235,6 +234,36 @@ out, or when Koli quits (`MeetingService.shutdown`). Continue previous and
 Start new instead change the meeting, not the call: she stays, and her notes
 start over.
 
+### Talking with her
+
+*Added 2026-11-18, after the owner sat alone with her in a call, asked her
+questions aloud and got nothing on her tile: the answer was tied to the chat
+setting (off), and she waited for Meet to close each caption.*
+
+In Active mode, while she is in the call:
+
+- **Who she answers.** A line that speaks to her by name, from anyone. When
+  Meet's people list has only you, the call is a conversation: everything you
+  say is to her.
+- **When.** Meet closes a caption about 8 seconds after the speaker stops, and
+  only then is it a line of the transcript. The service looks at the captions
+  still open every second (`MeetFeed.open_captions`): words to her that have
+  not changed for 1.2 s are answered. If the same caption grows later, its new
+  words are the next thing said. A finished caption is not answered again;
+  lines Koli's own Whisper transcribed are answered when they arrive.
+- **Where.** On her tile: three dots at once, then her words as the model
+  writes them (the tile is redrawn every 0.4 s), then the answer for a
+  minute. With `meeting.companion.chat` it is written in the chat too.
+- **What she says.** `companion.reply`: plain text, at most three short
+  sentences, in the speaker's language, from the meeting and from general
+  knowledge; nothing about the people beyond this meeting. The model gets the
+  public part of the notes, the lines the call heard, and her talk so far
+  (the last 12 lines, her own answers among them: they are in no transcript).
+- **How fast.** The wait is the pause (1.2 s), up to a second for the caption
+  to arrive, and the model's time to its first words. Measured with the local
+  `gemma4:e4b`: 0.1 to 2 s to the first words. `ai.companion.model` picks it.
+- Two answers are at least 2 seconds apart.
+
 ### Only what the call heard
 
 Koli's own Whisper hears your microphone whether or not it is muted in Meet:
@@ -275,7 +304,7 @@ never an attendee, a name for a 1:1 call, or a row in the summary's roster.
 | `meeting.companion.join_call` | false | Koli joins Google Meet calls with her own tile |
 | `meeting.companion.name` | `Koli` | her name in the call |
 | `meeting.companion.announce` | true | one chat line when she joins |
-| `meeting.companion.chat` | false | Active: answer in the chat when spoken to by name |
+| `meeting.companion.chat` | false | Active: her answers are written in the chat too |
 | `ai.companion.model`, `ai.companion.timeout` | '' , 20 | else the main AI model |
 
 ## Known limits

@@ -238,6 +238,17 @@ class MeetFeed:
                      'guest_tile': list(c.guest_tile) if c.guest_tile else None}
                     for c in self._calls.values() if c.joined and now - c.seen <= HEARTBEAT_TIMEOUT_S]
 
+    # The caption blocks of a call that are still open (someone is talking,
+    # or stopped a moment ago), oldest first: [{'id', 'name', 'self', 'text',
+    # 't0', 't1'}], `t1` the time the text last changed. Meet closes a block
+    # seconds after the speaker stops; Koli in the meeting answers sooner.
+    def open_captions(self, code: str) -> list:
+        with self._lock:
+            call = self._calls.get((code or '').lower())
+            blocks = [{'id': block_id, 'name': b['name'], 'self': b['self'], 'text': b['text'], 't0': b['t0'], 't1': b['t1']}
+                      for block_id, b in call.captions.items()] if call else []
+        return sorted(blocks, key=lambda b: b['t0'])
+
     def call(self, code: str) -> Optional[dict]:
         return next((c for c in self.joined_calls() if c['code'] == (code or '').lower()), None)
 
