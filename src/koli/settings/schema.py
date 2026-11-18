@@ -535,6 +535,36 @@ SCHEMA = [
        help='A template can set its own language; picking one when you summarize wins over both.'),
     _S('ai.meetings.timeout', 'Give up after', 'meetings', 'number', group='Summary', min=30, max=900, step=10,
        unit='seconds', help='How long the AI may take to write one summary.'),
+    # Koli in the meeting (docs/design/meet-participant.md): notes, answers and tasks while a meeting
+    # runs, and her own tile in a Google Meet call. The panel's picker changes the mode too.
+    _S('meeting.companion.mode', 'Koli in the meeting', 'meetings', 'segmented', group='Koli in the meeting',
+       choices=[['off', 'Just listen'], ['insights', 'Insights'], ['active', 'Active']],
+       help='Insights: while a meeting runs Koli keeps short notes in the meeting panel (the topic now, decisions, '
+            'tasks, open questions) and answers "What should I answer?" and "Catch me up". Active: also shows an '
+            'answer you could give when someone else asks a question. Both call the AI model about once a minute. '
+            'Just listen writes the transcript only.'),
+    _S('ai.companion.model', 'Notes and answers with', 'meetings', 'ai_model', group='Koli in the meeting',
+       help='The AI model for her notes and answers during a meeting. A fast, cheap one fits: it is asked about '
+            'once a minute. Empty uses the default model (Settings › AI).'),
+    _S('meeting.companion.update_seconds', 'Update the notes every', 'meetings', 'number', group='Koli in the meeting',
+       min=20, max=300, step=5, unit='seconds',
+       help='The least time between two updates. An update also needs a few new sentences; a silent meeting costs nothing.'),
+    _S('ai.companion.timeout', 'Give up after', 'meetings', 'number', group='Koli in the meeting', min=5, max=120, step=5,
+       unit='seconds', help='How long the AI may take for one update or answer.'),
+    _S('meeting.companion.join_call', 'Koli joins Google Meet calls', 'meetings', 'toggle', group='Koli in the meeting',
+       warn='Everyone in the call sees a participant with her name.',
+       help="In a Google Meet call you joined (with the Koli extension), Koli joins too, as a guest with her own tile "
+            "that shows her notes: the topic, decisions, tasks, open questions. Nothing private goes there. Her own "
+            "browser (215 MB) is downloaded the first time and uses about 1.3 GB of memory while she is in a call. "
+            "Off, you can still bring her in from the meeting panel. Meet sometimes refuses a guest; she tries three times."),
+    _S('meeting.companion.name', 'Her name in the call', 'meetings', 'text', group='Koli in the meeting',
+       help='The name other people see on her tile.'),
+    _S('meeting.companion.announce', 'She says who she is', 'meetings', 'toggle', group='Koli in the meeting',
+       help="When she joins she writes one line in the call's chat: that she is your AI assistant and shows notes on her tile."),
+    _S('meeting.companion.chat', 'She answers in the chat', 'meetings', 'toggle', group='Koli in the meeting',
+       warn="Her answers are written in the call's chat, for everyone.",
+       help='In Active mode, while she is in the call: when someone speaks to her by name ("Koli, what did we decide?") '
+            'she answers in the chat, from this meeting only, at most once every 20 seconds.'),
     # Search the meetings by meaning (docs/design/meeting-search.md); Ollama's address is on its AI card.
     _S('meeting.search.meaning', 'Search by meaning', 'meetings', 'toggle', group='Search',
        help='The search box finds a meeting by what it is about, not only by the words you type. '

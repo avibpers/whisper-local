@@ -9,11 +9,14 @@
 // the window; the corner handle resizes it; collapse shrinks it to a pill
 // and reports the pill's size. While a call is offered and while the meeting
 // runs, a button picks the summary template the meeting is summarized with.
+// Above the transcript sits Koli in the meeting (meeting_companion.js): her
+// mode, her notes and cards, and whether she is in the call with her own tile.
 
 import { html, render, useEffect, useLayoutEffect, useRef, useState } from '../vendor/preact-htm.module.js';
 import { call, on } from './api.js';
 import { createStore } from './store.js';
-import { Icon } from './ui.js';
+import { Icon, dir } from './ui.js';
+import { Companion, wireCompanion } from './meeting_companion.js';
 import { Lightbox, Thumb, rowsByTime } from './shots.js';
 
 const panel = createStore({
@@ -25,7 +28,6 @@ const panel = createStore({
   templates: [],   // the summary templates to pick from
 });
 
-function dir(text) { return /[֐-׿؀-ۿ]/.test(text || '') ? 'rtl' : 'ltr'; }
 function clock(s) { s = Math.max(0, Math.floor(s)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; }
 function loadTurns(id) { call('meeting_get', id).then((d) => panel.set({ turns: d.turns, screenshots: d.screenshots || [], cost: d.usage ? d.usage.cost : 0 })).catch(() => {}); }
 
@@ -271,12 +273,16 @@ function Panel() {
   if (m.state === 'ended') {
     return html`<div class="panel"><div class="head"><span class="dot ended"></span><span class="title">Saved · ${clock(m.duration_s || 0)}</span></div></div>`;
   }
+  // The pill and the full panel have keys of their own, so one is never made
+  // out of the other's element. Without them the click that collapses the
+  // panel went on up to that same element, by then the pill, whose click
+  // expands: a real mouse click collapsed and expanded in one go.
   if (collapsed) {
-    return html`<div ref=${pillRef} class="pill" ...${drag} onClick=${() => { panel.set({ collapsed: false }); call('meeting_collapse', false); }} title="Expand">
+    return html`<div key="pill" ref=${pillRef} class="pill" ...${drag} onClick=${() => { panel.set({ collapsed: false }); call('meeting_collapse', false); }} title="Expand">
       <span class=${'dot ' + m.state}></span>${title}<${Timer} since=${m.started_at} paused=${m.state === 'paused'} /></div>`;
   }
   const paused = m.state === 'paused';
-  return html`<div class="panel" onKeyDown=${(e) => e.key === 'Escape' && panel.set({ menu: false })}>
+  return html`<div key="panel" class="panel" onKeyDown=${(e) => e.key === 'Escape' && panel.set({ menu: false })}>
     <div class="head" ...${drag}>
       <span class=${'dot ' + m.state}></span><span class="title" title=${title}>${title}</span>
       <${Timer} since=${m.started_at} paused=${paused} />
@@ -290,6 +296,7 @@ function Panel() {
     ${m.notice === 'resumed' && html`<div class="notice"><span class="grow">Resumed · ${title}</span>${m.can_split && html`<button type="button" class="btn" onClick=${() => call('meeting_split')}>Start new instead</button>`}</div>`}
     ${m.notice === 'new' && html`<div class="notice"><span class="grow">New meeting</span>${m.can_continue && html`<button type="button" class="btn" onClick=${() => call('meeting_continue_previous')}>Continue previous instead</button>`}</div>`}
     ${m.excluded && html`<div class="notice"><span class="grow">You're excluded · your microphone isn't in the transcript</span></div>`}
+    <${Companion} m=${m} />
     <${Turns} />
     <div class="foot"><span class="sub">Summary</span><${TemplatePick} m=${m} /><${AutoSummaryButton} m=${m} /></div>
     <div class="foot">
@@ -309,6 +316,7 @@ function Panel() {
 
 async function boot() {
   wire();
+  wireCompanion();
   render(html`<${Panel} />`, document.getElementById('root'));
   loadTemplates();
   const data = await call('app_bootstrap', 'meeting');

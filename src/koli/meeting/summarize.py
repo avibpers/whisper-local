@@ -91,6 +91,14 @@ def meeting_text(m: dict) -> str:
     for r in roster(m):
         said = f"spoke {_clock(r['seconds'])} in {r['turns']} turn{'s' if r['turns'] != 1 else ''}" if r['spoke']             else 'was there but did not speak'
         lines.append(f"- {r['name']}{' (' + r['speaker'] + ')' if r['speaker'] else ''}: {said}")
+    # What was noted as a task while the meeting ran (Koli in the meeting):
+    # the person in the room marked these, so none may be left out.
+    tasks = [t for t in m.get('tasks') or [] if t.get('task')]
+    if tasks:
+        lines.append("Tasks noted during the meeting (include each in the action items):")
+        for t in tasks:
+            when = f"[{_clock(t['at'])}] " if t.get('at') is not None else ''
+            lines.append(f"- {when}{t['task']}{' (' + t['owner'] + ')' if t.get('owner') else ''}")
     lines.append('')
     lines.append('Transcript, one turn per line as [seconds from the start] speaker id (name): words.')
     rows = [(t['start'], 0, f"[{int(t['start'])}] {t['speaker']} ({names.get(t['speaker'], t['speaker'])}): {t['text']}")

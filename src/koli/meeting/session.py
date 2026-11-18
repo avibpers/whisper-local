@@ -106,6 +106,39 @@ def same_name_as(meeting: dict, speaker_id: str, name: str) -> Optional[str]:
     return next((s['id'] for s in meeting['speakers']
                  if s['id'] not in (speaker_id, 'you') and s['name'].strip().lower() == name), None)
 
+
+# The tasks of a meeting as they are stored: {'id', 'task', 'owner', 'at',
+# 'source'}. A task with no words is dropped, a missing id is given, `at`
+# is seconds from the start or None, `source` says who noted it.
+def clean_tasks(tasks: list) -> list:
+    clean, used = [], set()
+    for t in tasks or []:
+        if not isinstance(t, dict):
+            continue
+        task = ' '.join(str(t.get('task') or '').split())[:200]
+        if not task:
+            continue
+        task_id = str(t.get('id') or '').strip()[:20]
+        number = len(clean) + 1
+        while not task_id or task_id in used:
+            task_id = f'T{number}'
+            number += 1
+        used.add(task_id)
+        owner = ' '.join(str(t.get('owner') or '').split())[:40] or None
+        at = t.get('at')
+        at = round(float(at), 2) if isinstance(at, (int, float)) and not isinstance(at, bool) and at >= 0 else None
+        clean.append({'id': task_id, 'task': task, 'owner': owner, 'at': at,
+                      'source': t.get('source') if t.get('source') in ('you', 'koli') else 'you'})
+    return clean
+
+
+# `more` added to `tasks`, a task of `more` losing its id when `tasks`
+# already has it (both meetings count from T1), so clean_tasks gives a new one.
+def _renumbered(tasks: list, more: list) -> list:
+    used = {t.get('id') for t in tasks}
+    return list(tasks) + [{**t, 'id': '' if t.get('id') in used else t.get('id')} for t in more]
+
+
 # Friendly names for the apps the shipped rules know.
 APP_NAMES = {'discord.exe': 'Discord', 'zoom.exe': 'Zoom', 'ms-teams.exe': 'Teams', 'teams.exe': 'Teams',
              'slack.exe': 'Slack', 'chrome.exe': 'Chrome', 'msedge.exe': 'Edge', 'brave.exe': 'Brave'}
@@ -723,6 +756,25 @@ class SessionManager:
             self.store.save(target)
             return True
 
+    # The tasks noted while the meeting ran (Koli in the meeting): the ones
+    # you added and the ones you took from Koli's notes. Live or saved. The
+    # summary reads them as things to include in its action items.
+    def set_tasks(self, meeting_id: str, tasks: list) -> bool:
+        clean = clean_tasks(tasks)
+        with self._transition():
+            m = self.meeting
+            if m and m['id'] == meeting_id:
+                m['tasks'] = clean
+                self.saver.mark(m)
+                self._emit()
+                return True
+            target = self._saved(meeting_id)
+            if target is None:
+                return False
+            target['tasks'] = clean
+            self.store.save(target)
+            return True
+
     # You renamed the meeting: live or saved. `by_you` marks it, so a summary
     # written later doesn't rename it again.
     def set_title(self, meeting_id: str, title: str, by_you: bool = True) -> bool:
@@ -945,6 +997,11 @@ class SessionManager:
             moved_shots = [{**sh, 'at': round(sh['at'] + offset, 2)} for sh in new.get('screenshots', [])]
             self.store.move_shots(new['id'], prev['id'], moved_shots)
             prev.setdefault('screenshots', []).extend(moved_shots)
+            # Tasks noted in the new meeting come along, at their new times.
+            moved_tasks = [{**t, 'at': None if t.get('at') is None else round(t['at'] + offset, 2)}
+                           for t in new.get('tasks', [])]
+            if moved_tasks:
+                prev['tasks'] = clean_tasks(_renumbered(prev.get('tasks', []), moved_tasks))
             for s in new['speakers']:
                 if not any(p['id'] == s['id'] for p in prev['speakers']):
                     prev['speakers'].append(s)
@@ -988,6 +1045,13 @@ class SessionManager:
             old['screenshots'] = [sh for sh in shots if sh['at'] < resumed_s]
             self.store.move_shots(old['id'], fresh['id'], later)
             fresh['screenshots'] = later
+            # Tasks noted after the resume belong to the new meeting; ones
+            # with no time stay where they were written.
+            tasks = old.get('tasks', [])
+            after = [t for t in tasks if t.get('at') is not None and t['at'] >= resumed_s]
+            if after:
+                fresh['tasks'] = [{**t, 'at': round(t['at'] - resumed_s, 2)} for t in after]
+                old['tasks'] = [t for t in tasks if t not in after]
             self.store.save(old)
             self.meeting = fresh
             self._resumed_turn_index = None

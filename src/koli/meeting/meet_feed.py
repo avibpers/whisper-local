@@ -28,6 +28,16 @@ def _overlap(a0: float, a1: float, b0: float, b1: float) -> float:
     return max(0.0, min(a1, b1) - max(a0, b0))
 
 
+# The size of a tile as the extension measured it: [width, height] in whole
+# pixels, or None when it isn't two positive numbers.
+def _tile(value) -> Optional[list]:
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        return None
+    if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 for v in value):
+        return None
+    return [int(round(value[0])), int(round(value[1]))]
+
+
 class MeetCall:
     """One Meet tab's call, keyed by its meeting code (abc-defg-hij)."""
 
@@ -42,6 +52,8 @@ class MeetCall:
         self.channel = {}          # what the extension counted on Meet's caption channel
         self.self_name = ''
         self.people = []           # [{'id', 'name', 'self'}], the latest list the page showed
+        self.guest_tile = None     # [width, height] of Koli's own tile on your screen, when she is in the call
+        self.guests = set()        # names Koli sat in this call under: the page keeps listing her after she left
         self.seen = 0.0            # time.time() of the last message from the tab
         self.joined_at = None      # epoch seconds the extension saw you get in
         self.captions = {}         # block id -> {'name','self','text','t0','t1','final'}
@@ -55,8 +67,12 @@ class MeetCall:
 class MeetFeed:
     """Every Meet call the extension reports, safe to use from any thread."""
 
-    def __init__(self, now=time.time):
+    # `guest_name()` is Koli's name while she sits in a call as her own
+    # participant (meeting/guest.py), '' otherwise: she is never one of the
+    # people, so not an attendee, a 1:1 call's name, or a row in the summary.
+    def __init__(self, now=time.time, guest_name=lambda: ''):
         self._now = now
+        self._guest_name = guest_name
         self._lock = threading.Lock()
         self._calls = {}           # code -> MeetCall
 
@@ -126,8 +142,13 @@ class MeetFeed:
                                 f"channel: {call.channel or 'not seen'}")
         call.self_name = str(e.get('self_name') or call.self_name or '')
         title = str(e.get('title') or '').strip()
+        guest = str(self._guest_name() or '').strip().lower()
+        if guest:
+            call.guests.add(guest)
         people = [{'id': str(p.get('id') or ''), 'name': str(p.get('name') or '').strip(), 'self': bool(p.get('self'))}
-                  for p in (e.get('people') or []) if isinstance(p, dict) and str(p.get('name') or '').strip()]
+                  for p in (e.get('people') or []) if isinstance(p, dict) and str(p.get('name') or '').strip()
+                  and str(p.get('name')).strip().lower() not in call.guests]
+        call.guest_tile = _tile(e.get('guest_tile'))
         if title != call.title or (people and people != call.people):
             out['changed'].append(call.code)
         call.title = title or call.title
@@ -198,7 +219,8 @@ class MeetFeed:
         with self._lock:
             return [{'code': c.code, 'title': c.title, 'people': [dict(p) for p in c.people],
                      'captions_on': c.captions_on, 'captions_live': c.captions_live,
-                     'captions_back_at': c.captions_back_at, 'joined_at': c.joined_at, 'self_name': c.self_name}
+                     'captions_back_at': c.captions_back_at, 'joined_at': c.joined_at, 'self_name': c.self_name,
+                     'guest_tile': list(c.guest_tile) if c.guest_tile else None}
                     for c in self._calls.values() if c.joined and now - c.seen <= HEARTBEAT_TIMEOUT_S]
 
     def call(self, code: str) -> Optional[dict]:

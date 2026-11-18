@@ -753,6 +753,30 @@ meeting: # Meetings: calls in Discord, Zoom, Teams and the browser
         meaning: true
         # The Ollama model that reads meetings and questions
         model: qwen3-embedding:0.6b
+    # Koli in the meeting (docs/design/meet-participant.md): while a meeting
+    # runs she keeps short notes, suggests answers and keeps the tasks, in
+    # the meeting panel. In a Google Meet call she can also sit as her own
+    # participant, with a tile that shows her notes to everyone.
+    companion:
+        # off = just listen (the transcript only, no AI calls);
+        # insights = notes while the meeting runs: the topic now, decisions,
+        # tasks, open questions; active = insights, and an answer you could
+        # give when someone else asks a question
+        mode: 'off'
+        # The least time between two updates of the notes, in seconds
+        update_seconds: 45
+        # Koli joins the Google Meet calls you join, as a guest with her own
+        # tile. Her browser (215 MB) is downloaded the first time, and uses
+        # about 1.3 GB of memory while she is in a call
+        join_call: false
+        # Her name in the call
+        name: Koli
+        # She writes one line in the call's chat when she joins, saying she
+        # is your AI assistant
+        announce: true
+        # In active mode, in the call: she answers in the chat when someone
+        # speaks to her by name, from this meeting only
+        chat: false
     # An online model for meetings (provider/model, like
     # whisper.online_model), or empty for local Whisper. Each meeting
     # remembers which models transcribed it and what that cost.
@@ -1025,6 +1049,12 @@ ai: # Language models for polish, rewrites and later features (Settings › AI)
     meetings:
         model: '' # empty = the default model
         timeout: 180
+
+    # Koli in the meeting: notes every minute or so while a meeting runs, and
+    # answers on a button. A fast, cheap model fits; the summary keeps its own.
+    companion:
+        model: '' # empty = the default model
+        timeout: 20
 
     # AI actions: a voice command that matches none of yours ("move today's
     # photos to Pictures") is done by the AI, with your own wake word or the

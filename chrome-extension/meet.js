@@ -73,6 +73,7 @@
     joined: false,
     captionsOn: null,          // true / false when known from the button, null when unknown
     captionsWanted: true,      // Koli's answer says whether it wants captions on
+    guestName: '',             // Koli's own name while she sits in this call as a participant (her answer says)
     keyTries: 0,
     lastKeyAt: 0,
     selfName: '',
@@ -108,6 +109,7 @@
       chrome.runtime.sendMessage({ kind: 'events', code, urgent, events }, (reply) => {
         if (chrome.runtime.lastError || !reply) return;
         if (typeof reply.captions_wanted === 'boolean') state.captionsWanted = reply.captions_wanted;
+        state.guestName = typeof reply.guest_name === 'string' ? reply.guest_name : '';
       });
     } catch (e) {
       // The extension was reloaded: this old copy of the script can't talk any more.
@@ -558,12 +560,31 @@
   function statusEvent() {
     const now = Date.now();
     const captions = state.captionsOn === true;
+    const tile = guestTile();
     return { type: 'status', code, joined: state.joined, captions, title: state.title,
              captions_live: captions && (channel.live || pageReadable(now)),
              source: channel.live ? 'channel' : 'page', visible: state.visible,
              channel: { labels: [...channel.labels], users: channel.users.size, gave_up: channel.givenUp,
                         self_seen: channel.selfSeen, ...channel.counts },
-             self_name: state.selfName, at_ms: now, people: [...state.people.values()] };
+             self_name: state.selfName, at_ms: now, people: [...state.people.values()],
+             ...(tile ? { guest_tile: tile } : {}) };
+  }
+
+  // The size on your screen of Koli's own tile, when she sits in this call
+  // as a participant: her board takes that shape, so you see all of it
+  // (Meet fills a tile and cuts what is left over). The largest tile with
+  // her name, since a thumbnail of her may be there too.
+  function guestTile() {
+    const name = state.guestName.trim().toLowerCase();
+    if (!name || !state.visible) return null;
+    let best = null;
+    for (const tile of document.querySelectorAll('[data-participant-id]')) {
+      if ((tileName(tile) || '').trim().toLowerCase() !== name) continue;
+      const r = tile.getBoundingClientRect();
+      if (r.width < 40 || r.height < 40) continue;
+      if (!best || r.width * r.height > best[0] * best[1]) best = [Math.round(r.width), Math.round(r.height)];
+    }
+    return best;
   }
 
   function leave() {
@@ -603,7 +624,7 @@
     const events = readCaptions();
     const status = statusEvent();
     const summary = JSON.stringify([status.captions, status.captions_live, status.source, status.visible,
-                                    status.title, status.people]);
+                                    status.title, status.people, status.guest_tile]);
     const now = Date.now();
     if (justJoined || summary !== state.lastStatus || now - state.lastStatusAt >= HEARTBEAT_MS) {
       events.unshift(status);

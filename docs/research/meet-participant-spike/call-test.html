@@ -1,0 +1,41 @@
+<!doctype html>
+<!-- call-test.html  (THROWAWAY SPIKE)
+     A stand-in for a meeting: asks for the camera and microphone the way a
+     call page does, sends them through a real WebRTC connection to itself,
+     and shows what arrives. The test reads the frame counters from outside. -->
+<meta charset="utf-8">
+<title>Koli camera test</title>
+<body style="margin:0;background:#000">
+<video id="remote" autoplay muted playsinline style="width:100vw;height:100vh;object-fit:contain"></video>
+<script>
+window.__call = { ready: false };
+(async () => {
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+  window.__call.devices = devices.map((d) => `${d.kind}:${d.label}`);
+  window.__call.tracks = stream.getTracks().map((t) => `${t.kind}:${t.label}`);
+  const sender = new RTCPeerConnection();
+  const receiver = new RTCPeerConnection();
+  sender.onicecandidate = (e) => e.candidate && receiver.addIceCandidate(e.candidate);
+  receiver.onicecandidate = (e) => e.candidate && sender.addIceCandidate(e.candidate);
+  receiver.ontrack = (e) => { document.getElementById('remote').srcObject = e.streams[0]; };
+  stream.getTracks().forEach((t) => sender.addTrack(t, stream));
+  const offer = await sender.createOffer();
+  await sender.setLocalDescription(offer);
+  await receiver.setRemoteDescription(offer);
+  const answer = await receiver.createAnswer();
+  await receiver.setLocalDescription(answer);
+  await sender.setRemoteDescription(answer);
+  window.__call.stats = async () => {
+    const out = [...(await sender.getStats()).values()].find((s) => s.type === 'outbound-rtp' && s.kind === 'video') || {};
+    const inn = [...(await receiver.getStats()).values()].find((s) => s.type === 'inbound-rtp' && s.kind === 'video') || {};
+    return {
+      encoded: out.framesEncoded || 0, sent: out.framesSent || 0, keyFrames: out.keyFramesEncoded || 0,
+      decoded: inn.framesDecoded || 0, width: out.frameWidth || 0, height: out.frameHeight || 0,
+      bytesSent: out.bytesSent || 0, codec: out.mimeType || '', state: sender.connectionState,
+    };
+  };
+  window.__call.ready = true;
+})().catch((e) => { window.__call.error = String(e && e.stack || e); });
+</script>
+</body>
