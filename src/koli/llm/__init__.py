@@ -97,8 +97,11 @@ def parse_json(text: str):
     return None
 
 
+# `web`: the model may search the web for this answer, where its provider
+# can (the ChatGPT login so far); any other answers from what it knows.
 def complete(feature: str, messages: list, json: bool = False, on_text=None,
-             model: str = '', timeout: float = None, fallbacks: bool = True, options: dict = None) -> Result:
+             model: str = '', timeout: float = None, fallbacks: bool = True, options: dict = None,
+             web: bool = False) -> Result:
     models, route_timeout = routing.route(_setting, feature, model, fallbacks)
     if not models:
         return Result(error='No AI model chosen. Pick one in Settings › AI.')
@@ -125,6 +128,8 @@ def complete(feature: str, messages: list, json: bool = False, on_text=None,
             sent = images.without_images(messages) if spec in _NO_PICTURES else messages
             # `options` are Ollama's own request fields; other providers don't take them.
             extra = {'options': options} if options and provider_id == 'ollama' else {}
+            if web and getattr(provider, 'searches_web', False):
+                extra['web'] = True
             try:
                 text, tokens_in, tokens_out = provider.complete(model_id, sent, json, on_text, remaining, **extra)
             except (http.HttpError, ProviderError) as e:

@@ -31,6 +31,7 @@ class Provider:
     kind = CLOUD
     auth = 'none'          # none | key | device
     site = ''              # where to get it / sign up
+    searches_web = False   # complete() takes web=True: the model may search the web
 
     def complete(self, model, messages, json_mode, on_text, timeout):
         raise NotImplementedError
@@ -142,10 +143,11 @@ class _SubscriptionProvider(Provider):
     account = None   # the oauth.Subscription
 
     # One retry after a 401 (refresh the token) or a 426 (newer client version).
-    def complete(self, model, messages, json_mode, on_text, timeout):
+    # `more` is what this provider alone understands (web search).
+    def complete(self, model, messages, json_mode, on_text, timeout, **more):
         access, account_id = self.account.bearer()
         try:
-            return self._call(access, account_id, model, messages, json_mode, on_text, timeout)
+            return self._call(access, account_id, model, messages, json_mode, on_text, timeout, **more)
         except http.HttpError as e:
             if e.status == 401:
                 access, account_id = self.account.bearer(stale=access)
@@ -153,7 +155,7 @@ class _SubscriptionProvider(Provider):
                 client_version.note_refusal(self.id, e.body)
             else:
                 raise
-            return self._call(access, account_id, model, messages, json_mode, on_text, timeout)
+            return self._call(access, account_id, model, messages, json_mode, on_text, timeout, **more)
 
     def list_models(self) -> list:
         access, account_id = self.account.bearer()
@@ -175,6 +177,7 @@ class Codex(_SubscriptionProvider):
     # The model list hides models from an older client, so it asks as a
     # version ahead of any release. Chat calls use the real version.
     models_client_version = '99.0.0'
+    searches_web = True
 
     def headers(self, access, account_id, version) -> dict:
         h = {'Authorization': f"Bearer {access}", 'originator': 'codex_cli_rs',
@@ -183,9 +186,9 @@ class Codex(_SubscriptionProvider):
             h['chatgpt-account-id'] = account_id
         return h
 
-    def _call(self, access, account_id, model, messages, json_mode, on_text, timeout):
+    def _call(self, access, account_id, model, messages, json_mode, on_text, timeout, web=False):
         headers = self.headers(access, account_id, client_version.current('codex'))
-        return codex_wire.complete(self.base_url, headers, model, messages, json_mode, on_text, timeout)
+        return codex_wire.complete(self.base_url, headers, model, messages, json_mode, on_text, timeout, web=web)
 
     def _list(self, access, account_id):
         headers = self.headers(access, account_id, self.models_client_version)

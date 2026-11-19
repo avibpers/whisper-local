@@ -279,6 +279,12 @@ In Active mode, while she is in the call:
   knowledge; nothing about the people beyond this meeting. The model gets the
   public part of the notes, the lines the call heard, and her talk so far
   (the last 12 lines, her own answers among them: they are in no transcript).
+- **The web.** With `meeting.companion.web` (on by default) her answer may
+  come from a web search: `llm.complete(..., web=True)` adds the Responses
+  API's `web_search` tool where the provider can (the ChatGPT login, measured
+  2026-11-19: the weather in 3.7 s, against "I can't access live weather"
+  without it). The model decides when to search; other providers answer from
+  what they know. Only her answers in the call search, not her notes.
 - **How fast.** The wait is the pause (1.5 s), up to a second for the caption
   to arrive, and the model's time to its first words. Measured with the local
   `gemma4:e4b`: 0.1 to 2 s to the first words. `ai.companion.model` picks it.
@@ -325,6 +331,7 @@ never an attendee, a name for a 1:1 call, or a row in the summary's roster.
 | `meeting.companion.name` | `Koli` | her name in the call |
 | `meeting.companion.announce` | true | one chat line when she joins |
 | `meeting.companion.chat` | false | Active: her answers are written in the chat too |
+| `meeting.companion.web` | true | her answers in a call may come from a web search |
 | `ai.companion.model`, `ai.companion.timeout` | '' , 20 | else the main AI model |
 
 ## Known limits

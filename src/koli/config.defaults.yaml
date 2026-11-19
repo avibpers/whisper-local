@@ -778,6 +778,10 @@ meeting: # Meetings: calls in Discord, Zoom, Teams and the browser
         # In active mode, in the call: her answers are also written in the
         # call's chat
         chat: false
+        # When she answers in a call she may search the web for things that
+        # change (the weather, news, prices). Works with a ChatGPT (Codex)
+        # login; other models answer from what they know
+        web: true
     # An online model for meetings (provider/model, like
     # whisper.online_model), or empty for local Whisper. Each meeting
     # remembers which models transcribed it and what that cost.

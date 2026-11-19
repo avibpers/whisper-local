@@ -198,6 +198,11 @@ First decide which of three things to do, and do exactly one:
 
 When you are told the speaker has stopped talking, [wait] is no longer possible: answer what you can make of it, or [skip]."""
 
+# Added to the talk prompt when she may look things up.
+WEB_PART = """
+
+You can search the web. Do it for things that change or that you can't know: the weather, news, prices, opening hours, results, who holds a role now. Don't search for what the meeting itself answers or for plain general knowledge. Say the answer itself, briefly, with no links and no list of sources."""
+
 
 # A JSON object out of the model's words: plain, in a code fence, or inside prose.
 def _parse(text: str):
@@ -301,9 +306,17 @@ def _public_notes_part(notes: dict) -> str:
 
 
 # The words on her tile: one line of plain text, without the marks a model
-# likes to add, cut to what a tile holds.
+# likes to add, cut to what a tile holds. A model that searched the web adds
+# its sources whatever it is told: "([site](https://…))" goes, a link keeps
+# its words, a bare address goes, and so does half a link at the end while
+# the words are still coming in.
 def tidy_say(text: str) -> str:
-    text = ' '.join(str(text or '').replace('**', '').replace('`', '').split())
+    text = str(text or '').replace('**', '').replace('`', '')
+    text = re.sub(r'\s*\(\s*\[[^\]]*\]\([^)]*\)\s*\)', '', text)     # ([source](address))
+    text = re.sub(r'\[([^\]]*)\]\([^)]*\)', r'\1', text)             # [words](address)
+    text = re.sub(r'\s*\(?\[[^\]]*(\]\([^)]*)?$', '', text)          # half a link at the end
+    text = re.sub(r'\s*https?://\S+', '', text)                      # a bare address
+    text = ' '.join(text.split())
     if len(text) >= 2 and text[0] == text[-1] and text[0] in '"\'':
         text = text[1:-1].strip()
     return text[:SAY_MAX]
@@ -320,11 +333,14 @@ def tidy_say(text: str) -> str:
 # lines(..., heard_only=True)) and the talk with her so far ([{'who',
 # 'text'}], her own answers among them: they are in no transcript).
 # `on_text(piece)` gets the words as the model writes them. Plain text.
+# `web`: she may search the web for the answer (weather, news); a model
+# whose provider can't search answers from what it knows.
 def reply(notes: dict, rows: list, talk: list, who: str, text: str, language: str, complete: Callable,
-          on_text: Optional[Callable] = None, owner: str = '', alone: bool = False, stopped: bool = True) -> tuple:
+          on_text: Optional[Callable] = None, owner: str = '', alone: bool = False, stopped: bool = True,
+          web: bool = False) -> tuple:
     owner = _text(owner, 40)
     who = _text(who, 40) or 'someone'
-    system = TALK_PROMPT.format(owner=f' You work for {owner}.' if owner else '')
+    system = TALK_PROMPT.format(owner=f' You work for {owner}.' if owner else '') + (WEB_PART if web else '')
     parts = [_public_notes_part(notes)]
     if rows:
         parts.append("The last minutes of the meeting:\n" + transcript(rows))
@@ -335,7 +351,7 @@ def reply(notes: dict, rows: list, talk: list, who: str, text: str, language: st
                  + (f"{who} has stopped talking." if stopped else f"{who} has paused; more words may still come."))
     parts.append(f"Said to you now by {who}:\n{_text(text, 600)}")
     messages = [{'role': 'system', 'content': system}, {'role': 'user', 'content': '\n\n'.join(parts)}]
-    result = complete(FEATURE, messages, json=False, on_text=on_text)
+    result = complete(FEATURE, messages, json=False, on_text=on_text, **({'web': True} if web else {}))
     if not getattr(result, 'ok', False):
         raise CompanionError(getattr(result, 'error', '') or 'The AI did not answer')
     first = str(result.text or '').strip().lower()
