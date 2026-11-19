@@ -338,6 +338,45 @@ In Active mode, while she is in the call:
   as "Koli (the AI assistant in the call)". Before, her words were on the
   tile for a minute and nowhere else.
 
+### What she adds on her own
+
+*Added 2026-11-19: "she was not participating or barging in the middle".
+Until then Active mode only answered: she spoke when spoken to.*
+
+In Active mode, in a call with other people (`meeting.companion.chime`, on by
+default), she may say something nobody asked for. `companion.chime` asks the
+model, which is told to speak only when a question was left without an
+answer and she knows it, a wrong fact matters for a decision, something said
+earlier in the meeting is recalled wrongly or not at all, or a decision is
+about to contradict an earlier one; in every other case `[skip]`. No comments,
+summaries, praise or offers of help. At most two short sentences.
+
+When the model is asked (`CompanionService._consider_chime`), all of:
+
+- nobody has spoken for 2 s (no open caption changed): she waits for a gap;
+- at least 40 new words were heard since her last look;
+- her last look was at least 30 s ago, her last remark of her own at least
+  90 s ago, and anything else she said at least 30 s ago;
+- the call is not just you and her (there, everything you say is to her).
+
+So an hour of lively talk is at most 120 looks and 40 remarks; each look is
+one call to her model with the last three minutes. The limits of a ChatGPT
+subscription for this are not known: the caps are the knob.
+
+The model is asked on a thread of its own (`meeting-companion-chime`), so a
+question put to her by name never waits behind it. An answer always wins the
+tile: a remark whose answer came in after she began on someone's question is
+dropped. The remark is shown like an answer (the prompter, the pulse) under
+"has something to add" (`say_kind: 'chime'`), kept in the meeting's
+`remarks` with `kind: 'chime'`, remembered in her talk so she doesn't repeat
+it, and written in the chat too when her answers are. It is built from what
+the call heard only, like everything on her tile. A model that fails is a
+line in the log, not a card: nobody asked.
+
+Measured on `codex/gpt-6.1-terra` (2026-11-19, 12 short talks, English and
+Hebrew): 11 as a person would want, the miss a silence where a remark was
+wanted; 1.3 to 3.3 s each.
+
 ### Only what the call heard
 
 Koli's own Whisper hears your microphone whether or not it is muted in Meet:

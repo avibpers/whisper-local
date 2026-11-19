@@ -36,6 +36,13 @@ MIN_PAUSED_WORDS = 3       # fewer words than this in a pause ("Koli…") aren't
 READ_CPS = 14.0            # characters a second someone reads off her tile
 MIN_READ_S, MAX_READ_S = 6.0, 25.0   # an answer stays up at least this long before a follow-up may replace it
 STREAM_EVERY_S = 0.4       # her tile is redrawn this often while her words come in
+# What she adds on her own (Active mode, others in the call). Every look is a call to
+# the model and every remark an interruption, so both are capped.
+CHIME_CHECK_S = 30.0       # she considers adding something at most this often
+CHIME_MIN_WORDS = 40       # and only when this many new words were heard since her last look
+CHIME_QUIET_S = 2.0        # and nobody has spoken for this long: she waits for a gap
+CHIME_GAP_S = 90.0         # two remarks of her own are at least this far apart
+CHIME_AFTER_SAY_S = 30.0   # and not this soon after anything else she said
 TALK_KEEP = 12             # lines of her talk with the call that the model sees again
 THINKING = '…'             # on her tile from the moment she starts on an answer
 NO_MODEL = "Choose an AI model in Settings › AI first"
@@ -70,6 +77,7 @@ class CompanionService:
         self._forget('')
         self._unsubscribe = []             # how to stop hearing the meeting's events
         self._stopped = threading.Event()  # set on shutdown: her listening thread ends
+        self._threaded = start_worker      # False in tests: what would get a thread of its own runs in place
         if subscribe is not None:
             self._unsubscribe = [subscribe('meeting', self.on_event), subscribe('meeting_turn', self.on_event)]
         if start_worker:
@@ -95,6 +103,10 @@ class CompanionService:
         self._say_to = ''                  # whom she answers
         self._say_until = 0.0
         self._follow_until = 0.0           # until then the one she answered may go on without her name
+        self._chime_read = 0               # turns she has already considered adding something to
+        self._chime_checked_at = float('-inf')
+        self._chimed_at = float('-inf')    # her last remark of her own
+        self._chiming = False              # the model is being asked whether she has something to add
         self._said_at = float('-inf')
         self._talk = collections.deque(maxlen=TALK_KEEP)   # her talk with the call: [{'who', 'text'}], her answers too
         # Captions still open, by block id: {'taken': the words she is done with (answered,
@@ -634,6 +646,94 @@ class CompanionService:
             why = '' if row['captioned'] else self._to_her(m, row['text'], row['you'], who)
             if why:
                 self._reply(m, who, row['text'], stopped=True, why=why)
+        self._consider_chime(m)
+
+    # ── What she adds on her own ─────────────────────────────────────────────
+    # Active mode, in a call with other people: in a gap of the talk she may
+    # say something nobody asked for (an answer to a question left hanging, a
+    # number remembered wrongly). The model decides, and mostly says no.
+    # Built like an answer from what the call heard only.
+
+    # Whether this is a moment to ask the model, and then asking it. The
+    # model is asked off the talk thread: a question put to her by name
+    # must not wait behind a remark she may not even make.
+    def _consider_chime(self, m: dict):
+        now = self._now()
+        if (self._chiming or not self._setting('meeting.companion.chime', True) or self._alone(m) or not self._ai_ready()
+                or now - self._chime_checked_at < CHIME_CHECK_S or now - self._chimed_at < CHIME_GAP_S
+                or now - self._said_at < CHIME_AFTER_SAY_S):
+            return
+        being_said = self._meetings.meet.open_captions(self._code(m))[-2:]
+        if any(now - block['t1'] < CHIME_QUIET_S for block in being_said):
+            return                             # someone is speaking: she waits for a gap
+        self._chime_read = min(self._chime_read, len(m.get('turns', [])))
+        fresh, upto = self._public_rows(m, self._chime_read)
+        said_now = [(self._owner(m) or 'You') if b.get('self') else b['name'] for b in being_said]
+        said_now = '\n'.join(f"{name}: {' '.join(str(b.get('text') or '').split())}" for name, b in zip(said_now, being_said)
+                             if str(b.get('text') or '').strip())
+        new_words = brain.words(fresh) + len(said_now.split())
+        if new_words < CHIME_MIN_WORDS:
+            return
+        self._chime_checked_at, self._chime_read, self._chiming = now, upto, True
+        job = lambda: self._chime(m, said_now, new_words)
+        if self._threaded:
+            threading.Thread(target=job, daemon=True, name='meeting-companion-chime').start()
+        else:
+            job()
+
+    def _chime(self, m: dict, said_now: str, new_words: int):
+        generation, said_at, guest, showing = self._generation, self._said_at, self._guest, self._say
+        put = {'text': '', 'at': float('-inf'), 'shown': False}
+
+        # Her tile is still hers to write on: the meeting is the same, and no
+        # answer to someone took the tile meanwhile (an answer always wins).
+        # What was up when she started (an answer older than
+        # CHIME_AFTER_SAY_S, or nothing) may be replaced.
+        def mine() -> bool:
+            return (generation == self._generation and said_at == self._said_at and self._can_talk()
+                    and (self._say == showing or (put['shown'] and self._say_kind == 'chime')))
+
+        def on_text(piece):
+            put['text'] += str(piece or '')
+            words = put['text'].lstrip()
+            if words.startswith('[') or not mine():
+                return
+            if self._now() - put['at'] >= STREAM_EVERY_S and brain.tidy_say(words):
+                put['at'], put['shown'] = self._now(), True
+                self._put(m, brain.tidy_say(words), 'chime')
+        asked_at = time.time()
+        try:
+            rows = brain.lines(m, since=self._elapsed(m) - ANSWER_WINDOW_S, heard=self._heard_fn(m), heard_only=True)
+            with for_meeting(m['id'], 'companion'):
+                said = brain.chime(self._notes, rows, list(self._talk), said_now, meeting_language(m), self._complete,
+                                   on_text=on_text, owner=self._owner(m))
+            if not mine():
+                return                         # the meeting changed, or she answered someone meanwhile
+            watched = guest.watched() if said and hasattr(guest, 'watched') else None
+            seen = '' if watched is None else (f', her picture is asked for at {watched} lines' if watched
+                                             else ', Meet asks for no picture of her')
+            logger.info(f"Koli in the meeting: {'a remark of her own' if said else 'nothing to add'} after {new_words} new words "
+                        f"in {time.time() - asked_at:.1f} s" + (f", {len(said.split())} words said{seen}" if said else ''))
+            if not said:
+                if put['shown']:               # words that turned out to be a no
+                    self._put(m, '')
+                return
+            self._said_at = self._chimed_at = self._now()
+            self._put(m, said, 'chime')
+            self._talk.append({'who': self._name(), 'text': said})
+            self._remember(m, None, '', said, 'chime')
+            if self._setting('meeting.companion.chat', False):
+                guest.say(said)
+            self._card('said', f"{self._name()} added", said, [])
+        except CompanionError as e:
+            # Nobody asked for this: a model that fails is no card, only a line in the log.
+            logger.info(f"Koli in the meeting: could not consider a remark of her own: {e}")
+            if put['shown'] and mine():
+                self._put(m, '')
+        except Exception as e:
+            logger.warning(f"Koli in the meeting: a remark of her own failed: {e}", exc_info=True)
+        finally:
+            self._chiming = False
 
     # How long an answer needs on her tile before a follow-up may take its place.
     @staticmethod
