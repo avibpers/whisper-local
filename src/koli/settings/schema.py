@@ -567,8 +567,9 @@ SCHEMA = [
        help="In Active mode, in the call, she answers on her tile. With this on she also writes each answer in the "
             "call's chat, where it stays after her tile has moved on."),
     _S('meeting.companion.chime', 'She adds something on her own', 'meetings', 'toggle', group='Koli in the meeting',
-       help='In Active mode, in a call with other people: when a question is left without an answer, or something '
-            'said earlier in the meeting is remembered wrongly, she says so on her tile without being asked. She waits '
+       help='In Active mode, in a call with other people: when a question is left without an answer, something said '
+            'earlier in the meeting is remembered wrongly, or the group is stuck and she knows a fact that helps, she '
+            "says so on her tile without being asked. Needs Meet's captions on. She waits "
             'for a gap in the talk, considers it at most every half minute and speaks at most every minute and a half. '
             'Each look is one more call to her AI model.'),
     _S('meeting.companion.web', 'She looks things up on the web', 'meetings', 'toggle', group='Koli in the meeting',
