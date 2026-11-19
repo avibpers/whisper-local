@@ -542,6 +542,17 @@ class CompanionService:
         self._say, self._say_kind, self._say_to = text, (kind if text else ''), (to if text else '')
         self._say_until = self._now() + SAY_SHOWN_S if text else 0.0
         self._show_board(m)
+        if not text:
+            self._hand(False)
+
+    # Her hand in Meet (meeting.companion.raise_hand): up when she speaks up
+    # on her own, and with an answer when her tile is on nobody's screen. The
+    # guest lowers it by itself after a moment; down at once with her words.
+    def _hand(self, up: bool):
+        guest = self._guest
+        if guest is None or not hasattr(guest, 'hand') or (up and not self._setting('meeting.companion.raise_hand', True)):
+            return
+        guest.hand(up)
 
     # A card's words written in the call's chat, by your click.
     def say(self, card_id: str):
@@ -706,6 +717,8 @@ class CompanionService:
             if words.startswith('[') or not mine():
                 return
             if self._now() - put['at'] >= STREAM_EVERY_S and brain.tidy_say(words):
+                if not put['shown']:           # her first words: nobody is looking at her tile
+                    self._hand(True)
                 put['at'], put['shown'] = self._now(), True
                 self._put(m, brain.tidy_say(words), 'chime')
         asked_at = time.time()
@@ -726,6 +739,8 @@ class CompanionService:
                     self._put(m, '')
                 return
             self._said_at = self._chimed_at = self._now()
+            if not put['shown']:
+                self._hand(True)
             self._put(m, said, 'chime')
             self._talk.append({'who': self._name(), 'text': said})
             self._remember(m, None, '', said, 'chime')
@@ -813,6 +828,8 @@ class CompanionService:
             self._last_asker = who
             self._follow_until = self._now() + FOLLOW_UP_S
         self._put(m, said, 'answer', who)
+        if watched == 0:                       # her tile is on nobody's screen: the hand is what they can see
+            self._hand(True)
         self._talk.append({'who': who, 'text': text})
         self._talk.append({'who': self._name(), 'text': said})
         self._remember(m, who, text, said, 'answer')

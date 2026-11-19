@@ -26,6 +26,7 @@ RETRY_WAIT_S = 8.0
 ASK_WAIT_S = 180.0       # how long she waits to be admitted after "Ask to join"
 TICK_S = 5.0             # how often she checks she is still in the call and what Meet asks her to send
 FRAME_S = 0.1            # while her board moves (her words coming in), the app redraws it this often
+HAND_UP_S = 20.0         # her hand stays raised this long: it calls eyes to her tile, it is not a request to speak
 NAME_BOX_WAIT_S = 25.0
 JOIN_WAIT_S = 40.0       # from the click on Join to being in the call
 POLL_S = 1.0
@@ -103,6 +104,19 @@ AS_GUEST = _button('guest', "/^Continue as guest/.test(b.innerText.trim())")
 JOIN = _button('join', "/^(Join now|Ask to join)$/.test(b.innerText.trim())")
 DIALOG_JOIN = _button('dialog_join', "b.closest('[role=\"dialog\"]') && b.innerText.trim() === 'Join now'")
 CHAT = _button('chat', "/chat with everyone/i.test(b.getAttribute('aria-label') || '')")
+# Raise hand: one button that toggles and reads "Raise hand (ctrl + alt + h)" either way.
+# She looks for it to know the call has one, and presses the shortcut it names: a
+# pointer crossing her hidden page took over a minute (measured 2026-11-19).
+HAND = _button('hand', "/^raise hand/i.test(b.getAttribute('aria-label') || '')")
+
+# Whether her hand is up, from the line Meet writes for screen readers ("Your
+# hand is raised at position 1." / "Your hand is lowered."); null when the
+# page says neither. Measured on Meet's page, 2026-11-19.
+HAND_UP = """/*probe:hand_up*/(() => {
+  const text = document.body.innerText;
+  if (text.includes('Your hand is raised')) return true;
+  return text.includes('Your hand is lowered') ? false : null;
+})()"""
 
 # Her own microphone button and whether it is muted. Meet marks it with
 # data-is-muted, and its icon is "mic" or "mic_off" in every language
@@ -222,6 +236,10 @@ class MeetGuest:
         self._moving = False       # her board is animating: frames are driven from here (animate)
         self._wake = threading.Event()   # set when there is something new to draw
         self._watched = None       # the tallest picture of her Meet asks for; 0 = none; None = not looked yet
+        self._hand_up = False      # her hand is raised in Meet (as far as she knows)
+        self._hand_until = 0.0     # until then it should be up
+        self._hand_missing = False  # this call has no Raise hand button for her
+        self._hand_check = False   # the shortcut was pressed: the next look at the call reads what the page says
         self._dense = False
         self._frame = frame_size(None, None)
         self._frame_sent = None
@@ -264,6 +282,7 @@ class MeetGuest:
                     else:
                         self._wake.wait(0.5)
                         self._wake.clear()
+                    self.keep_hand()
                     if time.monotonic() >= next_tick:
                         next_tick = time.monotonic() + TICK_S
                         self.tick()
@@ -336,6 +355,7 @@ class MeetGuest:
             self._drawn = None
             self._moving = False
             self._watched = None
+            self._hand_up, self._hand_until, self._hand_missing, self._hand_check = False, 0.0, False, False
             self._frame_sent = None
         if session is not None:
             try:
@@ -533,6 +553,15 @@ class MeetGuest:
             if self._view.get('say') and not self._moving:
                 self._moving = True
                 self._wake.set()
+            # The hand toggles and its button looks the same either way: after a press,
+            # what the page says decides, and a press that did not take is made again.
+            if self._hand_check:
+                self._hand_check = False
+                said = page.evaluate(HAND_UP)
+                if said is not None and bool(said) != self._hand_up:
+                    logger.info(f"Koli's hand is {'up' if said else 'down'} in Meet, not as she left it")
+                    self._hand_up = bool(said)
+                    self._wake.set()
         except Exception as e:
             logger.info(f"Koli's browser stopped answering: {e}")
             self._ended(f"{self.name} is no longer in the call")
@@ -581,6 +610,44 @@ class MeetGuest:
             self._moving = False
         return self._moving
 
+    # ── Her hand ─────────────────────────────────────────────────────────────
+    # Meet's own way to make people look at someone: a hand on her tile, a
+    # sound, a line for everyone, and her tile moves into view. Used when she
+    # speaks up on her own, or answers while her tile is on nobody's screen.
+
+    # Up for HAND_UP_S (then she lowers it herself), or down now. Only notes
+    # the wish: her own thread presses the keys (keep_hand), so the one who
+    # asks never waits on the browser.
+    def hand(self, up: bool):
+        self._hand_until = self._now() + HAND_UP_S if up else 0.0
+        self._wake.set()
+
+    @property
+    def hand_up(self) -> bool:
+        return self._hand_up
+
+    # Makes her hand what it should be now: Meet's shortcut, once, when it differs.
+    def keep_hand(self):
+        want = self._now() < self._hand_until
+        if want == self._hand_up or self._hand_missing:
+            return
+        with self._lock:
+            session, hands = self._session, self._hands
+        if session is None or hands is None or not self.in_call:
+            return
+        try:
+            with self._say_lock:               # her hands do one thing at a time
+                at = session.page.evaluate(HAND)
+                if not at:
+                    logger.info("Koli has no Raise hand button in this call")
+                    self._hand_missing = True
+                    return
+                hands.shortcut('h', ctrl=True, alt=True)
+            self._hand_up, self._hand_check = want, True
+        except Exception as e:
+            logger.info(f"Koli's hand was not {'raised' if want else 'lowered'}: {e}")
+            self._hand_missing = True
+
     # The tallest picture of her that Meet asks her to send right now, in
     # lines: 0 when it asks for none (her tile is probably on nobody's
     # screen), None before the first look.
@@ -618,4 +685,5 @@ class MeetGuest:
         return re.sub(r'/\*CONFIG\*/.*?/\*END\*/', lambda _: json.dumps(config, ensure_ascii=False), source, count=1)
 
 
-__all__ = ['ASK_WAIT_S', 'BrowserSession', 'MeetGuest', 'RETRIES', 'RETRY_WAIT_S', 'SAY_MAX', 'STATES', 'TICK_S', 'frame_size']
+__all__ = ['ASK_WAIT_S', 'BrowserSession', 'HAND_UP_S', 'MeetGuest', 'RETRIES', 'RETRY_WAIT_S', 'SAY_MAX', 'STATES', 'TICK_S',
+           'frame_size']

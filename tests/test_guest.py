@@ -153,6 +153,11 @@ class GuestCase(unittest.TestCase):
     def kinds(self):
         return [e[0] if e[0] != 'eval' else f'eval:{e[1]}' for e in self.log]
 
+    # Times Meet's shortcut for the hand was pressed: Ctrl+Alt+H.
+    def hand_keys(self):
+        return len([e for e in self.log if e[0] == 'send' and e[1] == 'Input.dispatchKeyEvent'
+                    and e[2].get('type') == 'rawKeyDown' and e[2].get('code') == 'KeyH' and e[2].get('modifiers') == 3])
+
 
 # ── The join ─────────────────────────────────────────────────────────────────
 
@@ -535,6 +540,75 @@ class InCallTests(GuestCase):
         guest.show({'title': 'Koli', 'say': ''})
         guest.tick()
         self.assertFalse(guest.moving)
+
+    # ── Her hand ─────────────────────────────────────────────────────────────
+    # Meet's own way to make people look at someone: the hand on her tile, a
+    # sound and a line for everyone. Measured in a real call (2026-11-19): a
+    # guest on a hidden page has the button and the page says "Your hand is
+    # raised"; the button itself looks the same. She uses Meet's shortcut,
+    # Ctrl+Alt+H: a pointer crossing a hidden page took over a minute (its
+    # moves wait for the page's frames, about one a second), a key is at once.
+
+    HAND_AT = {'x': 678, 'y': 565, 'text': ''}
+
+    def test_she_raises_her_hand_and_lowers_it_after_a_while(self):
+        guest = self.joined({**HAPPY, 'state': IN_CALL, 'button:hand': self.HAND_AT})
+        self.assertFalse(guest.hand_up)
+        guest.hand(True)
+        guest.keep_hand()
+        self.assertEqual(self.hand_keys(), 1)
+        self.assertEqual(self.presses(), [])                    # no pointer on a hidden page
+        self.assertTrue(guest.hand_up)
+        guest.keep_hand()
+        self.assertEqual(self.hand_keys(), 1)                   # once is enough
+        self.clock.t += 21                                      # a raised hand is for a moment, not for the meeting
+        guest.keep_hand()
+        self.assertEqual(self.hand_keys(), 2)
+        self.assertFalse(guest.hand_up)
+
+    def test_her_hand_goes_down_when_her_words_go(self):
+        guest = self.joined({**HAPPY, 'state': IN_CALL, 'button:hand': self.HAND_AT})
+        guest.hand(True)
+        guest.keep_hand()
+        guest.hand(False)
+        guest.keep_hand()
+        self.assertEqual(self.hand_keys(), 2)
+        self.assertFalse(guest.hand_up)
+
+    def test_a_hand_that_was_never_raised_is_not_lowered(self):
+        guest = self.joined({**HAPPY, 'state': IN_CALL, 'button:hand': self.HAND_AT})
+        guest.hand(False)
+        guest.keep_hand()
+        self.assertEqual(self.hand_keys(), 0)
+
+    def test_a_call_without_the_button_is_left_alone(self):
+        guest = self.joined({**HAPPY, 'state': IN_CALL, 'button:hand': None})
+        guest.hand(True)
+        guest.keep_hand()
+        guest.keep_hand()
+        self.assertEqual(self.hand_keys(), 0)
+        self.assertEqual(self.kinds().count('eval:button:hand'), 1)     # not looked for at every turn of the loop
+
+    def test_a_press_that_did_not_take_is_made_again(self):
+        # The button toggles and looks the same either way: the page's own words say which it is.
+        guest = self.joined({**HAPPY, 'state': IN_CALL, 'button:hand': self.HAND_AT, 'hand_up': [False, True]})
+        guest.hand(True)
+        guest.keep_hand()
+        guest.tick()                                            # the page: no hand is raised
+        self.assertFalse(guest.hand_up)
+        guest.keep_hand()
+        self.assertEqual(self.hand_keys(), 2)
+        guest.tick()                                            # now it is
+        self.assertTrue(guest.hand_up)
+        guest.keep_hand()
+        self.assertEqual(self.hand_keys(), 2)
+
+    def test_leaving_forgets_the_hand(self):
+        guest = self.joined({**HAPPY, 'state': IN_CALL, 'button:hand': self.HAND_AT})
+        guest.hand(True)
+        guest.keep_hand()
+        guest.leave()
+        self.assertFalse(guest.hand_up)
 
     def test_she_knows_whether_meet_asks_for_her_picture(self):
         guest = self.joined({**HAPPY, 'state': IN_CALL, 'sending': [[{'active': True, 'width': 480, 'height': 270},

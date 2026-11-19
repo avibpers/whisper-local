@@ -259,10 +259,41 @@ one stall in 150 s). A frame that gets no answer in 5 s stops the redrawing;
 the next look at the call picks it up again while she is still saying
 something.
 
+In a real call (2026-11-19, her page hidden, Meet asking for a 320x240
+picture): 9.8 video frames a second reached Meet while she spoke, at 22% of
+one core for her whole browser, against 9% while her notes are up; 1.2 GB.
+A short remark comes to rest after 3 to 4 s and the frames stop.
+
 At every look the guest also notes the tallest picture of her that Meet
 asks for (`MeetGuest.watched`). Meet asks for none when her tile is on
-nobody's screen, and each answer's log line says which it was: an answer
-nobody could see is the case a chat message or a raised hand is for.
+nobody's screen, and each answer's log line says which it was.
+
+**Her hand** *(2026-11-19: "some animation that people will look on her")*.
+The pulse of her tile only helps those who have her tile on screen. Meet's
+own signal reaches everyone: a raised hand puts a hand on her tile, plays a
+sound, tells the call, and brings her tile into view. Measured in a real
+call: a guest has the button ("Raise hand (ctrl + alt + h)"); it toggles and
+looks the same either way, and the page says which it is in a line for
+screen readers ("Your hand is raised at position 1." / "Your hand is
+lowered.").
+
+- `MeetGuest.hand(True)` notes the wish; her own thread (`keep_hand`) looks
+  for the button, presses Meet's shortcut Ctrl+Alt+H
+  (`Hands.shortcut`), and lowers the hand again after 20 s (`HAND_UP_S`): it
+  calls eyes to her tile, it is not a request to speak. In the call: up
+  within 2 s of her remark, down at 21 s.
+- Not a click. A pointer path across her hidden page took over a minute:
+  Chrome hands mouse moves to a page with its frames, and a hidden page has
+  about one a second. Keys are not tied to frames. Anything she does after
+  the page is hidden must be keys, inserted text or a script, never the
+  pointer.
+- At the next look at the call the page's line is read; a press that did not
+  take (or took twice) is made again. A call without the button is left
+  alone for the rest of the call.
+- When (`CompanionService._hand`, `meeting.companion.raise_hand`, on by
+  default): with every remark of her own; with an answer only when Meet
+  asks for no picture of her, since the one who asked is usually looking.
+  Down at once when her words leave the tile.
 
 She leaves when the meeting ends, when you leave the call, when you press Take
 out, or when Koli quits (`MeetingService.shutdown`). Continue previous and
@@ -442,6 +473,7 @@ never an attendee, a name for a 1:1 call, or a row in the summary's roster.
 | `meeting.companion.announce` | true | one chat line when she joins |
 | `meeting.companion.chat` | false | Active: her answers are written in the chat too |
 | `meeting.companion.chime` | true | Active, with others in the call: she adds something on her own in a gap |
+| `meeting.companion.raise_hand` | true | she raises her hand in Meet for 20 s when she speaks up |
 | `meeting.companion.web` | true | her answers in a call may come from a web search |
 | `ai.companion.model`, `ai.companion.timeout` | '' , 20 | else the main AI model |
 
@@ -463,9 +495,10 @@ never an attendee, a name for a 1:1 call, or a row in the summary's roster.
 - She adds something on her own only where Meet's captions are on (they
   tell her when nobody is speaking), and only as well as the captions are
   written: a call in two languages at once gives her little to be sure of.
-- When her tile is on nobody's screen her words are seen by no one; the log
-  says so for each answer ("Meet asks for no picture of her"). Raising her
-  hand or writing in the chat in that case is not built yet.
+- When her tile is on nobody's screen her words are seen by no one until
+  they look: she raises her hand then, and the log says so for each answer
+  ("Meet asks for no picture of her"). The hand's words on Meet's page are
+  read in English (`?hl=en`).
 - Not in this version: her voice, answers that draw on your earlier meetings
   (the search waits on a local model, too slow for a live answer; the brain
   already takes a `past` text), "explain this term", a warning before the end
