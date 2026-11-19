@@ -27,8 +27,8 @@ ANSWER_WINDOW_S = 180      # the talk an answer is drawn from
 TASK_WINDOW_S = 90         # the talk a new task is found in
 SAY_GAP_S = 2.0            # the least time between two answers of hers
 SAY_SHOWN_S = 60           # how long what she said stays on her board
-IDLE_S = 1.0               # how often the worker listens for a pause in what is being said to her
-READ_EVERY = 5             # every so many idle looks, whether the notes are due
+IDLE_S = 5.0               # with nothing new, how often the worker looks whether the notes are due
+LISTEN_S = 0.5             # how often she looks at what is being said to her (a thread of its own)
 PAUSE_S = 1.5              # a caption unchanged this long: the speaker paused, and the model is asked whether to answer
 STOPPED_S = 3.0            # unchanged this long: the speaker has stopped, there is nothing to wait for
 FOLLOW_UP_S = 45.0         # this long after her answer, the same person's next words need no name
@@ -67,10 +67,14 @@ class CompanionService:
         self._card_seq = 0
         self._forget('')
         self._unsubscribe = []             # how to stop hearing the meeting's events
+        self._stopped = threading.Event()  # set on shutdown: her listening thread ends
         if subscribe is not None:
             self._unsubscribe = [subscribe('meeting', self.on_event), subscribe('meeting_turn', self.on_event)]
         if start_worker:
             threading.Thread(target=self._loop, daemon=True, name='meeting-companion').start()
+            # Talking with her has a thread of its own: an answer must never wait
+            # behind a notes update, which takes the model 5 to 9 seconds.
+            threading.Thread(target=self._talk_loop, daemon=True, name='meeting-companion-talk').start()
 
     # Everything known about one meeting; a new meeting starts clean.
     def _forget(self, meeting_id: str):
@@ -160,15 +164,16 @@ class CompanionService:
     # ── The worker ───────────────────────────────────────────────────────────
 
     def _loop(self):
-        idle = 0
         while not self._closed:
             try:
-                self._run(self._jobs.get(timeout=IDLE_S))
+                job = self._jobs.get(timeout=IDLE_S)
             except queue.Empty:
-                idle += 1
-                if idle % READ_EVERY == 0:
-                    self._run(('read',))
-            self._run(('listen',))
+                job = ('read',)
+            self._run(job)
+
+    def _talk_loop(self):
+        while not self._stopped.wait(LISTEN_S):
+            self.listen()
 
     # Runs one waiting job; False when there was none. For tests.
     def step(self) -> bool:
@@ -188,7 +193,7 @@ class CompanionService:
             elif kind == 'auto_join':
                 self._auto_join()
             elif kind == 'listen':
-                self.listen()
+                self._listen()
             elif kind == 'read':
                 with self._lock:
                     self._read_queued = False
@@ -242,26 +247,15 @@ class CompanionService:
             self._forget('')
             self._publish_state()
 
-    # New lines arrived (or it is time to look): her name, then the notes.
+    # New lines arrived (or it is time to look): the notes. Who is talking
+    # to her is listened for on her other thread (listen).
     def _read_new(self):
         m = self._meeting()
         if not m:
             return
-        self._expire_say()
         if self._meetings.session.state != 'live':
             return
         mode = self._mode()
-        turns = len(m.get('turns', []))
-        self._heard = min(self._heard, turns)       # the list can get shorter (echo removal, a split)
-        # Only words the call heard: your own aside to her with the microphone
-        # muted in Meet must not get an answer in front of everyone.
-        new, self._heard = self._public_rows(m, self._heard)
-        if mode == 'active':
-            # A finished caption of Meet's was already heard while it was open (listen).
-            for row in new:
-                who = (self._owner(m) or 'You') if row['you'] else row['name']
-                if not row['captioned'] and self._to_her(m, row['text'], row['you'], who):
-                    self._reply(m, who, row['text'], stopped=True)
         if mode != 'off':
             self._update(m, mode, force=False)
 
@@ -564,16 +558,26 @@ class CompanionService:
         return (self._mode() == 'active' and guest is not None and guest.in_call
                 and self._meetings.session.state == 'live')
 
+    # One look at what is being said to her, with a failure turned into a
+    # card. Her own thread calls it every LISTEN_S.
+    def listen(self):
+        self._run(('listen',))
+
     # Meet closes a caption about 8 seconds after the speaker stops, and only
     # then is it a line of the transcript. She looks at the captions still
-    # open instead, every second. Words that may be for her and haven't
-    # changed for PAUSE_S are put to the model: it answers, waits (the
-    # words stay, and are judged again with what follows, or once the
-    # speaker has stopped), or stays out (the words are behind her).
-    # (Captions are heard by the call by their nature.)
-    def listen(self):
+    # open instead. Words that may be for her and haven't changed for
+    # PAUSE_S are put to the model: it answers, waits (the words stay, and
+    # are judged again with what follows, or once the speaker has stopped),
+    # or stays out (the words are behind her). Captions are heard by the
+    # call by their nature; lines Koli's own Whisper transcribed are looked
+    # at when they arrive, and only those the call heard: your own aside
+    # with the microphone muted in Meet must not get an answer in public.
+    def _listen(self):
         m = self._meeting()
-        if not m or not self._can_talk() or not self._code(m):
+        if not m:
+            return
+        self._expire_say()
+        if not self._can_talk() or not self._code(m):
             return
         now = self._now()
         for block in self._meetings.meet.open_captions(self._code(m))[-2:]:
@@ -601,29 +605,40 @@ class CompanionService:
                 state['taken'] = text
         for block_id in list(self._answered)[:-20]:
             del self._answered[block_id]
+        # Lines that are not Meet's captions (a finished caption was heard while it was open).
+        self._heard = min(self._heard, len(m.get('turns', [])))      # the list can get shorter (echo removal, a split)
+        new, self._heard = self._public_rows(m, self._heard)
+        for row in new:
+            who = (self._owner(m) or 'You') if row['you'] else row['name']
+            if not row['captioned'] and self._to_her(m, row['text'], row['you'], who):
+                self._reply(m, who, row['text'], stopped=True)
 
     # What she does with `text`, said by `who`: 'answer', 'wait' or 'skip'
-    # (None when she couldn't even ask: too soon, no model). Three dots on
-    # her tile at once, then her words as the model writes them, then the
-    # whole answer for SAY_SHOWN_S; nothing stays when she waits or stays
-    # out. Drawn only from what the call heard.
+    # (None when she couldn't even ask: too soon, no model, or the meeting
+    # ended meanwhile). Her tile: three dots at once when it has nothing
+    # to say, then her words as the model writes them, then the whole
+    # answer for SAY_SHOWN_S. An answer already up stays up while the next
+    # words are judged (in a live call it kept vanishing behind the dots),
+    # and goes only when a new answer starts. Drawn only from what the call heard.
     def _reply(self, m: dict, who: str, text: str, stopped: bool = True) -> Optional[str]:
         guest = self._guest
         if not self._can_talk() or self._now() - self._said_at < SAY_GAP_S or not self._ai_ready():
             return None
-        before = (self._say, self._say_until)
-        self._say, self._say_until = THINKING, self._now() + SAY_SHOWN_S
-        self._show_board(m)
+        generation = self._generation
+        showing = bool(self._say) and self._say != THINKING and self._now() < self._say_until
+        if not showing:
+            self._say, self._say_until = THINKING, self._now() + SAY_SHOWN_S
+            self._show_board(m)
         shown = {'text': '', 'at': float('-inf')}
 
         def on_text(piece):
             shown['text'] += str(piece or '')
             words = shown['text'].lstrip()
-            if words.startswith('['):
+            if words.startswith('[') or generation != self._generation:
                 return                         # [wait] or [skip]: nothing for her tile
             if self._now() - shown['at'] >= STREAM_EVERY_S and brain.tidy_say(words):
                 shown['at'] = self._now()
-                self._say = brain.tidy_say(words)
+                self._say, self._say_until = brain.tidy_say(words), self._now() + SAY_SHOWN_S
                 self._show_board(m)
         rows = brain.lines(m, since=self._elapsed(m) - ANSWER_WINDOW_S, heard=self._heard_fn(m), heard_only=True)
         asked_at = time.time()
@@ -633,17 +648,21 @@ class CompanionService:
                                          self._complete, on_text=on_text, owner=self._owner(m),
                                          alone=self._alone(m), stopped=stopped)
         except CompanionError:
-            self._say = ''
-            self._show_board(m)
+            if generation == self._generation and not showing:
+                self._say, self._say_until = '', 0.0
+                self._show_board(m)
             raise
+        # The meeting ended or changed while the model was writing: these words belong to nobody now.
+        if generation != self._generation:
+            return None
         # What she decided, for the log: never the words themselves.
         logger.info(f"Koli in the meeting: {kind} to {len(text.split())} words "
                     f"({'the speaker stopped' if stopped else 'a pause'}, {'alone with her' if self._alone(m) else 'others in the call'}) "
                     f"in {time.time() - asked_at:.1f} s" + (f", {len(said.split())} words said" if kind == 'answer' else ''))
         if kind != 'answer':
-            # Her tile goes back to what it showed (an answer still up stays up).
-            self._say, self._say_until = before if before[0] != THINKING else ('', 0.0)
-            self._show_board(m)
+            if not showing:                    # only the dots were up: they go
+                self._say, self._say_until = '', 0.0
+                self._show_board(m)
             return kind
         self._said_at = self._now()
         self._last_asker = who
@@ -675,6 +694,7 @@ class CompanionService:
 
     def shutdown(self):
         self._closed = True
+        self._stopped.set()
         for stop in self._unsubscribe:
             if callable(stop):
                 stop()
