@@ -25,6 +25,7 @@ RETRIES = 3              # Meet refuses guests at random (Vexa measured about ha
 RETRY_WAIT_S = 8.0
 ASK_WAIT_S = 180.0       # how long she waits to be admitted after "Ask to join"
 TICK_S = 5.0             # how often she checks she is still in the call and what Meet asks her to send
+FRAME_S = 0.1            # while her board moves (her words coming in), the app redraws it this often
 NAME_BOX_WAIT_S = 25.0
 JOIN_WAIT_S = 40.0       # from the click on Join to being in the call
 POLL_S = 1.0
@@ -218,6 +219,9 @@ class MeetGuest:
         self.state = 'off'
         self._view = {}            # the public view to draw
         self._drawn = None         # the view as last sent to the page
+        self._moving = False       # her board is animating: frames are driven from here (animate)
+        self._wake = threading.Event()   # set when there is something new to draw
+        self._watched = None       # the tallest picture of her Meet asks for; 0 = none; None = not looked yet
         self._dense = False
         self._frame = frame_size(None, None)
         self._frame_sent = None
@@ -245,9 +249,23 @@ class MeetGuest:
             if self._thread is not None and self._thread.is_alive():
                 return
 
+            # In the call: a look at the call every TICK_S, and while her board
+            # moves a frame every FRAME_S. A hidden page draws about once a
+            # second by itself; driven from here it gave 10.8 frames a second
+            # (measured 2026-11-19), which is what makes her words flow.
             def run():
-                if self.join_now(code, owner):
-                    while not self._stop.wait(TICK_S):
+                if not self.join_now(code, owner):
+                    return
+                next_tick = time.monotonic() + TICK_S
+                while not self._stop.is_set():
+                    if self._moving:
+                        self._stop.wait(FRAME_S)
+                        self.animate()
+                    else:
+                        self._wake.wait(0.5)
+                        self._wake.clear()
+                    if time.monotonic() >= next_tick:
+                        next_tick = time.monotonic() + TICK_S
                         self.tick()
             self._thread = threading.Thread(target=run, daemon=True, name='meet-guest')
             self._thread.start()
@@ -316,6 +334,8 @@ class MeetGuest:
         with self._lock:
             session, self._session, self._hands = self._session, None, None
             self._drawn = None
+            self._moving = False
+            self._watched = None
             self._frame_sent = None
         if session is not None:
             try:
@@ -498,12 +518,21 @@ class MeetGuest:
                 return
             layers = [l for l in (page.evaluate('/*probe:sending*/window.__koli.sending()') or [])
                       if l.get('active') and l.get('height')]
+            self._watched = max((l['height'] for l in layers), default=0)
             if layers:
                 self._dense = max(l['height'] for l in layers) <= DENSE_HEIGHT
             if self._frame != self._frame_sent:
                 page.evaluate(f'/*probe:resize*/window.__koli.resize({self._frame[0]}, {self._frame[1]})')
                 self._frame_sent = self._frame
             self._draw(page)
+            # A frame that got no answer stops the redrawing (animate). Chrome
+            # stops a page for some seconds once, about a quarter of a minute
+            # after it is hidden (measured 2026-11-19), so while she says
+            # something every look at the call picks the pace up again; a
+            # board at rest ends it at the next frame.
+            if self._view.get('say') and not self._moving:
+                self._moving = True
+                self._wake.set()
         except Exception as e:
             logger.info(f"Koli's browser stopped answering: {e}")
             self._ended(f"{self.name} is no longer in the call")
@@ -531,6 +560,32 @@ class MeetGuest:
             return
         page.evaluate(f'/*probe:board*/window.__koli.board({json.dumps(view, ensure_ascii=False)})')
         self._drawn = view
+        if view.get('say'):            # her words come in, scroll and pulse: frames are needed
+            self._moving = True
+            self._wake.set()
+
+    @property
+    def moving(self) -> bool:
+        return self._moving
+
+    # One frame of her board. False once the board says it has come to rest
+    # (all her words are out and nothing scrolls), or when it can't be asked.
+    def animate(self) -> bool:
+        with self._lock:
+            session = self._session
+        try:
+            self._moving = bool(session is not None and self.in_call
+                                and session.page.evaluate('/*probe:frame*/window.__koli.frame()', timeout=5))
+        except Exception as e:
+            logger.debug(f"A frame of Koli's board was not drawn: {e}")
+            self._moving = False
+        return self._moving
+
+    # The tallest picture of her that Meet asks her to send right now, in
+    # lines: 0 when it asks for none (her tile is probably on nobody's
+    # screen), None before the first look.
+    def watched(self) -> Optional[int]:
+        return self._watched
 
     # The size of her tile on the owner's screen, from the extension.
     def set_tile(self, width, height):

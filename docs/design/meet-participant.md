@@ -229,6 +229,40 @@ later), refuses screen sharing, and keeps the page's `RTCPeerConnection`s to
 read what is being sent. The board wraps its text to the frame, writes Hebrew
 right to left, and scales type with the frame.
 
+**Two faces of the board** *(2026-11-19, after a five-person meeting: "like a
+prompter, not a slideshow, and her text was cut in the middle")*:
+
+- **Her notes**, while she has nothing to say: the topic, decisions, tasks,
+  open questions. Nothing moves, no frames are asked for.
+- **Her words**, while she says something (`say` in the public view): the
+  whole tile is hers. A line at the top says whom she answers (`say_to`) or
+  that she has something to add (`say_kind: 'chime'`), the frame of the tile
+  pulses for 3 s so eyes go to her, and the words come in at reading pace
+  (42 characters a second, faster when the model is ahead) and flow upwards
+  once the tile is full. Nothing is cut: a long answer glides by again from
+  the top (1.7 s a line, 3 s of rest at each end) for as long as it is up.
+  The old board showed the first 9 lines and dropped the rest.
+
+Who draws the frames, measured on the hidden page (2026-11-19): the page's
+own timer gives 1.5 frames a second and `requestAnimationFrame` 1.1, which is
+the slideshow; a call from the app for each frame (`MeetGuest.animate`,
+every 0.1 s) gives 10.8 a second at 16% of one core. So the board keeps its
+slow timer for the notes, and while it says it is moving the guest's thread
+asks for frames, and stops when the board has come to rest. Showing the page
+again would give 70 frames a second and cost the 49% of a core that hiding
+it saved.
+
+Chrome stops a hidden page for 7 to 8 seconds once, about a quarter of a
+minute after it is hidden, with or without a call or any drawing (measured:
+one stall in 150 s). A frame that gets no answer in 5 s stops the redrawing;
+the next look at the call picks it up again while she is still saying
+something.
+
+At every look the guest also notes the tallest picture of her that Meet
+asks for (`MeetGuest.watched`). Meet asks for none when her tile is on
+nobody's screen, and each answer's log line says which it was: an answer
+nobody could see is the case a chat message or a raised hand is for.
+
 She leaves when the meeting ends, when you leave the call, when you press Take
 out, or when Koli quits (`MeetingService.shutdown`). Continue previous and
 Start new instead change the meeting, not the call: she stays, and her notes
@@ -259,8 +293,16 @@ In Active mode, while she is in the call:
   showed why: one question got three answers, one per breath, and lines said
   to someone else in the room got answers too. The model is told whether the
   call is just the two of them and whether the speaker has stopped.
-- **Follow-ups.** For 45 s after she answered someone, that person's next
-  words need no name.
+- **Follow-ups.** For 45 s after she answered someone by name (or alone
+  with her), that person's next words need no name. In the first meeting
+  with five people this window renewed itself with every answer and every
+  breath went to the model: 12 answers, 21 waits, 7 skips in half an hour,
+  and an answer of 31 words was replaced 7 s later by the next one. So,
+  since 2026-11-19: a follow-up is judged only once the speaker has stopped;
+  a follow-up she answers does not renew the window; a `[skip]` closes it
+  (the talk moved on, she waits for her name); and a follow-up does not
+  replace an answer before it could be read (14 characters a second,
+  between 6 and 25 s). Her name always gets a look at once.
 - **Her name anywhere is enough for a look**, question or not ("… Koli, give
   me a list of models" got nothing on 2026-11-19, when a line also had to
   ask something). Whether it is for her is the model's call.
@@ -268,8 +310,9 @@ In Active mode, while she is in the call:
   `meeting-companion-talk`, looking every 0.5 s; the notes keep the worker
   thread. In a live call an answer had waited 5.6 s behind a notes update.
 - **Where.** On her tile: three dots at once, then her words as the model
-  writes them (the tile is redrawn every 0.4 s), then the answer for a
-  minute; when she waits or stays out, the dots go and nothing else shows.
+  writes them (the text reaches the tile every 0.4 s and flows in between,
+  see "Two faces of the board"), then the answer for a minute, up to 900
+  characters; when she waits or stays out, the dots go and nothing else shows.
   An answer already on the tile stays while the next words are judged, and
   goes only when a new answer starts: in a live call it kept vanishing behind
   the dots every time someone spoke ("she erases the answer").
@@ -289,6 +332,11 @@ In Active mode, while she is in the call:
   to arrive, and the model's time to its first words. Measured with the local
   `gemma4:e4b`: 0.1 to 2 s to the first words. `ai.companion.model` picks it.
 - Two answers are at least 2 seconds apart.
+- **Kept with the meeting.** Each answer goes into the meeting's file
+  (`remarks`: when, to whom, the words she answered, her words;
+  `MeetingSession.add_remark`) and the summary reads them at their moment
+  as "Koli (the AI assistant in the call)". Before, her words were on the
+  tile for a minute and nowhere else.
 
 ### Only what the call heard
 

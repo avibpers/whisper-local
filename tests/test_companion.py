@@ -424,7 +424,8 @@ class PublicViewTests(unittest.TestCase):
     def test_exactly_the_public_fields(self):
         view = companion.public_view(NOTES, 'Noa', name='Koli')
         self.assertEqual(tuple(view), companion.PUBLIC_FIELDS)
-        self.assertEqual(companion.PUBLIC_FIELDS, ('title', 'subtitle', 'topic', 'decisions', 'tasks', 'questions', 'say'))
+        self.assertEqual(companion.PUBLIC_FIELDS, ('title', 'subtitle', 'topic', 'decisions', 'tasks', 'questions', 'say',
+                                                   'say_kind', 'say_to'))
         self.assertEqual(view['title'], 'Koli')
         self.assertEqual(view['subtitle'], 'AI notes · with Noa')
         self.assertEqual(view['topic'], 'Pricing for the Pro plan')
@@ -448,6 +449,16 @@ class PublicViewTests(unittest.TestCase):
         view = companion.public_view(companion.empty_notes(), 'Noa')
         self.assertEqual(view['topic'], '')
         self.assertEqual(view['decisions'], [])
+
+    def test_the_view_says_what_kind_of_words_and_to_whom(self):
+        view = companion.public_view(NOTES, 'Avi', say='In 1948.', say_kind='answer', say_to='Dana ' + 'x' * 80)
+        self.assertEqual((view['say_kind'], len(view['say_to'])), ('answer', 40))
+        self.assertEqual(companion.public_view(NOTES, 'Avi', say='x', say_kind='nonsense')['say_kind'], '')
+        self.assertEqual(companion.public_view(NOTES, 'Avi')['say_to'], '')
+
+    def test_a_long_answer_is_not_cut_at_a_few_lines(self):
+        # The prompter scrolls, so the tile no longer limits an answer to what fits at once.
+        self.assertGreaterEqual(companion.SAY_MAX, 900)
 
     def test_say_is_passed_and_cut(self):
         view = companion.public_view(NOTES, 'Noa', say='x' * 1000)
@@ -591,6 +602,27 @@ class TaskStoreTests(unittest.TestCase):
         self.assertEqual([(t['id'], t['at']) for t in fresh['tasks']], [('B', 10.0)])
         self.assertEqual([t['id'] for t in self.store.load(m['id'])['tasks']], ['A', 'N'])
 
+    def test_what_koli_said_is_kept_in_the_meeting_file(self):
+        from tests.test_meeting import zoom
+        m = self.live(zoom())
+        self.assertTrue(self.sm.add_remark(m['id'], {'at': 65.4, 'to': 'Dana', 'asked': 'Koli when do we ship', 'said': '  On   Monday. ',
+                                                     'kind': 'answer', 'secret': 1}))
+        self.assertFalse(self.sm.add_remark(m['id'], {'said': ''}))
+        self.assertFalse(self.sm.add_remark('no-such-meeting', {'said': 'x'}))
+        self.assertEqual(self.sm.current()['remarks'], [{'at': 65.4, 'to': 'Dana', 'asked': 'Koli when do we ship', 'said': 'On Monday.',
+                                                         'kind': 'answer'}])
+        self.sm.end()
+        self.assertEqual(self.store.load(m['id'])['remarks'][0]['said'], 'On Monday.')
+
+    def test_the_summary_reads_what_koli_said(self):
+        from koli.meeting.summarize import meeting_text
+        m = meeting([(60, 's1', 'Koli when do we ship'), (80, 's1', 'thanks')])
+        m['remarks'] = [{'at': 70, 'to': 'Dana', 'asked': 'Koli when do we ship', 'said': 'On Monday.', 'kind': 'answer'}]
+        text = meeting_text(m)
+        self.assertIn('[70] Koli (the AI assistant in the call): On Monday.', text)
+        self.assertLess(text.index('when do we ship'), text.index('On Monday.'))
+        self.assertLess(text.index('On Monday.'), text.index('thanks'))
+
     def test_the_summary_reads_the_tasks(self):
         from koli.meeting.summarize import meeting_text
         m = meeting([(65, 's1', 'I will send the list')])
@@ -610,6 +642,12 @@ class FakeSession:
     def __init__(self):
         self.meeting = None
         self.state = 'idle'
+
+    def add_remark(self, meeting_id, remark):
+        if self.meeting and self.meeting['id'] == meeting_id:
+            self.meeting.setdefault('remarks', []).append(dict(remark))
+            return True
+        return False
 
     def set_tasks(self, meeting_id, tasks):
         from koli.meeting.session import clean_tasks
@@ -674,6 +712,9 @@ class FakeGuest:
 
     def set_tile(self, width, height):
         self.tiles.append((width, height))
+
+    def watched(self):
+        return getattr(self, 'picture', None)
 
 
 class SlowGuest(FakeGuest):
@@ -1296,11 +1337,11 @@ class ServiceGuestTests(ServiceCase):
         self.caption('b1', 'Koli when was the state founded', ago=1.6, mine=False)
         self.svc.listen()
         self.t += 10
-        self.caption('b2', 'and in which month', ago=1.6, mine=False)
+        self.caption('b2', 'and in which month', ago=3.6, mine=False)
         self.svc.listen()
         self.assertEqual(len(self.cards('said')), 2)
         self.t += 120
-        self.caption('b3', 'so the price is twenty dollars', ago=1.6, mine=False)
+        self.caption('b3', 'so the price is twenty dollars', ago=3.6, mine=False)
         self.svc.listen()
         self.assertEqual(len(self.ai.calls), 2)                        # long after: her name again
 
@@ -1403,6 +1444,92 @@ class ServiceGuestTests(ServiceCase):
             self.caption('b1', 'what is the weather in Rehovot today', ago=1.6)
             self.svc.listen()
             self.assertEqual(seen, [expected])
+
+    def with_dana(self, *answers, **settings):
+        self.make(*answers, mode='active', **settings)
+        self.start()
+        self.svc.join()
+        self.meetings.meet.calls['abc-defg-hij']['people'] = [{'id': '1', 'name': 'Noa Levi', 'self': True},
+                                                             {'id': '2', 'name': 'Dana', 'self': False}]
+        self.caption('b1', 'Koli when was the state founded', ago=1.6, mine=False)
+        self.svc.listen()
+        self.assertEqual(len(self.cards('said')), 1)
+
+    def test_a_follow_up_is_judged_only_once_the_speaker_has_stopped(self):
+        # In a live meeting every breath of the one she had answered went to the model: 21 waits.
+        self.with_dana('In 1948.', 'In May.')
+        self.t += 10
+        self.caption('b2', 'and in which month was it', ago=1.6, mine=False)
+        self.svc.listen()
+        self.assertEqual(len(self.ai.calls), 1)
+        self.caption('b2', 'and in which month was it', ago=3.6, mine=False)
+        self.svc.listen()
+        self.assertEqual(len(self.ai.calls), 2)
+
+    def test_words_that_were_not_a_follow_up_end_the_follow_ups(self):
+        self.with_dana('In 1948.', '[skip]', 'x')
+        self.t += 10
+        self.caption('b2', 'ok so back to the budget everyone', ago=3.6, mine=False)
+        self.svc.listen()
+        self.assertEqual(len(self.ai.calls), 2)
+        self.t += 5
+        self.caption('b3', 'we need to cut ten percent', ago=3.6, mine=False)
+        self.svc.listen()
+        self.assertEqual(len(self.ai.calls), 2)                 # she went back to her seat
+
+    def test_answering_a_follow_up_does_not_keep_the_window_open_for_ever(self):
+        self.with_dana('In 1948.', 'In May.', 'x')
+        self.t += 30
+        self.caption('b2', 'and in which month was it', ago=3.6, mine=False)
+        self.svc.listen()
+        self.assertEqual(len(self.cards('said')), 2)
+        self.t += 20                                             # 50 s after her first answer, 20 s after the second
+        self.caption('b3', 'and who was the first prime minister', ago=3.6, mine=False)
+        self.svc.listen()
+        self.assertEqual(len(self.ai.calls), 2)
+
+    def test_an_answer_is_left_up_long_enough_to_read_before_a_follow_up_replaces_it(self):
+        # Seen live: an answer of 31 words was replaced after 7 seconds.
+        long_answer = 'The state was founded in 1948. ' * 8          # about 250 characters
+        self.with_dana(long_answer, 'In May.')
+        self.t += 5
+        self.caption('b2', 'and in which month was it', ago=3.6, mine=False)
+        self.svc.listen()
+        self.assertEqual(len(self.ai.calls), 1)                 # still being read
+        self.t += 20
+        self.caption('b2', 'and in which month was it', ago=23.6, mine=False)
+        self.svc.listen()
+        self.assertEqual(len(self.cards('said')), 2)
+
+    def test_her_name_is_answered_at_once_whatever_is_on_her_tile(self):
+        self.with_dana('The state was founded in 1948. ' * 8, 'In May.')
+        self.t += 5
+        self.caption('b2', 'Koli and in which month was it', ago=1.6, mine=False)
+        self.svc.listen()
+        self.assertEqual(len(self.cards('said')), 2)
+
+    def test_the_tile_says_whom_she_answers(self):
+        self.with_dana('In 1948.')
+        view = self.guests[0].views[-1]
+        self.assertEqual((view['say'], view['say_kind'], view['say_to']), ('In 1948.', 'answer', 'Dana'))
+
+    def test_what_she_says_is_kept_with_the_meeting(self):
+        self.with_dana('In 1948.')
+        remarks = self.meetings.session.meeting['remarks']
+        self.assertEqual(len(remarks), 1)
+        self.assertEqual((remarks[0]['to'], remarks[0]['asked'], remarks[0]['said'], remarks[0]['kind']),
+                         ('Dana', 'Koli when was the state founded', 'In 1948.', 'answer'))
+
+    def test_the_log_says_whether_meet_was_asking_for_her_picture(self):
+        self.make('In 1948.', mode='active')
+        self.start()
+        self.alone()
+        self.svc.join()
+        self.guests[0].picture = 0
+        self.caption('b1', 'when was the state founded', ago=1.6)
+        with self.assertLogs('koli.services.companion', level='INFO') as logs:
+            self.svc.listen()
+        self.assertIn('Meet asks for no picture of her', ' '.join(logs.output))
 
     def test_her_words_appear_on_the_tile_as_they_come(self):
         self.make('The state was founded in 1948, in the month of May.', mode='active')

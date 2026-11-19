@@ -33,6 +33,8 @@ PAUSE_S = 1.5              # a caption unchanged this long: the speaker paused, 
 STOPPED_S = 3.0            # unchanged this long: the speaker has stopped, there is nothing to wait for
 FOLLOW_UP_S = 45.0         # this long after her answer, the same person's next words need no name
 MIN_PAUSED_WORDS = 3       # fewer words than this in a pause ("Koli…") aren't put to the model: more is coming
+READ_CPS = 14.0            # characters a second someone reads off her tile
+MIN_READ_S, MAX_READ_S = 6.0, 25.0   # an answer stays up at least this long before a follow-up may replace it
 STREAM_EVERY_S = 0.4       # her tile is redrawn this often while her words come in
 TALK_KEEP = 12             # lines of her talk with the call that the model sees again
 THINKING = '…'             # on her tile from the moment she starts on an answer
@@ -89,7 +91,10 @@ class CompanionService:
         self._updated_at = float('-inf')
         self._asked = set()                # questions already shown as a card
         self._say = ''                     # what she last said to the call, while it stays on her board
+        self._say_kind = ''                # 'answer' or 'chime' (a note of her own)
+        self._say_to = ''                  # whom she answers
         self._say_until = 0.0
+        self._follow_until = 0.0           # until then the one she answered may go on without her name
         self._said_at = float('-inf')
         self._talk = collections.deque(maxlen=TALK_KEEP)   # her talk with the call: [{'who', 'text'}], her answers too
         # Captions still open, by block id: {'taken': the words she is done with (answered,
@@ -508,7 +513,7 @@ class CompanionService:
 
     # The one view of the notes that goes to the call's screen.
     def _view(self, m: Optional[dict]) -> dict:
-        return brain.public_view(self._notes, self._owner(m), self._name(), self._say)
+        return brain.public_view(self._notes, self._owner(m), self._name(), self._say, self._say_kind, self._say_to)
 
     def _show_board(self, m: Optional[dict]):
         guest = self._guest
@@ -517,8 +522,14 @@ class CompanionService:
 
     def _expire_say(self):
         if self._say and self._now() >= self._say_until:
-            self._say = ''
-            self._show_board(self._meeting())
+            self._put(self._meeting(), '')
+
+    # What her tile says now: the words, whether they answer someone (and
+    # whom) or are a note of her own. '' gives the tile back to her notes.
+    def _put(self, m: Optional[dict], text: str, kind: str = '', to: str = ''):
+        self._say, self._say_kind, self._say_to = text, (kind if text else ''), (to if text else '')
+        self._say_until = self._now() + SAY_SHOWN_S if text else 0.0
+        self._show_board(m)
 
     # A card's words written in the call's chat, by your click.
     def say(self, card_id: str):
@@ -546,12 +557,18 @@ class CompanionService:
         people = (call or {}).get('people') or []
         return any(p.get('self') for p in people) and not any(not p.get('self') for p in people)
 
-    # Words she should look at: they name her, or you said them alone with
-    # her, or they come from the person she answered a moment ago. Whether
-    # she answers them is for the model to judge (brain.reply).
-    def _to_her(self, m: dict, text: str, yours: bool, who: str = '') -> bool:
-        follow_up = bool(who) and who == self._last_asker and self._now() - self._said_at < FOLLOW_UP_S
-        return brain.spoken_to(text, self._name()) or (yours and self._alone(m)) or follow_up
+    # Why she should look at these words: 'named' (they say her name),
+    # 'alone' (you said them, alone with her in the call), 'follow' (the one
+    # she answered a moment ago goes on), or '' (not hers to look at).
+    # Whether she answers is for the model to judge (brain.reply).
+    def _to_her(self, m: dict, text: str, yours: bool, who: str = '') -> str:
+        if brain.spoken_to(text, self._name()):
+            return 'named'
+        if yours and self._alone(m):
+            return 'alone'
+        if who and who == self._last_asker and self._now() < self._follow_until:
+            return 'follow'
+        return ''
 
     def _can_talk(self) -> bool:
         guest = self._guest
@@ -592,12 +609,16 @@ class CompanionService:
             taken = state['taken']
             fresh = text[len(taken):].strip() if taken and text.startswith(taken) else text
             who = (self._owner(m) or 'You') if block.get('self') else block['name']
-            if not fresh or not self._to_her(m, fresh, bool(block.get('self')), who):
+            why = self._to_her(m, fresh, bool(block.get('self')), who)
+            if not fresh or not why:
                 state['taken'] = text
                 continue
-            if not stopped and len(fresh.split()) < MIN_PAUSED_WORDS:
-                continue                       # a word or two and a breath: looked at once they stop
-            kind = self._reply(m, who, fresh, stopped=stopped)
+            # A word or two and a breath are looked at once they stop. So is a
+            # follow-up: in a live meeting every breath of the one she had
+            # answered went to the model (21 times "wait" in half an hour).
+            if not stopped and (why == 'follow' or len(fresh.split()) < MIN_PAUSED_WORDS):
+                continue
+            kind = self._reply(m, who, fresh, stopped=stopped, why=why)
             if kind is None:
                 continue                       # too soon after her last answer: next look
             state['asked'], state['stopped'] = text, stopped
@@ -610,25 +631,35 @@ class CompanionService:
         new, self._heard = self._public_rows(m, self._heard)
         for row in new:
             who = (self._owner(m) or 'You') if row['you'] else row['name']
-            if not row['captioned'] and self._to_her(m, row['text'], row['you'], who):
-                self._reply(m, who, row['text'], stopped=True)
+            why = '' if row['captioned'] else self._to_her(m, row['text'], row['you'], who)
+            if why:
+                self._reply(m, who, row['text'], stopped=True, why=why)
+
+    # How long an answer needs on her tile before a follow-up may take its place.
+    @staticmethod
+    def _read_time(text: str) -> float:
+        return max(MIN_READ_S, min(MAX_READ_S, len(text) / READ_CPS))
 
     # What she does with `text`, said by `who`: 'answer', 'wait' or 'skip'
-    # (None when she couldn't even ask: too soon, no model, or the meeting
-    # ended meanwhile). Her tile: three dots at once when it has nothing
-    # to say, then her words as the model writes them, then the whole
-    # answer for SAY_SHOWN_S. An answer already up stays up while the next
-    # words are judged (in a live call it kept vanishing behind the dots),
-    # and goes only when a new answer starts. Drawn only from what the call heard.
-    def _reply(self, m: dict, who: str, text: str, stopped: bool = True) -> Optional[str]:
+    # (None when she couldn't even ask: too soon, no model, the meeting
+    # ended meanwhile, or the answer on her tile is still being read).
+    # Her tile: three dots at once when it has nothing to say, then her
+    # words as the model writes them, then the whole answer for
+    # SAY_SHOWN_S. An answer already up stays up while the next words are
+    # judged, and goes only when a new answer starts. `why` is why she
+    # looks at the words (_to_her). Drawn only from what the call heard.
+    def _reply(self, m: dict, who: str, text: str, stopped: bool = True, why: str = 'named') -> Optional[str]:
         guest = self._guest
         if not self._can_talk() or self._now() - self._said_at < SAY_GAP_S or not self._ai_ready():
             return None
-        generation = self._generation
         showing = bool(self._say) and self._say != THINKING and self._now() < self._say_until
+        # A follow-up doesn't push a fresh answer off her tile before it could be
+        # read (in a live call an answer of 31 words was replaced after 7 seconds).
+        if why == 'follow' and showing and self._now() - self._said_at < self._read_time(self._say):
+            return None
+        generation = self._generation
         if not showing:
-            self._say, self._say_until = THINKING, self._now() + SAY_SHOWN_S
-            self._show_board(m)
+            self._put(m, THINKING, 'answer', who)
         shown = {'text': '', 'at': float('-inf')}
 
         def on_text(piece):
@@ -638,8 +669,7 @@ class CompanionService:
                 return                         # [wait] or [skip]: nothing for her tile
             if self._now() - shown['at'] >= STREAM_EVERY_S and brain.tidy_say(words):
                 shown['at'] = self._now()
-                self._say, self._say_until = brain.tidy_say(words), self._now() + SAY_SHOWN_S
-                self._show_board(m)
+                self._put(m, brain.tidy_say(words), 'answer', who)
         rows = brain.lines(m, since=self._elapsed(m) - ANSWER_WINDOW_S, heard=self._heard_fn(m), heard_only=True)
         asked_at = time.time()
         try:
@@ -650,31 +680,48 @@ class CompanionService:
                                          web=bool(self._setting('meeting.companion.web', True)))
         except CompanionError:
             if generation == self._generation and not showing:
-                self._say, self._say_until = '', 0.0
-                self._show_board(m)
+                self._put(m, '')
             raise
         # The meeting ended or changed while the model was writing: these words belong to nobody now.
         if generation != self._generation:
             return None
-        # What she decided, for the log: never the words themselves.
+        # What she decided, for the log: never the words themselves. For an answer
+        # also whether Meet was asking for her picture: when it asks for none, her
+        # tile is on nobody's screen and the answer was seen by no one.
+        watched = guest.watched() if kind == 'answer' and hasattr(guest, 'watched') else None
+        seen = '' if watched is None else (f', her picture is asked for at {watched} lines' if watched
+                                         else ', Meet asks for no picture of her')
         logger.info(f"Koli in the meeting: {kind} to {len(text.split())} words "
-                    f"({'the speaker stopped' if stopped else 'a pause'}, {'alone with her' if self._alone(m) else 'others in the call'}) "
-                    f"in {time.time() - asked_at:.1f} s" + (f", {len(said.split())} words said" if kind == 'answer' else ''))
+                    f"({'the speaker stopped' if stopped else 'a pause'}, {'alone with her' if self._alone(m) else 'others in the call'}"
+                    f"{', a follow-up' if why == 'follow' else ''}) "
+                    f"in {time.time() - asked_at:.1f} s" + (f", {len(said.split())} words said{seen}" if kind == 'answer' else ''))
         if kind != 'answer':
+            if why == 'follow' and kind == 'skip':
+                self._follow_until = 0.0       # the talk moved on: she waits for her name again
             if not showing:                    # only the dots were up: they go
-                self._say, self._say_until = '', 0.0
-                self._show_board(m)
+                self._put(m, '')
             return kind
         self._said_at = self._now()
-        self._last_asker = who
-        self._say, self._say_until = said, self._now() + SAY_SHOWN_S
-        self._show_board(m)
+        if why != 'follow':                    # a follow-up answered doesn't keep the window open for ever
+            self._last_asker = who
+            self._follow_until = self._now() + FOLLOW_UP_S
+        self._put(m, said, 'answer', who)
         self._talk.append({'who': who, 'text': text})
         self._talk.append({'who': self._name(), 'text': said})
+        self._remember(m, who, text, said, 'answer')
         if self._setting('meeting.companion.chat', False):
             guest.say(said)
         self._card('said', f"{self._name()} answered {who}", said, [])
         return kind
+
+    # Her words go into the meeting's file: her tile shows them for a minute
+    # and they are in no transcript.
+    def _remember(self, m: dict, who: str, asked: str, said: str, kind: str):
+        try:
+            self._meetings.session.add_remark(m['id'], {'at': self._elapsed(m), 'to': who, 'asked': asked,
+                                                        'said': said, 'kind': kind})
+        except Exception as e:
+            logger.debug(f"Koli's words were not kept with the meeting: {e}")
 
     # ── What the panel gets ──────────────────────────────────────────────────
 

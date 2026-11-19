@@ -17,8 +17,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
   answers, and only what the call itself heard (not words your microphone picked up
   while muted in Meet). She says who she is in the chat, can send a card's text to the chat on your
   click. In Active mode she answers on her tile, as soon as you pause: whoever speaks to
-  her by name, and anything you say when the call is just you and her. Her words appear
-  as she writes them, she remembers the conversation, and may also write the answer in
+  her by name, and anything you say when the call is just you and her. While she speaks
+  the whole tile is hers: its frame pulses, a line says whom she answers, and her words
+  flow in like a prompter and scroll, so a long answer is never cut. What she said is kept
+  with the meeting and its summary. She remembers the conversation, and may also write the answer in
   the chat (a setting). Ask her the weather or the news and she looks it up on the web
   (with a ChatGPT login as her model). Her
   own browser (Chrome for Testing, 215 MB) is downloaded the first time and closes
