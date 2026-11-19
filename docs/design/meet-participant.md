@@ -245,8 +245,9 @@ prompter, not a slideshow, and her text was cut in the middle")*:
 
 Who draws the frames, measured on the hidden page (2026-11-19): the page's
 own timer gives 1.5 frames a second and `requestAnimationFrame` 1.1, which is
-the slideshow; a call from the app for each frame (`MeetGuest.animate`,
-every 0.1 s) gives 10.8 a second at 16% of one core. So the board keeps its
+the slideshow; calls from the app, one after the other, give 10.8 a second at
+16% of one core. As the app drives it (`MeetGuest.animate`: a wait of 0.1 s,
+then the call) it is 7 to 9 a second, measured over 150 s. So the board keeps its
 slow timer for the notes, and while it says it is moving the guest's thread
 asks for frames, and stops when the board has come to rest. Showing the page
 again would give 70 frames a second and cost the 49% of a core that hiding
@@ -347,13 +348,25 @@ In Active mode, in a call with other people (`meeting.companion.chime`, on by
 default), she may say something nobody asked for. `companion.chime` asks the
 model, which is told to speak only when a question was left without an
 answer and she knows it, a wrong fact matters for a decision, something said
-earlier in the meeting is recalled wrongly or not at all, or a decision is
-about to contradict an earlier one; in every other case `[skip]`. No comments,
-summaries, praise or offers of help. At most two short sentences.
+earlier in the meeting is recalled wrongly or not at all, a decision is
+about to contradict an earlier one, or the group is stuck and she knows one
+concrete thing that moves them on (a fact, a pitfall, a simpler way: not an
+opinion); in every other case `[skip]`. No comments, summaries, praise or
+offers of help. At most two short sentences.
+
+Every look carries the last three minutes again, so the lines are sent in
+two parts, "earlier (judged already, for context)" and "said since you last
+looked" (`first_new`), and she is told to judge the new part only. Without
+the mark a question she let pass would be judged again at every look and
+could come up two minutes late.
 
 When the model is asked (`CompanionService._consider_chime`), all of:
 
-- nobody has spoken for 2 s (no open caption changed): she waits for a gap;
+- nobody has spoken for 2 s (no open caption changed): she waits for a gap.
+  The gap is read off Meet's captions, so the new lines must hold captions
+  of Meet's (or one must be open): lines Koli transcribed herself arrive
+  seconds late and say nothing about who speaks now, and with those alone
+  she stays out rather than cut in in the middle of a sentence;
 - at least 40 new words were heard since her last look;
 - her last look was at least 30 s ago, her last remark of her own at least
   90 s ago, and anything else she said at least 30 s ago;
@@ -373,9 +386,19 @@ it, and written in the chat too when her answers are. It is built from what
 the call heard only, like everything on her tile. A model that fails is a
 line in the log, not a card: nobody asked.
 
-Measured on `codex/gpt-6.1-terra` (2026-11-19, 12 short talks, English and
-Hebrew): 11 as a person would want, the miss a silence where a remark was
-wanted; 1.3 to 3.3 s each.
+Measured on `codex/gpt-6.1-terra` (2026-11-19):
+
+- 12 short talks, English and Hebrew, clean text, run twice: 11 as a person
+  would want each time; the miss was a silence where a remark was wanted (a
+  different talk each time), never a remark nobody needed. Two more for the
+  stuck-on-a-problem case (a fix offered; a matter of taste left alone):
+  both right. 1.3 to 5.7 s each.
+- The owner's meeting of that morning (five people, 34 minutes, 2,931 words
+  of mixed Hebrew and English captions), replayed through the same gate
+  with empty notes: 14 looks in 28 minutes (the talk had 42 gaps of 2 s),
+  no remark. The captions of that meeting are too garbled to be sure of
+  anything, and it was mostly one person presenting: silence is the right
+  answer there, and it also means she speaks up only as well as she hears.
 
 ### Only what the call heard
 
@@ -418,6 +441,7 @@ never an attendee, a name for a 1:1 call, or a row in the summary's roster.
 | `meeting.companion.name` | `Koli` | her name in the call |
 | `meeting.companion.announce` | true | one chat line when she joins |
 | `meeting.companion.chat` | false | Active: her answers are written in the chat too |
+| `meeting.companion.chime` | true | Active, with others in the call: she adds something on her own in a gap |
 | `meeting.companion.web` | true | her answers in a call may come from a web search |
 | `ai.companion.model`, `ai.companion.timeout` | '' , 20 | else the main AI model |
 
@@ -436,6 +460,12 @@ never an attendee, a name for a 1:1 call, or a row in the summary's roster.
   with an older one Koli can't tell whether your microphone was on in Meet,
   and leaves your own words out of them.
 - She can't read the chat or be asked there.
+- She adds something on her own only where Meet's captions are on (they
+  tell her when nobody is speaking), and only as well as the captions are
+  written: a call in two languages at once gives her little to be sure of.
+- When her tile is on nobody's screen her words are seen by no one; the log
+  says so for each answer ("Meet asks for no picture of her"). Raising her
+  hand or writing in the chat in that case is not built yet.
 - Not in this version: her voice, answers that draw on your earlier meetings
   (the search waits on a local model, too slow for a live answer; the brain
   already takes a `past` text), "explain this term", a warning before the end

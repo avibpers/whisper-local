@@ -423,8 +423,23 @@ class ActionTests(unittest.TestCase):
 class ChimeTests(unittest.TestCase):
     """What she adds on her own, with nobody asking: her words, or '' most of the time."""
 
-    ROWS = [{'at': 5, 'name': 'Dana', 'you': False, 'text': 'so the price we agreed on was twenty five dollars', 'heard': True},
-            {'at': 9, 'name': 'Eran', 'you': False, 'text': 'yes twenty five', 'heard': True}]
+    ROWS = [{'at': 5, 'name': 'Dana', 'you': False, 'text': 'so the price we agreed on was twenty five dollars', 'heard': True, 'index': 0},
+            {'at': 9, 'name': 'Eran', 'you': False, 'text': 'yes twenty five', 'heard': True, 'index': 1}]
+
+    def test_the_model_is_told_which_lines_are_new_since_her_last_look(self):
+        # Every look carries the last minutes again: without this a question she let pass
+        # is judged again at every look, and can come up two minutes late.
+        ai = FakeAI('[skip]')
+        companion.chime(NOTES, self.ROWS, [], '', 'en', ai, first_new=1)
+        said = ai.said()
+        earlier, new = said.index('Earlier in the meeting'), said.index('Said since you last looked')
+        self.assertTrue(earlier < said.index('so the price we agreed on') < new < said.index('Eran: yes twenty five'))
+
+    def test_with_no_earlier_lines_everything_is_new(self):
+        ai = FakeAI('[skip]')
+        companion.chime(NOTES, self.ROWS, [], '', 'en', ai, first_new=0)
+        self.assertNotIn('Earlier in the meeting', ai.said())
+        self.assertIn('Said since you last looked', ai.said())
 
     def test_most_of_the_time_she_says_nothing(self):
         ai = FakeAI('[skip]')
@@ -1844,10 +1859,28 @@ class ServiceChimeTests(ServiceCase):
         self.ai.calls.clear()
         return self.guests[0]
 
-    # Dana talks: 27 words a line.
-    def talk(self, start, lines=2):
+    # Dana talks: 27 words a line, as Meet's captions.
+    def talk(self, start, lines=2, text=LONG, captions=True):
         for i in range(lines):
-            self.turn(start + i * 3, 's1', LONG)
+            self.turn(start + i * 3, 's1', text, heard=captions)
+
+    def test_without_meets_captions_she_cannot_tell_a_gap_and_stays_out(self):
+        # Lines Koli transcribed herself arrive seconds late and say nothing about who is
+        # speaking now: with no open caption she would cut in in the middle of a sentence.
+        self.room('[skip]')
+        self.talk(5, captions=False)
+        self.svc.listen()
+        self.assertEqual(self.checks(), [])
+
+    def test_each_look_says_which_lines_are_new(self):
+        self.room('[skip]')
+        self.talk(5)
+        self.svc.listen()
+        self.talk(20, text=LONG.replace('Pro plan', 'NEWER plan'))
+        self.t += 31
+        self.svc.listen()
+        said = self.ai.said()
+        self.assertTrue(said.index('Pro plan') < said.index('Said since you last looked') < said.index('NEWER plan'))
 
     def checks(self):
         return [c for c in self.ai.calls if 'Nobody spoke to you' in c['messages'][0]['content']]

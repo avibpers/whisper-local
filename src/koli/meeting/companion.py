@@ -208,7 +208,10 @@ Speak only when one of these is true:
 - a question was asked in the call, nobody answered it, and you know the answer;
 - someone states as a fact something that is wrong, and it matters for what they are deciding;
 - they are trying to recall something that was said or decided earlier in this meeting (a number, a date, a name, who took a task) and can't, or recall it wrongly;
-- what they are about to decide contradicts a decision already made in this meeting.
+- what they are about to decide contradicts a decision already made in this meeting;
+- they are stuck on a problem or weighing how to do something, and you know one concrete thing that would move them on: a fact, a known pitfall, a simpler way. A thing they can check, not an opinion or a preference, and only when you understood what they are talking about.
+
+Judge only what was said since you last looked and what is being said right now. The earlier lines are there so that you understand it, and you have judged them already: never go back to something the talk has left behind or settled since.
 
 In every other case reply with exactly [skip]. Most of the time the answer is [skip]: people talking, agreeing, planning, joking or thinking aloud need nothing from you. Never comment, summarise, praise, encourage or offer help. Never say again what you already said (your earlier words are listed). When you are not sure it helps, [skip].
    "so we ship on Thursday and Dana updates the page" -> [skip]
@@ -388,17 +391,24 @@ def reply(notes: dict, rows: list, talk: list, who: str, text: str, language: st
 # time). Like an answer it is for everyone, so the model gets only the
 # public part of the notes and rows the call heard. `now`: the words being
 # said at this moment (captions still open), as "Name: words" lines.
-# `talk`: what she said before, so she doesn't say it twice.
+# `talk`: what she said before, so she doesn't say it twice. `first_new`:
+# the turn from which the rows are new since her last look; every look
+# carries the last minutes again, and without the mark a question she let
+# pass would be judged again at each look and could come up minutes late.
 def chime(notes: dict, rows: list, talk: list, now: str, language: str, complete: Callable,
-          on_text: Optional[Callable] = None, owner: str = '') -> str:
+          on_text: Optional[Callable] = None, owner: str = '', first_new: int = 0) -> str:
     now = str(now or '').strip()
     if not rows and not now:
         return ''
     owner = _text(owner, 40)
     system = CHIME_PROMPT.format(owner=f' You work for {owner}.' if owner else '')
     parts = [_public_notes_part(notes)]
-    if rows:
-        parts.append("The last minutes of the meeting:\n" + transcript(rows))
+    earlier = [r for r in rows or [] if r.get('index', 0) < first_new]
+    new = [r for r in rows or [] if r.get('index', 0) >= first_new]
+    if earlier:
+        parts.append("Earlier in the meeting (you judged these lines already; they are here for context):\n" + transcript(earlier))
+    if new:
+        parts.append("Said since you last looked:\n" + transcript(new))
     if now:
         parts.append("Being said right now:\n" + now[:800])
     if talk:

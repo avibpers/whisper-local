@@ -251,7 +251,7 @@ class MeetGuest:
 
             # In the call: a look at the call every TICK_S, and while her board
             # moves a frame every FRAME_S. A hidden page draws about once a
-            # second by itself; driven from here it gave 10.8 frames a second
+            # second by itself; driven from here it gave 7 to 9 frames a second
             # (measured 2026-11-19), which is what makes her words flow.
             def run():
                 if not self.join_now(code, owner):

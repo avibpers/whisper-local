@@ -671,17 +671,24 @@ class CompanionService:
         said_now = [(self._owner(m) or 'You') if b.get('self') else b['name'] for b in being_said]
         said_now = '\n'.join(f"{name}: {' '.join(str(b.get('text') or '').split())}" for name, b in zip(said_now, being_said)
                              if str(b.get('text') or '').strip())
+        # The gap is read off Meet's captions (a block still open, and when it last
+        # changed). Lines Koli transcribed herself arrive seconds late and tell
+        # nothing about who speaks now: with those alone she would cut in in the
+        # middle of a sentence, so she stays out.
+        if not being_said and not any(row['captioned'] for row in fresh):
+            return
         new_words = brain.words(fresh) + len(said_now.split())
         if new_words < CHIME_MIN_WORDS:
             return
+        first_new = self._chime_read
         self._chime_checked_at, self._chime_read, self._chiming = now, upto, True
-        job = lambda: self._chime(m, said_now, new_words)
+        job = lambda: self._chime(m, said_now, new_words, first_new)
         if self._threaded:
             threading.Thread(target=job, daemon=True, name='meeting-companion-chime').start()
         else:
             job()
 
-    def _chime(self, m: dict, said_now: str, new_words: int):
+    def _chime(self, m: dict, said_now: str, new_words: int, first_new: int):
         generation, said_at, guest, showing = self._generation, self._said_at, self._guest, self._say
         put = {'text': '', 'at': float('-inf'), 'shown': False}
 
@@ -706,7 +713,7 @@ class CompanionService:
             rows = brain.lines(m, since=self._elapsed(m) - ANSWER_WINDOW_S, heard=self._heard_fn(m), heard_only=True)
             with for_meeting(m['id'], 'companion'):
                 said = brain.chime(self._notes, rows, list(self._talk), said_now, meeting_language(m), self._complete,
-                                   on_text=on_text, owner=self._owner(m))
+                                   on_text=on_text, owner=self._owner(m), first_new=first_new)
             if not mine():
                 return                         # the meeting changed, or she answered someone meanwhile
             watched = guest.watched() if said and hasattr(guest, 'watched') else None
