@@ -22,11 +22,12 @@ MAX_QUESTIONS = 5
 MAX_POINTS = 3
 NEW_TEXT_CHARS = 6000          # the most transcript one call carries: the newest lines win
 MIN_NEW_WORDS = 25             # fewer new words than this aren't worth a call
-SAY_MAX = 400                  # characters of anything said to the whole call
+SAY_MAX = 900                  # characters of anything she says on her tile (it scrolls, so nothing is cut)
 LINE_MAX = 240                 # one note, decision, task or question
 
 # What the board and the chat may carry, and nothing else.
-PUBLIC_FIELDS = ('title', 'subtitle', 'topic', 'decisions', 'tasks', 'questions', 'say')
+PUBLIC_FIELDS = ('title', 'subtitle', 'topic', 'decisions', 'tasks', 'questions', 'say', 'say_kind', 'say_to')
+SAY_KINDS = ('answer', 'chime')   # an answer to someone, or something she adds on her own
 
 # How Whisper and Meet's captions write "Koli".
 ALIASES = ('koli', 'kolie', 'coley', 'collie', 'kohli', 'קולי')
@@ -370,7 +371,9 @@ def reply(notes: dict, rows: list, talk: list, who: str, text: str, language: st
 # The view of the notes that the board in the call shows. Built field by
 # field from PUBLIC_FIELDS: the summary lines, a question put to the owner
 # and the answer suggested to him stay out.
-def public_view(notes: dict, owner: str, name: str = 'Koli', say: str = '') -> dict:
+# `say` is what she is saying on her tile now, `say_kind` whether it answers
+# someone (`say_to`, a name from the call) or is a note of her own.
+def public_view(notes: dict, owner: str, name: str = 'Koli', say: str = '', say_kind: str = '', say_to: str = '') -> dict:
     notes = notes if isinstance(notes, dict) else {}
     topic = _text(notes.get('topic'))
     tasks = [f"{t['task']} ({t['owner']})" if t.get('owner') else t['task'] for t in _tasks(notes.get('tasks'))]
@@ -382,7 +385,8 @@ def public_view(notes: dict, owner: str, name: str = 'Koli', say: str = '') -> d
     else:
         subtitle = f"AI notes · with {owner}" if owner else "AI notes"
     view = {'title': _text(name, 40) or 'Koli', 'subtitle': subtitle, 'topic': topic, 'decisions': decisions,
-            'tasks': tasks, 'questions': _texts(notes.get('questions'), MAX_QUESTIONS), 'say': _text(say, SAY_MAX)}
+            'tasks': tasks, 'questions': _texts(notes.get('questions'), MAX_QUESTIONS), 'say': _text(say, SAY_MAX),
+            'say_kind': say_kind if say_kind in SAY_KINDS else '', 'say_to': _text(say_to, 40)}
     return {field: view[field] for field in PUBLIC_FIELDS}
 
 

@@ -139,6 +139,8 @@ def _renumbered(tasks: list, more: list) -> list:
     return list(tasks) + [{**t, 'id': '' if t.get('id') in used else t.get('id')} for t in more]
 
 
+MAX_REMARKS = 300   # the most of Koli's own words one meeting keeps
+
 # Friendly names for the apps the shipped rules know.
 APP_NAMES = {'discord.exe': 'Discord', 'zoom.exe': 'Zoom', 'ms-teams.exe': 'Teams', 'teams.exe': 'Teams',
              'slack.exe': 'Slack', 'chrome.exe': 'Chrome', 'msedge.exe': 'Edge', 'brave.exe': 'Brave'}
@@ -779,6 +781,28 @@ class SessionManager:
                 return False
             target['tasks'] = clean
             self.store.save(target)
+            return True
+
+    # What Koli said in the call (Koli in the meeting): to whom, in answer
+    # to which words, and her own words. Her tile shows them for a minute
+    # and they are in no transcript, so without this nobody could read
+    # them afterwards, the summary included. Live meeting only.
+    def add_remark(self, meeting_id: str, remark: dict) -> bool:
+        said = ' '.join(str((remark or {}).get('said') or '').split())[:1000]
+        if not said:
+            return False
+        at = remark.get('at')
+        entry = {'at': round(float(at), 2) if isinstance(at, (int, float)) and not isinstance(at, bool) and at >= 0 else None,
+                 'to': ' '.join(str(remark.get('to') or '').split())[:40] or None,
+                 'asked': ' '.join(str(remark.get('asked') or '').split())[:600],
+                 'said': said, 'kind': remark.get('kind') if remark.get('kind') in ('answer', 'chime') else 'answer'}
+        with self._transition():
+            m = self.meeting
+            if not m or m['id'] != meeting_id:
+                return False
+            m.setdefault('remarks', []).append(entry)
+            del m['remarks'][:-MAX_REMARKS]
+            self.saver.mark(m)
             return True
 
     # You renamed the meeting: live or saved. `by_you` marks it, so a summary

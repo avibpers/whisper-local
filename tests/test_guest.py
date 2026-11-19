@@ -485,6 +485,66 @@ class InCallTests(GuestCase):
         self.assertEqual(sent['decisions'], ['a'])
         self.assertIs(sent['dense'], False)
 
+    def test_while_she_says_something_her_board_is_redrawn_until_it_rests(self):
+        # A hidden page draws once a second by itself; the app drives it ten times a second (measured).
+        guest = self.joined({**HAPPY, 'state': IN_CALL, 'frame': [True, True, False]})
+        self.assertFalse(guest.moving)
+        guest.show({'title': 'Koli', 'subtitle': '', 'topic': 'x', 'decisions': [], 'tasks': [], 'questions': [],
+                    'say': 'In 1948.', 'say_kind': 'answer', 'say_to': 'Noa'})
+        self.assertTrue(guest.moving)
+        self.assertTrue(guest.animate())
+        self.assertTrue(guest.animate())
+        self.assertFalse(guest.animate())                       # the board says it has come to rest
+        self.assertFalse(guest.moving)
+        self.assertEqual(self.kinds().count('eval:frame'), 3)
+
+    def test_her_notes_alone_need_no_extra_frames(self):
+        guest = self.joined()
+        guest.show({'title': 'Koli', 'subtitle': '', 'topic': 'x', 'decisions': [], 'tasks': [], 'questions': [], 'say': ''})
+        self.assertFalse(guest.moving)
+
+    def test_a_page_that_fails_a_frame_stops_the_redrawing(self):
+        guest = self.joined()
+        guest.show({'title': 'Koli', 'say': 'In 1948.'})
+
+        def broken(expression, timeout=30.0):
+            raise RuntimeError('the browser is closed')
+        self.sessions[-1].page.evaluate = broken
+        self.assertFalse(guest.animate())
+        self.assertFalse(guest.moving)
+
+    def test_a_missed_frame_is_made_up_at_the_next_look_at_the_call(self):
+        # Chrome stops a page for some seconds once, soon after it is hidden (measured): a frame
+        # that was not answered must not leave the rest of her words to the page's slow timer.
+        guest = self.joined({**HAPPY, 'state': IN_CALL, 'frame': [True]})
+        guest.show({'title': 'Koli', 'say': 'In 1948.'})
+        page = self.sessions[-1].page
+        answering = page.evaluate
+
+        def stalled(expression, timeout=30.0):
+            raise TimeoutError('no answer')
+        page.evaluate = stalled
+        self.assertFalse(guest.animate())
+        page.evaluate = answering
+        guest.tick()
+        self.assertTrue(guest.moving)
+        self.assertTrue(guest.animate())
+
+    def test_a_look_at_the_call_starts_no_frames_for_her_notes(self):
+        guest = self.joined()
+        guest.show({'title': 'Koli', 'say': ''})
+        guest.tick()
+        self.assertFalse(guest.moving)
+
+    def test_she_knows_whether_meet_asks_for_her_picture(self):
+        guest = self.joined({**HAPPY, 'state': IN_CALL, 'sending': [[{'active': True, 'width': 480, 'height': 270},
+                                                                  {'active': False, 'width': 0, 'height': 0}], []]})
+        self.assertIsNone(guest.watched())                      # not looked yet
+        guest.tick()
+        self.assertEqual(guest.watched(), 270)
+        guest.tick()
+        self.assertEqual(guest.watched(), 0)                    # Meet asks for no picture of her
+
     def test_the_same_view_is_not_sent_twice(self):
         guest = self.joined()
         view = {'title': 'Koli', 'subtitle': '', 'topic': 'x', 'decisions': [], 'tasks': [], 'questions': [], 'say': ''}

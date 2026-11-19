@@ -105,6 +105,9 @@ def meeting_text(m: dict) -> str:
             for t in m.get('turns', [])]
     rows += [(s['at'], 1, f"[{int(s['at'])}] SCREENSHOT: {s.get('caption') or 'no caption'}")
              for s in m.get('screenshots', [])]
+    # What Koli said in the call, at its moment: it was on her tile, not in anyone's mouth.
+    rows += [(r.get('at') or 0, 2, f"[{int(r.get('at') or 0)}] Koli (the AI assistant in the call): {r['said']}")
+             for r in m.get('remarks') or [] if r.get('said')]
     lines += [r[2] for r in sorted(rows)]
     return '\n'.join(lines)
 
