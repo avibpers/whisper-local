@@ -646,7 +646,8 @@ class CompanionService:
             with for_meeting(m['id'], 'companion'):
                 kind, said = brain.reply(self._notes, rows, list(self._talk), who, text, meeting_language(m),
                                          self._complete, on_text=on_text, owner=self._owner(m),
-                                         alone=self._alone(m), stopped=stopped)
+                                         alone=self._alone(m), stopped=stopped,
+                                         web=bool(self._setting('meeting.companion.web', True)))
         except CompanionError:
             if generation == self._generation and not showing:
                 self._say, self._say_until = '', 0.0

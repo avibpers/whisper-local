@@ -19,7 +19,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
   click. In Active mode she answers on her tile, as soon as you pause: whoever speaks to
   her by name, and anything you say when the call is just you and her. Her words appear
   as she writes them, she remembers the conversation, and may also write the answer in
-  the chat (a setting). Her
+  the chat (a setting). Ask her the weather or the news and she looks it up on the web
+  (with a ChatGPT login as her model). Her
   own browser (Chrome for Testing, 215 MB) is downloaded the first time and closes
   with Koli. Windows only for now; Meet sometimes refuses a guest, so she tries three
   times and says so.

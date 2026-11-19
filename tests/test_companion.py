@@ -388,6 +388,31 @@ class ActionTests(unittest.TestCase):
         self.assertEqual(''.join(pieces), 'In 1948, in May.')
         self.assertGreater(len(pieces), 1)
 
+    def test_reply_may_look_things_up_when_allowed(self):
+        # "What is the weather today" got "I have no access" in a live call (2026-11-19).
+        seen = []
+
+        def model(feature, messages, json=False, **kwargs):
+            seen.append((kwargs.get('web'), messages[0]['content']))
+            return FakeResult('16 degrees and sunny.')
+        self.decide(model, web=True)
+        self.decide(model)
+        self.assertIs(seen[0][0], True)
+        self.assertIn('search the web', seen[0][1])
+        self.assertFalse(seen[1][0])
+        self.assertNotIn('search the web', seen[1][1])
+
+    def test_links_and_sources_never_reach_her_tile(self):
+        # With web search the model adds its sources, whatever it is told (seen 2026-11-19).
+        said = companion.tidy_say("Its rivals are Manus and OpenClaw. ([grokbotwiki.com](https://grokbotwiki.com/x?utm=1))")
+        self.assertEqual(said, "Its rivals are Manus and OpenClaw.")
+        self.assertEqual(companion.tidy_say("See [the forecast](https://weather.example/rehovot) for more."), "See the forecast for more.")
+        self.assertEqual(companion.tidy_say("It is 16 degrees https://weather.example/rehovot now."), "It is 16 degrees now.")
+
+    def test_half_a_link_does_not_flash_while_her_words_come_in(self):
+        for partial in ("It is sunny. ([weather.ex", "It is sunny. ([weather.example](https://weather.exam", "It is sunny. (["):
+            self.assertEqual(companion.tidy_say(partial), "It is sunny.")
+
     def test_reply_with_no_words_raises(self):
         with self.assertRaises(CompanionError):
             self.reply(FakeAI(FakeResult(error='The model is busy')))
@@ -1363,6 +1388,22 @@ class ServiceGuestTests(ServiceCase):
         self.assertEqual(self.cards('said'), [])
         self.assertEqual(list(self.svc._talk), [])
 
+    def test_she_looks_things_up_unless_the_setting_says_no(self):
+        for setting, expected in ((None, True), (True, True), (False, False)):
+            self.make(mode='active', **({} if setting is None else {'web': setting}))
+            self.start()
+            self.alone()
+            self.svc.join()
+            seen = []
+
+            def model(feature, messages, json=False, **kwargs):
+                seen.append(bool(kwargs.get('web')))
+                return FakeResult('16 degrees.')
+            self.svc._complete = model
+            self.caption('b1', 'what is the weather in Rehovot today', ago=1.6)
+            self.svc.listen()
+            self.assertEqual(seen, [expected])
+
     def test_her_words_appear_on_the_tile_as_they_come(self):
         self.make('The state was founded in 1948, in the month of May.', mode='active')
         self.start()
@@ -1951,7 +1992,7 @@ class WiringTests(unittest.TestCase):
         defaults = YAML(typ='safe').load((ROOT / 'src' / 'koli' / 'config.defaults.yaml').read_text(encoding='utf-8'))
         hers = defaults['meeting']['companion']
         self.assertEqual(hers, {'mode': 'off', 'update_seconds': 45, 'join_call': False, 'name': 'Koli', 'announce': True,
-                                'chat': False})
+                                'chat': False, 'web': True})
         self.assertEqual(defaults['ai']['companion'], {'model': '', 'timeout': 20})
         for key in hers:
             self.assertIsNotNone(schema.get(f'meeting.companion.{key}'), key)

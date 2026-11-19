@@ -566,6 +566,10 @@ SCHEMA = [
     _S('meeting.companion.chat', 'Her answers go in the chat too', 'meetings', 'toggle', group='Koli in the meeting',
        help="In Active mode, in the call, she answers on her tile. With this on she also writes each answer in the "
             "call's chat, where it stays after her tile has moved on."),
+    _S('meeting.companion.web', 'She looks things up on the web', 'meetings', 'toggle', group='Koli in the meeting',
+       help='When someone in the call asks her something that changes (the weather, news, a price), she searches '
+            'the web and answers from what she finds. The search is worded by the AI model from what was asked. '
+            'Works with a ChatGPT (Codex) login as her model; other models answer from what they know.'),
     # Search the meetings by meaning (docs/design/meeting-search.md); Ollama's address is on its AI card.
     _S('meeting.search.meaning', 'Search by meaning', 'meetings', 'toggle', group='Search',
        help='The search box finds a meeting by what it is about, not only by the words you type. '

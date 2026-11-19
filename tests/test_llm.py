@@ -285,6 +285,74 @@ class WireFormatTests(unittest.TestCase):
 
 # ── Subscriptions ────────────────────────────────────────────────────────────
 
+class WebSearchTests(unittest.TestCase):
+    # Measured 2026-11-19 on the ChatGPT login: with the tool the weather question got an answer
+    # from the web in 3.7 s; without it, "I can't access live weather data".
+    def test_codex_sends_the_web_search_tool_only_when_asked(self):
+        from koli.llm.transports import codex
+        sent = []
+
+        class Stream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        def post_stream(url, payload, headers, timeout):
+            sent.append(payload)
+            return Stream()
+        events = [('', json.dumps({'type': 'response.web_search_call.completed'})),
+                  ('', json.dumps({'type': 'response.output_text.delta', 'delta': '16°C'}))]
+        with mock.patch.object(codex.http, 'post_stream', post_stream), \
+                mock.patch.object(codex, 'iter_events', lambda resp: iter(events)):
+            self.assertEqual(codex.complete('https://x', {}, 'm', [{'role': 'user', 'content': 'weather?'}], web=True)[0], '16°C')
+            codex.complete('https://x', {}, 'm', [{'role': 'user', 'content': 'hi'}])
+        self.assertEqual(sent[0]['tools'], [{'type': 'web_search'}])
+        self.assertNotIn('tools', sent[1])
+
+    def ask(self, provider, **more):
+        from koli import llm
+        with TempAppData(), mock.patch.object(llm.providers, 'get', lambda provider_id: provider), \
+                mock.patch.object(llm.ledger, 'record', lambda *a, **k: {'cost': 0}):
+            llm.configure(FakeConfig({'ai.model': 'codex/m'}))
+            return llm.complete('companion', [{'role': 'user', 'content': 'weather?'}], **more)
+
+    def test_web_reaches_only_a_provider_that_can_search(self):
+        calls = []
+
+        class Searching:
+            searches_web = True
+
+            def complete(self, model, messages, json_mode, on_text, timeout, **more):
+                calls.append(more)
+                return 'ok', 1, 1
+
+        class Plain:
+            def complete(self, model, messages, json_mode, on_text, timeout):
+                calls.append('plain')
+                return 'ok', 1, 1
+        self.assertTrue(self.ask(Searching(), web=True).ok)
+        self.assertTrue(self.ask(Searching()).ok)
+        self.assertTrue(self.ask(Plain(), web=True).ok)          # no error: it answers from what it knows
+        self.assertEqual(calls, [{'web': True}, {}, 'plain'])
+
+    def test_the_chatgpt_login_can_search_and_passes_it_on(self):
+        from koli.llm.providers import Codex, Grok, Ollama
+        self.assertTrue(Codex.searches_web)
+        self.assertFalse(getattr(Grok, 'searches_web', False))
+        self.assertFalse(getattr(Ollama, 'searches_web', False))
+        seen = {}
+
+        def wire(base_url, headers, model, messages, json_mode=None, on_text=None, timeout=60, web=False):
+            seen['web'] = web
+            return 'ok', 1, 1
+        with TempAppData(), mock.patch('koli.llm.providers.codex_wire.complete', wire), \
+                mock.patch.object(Codex.account, 'bearer', lambda stale=None: ('token', 'acct')):
+            Codex().complete('m', [{'role': 'user', 'content': 'weather?'}], None, None, 30, web=True)
+        self.assertIs(seen['web'], True)
+
+
 class SubscriptionTests(unittest.TestCase):
     def setUp(self):
         self.temp = TempAppData()
