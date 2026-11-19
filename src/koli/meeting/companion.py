@@ -30,8 +30,6 @@ PUBLIC_FIELDS = ('title', 'subtitle', 'topic', 'decisions', 'tasks', 'questions'
 
 # How Whisper and Meet's captions write "Koli".
 ALIASES = ('koli', 'kolie', 'coley', 'collie', 'kohli', 'קולי')
-ASKING = re.compile(r"\?|\b(what|when|who|where|why|how|which|can you|could you|would you|do you|please)\b"
-                    r"|(?<!\w)(מה|מתי|מי|איפה|למה|איך|האם|תוכלי|אפשר|בבקשה)(?!\w)", re.IGNORECASE)
 RTL = re.compile(r'[֐-׿؀-ۿ]')
 
 
@@ -372,21 +370,14 @@ def public_view(notes: dict, owner: str, name: str = 'Koli', say: str = '') -> d
     return {field: view[field] for field in PUBLIC_FIELDS}
 
 
-# Whether a line is said to Koli: her name as a word of its own (or a way
-# speech-to-text writes it), in a line that asks for something.
+# Whether a line names Koli: her name as a word of its own, or a way
+# speech-to-text writes it. That is enough for a look; whether the line is
+# really for her ("Koli, give me a list" or "I told Koli yesterday") is the
+# model's call in reply().
 def spoken_to(text: str, name: str = 'Koli') -> bool:
-    text = str(text or '')
     name = (name or 'Koli').strip().lower()
     names = set(ALIASES) if name == 'koli' else {name}
-    found = None
-    for alias in names:
-        found = re.search(rf'(?<!\w){re.escape(alias)}(?!\w)', text, re.IGNORECASE)
-        if found:
-            break
-    if not found:
-        return False
-    # Her name first is someone turning to her; otherwise the line must ask.
-    return found.start() <= 2 or bool(ASKING.search(text))
+    return any(re.search(rf'(?<!\w){re.escape(alias)}(?!\w)', str(text or ''), re.IGNORECASE) for alias in names)
 
 
 __all__ = ['ALIASES', 'CompanionError', 'FEATURE', 'MAX_DECISIONS', 'MAX_QUESTIONS', 'MAX_SUMMARY', 'MAX_TASKS',

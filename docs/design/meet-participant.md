@@ -261,9 +261,18 @@ In Active mode, while she is in the call:
   call is just the two of them and whether the speaker has stopped.
 - **Follow-ups.** For 45 s after she answered someone, that person's next
   words need no name.
+- **Her name anywhere is enough for a look**, question or not ("… Koli, give
+  me a list of models" got nothing on 2026-11-19, when a line also had to
+  ask something). Whether it is for her is the model's call.
+- **A thread of her own.** Listening and answering run on
+  `meeting-companion-talk`, looking every 0.5 s; the notes keep the worker
+  thread. In a live call an answer had waited 5.6 s behind a notes update.
 - **Where.** On her tile: three dots at once, then her words as the model
   writes them (the tile is redrawn every 0.4 s), then the answer for a
   minute; when she waits or stays out, the dots go and nothing else shows.
+  An answer already on the tile stays while the next words are judged, and
+  goes only when a new answer starts: in a live call it kept vanishing behind
+  the dots every time someone spoke ("she erases the answer").
   With `meeting.companion.chat` the answer is written in the chat too.
 - **What she says.** `companion.reply`: plain text, at most three short
   sentences, in the speaker's language, from the meeting and from general

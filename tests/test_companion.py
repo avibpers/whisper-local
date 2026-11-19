@@ -441,8 +441,10 @@ class SpokenToTests(unittest.TestCase):
         self.assertFalse(companion.spoken_to('broccoli is what we ordered?', 'Koli'))
         self.assertFalse(companion.spoken_to('אני שומע את הקוליות שלך?', 'Koli'))
 
-    def test_her_name_with_no_question_is_not_a_question(self):
-        self.assertFalse(companion.spoken_to('I told Koli about it yesterday.', 'Koli'))
+    def test_her_name_anywhere_is_enough_for_a_look(self):
+        # Whether she answers is the model's call (reply): "give me a list" asks with no question word.
+        self.assertTrue(companion.spoken_to('I told Koli about it yesterday.', 'Koli'))
+        self.assertTrue(companion.spoken_to('להם את הזה קולי תתני לי רשימה של מודלים', 'Koli'))
 
     def test_another_name_she_was_given(self):
         self.assertTrue(companion.spoken_to('Nova, when do we ship?', 'Nova'))
@@ -702,6 +704,7 @@ class ServiceCase(unittest.TestCase):
     def drain(self):
         while self.svc.step():
             pass
+        self.svc.listen()
 
     def cards(self, kind=None):
         return [c for c in self.svc.state()['cards'] if kind is None or c['kind'] == kind]
@@ -1304,6 +1307,62 @@ class ServiceGuestTests(ServiceCase):
         self.assertNotIn('founded', line)
         self.assertNotIn('1948', line)
 
+    def test_a_request_with_her_name_in_the_middle_reaches_her(self):
+        # Seen live 2026-11-19: "... Koli give me a list of models" got nothing.
+        self.make('Here are three.', mode='active')
+        self.start()
+        self.svc.join()
+        self.meetings.meet.calls['abc-defg-hij']['people'] = [{'id': '1', 'name': 'Noa Levi', 'self': True},
+                                                             {'id': '2', 'name': 'Dana', 'self': False}]
+        self.caption('b1', 'they have this Koli give me a list of models', ago=1.6, mine=False)
+        self.svc.listen()
+        self.assertEqual(len(self.cards('said')), 1)
+
+    def test_an_answer_stays_on_her_tile_while_the_next_words_are_judged(self):
+        # Seen live: "she erases the answer because she thinks you are asking another question".
+        self.make('In 1948.', '[skip]', mode='active')
+        self.start()
+        self.alone()
+        self.svc.join()
+        self.caption('b1', 'when was the state founded', ago=1.6)
+        self.svc.listen()
+        seen = len(self.guests[0].views)
+        self.t += 5
+        self.caption('b2', 'wow that is right good', ago=1.6)
+        self.svc.listen()
+        self.assertEqual(len(self.ai.calls), 2)
+        self.assertEqual([v['say'] for v in self.guests[0].views[seen:] if v['say'] != 'In 1948.'], [])
+        self.assertEqual(self.guests[0].views[-1]['say'], 'In 1948.')
+
+    def test_a_new_answer_takes_the_place_of_the_one_showing(self):
+        self.make('In 1948.', 'In May.', mode='active')
+        self.start()
+        self.alone()
+        self.svc.join()
+        self.caption('b1', 'when was the state founded', ago=1.6)
+        self.svc.listen()
+        self.t += 5
+        self.caption('b2', 'and in which month', ago=1.6)
+        self.svc.listen()
+        says = [v['say'] for v in self.guests[0].views]
+        self.assertEqual(says[-1], 'In May.')
+        self.assertEqual(says.count('…'), 1)                     # the dots only when her tile had nothing to say
+
+    def test_an_answer_for_a_meeting_that_ended_meanwhile_is_dropped(self):
+        self.make(mode='active')
+        self.start()
+        self.alone()
+        self.svc.join()
+
+        def model(feature, messages, json=False, **kwargs):
+            self.svc._forget('')                                  # the meeting ended while the model was writing
+            return FakeResult('In 1948.')
+        self.svc._complete = model
+        self.caption('b1', 'when was the state founded', ago=1.6)
+        self.svc.listen()
+        self.assertEqual(self.cards('said'), [])
+        self.assertEqual(list(self.svc._talk), [])
+
     def test_her_words_appear_on_the_tile_as_they_come(self):
         self.make('The state was founded in 1948, in the month of May.', mode='active')
         self.start()
@@ -1592,6 +1651,36 @@ class ServiceInTheAppTests(ServiceCase):
         self.bus.publish('meeting_turn', {'id': 'm1', 'turn': turn})
         self.assertTrue(self.wait_for(lambda: self.svc.state()['notes']['topic'] == NOTES['topic']))
         self.assertTrue(any(p['notes']['topic'] == NOTES['topic'] for p in self.published))
+
+    def test_notes_being_written_do_not_hold_up_her_answer(self):
+        # Seen live 2026-11-19: an answer waited 5.6 s behind a notes update.
+        import threading
+        self.make_live()
+        self.settings['meeting.companion.mode'] = 'active'
+        release = threading.Event()
+        self.addCleanup(release.set)
+        notes_started = threading.Event()
+
+        def model(feature, messages, json=False, **kwargs):
+            if json:                                              # the notes
+                notes_started.set()
+                release.wait(10)
+                return FakeResult(__import__('json').dumps(NOTES))
+            return FakeResult('In 1948.')                         # her answer
+        self.svc._complete = model
+        m = self.go_live()
+        self.assertTrue(self.wait_for(lambda: self.svc.state()['id'] == 'm1'))
+        self.meetings.meet.calls['abc-defg-hij'] = {'code': 'abc-defg-hij', 'self_name': 'Noa Levi',
+                                                    'people': [{'id': '1', 'name': 'Noa Levi', 'self': True}]}
+        self.svc.join()
+        turn = {'start': 5, 'end': 7, 'stream': 'loopback', 'speaker': 's1', 'text': LONG, 'lang': 'en'}
+        m['turns'].append(turn)
+        self.bus.publish('meeting_turn', {'id': 'm1', 'turn': turn})
+        self.assertTrue(notes_started.wait(5))
+        self.meetings.meet.open = [{'id': 'b1', 'name': 'Noa Levi', 'self': True, 'text': 'when was the state founded',
+                                    't0': self.t - 10, 't1': self.t - 1.6}]
+        self.assertTrue(self.wait_for(lambda: any(c['kind'] == 'said' for c in self.svc.state()['cards'])))
+        self.assertFalse(release.is_set())                        # the notes are still being written
 
     def test_after_shutdown_the_bus_no_longer_reaches_her(self):
         self.make_live()
