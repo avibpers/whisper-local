@@ -439,6 +439,13 @@ class HumanInputTests(unittest.TestCase):
         downs = [p for m, p in self.page.calls if p.get('type') == 'keyDown']
         self.assertEqual([(p['text'], p['windowsVirtualKeyCode']) for p in downs], [('.', 0), ('%', 0)])
 
+    def test_a_shortcut_is_a_letter_with_ctrl_and_alt_held(self):
+        # Meet's Ctrl+Alt+H. Keys are not tied to the page's frames: at once on a hidden page.
+        self.hands.shortcut('h', ctrl=True, alt=True)
+        keys = [(m, p) for m, p in self.page.calls if m == 'Input.dispatchKeyEvent']
+        self.assertEqual([p['type'] for _, p in keys], ['rawKeyDown', 'keyUp'])
+        self.assertEqual({(p['modifiers'], p['key'], p['code'], p['windowsVirtualKeyCode']) for _, p in keys}, {(3, 'h', 'KeyH', 72)})
+
     def test_enter_is_a_key_press(self):
         self.hands.press('Enter')
         keys = [p for m, p in self.page.calls if m == 'Input.dispatchKeyEvent']

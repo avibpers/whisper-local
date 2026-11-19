@@ -23,7 +23,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
   with the meeting and its summary. She remembers the conversation, and may also write the answer in
   the chat (a setting). With other people in the call she also speaks up on her own, in a gap
   of the talk: when a question is left hanging, or something decided earlier is remembered
-  wrongly (at most every minute and a half; Settings › Meetings › She adds something on her own). Ask her the weather or the news and she looks it up on the web
+  wrongly (at most every minute and a half; Settings › Meetings › She adds something on her own),
+  and raises her hand in Meet for 20 seconds so people look at her tile. Ask her the weather or the news and she looks it up on the web
   (with a ChatGPT login as her model). Her
   own browser (Chrome for Testing, 215 MB) is downloaded the first time and closes
   with Koli. Windows only for now; Meet sometimes refuses a guest, so she tries three

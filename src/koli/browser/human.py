@@ -84,6 +84,17 @@ class Hands:
         self._page.send('Input.dispatchKeyEvent', {'type': 'keyDown', **key})
         self._page.send('Input.dispatchKeyEvent', {'type': 'keyUp', **key})
 
+    # A letter with Ctrl and/or Alt held: a page's keyboard shortcut (Meet's
+    # Ctrl+Alt+H). Keys are not tied to the page's frames, so this lands at
+    # once on a hidden page, where a pointer path waits a second for every
+    # move (measured 2026-11-19: over a minute for one click).
+    def shortcut(self, letter: str, ctrl: bool = False, alt: bool = False):
+        letter = letter.lower()
+        key = {'modifiers': (1 if alt else 0) | (2 if ctrl else 0), 'key': letter, 'code': f'Key{letter.upper()}',
+               'windowsVirtualKeyCode': ord(letter.upper())}
+        self._page.send('Input.dispatchKeyEvent', {'type': 'rawKeyDown', **key})
+        self._page.send('Input.dispatchKeyEvent', {'type': 'keyUp', **key})
+
     # Text put in the focused field in one step. Used after the join (a chat
     # message), where Meet took it; never for the name before joining.
     def insert(self, text: str):

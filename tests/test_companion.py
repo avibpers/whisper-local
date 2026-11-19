@@ -749,7 +749,7 @@ class FakeGuest:
     def __init__(self, on_state, name='Koli', announce=''):
         self.on_state, self.name, self.announce = on_state, name, announce
         self.state = 'off'
-        self.joined, self.said, self.views, self.tiles = [], [], [], []
+        self.joined, self.said, self.views, self.tiles, self.hands = [], [], [], [], []
         self.left = 0
 
     @property
@@ -780,6 +780,9 @@ class FakeGuest:
 
     def watched(self):
         return getattr(self, 'picture', None)
+
+    def hand(self, up):
+        self.hands.append(up)
 
 
 class SlowGuest(FakeGuest):
@@ -2019,6 +2022,38 @@ class ServiceChimeTests(ServiceCase):
         self.svc.listen()
         self.assertEqual(guest.said, [self.REMARK])
 
+    # Her hand goes up with a remark of her own: Meet shows it to everyone, whatever is on their screen.
+    def test_she_raises_her_hand_when_she_speaks_up(self):
+        guest = self.room()
+        self.talk(5)
+        self.svc.listen()
+        self.assertEqual(guest.hands, [True])
+        self.t += 61                                            # her words leave the tile
+        self.svc.listen()
+        self.assertEqual(guest.hands, [True, False])
+
+    def test_no_hand_for_nothing(self):
+        guest = self.room('[skip]')
+        self.talk(5)
+        self.svc.listen()
+        self.assertNotIn(True, guest.hands)
+
+    def test_the_hand_can_be_switched_off(self):
+        guest = self.room(raise_hand=False)
+        self.talk(5)
+        self.svc.listen()
+        self.assertNotIn(True, guest.hands)
+        self.assertEqual(guest.views[-1]['say'], self.REMARK)   # she still says it
+
+    def test_an_answer_raises_her_hand_only_when_her_tile_is_on_nobodys_screen(self):
+        for picture, raised in ((0, True), (270, False), (None, False)):
+            guest = self.room('Thursday.')
+            guest.picture = picture
+            self.turn(5, 's2', 'Koli, when do we ship?')
+            self.svc.listen()
+            self.assertEqual(guest.views[-1]['say'], 'Thursday.')
+            self.assertEqual(True in guest.hands, raised, picture)
+
     def test_she_remembers_what_she_added(self):
         self.room(self.REMARK, 'Thursday.')
         self.talk(5)
@@ -2369,7 +2404,7 @@ class WiringTests(unittest.TestCase):
         defaults = YAML(typ='safe').load((ROOT / 'src' / 'koli' / 'config.defaults.yaml').read_text(encoding='utf-8'))
         hers = defaults['meeting']['companion']
         self.assertEqual(hers, {'mode': 'off', 'update_seconds': 45, 'join_call': False, 'name': 'Koli', 'announce': True,
-                                'chat': False, 'chime': True, 'web': True})
+                                'chat': False, 'chime': True, 'raise_hand': True, 'web': True})
         self.assertEqual(defaults['ai']['companion'], {'model': '', 'timeout': 20})
         for key in hers:
             self.assertIsNotNone(schema.get(f'meeting.companion.{key}'), key)

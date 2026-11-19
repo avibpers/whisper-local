@@ -783,6 +783,9 @@ meeting: # Meetings: calls in Discord, Zoom, Teams and the browser
         # remembered wrongly). She waits for a gap, considers it at most
         # every 30 s and speaks at most every 90 s
         chime: true
+        # She raises her hand in Meet (for 20 s) when she adds something on
+        # her own, and with an answer when her tile is on nobody's screen
+        raise_hand: true
         # When she answers in a call she may search the web for things that
         # change (the weather, news, prices). Works with a ChatGPT (Codex)
         # login; other models answer from what they know

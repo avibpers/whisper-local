@@ -572,6 +572,9 @@ SCHEMA = [
             "says so on her tile without being asked. Needs Meet's captions on. She waits "
             'for a gap in the talk, considers it at most every half minute and speaks at most every minute and a half. '
             'Each look is one more call to her AI model.'),
+    _S('meeting.companion.raise_hand', 'She raises her hand when she speaks up', 'meetings', 'toggle', group='Koli in the meeting',
+       help="When she adds something on her own she raises her hand in Meet for 20 seconds, so people look at her tile. "
+            "She also does it with an answer when her tile is on nobody's screen."),
     _S('meeting.companion.web', 'She looks things up on the web', 'meetings', 'toggle', group='Koli in the meeting',
        help='When someone in the call asks her something that changes (the weather, news, a price), she searches '
             'the web and answers from what she finds. The search is worded by the AI model from what was asked. '
