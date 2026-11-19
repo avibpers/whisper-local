@@ -420,6 +420,56 @@ class ActionTests(unittest.TestCase):
 
 # ── What others may see ──────────────────────────────────────────────────────
 
+class ChimeTests(unittest.TestCase):
+    """What she adds on her own, with nobody asking: her words, or '' most of the time."""
+
+    ROWS = [{'at': 5, 'name': 'Dana', 'you': False, 'text': 'so the price we agreed on was twenty five dollars', 'heard': True},
+            {'at': 9, 'name': 'Eran', 'you': False, 'text': 'yes twenty five', 'heard': True}]
+
+    def test_most_of_the_time_she_says_nothing(self):
+        ai = FakeAI('[skip]')
+        self.assertEqual(companion.chime(NOTES, self.ROWS, [], '', 'en', ai), '')
+        self.assertEqual(companion.chime(NOTES, self.ROWS, [], '', 'en', FakeAI('  [SKIP] nothing to add')), '')
+
+    def test_her_remark_is_plain_text(self):
+        ai = FakeAI('**The price decided earlier was twenty dollars, not twenty five.**')
+        self.assertEqual(companion.chime(NOTES, self.ROWS, [], '', 'en', ai),
+                         'The price decided earlier was twenty dollars, not twenty five.')
+        self.assertFalse(ai.calls[0]['json'])
+
+    def test_the_model_sees_the_talk_what_is_said_now_and_what_she_said_before(self):
+        ai = FakeAI('[skip]')
+        companion.chime(NOTES, self.ROWS, [{'who': 'Koli', 'text': 'In 1948.'}], 'Dana: and who owns the guide', 'en', ai, owner='Noa')
+        said = ai.said()
+        self.assertIn('twenty five dollars', said)
+        self.assertIn('Being said right now:\nDana: and who owns the guide', said)
+        self.assertIn('Koli: In 1948.', said)
+        self.assertIn('You work for Noa.', said)
+        self.assertIn('[skip]', said)
+
+    def test_only_the_public_part_of_the_notes_reaches_the_model(self):
+        # Her remark is for everyone: the summary lines and the answer suggested to the owner stay out.
+        notes = {**NOTES, 'summary': ['PRIVATE LINE'], 'ask': {'question': 'q', 'answer': 'PRIVATE ANSWER', 'points': []}}
+        ai = FakeAI('[skip]')
+        companion.chime(notes, self.ROWS, [], '', 'en', ai)
+        self.assertNotIn('PRIVATE', ai.said())
+        self.assertIn(NOTES['topic'], ai.said())
+
+    def test_her_words_reach_the_tile_as_they_are_written(self):
+        pieces = []
+        companion.chime(NOTES, self.ROWS, [], '', 'en', FakeAI('It was twenty.'), on_text=pieces.append)
+        self.assertEqual(''.join(pieces), 'It was twenty.')
+
+    def test_a_model_that_fails_is_an_error(self):
+        with self.assertRaises(CompanionError):
+            companion.chime(NOTES, self.ROWS, [], '', 'en', FakeAI(FakeResult(error='no answer')))
+
+    def test_with_nothing_said_nothing_is_asked(self):
+        ai = FakeAI('x')
+        self.assertEqual(companion.chime(NOTES, [], [], '', 'en', ai), '')
+        self.assertEqual(ai.calls, [])
+
+
 class PublicViewTests(unittest.TestCase):
     def test_exactly_the_public_fields(self):
         view = companion.public_view(NOTES, 'Noa', name='Koli')
@@ -732,7 +782,8 @@ class ServiceCase(unittest.TestCase):
         from koli.services.companion import CompanionService
         self.settings = {'meeting.companion.mode': 'insights', 'meeting.companion.update_seconds': 45,
                          'meeting.companion.join_call': False, 'meeting.companion.name': 'Koli',
-                         'meeting.companion.announce': True, 'meeting.companion.chat': False}
+                         'meeting.companion.announce': True, 'meeting.companion.chat': False,
+                         'meeting.companion.chime': False}
         self.settings.update({f'meeting.companion.{k}': v for k, v in settings.items()})
         self.meetings = FakeMeetings()
         self.events, self.copied, self.guests = [], [], []
@@ -1779,6 +1830,172 @@ class ServiceGuestTests(ServiceCase):
 
 # ── In the app: the event bus and the worker thread ──────────────────────────
 
+class ServiceChimeTests(ServiceCase):
+    """Active mode, in the call: now and then she adds something nobody asked for."""
+
+    REMARK = 'The price decided earlier was twenty dollars, not twenty five.'
+
+    def room(self, *answers, **settings):
+        self.make(*(answers or (self.REMARK,)), **{'mode': 'active', 'chime': True, **settings})
+        self.start()
+        self.meetings.meet.calls['abc-defg-hij']['people'] = [{'id': '1', 'name': 'Noa Levi', 'self': True},
+                                                             {'id': '2', 'name': 'Dana', 'self': False}]
+        self.svc.join()
+        self.ai.calls.clear()
+        return self.guests[0]
+
+    # Dana talks: 27 words a line.
+    def talk(self, start, lines=2):
+        for i in range(lines):
+            self.turn(start + i * 3, 's1', LONG)
+
+    def checks(self):
+        return [c for c in self.ai.calls if 'Nobody spoke to you' in c['messages'][0]['content']]
+
+    def caption(self, block_id, text, ago, mine=True):
+        self.meetings.meet.open = [{'id': block_id, 'name': 'Noa Levi' if mine else 'Dana', 'self': mine, 'text': text,
+                                    't0': self.t - 10, 't1': self.t - ago}]
+
+    def test_in_a_gap_she_adds_something_on_her_own(self):
+        guest = self.room()
+        self.talk(5)
+        self.svc.listen()
+        self.assertEqual(len(self.checks()), 1)
+        view = guest.views[-1]
+        self.assertEqual((view['say'], view['say_kind'], view['say_to']), (self.REMARK, 'chime', ''))
+        self.assertEqual(self.cards('said')[0]['title'], 'Koli added')
+        remark = self.meetings.session.meeting['remarks'][-1]
+        self.assertEqual((remark['said'], remark['kind'], remark['to']), (self.REMARK, 'chime', None))
+
+    def test_she_does_not_cut_in_while_someone_is_speaking(self):
+        self.room()
+        self.talk(5)
+        self.caption('b1', 'and another thing about the price', ago=0.5, mine=False)
+        self.svc.listen()
+        self.assertEqual(self.checks(), [])
+        self.caption('b1', 'and another thing about the price', ago=2.5, mine=False)
+        self.svc.listen()
+        self.assertEqual(len(self.checks()), 1)
+        self.assertIn('Being said right now:\nDana: and another thing about the price', self.ai.said())
+
+    def test_when_she_has_nothing_to_add_her_tile_stays_as_it_is(self):
+        guest = self.room('[skip]')
+        shown = len(guest.views)
+        self.talk(5)
+        self.svc.listen()
+        self.assertEqual(len(self.checks()), 1)
+        self.assertEqual([v['say'] for v in guest.views[shown:]], [])
+        self.assertEqual(self.cards('said'), [])
+        self.assertNotIn('remarks', self.meetings.session.meeting)
+
+    def test_the_same_words_are_looked_at_once(self):
+        self.room('[skip]')
+        self.talk(5)
+        self.svc.listen()
+        self.t += 120
+        self.svc.listen()
+        self.assertEqual(len(self.checks()), 1)
+
+    def test_she_looks_at_most_every_half_minute(self):
+        self.room('[skip]')
+        self.talk(5)
+        self.svc.listen()
+        self.talk(20)
+        self.t += 10
+        self.svc.listen()
+        self.assertEqual(len(self.checks()), 1)
+        self.t += 21
+        self.svc.listen()
+        self.assertEqual(len(self.checks()), 2)
+
+    def test_a_few_new_words_are_not_worth_a_look(self):
+        self.room('[skip]')
+        self.turn(5, 's1', 'so the price is twenty dollars')
+        self.svc.listen()
+        self.assertEqual(self.checks(), [])
+
+    def test_her_own_remarks_are_a_minute_and_a_half_apart(self):
+        self.room()
+        self.talk(5)
+        self.svc.listen()
+        self.talk(20)
+        self.t += 60
+        self.svc.listen()
+        self.assertEqual(len(self.checks()), 1)                 # not even asked: too soon after her last remark
+        self.t += 31
+        self.svc.listen()
+        self.assertEqual(len(self.checks()), 2)
+        self.assertEqual(len(self.cards('said')), 2)
+
+    def test_she_does_not_talk_over_an_answer_she_just_gave(self):
+        self.room('Thursday.', self.REMARK)
+        self.turn(5, 's2', 'Koli, when do we ship?')              # Eran asks; Dana talks on (no follow-up of his)
+        self.svc.listen()
+        self.assertEqual(len(self.cards('said')), 1)
+        self.talk(10)
+        self.t += 10
+        self.svc.listen()
+        self.assertEqual(self.checks(), [])
+        self.t += 25
+        self.svc.listen()
+        self.assertEqual(len(self.checks()), 1)
+        # Half a minute on, the old answer is still up (it stays a minute): her remark takes its place.
+        self.assertEqual(self.guests[0].views[-1]['say'], self.REMARK)
+
+    def test_only_in_active_mode_in_the_call_with_others_and_switched_on(self):
+        for settings, joined, alone in (({'mode': 'insights'}, True, False), ({'chime': False}, True, False),
+                                        ({}, False, False), ({}, True, True)):
+            self.make('[skip]', **{'mode': 'active', 'chime': True, **settings})
+            self.start()
+            people = [{'id': '1', 'name': 'Noa Levi', 'self': True}] + ([] if alone else [{'id': '2', 'name': 'Dana', 'self': False}])
+            self.meetings.meet.calls['abc-defg-hij']['people'] = people
+            if joined:
+                self.svc.join()
+            self.ai.calls.clear()
+            self.talk(5)
+            self.svc.listen()
+            self.assertEqual(self.checks(), [], (settings, joined, alone))
+
+    def test_only_what_the_call_heard_reaches_the_model(self):
+        self.room('[skip]')
+        self.meetings.meet.states[self.epoch(5)] = False                   # said with your microphone off in Meet
+        self.turn(5, 'you', 'between us the SECRET budget is much higher than what we told them')
+        self.meetings.meet.states[self.epoch(8)] = True
+        self.turn(8, 'you', 'so the OPEN offer stays at twenty dollars for everyone')
+        self.talk(11)
+        self.svc.listen()
+        said = self.ai.said()
+        self.assertNotIn('SECRET', said)
+        self.assertIn('OPEN offer', said)
+
+    def epoch(self, start):
+        from koli.services.companion import started_ts
+        return round(started_ts(self.meetings.session.meeting) + start, 2)
+
+    def test_a_model_that_fails_shows_no_card_and_is_left_alone_for_a_while(self):
+        self.room(FakeResult(error='the model is busy'))
+        self.talk(5)
+        self.svc.listen()
+        self.svc.listen()
+        self.assertEqual(len(self.checks()), 1)
+        self.assertEqual(self.cards('error'), [])
+
+    def test_her_remark_goes_in_the_chat_too_when_answers_do(self):
+        guest = self.room(chat=True)
+        self.talk(5)
+        self.svc.listen()
+        self.assertEqual(guest.said, [self.REMARK])
+
+    def test_she_remembers_what_she_added(self):
+        self.room(self.REMARK, 'Thursday.')
+        self.talk(5)
+        self.svc.listen()
+        self.t += 30
+        self.turn(30, 's1', 'Koli, when do we ship?')
+        self.svc.listen()
+        self.assertIn(f'Koli: {self.REMARK}', self.ai.said())
+
+
 class ServiceInTheAppTests(ServiceCase):
     def wait_for(self, condition, seconds=5.0):
         import time
@@ -2119,7 +2336,7 @@ class WiringTests(unittest.TestCase):
         defaults = YAML(typ='safe').load((ROOT / 'src' / 'koli' / 'config.defaults.yaml').read_text(encoding='utf-8'))
         hers = defaults['meeting']['companion']
         self.assertEqual(hers, {'mode': 'off', 'update_seconds': 45, 'join_call': False, 'name': 'Koli', 'announce': True,
-                                'chat': False, 'web': True})
+                                'chat': False, 'chime': True, 'web': True})
         self.assertEqual(defaults['ai']['companion'], {'model': '', 'timeout': 20})
         for key in hers:
             self.assertIsNotNone(schema.get(f'meeting.companion.{key}'), key)

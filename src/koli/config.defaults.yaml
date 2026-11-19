@@ -778,6 +778,11 @@ meeting: # Meetings: calls in Discord, Zoom, Teams and the browser
         # In active mode, in the call: her answers are also written in the
         # call's chat
         chat: false
+        # In active mode, in a call with other people: she may say something
+        # nobody asked for (an answer to a question left hanging, a number
+        # remembered wrongly). She waits for a gap, considers it at most
+        # every 30 s and speaks at most every 90 s
+        chime: true
         # When she answers in a call she may search the web for things that
         # change (the weather, news, prices). Works with a ChatGPT (Codex)
         # login; other models answer from what they know

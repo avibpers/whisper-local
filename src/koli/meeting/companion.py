@@ -199,6 +199,23 @@ First decide which of three things to do, and do exactly one:
 
 When you are told the speaker has stopped talking, [wait] is no longer possible: answer what you can make of it, or [skip]."""
 
+# What she adds on her own. The bar is high on purpose: a participant who
+# comments on everything is muted by the second meeting.
+CHIME_PROMPT = """You are Koli, an AI assistant sitting in a video call as a participant of your own. You have no voice yet: what you say appears as text on your video tile, for everyone in the call to read.{owner}
+Nobody spoke to you. You are listening, and you may add something on your own the way a good colleague does: rarely, briefly, and only when it helps the people in the call right now. You get their words as speech-to-text wrote them: some are garbled and there is no punctuation.
+
+Speak only when one of these is true:
+- a question was asked in the call, nobody answered it, and you know the answer;
+- someone states as a fact something that is wrong, and it matters for what they are deciding;
+- they are trying to recall something that was said or decided earlier in this meeting (a number, a date, a name, who took a task) and can't, or recall it wrongly;
+- what they are about to decide contradicts a decision already made in this meeting.
+
+In every other case reply with exactly [skip]. Most of the time the answer is [skip]: people talking, agreeing, planning, joking or thinking aloud need nothing from you. Never comment, summarise, praise, encourage or offer help. Never say again what you already said (your earlier words are listed). When you are not sure it helps, [skip].
+   "so we ship on Thursday and Dana updates the page" -> [skip]
+   "what was the price we agreed on, twenty five?" with the notes saying twenty -> You agreed on twenty dollars.
+
+When you do speak: the thing itself in at most two short sentences, in the language they are speaking, in plain words. No greeting, no "I noticed", no markdown, no lists. You know nothing about these people beyond this meeting."""
+
 # Added to the talk prompt when she may look things up.
 WEB_PART = """
 
@@ -364,6 +381,37 @@ def reply(notes: dict, rows: list, talk: list, who: str, text: str, language: st
     if not said:
         raise CompanionError("The AI had no answer")
     return ('answer', said)
+
+
+# Something Koli adds to the call on her own, with nobody asking: her
+# words, or '' when she has nothing worth cutting in for (most of the
+# time). Like an answer it is for everyone, so the model gets only the
+# public part of the notes and rows the call heard. `now`: the words being
+# said at this moment (captions still open), as "Name: words" lines.
+# `talk`: what she said before, so she doesn't say it twice.
+def chime(notes: dict, rows: list, talk: list, now: str, language: str, complete: Callable,
+          on_text: Optional[Callable] = None, owner: str = '') -> str:
+    now = str(now or '').strip()
+    if not rows and not now:
+        return ''
+    owner = _text(owner, 40)
+    system = CHIME_PROMPT.format(owner=f' You work for {owner}.' if owner else '')
+    parts = [_public_notes_part(notes)]
+    if rows:
+        parts.append("The last minutes of the meeting:\n" + transcript(rows))
+    if now:
+        parts.append("Being said right now:\n" + now[:800])
+    if talk:
+        parts.append("What you said in this call so far, and what was said to you:\n"
+                     + '\n'.join(f"{t['who']}: {t['text']}" for t in talk))
+    messages = [{'role': 'system', 'content': system}, {'role': 'user', 'content': '\n\n'.join(parts)}]
+    result = complete(FEATURE, messages, json=False, on_text=on_text)
+    if not getattr(result, 'ok', False):
+        raise CompanionError(getattr(result, 'error', '') or 'The AI did not answer')
+    # [skip] anywhere is a skip: a model that explains why it stays out has nothing for the call.
+    if '[skip]' in str(result.text or '').lower() or '[wait]' in str(result.text or '').lower():
+        return ''
+    return tidy_say(result.text)
 
 
 # ── What others may see ──────────────────────────────────────────────────────
