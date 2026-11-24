@@ -8,6 +8,7 @@
 
 import logging
 import queue
+import re
 import time
 import threading
 from typing import Optional, Callable
@@ -411,13 +412,42 @@ class WhisperEngine:
         total = sum(w for w, _ in weights)
         return sum(w * lp for w, lp in weights) / total if total else None
 
+    # English that isn't English: every word is spelled from pieces in
+    # Whisper's vocabulary, where real words are one piece. "Atma Dehima"
+    # (את מדהימה, 2026-11-24) is two pieces a word, "Continue" and "Battery
+    # status" one. Lowercased, since a capital splits "Merge" in two; your
+    # favored words (JumboMail, Koli) never count as made up.
+    def _looks_made_up(self, text: str) -> bool:
+        tokenizer = getattr(self.model, 'hf_tokenizer', None)
+        words = re.findall(r"[A-Za-z']+", text or '')
+        if tokenizer is None or not words:
+            return False
+        yours = {w.lower() for w in re.findall(r"[A-Za-z']+", str(self.hotwords or ''))}
+        try:
+            return all(w.lower() not in yours
+                       and len(tokenizer.encode(' ' + w.lower(), add_special_tokens=False).ids) >= 2
+                       for w in words)
+        except Exception as e:
+            self.logger.debug(f"Tokenizer unavailable for the made-up check: {e}")
+            return False
+
+    # When the English is made up, the chat's version needs only to be about
+    # as sure (within this much). "Atma Dehima" lost to את מדהימה by 0.06;
+    # the nearest real English in the replay, "Grokbot", was 0.10 surer.
+    REDO_MADE_UP_SLACK = 0.08
+
     # Whether the redo in the chat's language replaces the first decode.
     def _redo_wins(self, first: list, again: list) -> bool:
         text = ''.join(p['text'] for p in again).strip()
         if not text or text.rstrip('.!?') in self.REDO_INVENTED:
             return False
         before, after = self._confidence(first), self._confidence(again)
-        return before is not None and after is not None and after >= before + self.REDO_MIN_GAIN
+        if before is None or after is None:
+            return False
+        if after >= before + self.REDO_MIN_GAIN:
+            return True
+        first_text = ''.join(p['text'] for p in first).strip()
+        return after >= before - self.REDO_MADE_UP_SLACK and self._looks_made_up(first_text)
 
     # Your prompt and favored words with what practice taught Koli for this
     # language (`vocabulary_extras`, set by the state manager; every language
