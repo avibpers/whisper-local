@@ -7632,6 +7632,36 @@ class LanguageModelRoutingTests(unittest.TestCase):
         self.assertEqual(engine.last_info['language'], 'en')
         self.assertNotIn('language_from', engine.last_info)
 
+    # "Atma Dehima" for את מדהימה (2026-11-24): Whisper was a little surer of
+    # the English, but no word of it is English (two pieces a word in its
+    # vocabulary), so the chat's version wins when about as sure.
+    def _with_tokenizer(self, engine, pieces):
+        import unittest.mock as mock
+        engine.model.hf_tokenizer = mock.Mock(encode=lambda text, add_special_tokens=False: mock.Mock(
+            ids=[0] * pieces.get(text.strip(), 1)))
+        return engine
+
+    def test_made_up_english_loses_to_the_chats_language_when_about_as_sure(self):
+        heard = {'en': ('Atma Dehima', -0.36), 'he': ('את מדהימה', -0.42)}
+        engine = self._with_tokenizer(self._engine(detected=self._SURE_ENGLISH, allowed=['he', 'en'], heard=heard),
+                                      {'atma': 2, 'dehima': 3})
+        self.assertEqual(self._run_in_chat(engine, 'he'), 'את מדהימה')
+        self.assertEqual(engine.last_info.get('language_from'), 'chat')
+
+    def test_real_english_or_your_words_keep_the_full_margin(self):
+        heard = {'en': ('Merge.', -0.36), 'he': ('מרד', -0.42)}
+        engine = self._with_tokenizer(self._engine(detected=self._SURE_ENGLISH, allowed=['he', 'en'], heard=heard),
+                                      {'Merge': 2, 'merge': 1})
+        self.assertEqual(self._run_in_chat(engine, 'he'), 'Merge.', 'one piece lowercased: a real word')
+        heard = {'en': ('Koli', -0.36), 'he': ('כולי', -0.42)}
+        engine = self._with_tokenizer(self._engine(detected=self._SURE_ENGLISH, allowed=['he', 'en'], heard=heard),
+                                      {'koli': 2})
+        self.assertEqual(self._run_in_chat(engine, 'he'), 'Koli', 'a favored word is never made up')
+        heard = {'en': ('Atma Dehima', -0.30), 'he': ('את מדהימה', -0.42)}
+        engine = self._with_tokenizer(self._engine(detected=self._SURE_ENGLISH, allowed=['he', 'en'], heard=heard),
+                                      {'atma': 2, 'dehima': 3})
+        self.assertEqual(self._run_in_chat(engine, 'he'), 'Atma Dehima', 'English clearly surer still wins')
+
     def test_an_invented_thank_you_never_wins(self):
         engine = self._engine(detected=self._SURE_ENGLISH, allowed=['he', 'en'],
                               heard={'en': ('Automate', -0.9), 'he': ('תודה רבה.', -0.3)})

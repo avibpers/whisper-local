@@ -100,6 +100,15 @@ either way. The other direction (Hebrew clips in an English chat) broke as
 many as it fixed (מטופל became "Metupal"), so only your main language is
 tried.
 
+### English that isn't English
+
+"Atma Dehima" for את מדהימה still came out in English: Whisper was 0.06
+surer of it. When no word of the English is a real word (each takes two or
+more pieces in Whisper's vocabulary, lowercased; your favored words never
+count), the chat's version needs only to be within 0.08. In the replay that
+fixed "Tukan" (תוקן) and "Bootsam" (בוצע) and broke nothing; the nearest
+real English, "Grokbot", was 0.10 surer and stays.
+
 ## Not done (ideas for later)
 
 - Your last sentence in the chat as a short hint to Whisper, for names and
