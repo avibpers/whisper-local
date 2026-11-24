@@ -72,6 +72,34 @@ engine on the 39 clips the replay changed, the chat's language fixed 13
 main", "I see it", "in prod", "Cloudflare") and broke none; the other 26
 came out the same as today.
 
+## Short clips heard again (2026-11-24)
+
+The weak-guess rule missed one or two Hebrew words in a Hebrew chat:
+"Nakhon" for נכון, "Dov." for טוב, "Gantt, Dakhini." for כן תכיני. Whisper
+was sure enough of English (0.56-0.66), or its top guess was Arabic and
+English won among your languages, so the chat was never asked.
+
+Now a dictation of 4.5 s or less, written in another language than the
+chat's, is decoded once more in the chat's language when that is your main
+one. The redo runs on the main model without the prompt and favored words
+(written in English, they pulled the Hebrew redo to Latin letters:
+"Ganttahini"). It replaces the first version when Whisper's average
+log-probability is at least 0.15 better, and never when it is an invented
+thank-you (forced to Hebrew, Whisper wrote תודה רבה for "Automate"). The
+log says "Short clip written in en (-0.81), this chat is in he: heard again
+in he (-0.51), kept"; `language_from: chat` marks it. It costs one more
+decode (about 0.2 s) only on such clips.
+
+Measured on 509 short clips whose language differed from the chat's, each
+decoded forced to Hebrew and to English, then the 169 English ones in
+Hebrew chats run through the real engine. The redo changed 27: about 14
+fixed (the four above, "Bootsa" בוצע, "low." לא, "Kamuts time" כמות שתיים,
+"Video" בדיוק...), 2 broken ("Again, let's test", "Answer in English
+please"; "Dev3" broke at 0.13 and is under the margin now), the rest wrong
+either way. The other direction (Hebrew clips in an English chat) broke as
+many as it fixed (מטופל became "Metupal"), so only your main language is
+tried.
+
 ## Not done (ideas for later)
 
 - Your last sentence in the chat as a short hint to Whisper, for names and

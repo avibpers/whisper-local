@@ -7436,14 +7436,16 @@ class LanguageModelRoutingTests(unittest.TestCase):
     # detects the language, that language goes to the second model, anything
     # else is transcribed by the main model in the language it detected.
     # `detected` is (language, probability[, every language's score]).
-    def _engine(self, detected=('en', 0.98), forced=None, second=True, allowed=None):
+    # `heard`: what the main model writes and how sure it is, per language
+    # it's told ({'he': ('נכון', -0.5)}); otherwise 'main text' at -0.2.
+    def _engine(self, detected=('en', 0.98), forced=None, second=True, allowed=None, heard=None):
         import unittest.mock as mock
         from koli import whisper_engine
 
         class Segment:
-            def __init__(self, text):
+            def __init__(self, text, logprob=-0.2):
                 self.text, self.start, self.end = text, 0.0, 1.0
-                self.no_speech_prob, self.avg_logprob, self.compression_ratio = 0.02, -0.2, 1.1
+                self.no_speech_prob, self.avg_logprob, self.compression_ratio = 0.02, logprob, 1.1
 
         class Model:
             def __init__(self, name):
@@ -7455,7 +7457,9 @@ class LanguageModelRoutingTests(unittest.TestCase):
 
             def transcribe(self, audio, **kwargs):
                 self.calls.append(('transcribe', kwargs))
-                return iter([Segment(f'{self.name} text')]), mock.Mock(
+                said = (heard or {}).get(kwargs.get('language')) if self.name == 'main' else None
+                segment = Segment(*said) if said else Segment(f'{self.name} text')
+                return iter([segment]), mock.Mock(
                     language=kwargs.get('language') or 'en', language_probability=0.99)
 
         engine = whisper_engine.WhisperEngine.__new__(whisper_engine.WhisperEngine)
@@ -7599,7 +7603,51 @@ class LanguageModelRoutingTests(unittest.TestCase):
         self.assertEqual(self._run_in_chat(engine, 'en'), 'hebrew text')
         engine = self._engine(detected=('en', 0.95, [('en', 0.95), ('he', 0.02)]), allowed=['he', 'en'])
         self._run_in_chat(engine, 'he')
-        self.assertEqual(engine.model.calls[-1][1]['language'], 'en')
+        self.assertEqual(engine.model.calls[1][1]['language'], 'en')
+        self.assertEqual(engine.last_info['language'], 'en', 'the Hebrew redo was no clearer')
+
+    # ── A short clip heard again in the chat's language ──
+    # "Nakhon" for נכון in a Hebrew chat (2026-11-24): Whisper was sure
+    # enough of English. A short clip written in another language than the
+    # chat's (your main one) is decoded again in it, without the English
+    # prompt and favored words, and kept when Whisper is clearly surer.
+    _SURE_ENGLISH = ('en', 0.66, [('en', 0.66), ('he', 0.2)])
+
+    def test_a_short_clip_in_a_hebrew_chat_is_heard_again_in_hebrew(self):
+        engine = self._engine(detected=self._SURE_ENGLISH, allowed=['he', 'en'],
+                              heard={'en': ('Nakhon', -0.81), 'he': ('נכון', -0.51)})
+        self.assertEqual(self._run_in_chat(engine, 'he'), 'נכון')
+        redo = engine.model.calls[-1][1]
+        self.assertEqual(redo['language'], 'he')
+        self.assertNotIn('initial_prompt', redo, 'the English prompt pulled Hebrew to Latin letters')
+        self.assertNotIn('hotwords', redo)
+        self.assertEqual(engine.last_info['language'], 'he')
+        self.assertEqual(engine.last_info.get('language_from'), 'chat')
+        self.assertEqual(engine.language_model.calls, [], 'never the second model')
+
+    def test_the_first_version_stays_unless_the_redo_is_clearly_surer(self):
+        engine = self._engine(detected=self._SURE_ENGLISH, allowed=['he', 'en'],
+                              heard={'en': ('Remove the tree.', -0.52), 'he': ('תחת ודלת', -0.45)})
+        self.assertEqual(self._run_in_chat(engine, 'he'), 'Remove the tree.')
+        self.assertEqual(engine.last_info['language'], 'en')
+        self.assertNotIn('language_from', engine.last_info)
+
+    def test_an_invented_thank_you_never_wins(self):
+        engine = self._engine(detected=self._SURE_ENGLISH, allowed=['he', 'en'],
+                              heard={'en': ('Automate', -0.9), 'he': ('תודה רבה.', -0.3)})
+        self.assertEqual(self._run_in_chat(engine, 'he'), 'Automate')
+
+    def test_only_a_short_clip_and_only_towards_your_main_language(self):
+        import unittest.mock as mock
+        import numpy as np
+        heard = {'en': ('Nakhon', -0.81), 'he': ('נכון', -0.3)}
+        engine = self._engine(detected=self._SURE_ENGLISH, allowed=['he', 'en'], heard=heard)
+        with mock.patch('builtins.print'):
+            text = engine.transcribe_audio(np.zeros(16000 * 6, dtype=np.float32), chat_language='he')
+        self.assertEqual(text, 'Nakhon', 'six seconds is not short')
+        self.assertEqual(len([c for c in engine.model.calls if c[0] == 'transcribe']), 1)
+        engine = self._engine(detected=('en', 0.66, [('en', 0.66), ('he', 0.2)]), allowed=['en', 'he'], heard=heard)
+        self.assertEqual(self._run_in_chat(engine, 'he'), 'Nakhon', 'Hebrew is not the main language here')
 
     def test_a_chat_language_you_dont_speak_is_ignored(self):
         engine = self._engine(detected=('en', 0.15, [('en', 0.15), ('he', 0.01)]), allowed=['he', 'en'])

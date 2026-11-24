@@ -369,6 +369,56 @@ class WhisperEngine:
         name = str(getattr(self, 'model_key', '') or '').lower()
         return name.split('.')[0].split('-')[0] in self.SMALL_MODELS
 
+    # ── A short clip heard again in the chat's language ──
+    # One or two Hebrew words in a Hebrew chat came out as English gibberish
+    # ("Nakhon" for נכון, "Dov." for טוב, 2026-11-24): Whisper was sure enough
+    # of English, or its top guess was Arabic, so the weak-guess rule never
+    # asked the chat. A short clip written in another language than the chat's
+    # is decoded again in the chat's language, and that version is kept when
+    # Whisper is clearly more confident of it. A replay of 509 short clips:
+    # the redo in Hebrew fixed the gibberish and left real English ("Remove
+    # and delete the tree") alone; the other way round (Hebrew clips in an
+    # English chat) it broke as many as it fixed, so only your main language
+    # is tried.
+    REDO_MAX_SECONDS = 4.5
+    # How much better (average log-probability) the chat's version must be.
+    # Run through the engine, "Dev3" became דב 3 at 0.13 better.
+    REDO_MIN_GAIN = 0.15
+    # Forced to Hebrew, Whisper invents a thank-you for English it can't place
+    # ("Automate" became תודה רבה); such a redo never wins.
+    REDO_INVENTED = ('תודה רבה', 'תודה', 'תודה רבה, ביי ביי', 'הלו', 'יאללה ביי', 'יאללה, ביי', 'ביי ביי')
+
+    # The language to decode a short clip in again, or None: your main one,
+    # when it's the chat's language and Whisper wrote another. Only when the
+    # language wasn't forced and the chat didn't already decide.
+    def _redo_language(self, written: str, chat_language: str, language: Optional[str],
+                       audio_seconds: float, text: str, task: str) -> Optional[str]:
+        allowed = getattr(self, 'allowed_languages', None) or []
+        forced = self.language if language is None else (None if language == 'auto' else language)
+        if forced or len(allowed) < 2 or not chat_language or chat_language != allowed[0]:
+            return None
+        if not text or written == chat_language or task != 'transcribe':
+            return None
+        if getattr(self, '_language_from_chat', False) or audio_seconds > self.REDO_MAX_SECONDS:
+            return None
+        return chat_language
+
+    # Whisper's confidence in a decode: the pieces' log-probability, weighted
+    # by how long each one is.
+    @staticmethod
+    def _confidence(pieces: list) -> Optional[float]:
+        weights = [(max(p['end'] - p['start'], 0.01), p['avg_logprob']) for p in pieces]
+        total = sum(w for w, _ in weights)
+        return sum(w * lp for w, lp in weights) / total if total else None
+
+    # Whether the redo in the chat's language replaces the first decode.
+    def _redo_wins(self, first: list, again: list) -> bool:
+        text = ''.join(p['text'] for p in again).strip()
+        if not text or text.rstrip('.!?') in self.REDO_INVENTED:
+            return False
+        before, after = self._confidence(first), self._confidence(again)
+        return before is not None and after is not None and after >= before + self.REDO_MIN_GAIN
+
     # Your prompt and favored words with what practice taught Koli for this
     # language (`vocabulary_extras`, set by the state manager; every language
     # when `lang` isn't known yet). Prompt terms go to the main model only:
@@ -627,13 +677,22 @@ class WhisperEngine:
             # the decoding runs, so that stays on the engine thread too, along
             # with picking the model. Each piece keeps Whisper's own numbers on
             # how sure it was, so auto-dictation can leave out what was noise.
-            def decode():
-                model, key, lang, prompt, detected_probability = self._route(audio_data, language, chat_language)
+            # `redo`: decode again told this language, on the main model,
+            # without routing (which would reset the guess) and without the
+            # prompt or favored words: written in English, they pulled the
+            # Hebrew redo to Latin letters ("Ganttahini" for כן תכיני).
+            def decode(redo: Optional[str] = None):
+                if redo:
+                    model, key, lang, prompt, detected_probability = self.model, self.model_key, redo, None, None
+                else:
+                    model, key, lang, prompt, detected_probability = self._route(audio_data, language, chat_language)
                 kwargs = dict(beam_size=beam_size or self.beam_size, language=lang, task=task or self.task,
                               condition_on_previous_text=False)
                 # Learned words join yours only on ordinary calls: the wake
                 # word passes its own spelling as `hotwords`.
-                if hotwords is None and use_prompt:
+                if redo:
+                    words = None
+                elif hotwords is None and use_prompt:
                     prompt, words = self._with_learned(model, lang, prompt, self.hotwords)
                 else:
                     words = self.hotwords if hotwords is None else hotwords
@@ -654,8 +713,22 @@ class WhisperEngine:
                            'compression_ratio': round(float(s.compression_ratio), 2)} for s in segments]
                 return pieces, info, key, detected_probability, getattr(self, '_raw_language_probability', None)
 
-            decoded, info, used_key, detected_probability, raw_probability = self._run_decode(
-                decode, len(audio_data) / 16000)
+            audio_seconds = len(audio_data) / 16000
+            decoded, info, used_key, detected_probability, raw_probability = self._run_decode(decode, audio_seconds)
+            redo_from_chat = False
+            if not quiet:
+                redo = self._redo_language(info.language, chat_language, language, audio_seconds,
+                                           ''.join(p['text'] for p in decoded).strip(), task or self.task)
+                if redo:
+                    again, again_info, again_key, _, _ = self._run_decode(lambda: decode(redo), audio_seconds)
+                    before, after = self._confidence(decoded), self._confidence(again)
+                    if self._redo_wins(decoded, again):
+                        self.logger.info(f"Short clip written in {info.language} ({before:.2f}), this chat is in "
+                                         f"{redo}: heard again in {redo} ({after:.2f}), kept")
+                        decoded, info, used_key, redo_from_chat = again, again_info, again_key, True
+                    else:
+                        self.logger.info(f"Short clip written in {info.language} ({before if before is not None else 0:.2f}); "
+                                         f"heard again in {redo} ({after if after is not None else 0:.2f}), not clearer")
             if pieces is not None:
                 pieces.extend(decoded)
             pieces = decoded
@@ -690,7 +763,7 @@ class WhisperEngine:
             }
             # Whisper was unsure and the chat's language decided (History and
             # the kept clip show it).
-            if getattr(self, '_language_from_chat', False):
+            if getattr(self, '_language_from_chat', False) or redo_from_chat:
                 self.last_info['language_from'] = 'chat'
             self.logger.info(f"Transcription complete. Language: {detected_language} (confidence: {confidence:.2f}) - Time: {transcription_time:.2f}s")
             # The numbers only, never the text: why a piece was kept or left out.
